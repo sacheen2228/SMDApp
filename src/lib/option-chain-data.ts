@@ -188,17 +188,29 @@ function calculateGreeks(
   };
 }
 
+// Market data overrides for real-time spot/VIX integration
+export interface MarketOverrides {
+  spotPrice?: number;
+  spotChange?: number;
+  spotChangePct?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  prevClose?: number;
+  indiaVIX?: number;
+  vixChange?: number;
+}
+
 // Generate option chain data
-export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: string): OptionChainResponse {
+export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: string, overrides?: MarketOverrides): OptionChainResponse {
   const config = SYMBOL_CONFIG[symbol] || SYMBOL_CONFIG.NIFTY;
   const rand = seededRandom(Date.now());
 
-  // Generate realistic spot price with some movement
-  const baseMovement = (rand() - 0.48) * config.basePrice * 0.02; // Slight upward bias
-  const spotPrice = Math.round((config.basePrice + baseMovement) * 100) / 100;
-  const prevClose = Math.round((config.basePrice - (rand() - 0.48) * config.basePrice * 0.01) * 100) / 100;
-  const spotChange = Math.round((spotPrice - prevClose) * 100) / 100;
-  const spotChangePct = Math.round((spotChange / prevClose) * 10000) / 100;
+  // Use real spot price if provided, otherwise generate simulated
+  const spotPrice = overrides?.spotPrice || Math.round((config.basePrice + (rand() - 0.48) * config.basePrice * 0.02) * 100) / 100;
+  const prevClose = overrides?.prevClose || Math.round((config.basePrice - (rand() - 0.48) * config.basePrice * 0.01) * 100) / 100;
+  const spotChange = overrides?.spotChange ?? Math.round((spotPrice - prevClose) * 100) / 100;
+  const spotChangePct = overrides?.spotChangePct ?? Math.round((spotChange / prevClose) * 10000) / 100;
 
   const expiries = generateExpiries();
   const selectedExpiry = expiryDate || expiries[0]?.date || new Date().toISOString().split('T')[0];
@@ -219,9 +231,9 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
     strikes.push(s);
   }
 
-  // India VIX simulation
-  const indiaVIX = Math.round((13 + rand() * 8) * 100) / 100;
-  const vixChange = Math.round((rand() - 0.5) * 3 * 100) / 100;
+  // India VIX - use real if provided
+  const indiaVIX = overrides?.indiaVIX ?? Math.round((13 + rand() * 8) * 100) / 100;
+  const vixChange = overrides?.vixChange ?? Math.round((rand() - 0.5) * 3 * 100) / 100;
 
   // Generate option data for each strike
   const data: OptionData[] = strikes.map(strike => {
@@ -327,9 +339,9 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
     spotPrice,
     spotChange,
     spotChangePct,
-    open: Math.round((prevClose + (rand() - 0.5) * prevClose * 0.005) * 100) / 100,
-    high: Math.round((spotPrice + rand() * spotPrice * 0.01) * 100) / 100,
-    low: Math.round((spotPrice - rand() * spotPrice * 0.01) * 100) / 100,
+    open: overrides?.open || Math.round((prevClose + (rand() - 0.5) * prevClose * 0.005) * 100) / 100,
+    high: overrides?.high || Math.round((spotPrice + rand() * spotPrice * 0.01) * 100) / 100,
+    low: overrides?.low || Math.round((spotPrice - rand() * spotPrice * 0.01) * 100) / 100,
     prevClose,
     indiaVIX,
     vixChange,

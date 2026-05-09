@@ -88,6 +88,9 @@ type OptionChainResponse = {
   summary: MarketSummary;
   timestamp: string;
   isLive?: boolean;
+  dataSource?: string;
+  spotPriceReal?: boolean;
+  vixReal?: boolean;
 };
 
 type ViewMode = 'option-chain' | 'oi-analysis';
@@ -584,6 +587,12 @@ export default function OptionChainPage() {
                 <>
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-emerald-500 font-semibold">LIVE</span> · Motilal Oswal
+                </>
+              ) : data?.spotPriceReal ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="text-blue-500 font-semibold">REAL PRICES</span> · Yahoo Finance
+                  <span className="text-muted-foreground">· OI simulated</span>
                 </>
               ) : (
                 <>
