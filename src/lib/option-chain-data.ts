@@ -84,6 +84,7 @@ const SYMBOL_CONFIG: Record<string, {
   BANKNIFTY: { lotSize: 15, stepSize: 100, rangeFactor: 0.10, basePrice: 51000 },
   FINNIFTY: { lotSize: 25, stepSize: 50, rangeFactor: 0.08, basePrice: 23000 },
   MIDCPNIFTY: { lotSize: 50, stepSize: 25, rangeFactor: 0.08, basePrice: 12000 },
+  SENSEX: { lotSize: 10, stepSize: 100, rangeFactor: 0.08, basePrice: 79000 },
 };
 
 // Generate expiry dates (weekly + monthly)

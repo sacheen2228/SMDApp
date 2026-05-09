@@ -1,56 +1,22 @@
-# Project Worklog - Sensibull Option Chain Clone
-
 ---
 Task ID: 1
 Agent: Main
-Task: Plan architecture and create data models
+Task: Add SENSEX support and OI Analysis feature to Option Chain
 
 Work Log:
-- Analyzed Sensibull option chain website structure
-- Identified key features: symbol selector, expiry selector, spot price, VIX, PCR, max pain, OI analysis, option chain table with calls/puts
-- Planned architecture: Next.js API routes for data generation, React components for UI
-- Will generate simulated Indian options data since Finance API is US-market focused
+- Added SENSEX to SYMBOL_CONFIG in backend data generator (basePrice: 79000, stepSize: 100, lotSize: 10)
+- Added SENSEX to symbol dropdown in frontend page
+- Added new "OI Analysis" view with tab navigation (Option Chain / OI Analysis)
+- Added OI Change bar chart (Sensibull-style) with red/green bars for call/put OI changes
+- Added Open Interest visualization mode in OI Analysis
+- Added strike range filter (All, 5, 10, 15, 20 strikes above/below ATM)
+- Added Show OI toggle switch
+- Added summary cards (Call Resistance, Put Support, CE OI Change, PE OI Change)
+- Added OI data table in analysis view
+- Fixed PM2 process management issue (replaced standalone server with dev server)
+- Verified all symbols work: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX
 
 Stage Summary:
-- Architecture planned: Single-page app with API routes for data generation
-- Data model: Options with strike, CE/PE data (OI, OI Chg, Volume, IV, LTP, Greeks)
-- Key components: Header, MarketSummary, OIAnalysis, OptionChainTable, Footer
-
----
-Task ID: 2
-Agent: Main
-Task: Build backend API routes for option chain data generation
-
-Work Log:
-- Created comprehensive option chain data generator at src/lib/option-chain-data.ts
-- Implemented realistic data generation with Black-Scholes Greeks calculations
-- Added NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY symbol configurations
-- Created expiry date generation (weekly + monthly)
-- Created API route at src/app/api/option-chain/route.ts
-
-Stage Summary:
-- Backend API fully functional, returns comprehensive option chain data
-- Includes: OI, OI Change, Volume, IV, LTP, Chg, Greeks (Delta, Gamma, Theta, Vega)
-- Market summary with Spot, VIX, PCR, Max Pain, OHLC, Total OI
-
----
-Task ID: 3-6
-Agent: Main
-Task: Build full frontend - Header, Market Summary, OI Analysis, Option Chain Table
-
-Work Log:
-- Built comprehensive single-page Option Chain application
-- Header with logo, symbol selector, expiry tabs, settings popover, dark/light mode toggle
-- Market summary bar with Spot, Change%, VIX, PCR, Max Pain, OI summary, OHLC
-- OI Analysis section with top 5 Call/Put OI bars and distribution chart
-- Full option chain table with heat-mapped OI, ITM/OTM highlighting, ATM indicator
-- Settings: toggle Greeks, OI Change, auto-refresh
-- Dark mode support with next-themes
-- Responsive design for mobile and desktop
-- Lint passes clean
-
-Stage Summary:
-- Full Sensibull clone with professional UI
-- All core features: symbol selector, expiry selector, market summary, OI analysis, option chain table
-- Advanced features: OI heat mapping, ATM auto-scroll, dark mode, Greeks display toggle
-- Responsive design with mobile-friendly controls
+- SENSEX now appears in the dropdown and generates realistic data (~79000 base price, 100 step size)
+- New OI Analysis tab provides Sensibull-style OI Change chart with interactive features
+- Server running stably on PM2 with dev mode
