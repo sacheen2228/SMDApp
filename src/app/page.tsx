@@ -14,6 +14,12 @@ import {
   Moon,
   Eye,
   EyeOff,
+  Wifi,
+  WifiOff,
+  Info,
+  ExternalLink,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +38,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { useTheme } from 'next-themes';
 
 // Types
@@ -114,6 +121,192 @@ function oiHeat(oi: number, maxOI: number, isCall: boolean): React.CSSProperties
     return { background: `linear-gradient(to left, rgba(239,68,68,${pct * 0.35}), transparent)` };
   }
   return { background: `linear-gradient(to right, rgba(34,197,94,${pct * 0.35}), transparent)` };
+}
+
+// ─── Live Data Setup Dialog ───
+function LiveDataSetupDialog() {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  };
+
+  const envContent = `# Motilal Oswal OpenAPI Credentials
+MO_BASE_URL=https://openapi.motilaloswal.com
+MO_API_KEY=your_api_key_here
+MO_API_SECRET=your_api_secret_here
+MO_USER_ID=your_client_code
+MO_PASSWORD=your_password
+MO_TOTP_SECRET=your_totp_secret_here
+MO_TWO_FA=DD/MM/YYYY
+MO_STATIC_IP=your_static_ip`;
+
+  const runLocalCommands = `# 1. Install Bun (if not installed)
+curl -fsSL https://bun.sh/install | bash
+
+# 2. Clone/navigate to project
+cd option-chain
+
+# 3. Install dependencies
+bun install
+
+# 4. Edit .env with your MO API credentials
+# Fill in: MO_API_KEY, MO_API_SECRET, MO_USER_ID,
+#          MO_PASSWORD, MO_TOTP_SECRET, MO_TWO_FA
+
+# 5. Start the dev server
+bun run dev
+
+# 6. Open in browser
+# http://localhost:3000`;
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-5 text-[9px] px-1.5 gap-1 text-amber-500 hover:text-amber-400">
+          <Info className="h-2.5 w-2.5" />
+          Get Live Data
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Wifi className="h-5 w-5 text-emerald-500" />
+            Get Live Market Data
+          </DialogTitle>
+          <DialogDescription>
+            Connect to Motilal Oswal API for real-time option chain data with live prices, OI, and Greeks.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 mt-2">
+          {/* Prerequisites */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">📋 Prerequisites</h4>
+            <ul className="text-xs space-y-1.5 text-muted-foreground">
+              <li className="flex items-start gap-2">
+                <span className="text-emerald-500 mt-0.5">✓</span>
+                <span>Active Motilal Oswal trading account</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-emerald-500 mt-0.5">✓</span>
+                <span>API key from <a href="https://invest.motilaloswal.com/OpenApi/Dashboard" target="_blank" rel="noopener noreferrer" className="text-primary underline inline-flex items-center gap-0.5">developer portal <ExternalLink className="h-2.5 w-2.5" /></a></span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-emerald-500 mt-0.5">✓</span>
+                <span>Registered Static IP (whitelisted in MO portal)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-emerald-500 mt-0.5">✓</span>
+                <span>TOTP secret key (from authenticator setup)</span>
+              </li>
+            </ul>
+          </div>
+
+          <Separator />
+
+          {/* Current Data Source */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">📊 Current Data Source</h4>
+            <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="font-semibold text-emerald-500">LIVE</span>
+                <span className="text-muted-foreground">— Full live data from Motilal Oswal API</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                <span className="font-semibold text-blue-500">REAL PRICES</span>
+                <span className="text-muted-foreground">— Real spot price from Yahoo Finance, OI simulated</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-500" />
+                <span className="font-semibold text-amber-500">SIMULATED</span>
+                <span className="text-muted-foreground">— All data simulated for demo purposes</span>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* .env Setup */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">⚙️ Environment Configuration</h4>
+            <p className="text-xs text-muted-foreground mb-2">
+              Add these variables to your <code className="bg-muted px-1 rounded">.env</code> file:
+            </p>
+            <div className="relative">
+              <pre className="bg-muted/80 rounded-lg p-3 text-[10px] font-mono overflow-x-auto leading-relaxed">
+                {envContent}
+              </pre>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-1 right-1 h-6 w-6 p-0"
+                onClick={() => copyToClipboard(envContent, 'env')}
+              >
+                {copied === 'env' ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Important Notes */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">⚠️ Important Notes</h4>
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs space-y-1.5">
+              <p><strong>Static IP Required:</strong> The MO API only accepts requests from your registered IP. The app <strong>must run on a machine</strong> with that IP address.</p>
+              <p><strong>2FA Field:</strong> Set <code className="bg-muted px-0.5 rounded">MO_TWO_FA</code> to your date of birth in <strong>DD/MM/YYYY</strong> format (e.g., <code className="bg-muted px-0.5 rounded">15/03/1995</code>).</p>
+              <p><strong>Password Hashing:</strong> The password is automatically hashed as SHA-256(password + apiKey) before sending. Enter your plain password in .env.</p>
+              <p><strong>TOTP:</strong> The TOTP secret is the base32 key from your authenticator app setup. A fresh TOTP is generated every 30 seconds automatically.</p>
+              <p><strong>Token Expiry:</strong> Auth tokens expire daily at 6:00 AM IST and are auto-refreshed.</p>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Run Locally */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">🚀 Run Locally</h4>
+            <div className="relative">
+              <pre className="bg-muted/80 rounded-lg p-3 text-[10px] font-mono overflow-x-auto leading-relaxed">
+                {runLocalCommands}
+              </pre>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-1 right-1 h-6 w-6 p-0"
+                onClick={() => copyToClipboard(runLocalCommands, 'commands')}
+              >
+                {copied === 'commands' ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* How It Works */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">🔄 Data Flow</h4>
+            <div className="text-xs text-muted-foreground space-y-1.5">
+              <p><strong>1.</strong> App generates TOTP from your secret key</p>
+              <p><strong>2.</strong> Logs in to MO API with credentials + TOTP</p>
+              <p><strong>3.</strong> Gets AuthToken and AccessToken</p>
+              <p><strong>4.</strong> Downloads Scrip Master (option instruments list)</p>
+              <p><strong>5.</strong> Fetches Index LTP (spot price)</p>
+              <p><strong>6.</strong> Fetches LTP for each option contract</p>
+              <p><strong>7.</strong> Calculates Greeks using Black-Scholes model</p>
+              <p><strong>8.</strong> Falls back to Yahoo Finance → Simulation if MO API is unreachable</p>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export default function OptionChainPage() {
@@ -585,18 +778,18 @@ export default function OptionChainPage() {
             <span className="flex items-center gap-1">
               {data?.isLive ? (
                 <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <Wifi className="h-3 w-3 text-emerald-500" />
                   <span className="text-emerald-500 font-semibold">LIVE</span> · Motilal Oswal
                 </>
               ) : data?.spotPriceReal ? (
                 <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  <Wifi className="h-3 w-3 text-blue-500" />
                   <span className="text-blue-500 font-semibold">REAL PRICES</span> · Yahoo Finance
                   <span className="text-muted-foreground">· OI simulated</span>
                 </>
               ) : (
                 <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  <WifiOff className="h-3 w-3 text-amber-500" />
                   <span className="text-amber-500 font-semibold">SIMULATED</span> · Demo Data
                 </>
               )}
@@ -610,6 +803,9 @@ export default function OptionChainPage() {
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-red-500/40 inline-block" /> Call OI</span>
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-emerald-500/40 inline-block" /> Put OI</span>
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" /> ATM</span>
+            
+            {/* Live Data Setup Dialog */}
+            <LiveDataSetupDialog />
           </div>
         </div>
       </footer>

@@ -1,9 +1,22 @@
 // Motilal Oswal OpenAPI Integration Service
 // Handles authentication, session management, and market data retrieval
 // Based on MOFSL OpenAPI V3.1 SDK endpoints
-// 
+//
+// API Docs: https://invest.motilaloswal.com/moAPI/APIDocumentation/Introduction
+//
 // IMPORTANT: This API requires requests from a registered Static IP.
 // The app will fall back to Yahoo Finance + simulation if MO API is unreachable.
+//
+// KEY FINDINGS from official docs:
+// - Base URL: https://openapi.motilaloswal.com
+// - Login: POST /rest/login/v7/authdirectapi with { userid, password(SHA256), 2FA, totp }
+// - Password hash: SHA-256(password + apiKey) lowercase hex
+// - 2FA: Date of birth in DD/MM/YYYY format
+// - LTP data: POST /rest/report/v3/getltpdata with { exchange, scripcode }
+// - Index LTP: POST /rest/report/v3/getindexltpdata with { exchange, scripcode(string) }
+// - LTP values are in PAISA (multiply by 0.01 for rupees)
+// - Scrip master: POST /rest/report/v3/getscripsbyexchangename with { exchangename }
+// - All calls need: Authorization, ApiKey, apisecretkey, accesstoken headers
 
 import { TOTP } from 'otplib';
 import crypto from 'crypto';
@@ -18,31 +31,30 @@ interface MOAuthTokens {
 
 interface MOLTPData {
   exchange: string;
-  tradingSymbol: string;
-  symbolToken: string;
-  ltp: number;
+  scripcode: number | string;
+  ltp: number;       // in rupees (converted from paisa)
   close: number;
   high: number;
   low: number;
   open: number;
-  prevClose: number;
-  change: number;
-  changePct: number;
   volume: number;
-  oi: number;
-  oiChg: number;
+  ask: number;
+  bid: number;
 }
 
 interface MOScripMasterEntry {
   exchange: string;
-  tradingSymbol: string;
-  symbolToken: string;
-  instrumentType: string;
-  expiry: string;
-  strike: number;
-  optionType: string;
-  lotSize: number;
-  name: string;
+  exchangename: string;
+  scripcode: number;
+  scripname: string;
+  scripshortname: string;
+  marketlot: number;
+  instrumentname: string;
+  expirydate: string;
+  strikeprice: number;
+  optiontype: string;
+  issuspended: number;
+  markettype: string;
 }
 
 // ─── Cached State ────────────────────────────────────────────────
@@ -57,8 +69,9 @@ const ENDPOINTS = {
   accessToken: '/rest/login/v1/getaccesstoken',
   getProfile: '/rest/login/v5/getprofile',
   ltpData: '/rest/report/v3/getltpdata',
+  indexLtp: '/rest/report/v3/getindexltpdata',
   scripMaster: '/rest/report/v3/getscripsbyexchangename',
-  indexLtp: '/rest/report/v3/getindexltp',
+  optionChain: '/rest/report/v3/getoptionchaindata',
 };
 
 // ─── Configuration ───────────────────────────────────────────────
@@ -94,7 +107,7 @@ function getStaticIP(): string {
   return process.env.MO_STATIC_IP || '';
 }
 
-// ─── Headers ─────────────────────────────────────────────────────
+// ─── Headers (as per official API docs) ──────────────────────────
 function getHeaders(authToken?: string, accessToken?: string): Record<string, string> {
   const staticIP = getStaticIP();
   const headers: Record<string, string> = {
@@ -113,7 +126,14 @@ function getHeaders(authToken?: string, accessToken?: string): Record<string, st
     'manufacturer': 'Cloud',
     'productname': 'Sacheen',
     'productversion': '1.0',
+    'browsername': 'Chrome',
+    'browserversion': '120.0',
   };
+
+  // Add apisecretkey (mandatory for all authenticated calls)
+  if (getApiSecret()) {
+    headers['apisecretkey'] = getApiSecret();
+  }
 
   if (authToken) {
     headers['Authorization'] = authToken;
@@ -126,6 +146,7 @@ function getHeaders(authToken?: string, accessToken?: string): Record<string, st
 }
 
 // ─── Password Hash: SHA-256(password + apiKey) ──────────────────
+// As per MO API docs: hash = SHA-256(password_string + apikey_string)
 function generatePasswordHash(password: string, apiKey: string): string {
   return crypto.createHash('sha256').update(password + apiKey).digest('hex');
 }
@@ -147,9 +168,14 @@ async function checkMOApiReachable(): Promise<boolean> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    await fetch(`${getBaseUrl()}${ENDPOINTS.login}`, {
+    // Try a simple HEAD request to the base URL
+    await fetch(`${getBaseUrl()}/rest/login/v7/authdirectapi`, {
       method: 'HEAD',
       signal: controller.signal,
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
     });
 
     clearTimeout(timeoutId);
@@ -172,28 +198,36 @@ async function loginWithTOTP(): Promise<MOAuthTokens> {
   const totpSecret = getTotpSecret();
   const twoFA = getTwoFA();
 
-  if (!userId || !password || !totpSecret) {
-    throw new Error('Missing Motilal Oswal credentials');
+  if (!userId || !password) {
+    throw new Error('Missing Motilal Oswal credentials (MO_USER_ID, MO_PASSWORD)');
   }
 
+  // Generate password hash: SHA-256(password + apiKey)
   const passwordHash = generatePasswordHash(password, apiKey);
-  const totpCode = generateTOTP(totpSecret);
 
+  // Build login body per official API docs
   const body: Record<string, string> = {
     userid: userId,
     password: passwordHash,
-    totp: totpCode,
   };
 
+  // Add 2FA (date of birth in DD/MM/YYYY format) if provided
   if (twoFA) {
     body['2FA'] = twoFA;
+  }
+
+  // Add TOTP if secret is configured
+  if (totpSecret) {
+    const totpCode = generateTOTP(totpSecret);
+    body['totp'] = totpCode;
+    console.log(`[MO API] Generated TOTP: ${totpCode}`);
   }
 
   console.log(`[MO API] Logging in as ${userId}...`);
 
   const response = await fetch(`${getBaseUrl()}${ENDPOINTS.login}`, {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getHeaders(), // No auth token yet for login
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
@@ -206,18 +240,19 @@ async function loginWithTOTP(): Promise<MOAuthTokens> {
   }
 
   const authToken = data.AuthToken;
-  console.log('[MO API] Login successful, getting access token...');
+  console.log('[MO API] Login successful, AuthToken received');
 
-  // Get access token
+  // Get access token (no body needed, just headers)
   const accessTokenResponse = await fetch(`${getBaseUrl()}${ENDPOINTS.accessToken}`, {
     method: 'POST',
-    headers: getHeaders(authToken),
+    headers: getHeaders(authToken, authToken), // Use authToken as initial accessToken
     signal: AbortSignal.timeout(10000),
   });
 
   const accessTokenData = await accessTokenResponse.json();
 
   if (accessTokenData.status !== 'SUCCESS') {
+    console.error('[MO API] Access token failed:', JSON.stringify(accessTokenData));
     throw new Error(`MO Access Token failed: ${accessTokenData.message || 'Unknown error'}`);
   }
 
@@ -227,7 +262,7 @@ async function loginWithTOTP(): Promise<MOAuthTokens> {
     authToken,
     accessToken,
     userId,
-    expiresAt: Date.now() + 23 * 60 * 60 * 1000,
+    expiresAt: Date.now() + 22 * 60 * 60 * 1000, // Token expires daily at 6 AM
   };
 
   moApiReachable = true;
@@ -247,24 +282,30 @@ async function getValidTokens(): Promise<MOAuthTokens> {
 export function isMOConfigured(): boolean {
   const userId = getUserId();
   const password = getPassword();
-  const totpSecret = getTotpSecret();
-  return !!(userId && password && totpSecret);
+  return !!(userId && password);
+}
+
+// ─── Convert paisa to rupees ────────────────────────────────────
+function paisaToRupees(paisa: number): number {
+  return paisa * 0.01;
 }
 
 // ─── Fetch Scrip Master Data ─────────────────────────────────────
-async function fetchScripMaster(exchange: string = 'NFO'): Promise<MOScripMasterEntry[]> {
+async function fetchScripMaster(exchangeName: string = 'NFO'): Promise<MOScripMasterEntry[]> {
   if (scripMasterCache && Date.now() - scripMasterCacheTime < 4 * 60 * 60 * 1000) {
-    return scripMasterCache;
+    return scripMasterCache.filter(s => s.exchangename === exchangeName);
   }
 
   const tokens = await getValidTokens();
 
-  console.log(`[MO API] Fetching scrip master for ${exchange}...`);
+  console.log(`[MO API] Fetching scrip master for ${exchangeName}...`);
 
   const response = await fetch(`${getBaseUrl()}${ENDPOINTS.scripMaster}`, {
     method: 'POST',
     headers: getHeaders(tokens.authToken, tokens.accessToken),
-    body: JSON.stringify({ exchange }),
+    body: JSON.stringify({
+      exchangename: exchangeName,
+    }),
     signal: AbortSignal.timeout(30000),
   });
 
@@ -274,31 +315,44 @@ async function fetchScripMaster(exchange: string = 'NFO'): Promise<MOScripMaster
     throw new Error(`MO Scrip Master failed: ${data.message || 'Unknown error'}`);
   }
 
-  const entries: MOScripMasterEntry[] = [];
   const items = Array.isArray(data.data) ? data.data : (data.data.records || data.data.result || []);
-  
+
+  const entries: MOScripMasterEntry[] = [];
   for (const item of items) {
     entries.push({
-      exchange: item.Exchange || item.exchange || exchange,
-      tradingSymbol: item.TradingSymbol || item.tradingsymbol || item.tradingSymbol || '',
-      symbolToken: String(item.SymbolToken || item.symboltoken || item.token || item.symbol_token || ''),
-      instrumentType: item.InstrumentType || item.instrumenttype || item.Instrumenttype || '',
-      expiry: item.Expiry || item.expiry || item.ExpiryDate || '',
-      strike: parseFloat(item.StrikePrice || item.strikeprice || item.strike || item.Strike || 0),
-      optionType: (item.OptionType || item.optiontype || item.Optiontype || item.Option || '').toUpperCase(),
-      lotSize: parseInt(item.LotSize || item.lotsize || item.Lotsize || '1'),
-      name: item.Name || item.name || item.Symbol || item.symbol || '',
+      exchange: item.exchange || item.Exchange || exchangeName,
+      exchangename: item.exchangename || item.ExchangeName || exchangeName,
+      scripcode: parseInt(item.scripcode || item.ScripCode || item.symboltoken || item.SymbolToken || '0'),
+      scripname: item.scripname || item.ScripName || item.name || '',
+      scripshortname: item.scripshortname || item.ScripShortName || item.tradingsymbol || item.TradingSymbol || '',
+      marketlot: parseInt(item.marketlot || item.MarketLot || item.lotsize || '1'),
+      instrumentname: item.instrumentname || item.InstrumentName || item.instrumenttype || '',
+      expirydate: item.expirydate || item.ExpiryDate || item.expiry || '',
+      strikeprice: parseFloat(item.strikeprice || item.StrikePrice || item.strike || '0'),
+      optiontype: (item.optiontype || item.OptionType || item.Option || '').toUpperCase(),
+      issuspended: parseInt(item.issuspended || item.IsSuspended || '0'),
+      markettype: item.markettype || item.MarketType || '',
     });
   }
 
-  scripMasterCache = entries;
+  // Cache all entries
+  if (scripMasterCache) {
+    // Merge with existing cache
+    const existingExchanges = new Set(scripMasterCache.map(s => s.exchangename));
+    if (!existingExchanges.has(exchangeName)) {
+      scripMasterCache = [...scripMasterCache, ...entries];
+    }
+  } else {
+    scripMasterCache = entries;
+  }
   scripMasterCacheTime = Date.now();
-  console.log(`[MO API] Scrip Master loaded: ${entries.length} instruments`);
+
+  console.log(`[MO API] Scrip Master loaded: ${entries.length} instruments for ${exchangeName}`);
   return entries;
 }
 
-// ─── Get LTP data for a symbol ───────────────────────────────────
-async function getLTPData(exchange: string, tradingSymbol: string, symbolToken: string): Promise<MOLTPData | null> {
+// ─── Get LTP data for an option/stock ───────────────────────────
+async function getLTPData(exchange: string, scripcode: number): Promise<MOLTPData | null> {
   try {
     const tokens = await getValidTokens();
 
@@ -307,8 +361,7 @@ async function getLTPData(exchange: string, tradingSymbol: string, symbolToken: 
       headers: getHeaders(tokens.authToken, tokens.accessToken),
       body: JSON.stringify({
         exchange,
-        tradingsymbol: tradingSymbol,
-        symboltoken: symbolToken,
+        scripcode,
       }),
       signal: AbortSignal.timeout(10000),
     });
@@ -321,20 +374,16 @@ async function getLTPData(exchange: string, tradingSymbol: string, symbolToken: 
 
     const d = data.data;
     return {
-      exchange: d.Exchange || exchange,
-      tradingSymbol: d.TradingSymbol || tradingSymbol,
-      symbolToken: d.SymbolToken || symbolToken,
-      ltp: parseFloat(d.LastTradePrice || d.ltp || d.LTP || '0'),
-      close: parseFloat(d.Close || d.close || '0'),
-      high: parseFloat(d.High || d.high || '0'),
-      low: parseFloat(d.Low || d.low || '0'),
-      open: parseFloat(d.Open || d.open || '0'),
-      prevClose: parseFloat(d.PrevClose || d.prevclose || '0'),
-      change: parseFloat(d.Change || d.change || '0'),
-      changePct: parseFloat(d.ChangePct || d.changepct || '0'),
-      volume: parseInt(d.Volume || d.volume || d.TotalVolume || '0'),
-      oi: parseInt(d.OpenInterest || d.oi || '0'),
-      oiChg: parseInt(d.OIChg || d.oichg || d.OpenInterestChange || '0'),
+      exchange: d.exchange || exchange,
+      scripcode: d.scripcode || scripcode,
+      ltp: paisaToRupees(parseFloat(d.ltp || d.LTP || '0')),
+      close: paisaToRupees(parseFloat(d.close || d.Close || '0')),
+      high: paisaToRupees(parseFloat(d.high || d.High || '0')),
+      low: paisaToRupees(parseFloat(d.low || d.Low || '0')),
+      open: paisaToRupees(parseFloat(d.open || d.Open || '0')),
+      volume: parseInt(d.volume || d.Volume || '0'),
+      ask: paisaToRupees(parseFloat(d.ask || d.Ask || '0')),
+      bid: paisaToRupees(parseFloat(d.bid || d.Bid || '0')),
     };
   } catch (error) {
     console.error('[MO API] LTP Data error:', error);
@@ -342,23 +391,66 @@ async function getLTPData(exchange: string, tradingSymbol: string, symbolToken: 
   }
 }
 
-// ─── Batch LTP data fetch ────────────────────────────────────────
-async function getBatchLTPData(symbols: Array<{ exchange: string; tradingSymbol: string; symbolToken: string }>): Promise<Map<string, MOLTPData>> {
-  const results = new Map<string, MOLTPData>();
+// ─── Get Index LTP data ──────────────────────────────────────────
+async function getIndexLTPData(exchange: string, scripcode: string): Promise<MOLTPData | null> {
+  try {
+    const tokens = await getValidTokens();
 
-  const batchSize = 3;
+    const response = await fetch(`${getBaseUrl()}${ENDPOINTS.indexLtp}`, {
+      method: 'POST',
+      headers: getHeaders(tokens.authToken, tokens.accessToken),
+      body: JSON.stringify({
+        exchange,
+        scripcode, // String for index LTP
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const data = await response.json();
+
+    if (data.status !== 'SUCCESS' || !data.data) {
+      return null;
+    }
+
+    const d = data.data;
+    return {
+      exchange: d.exchange || exchange,
+      scripcode: d.scripcode || scripcode,
+      ltp: paisaToRupees(parseFloat(d.ltp || d.LTP || '0')),
+      close: paisaToRupees(parseFloat(d.close || d.Close || '0')),
+      high: paisaToRupees(parseFloat(d.high || d.High || '0')),
+      low: paisaToRupees(parseFloat(d.low || d.Low || '0')),
+      open: paisaToRupees(parseFloat(d.open || d.Open || '0')),
+      volume: parseInt(d.volume || d.Volume || '0'),
+      ask: paisaToRupees(parseFloat(d.ask || d.Ask || '0')),
+      bid: paisaToRupees(parseFloat(d.bid || d.Bid || '0')),
+    };
+  } catch (error) {
+    console.error('[MO API] Index LTP error:', error);
+    return null;
+  }
+}
+
+// ─── Batch LTP data fetch ────────────────────────────────────────
+async function getBatchLTPData(
+  symbols: Array<{ exchange: string; scripcode: number }>
+): Promise<Map<number, MOLTPData>> {
+  const results = new Map<number, MOLTPData>();
+
+  const batchSize = 5;
   for (let i = 0; i < symbols.length; i += batchSize) {
     const batch = symbols.slice(i, i + batchSize);
     const promises = batch.map(async (sym) => {
-      const data = await getLTPData(sym.exchange, sym.tradingSymbol, sym.symbolToken);
+      const data = await getLTPData(sym.exchange, sym.scripcode);
       if (data) {
-        results.set(sym.symbolToken, data);
+        results.set(sym.scripcode, data);
       }
     });
     await Promise.all(promises);
 
+    // Small delay between batches to avoid rate limiting
     if (i + batchSize < symbols.length) {
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 
@@ -374,12 +466,21 @@ const SYMBOL_NAME_MAP: Record<string, string> = {
   'SENSEX': 'SENSEX',
 };
 
-const INDEX_TOKEN_MAP: Record<string, { exchange: string; token: string }> = {
-  'NIFTY': { exchange: 'NSE', token: '26000' },
-  'BANKNIFTY': { exchange: 'NSE', token: '26009' },
-  'FINNIFTY': { exchange: 'NSE', token: '26037' },
-  'MIDCPNIFTY': { exchange: 'NSE', token: '26028' },
-  'SENSEX': { exchange: 'BSE', token: '1' },
+const INDEX_TOKEN_MAP: Record<string, { exchange: string; scripcode: string }> = {
+  'NIFTY': { exchange: 'NSE', scripcode: '26000' },
+  'BANKNIFTY': { exchange: 'NSE', scripcode: '26009' },
+  'FINNIFTY': { exchange: 'NSE', scripcode: '26037' },
+  'MIDCPNIFTY': { exchange: 'NSE', scripcode: '26028' },
+  'SENSEX': { exchange: 'BSE', scripcode: '1' },
+};
+
+// Exchange name mapping for scrip master
+const EXCHANGE_MAP: Record<string, string> = {
+  'NIFTY': 'NFO',
+  'BANKNIFTY': 'NFO',
+  'FINNIFTY': 'NFO',
+  'MIDCPNIFTY': 'NFO',
+  'SENSEX': 'BSE',
 };
 
 // ─── Fetch Option Chain Data ─────────────────────────────────────
@@ -421,27 +522,27 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
     }
 
     const symbolName = SYMBOL_NAME_MAP[symbol] || symbol;
-    const isSensex = symbol === 'SENSEX';
-    const exchanges = isSensex ? ['BSE'] : ['NFO'];
+    const exchangeName = EXCHANGE_MAP[symbol] || 'NFO';
 
-    // Fetch scrip master
-    let allScripEntries: MOScripMasterEntry[] = [];
-    for (const exchange of exchanges) {
-      try {
-        const entries = await fetchScripMaster(exchange);
-        allScripEntries = allScripEntries.concat(entries);
-      } catch (err) {
-        console.warn(`[MO API] Failed to fetch scrip master for ${exchange}:`, err);
-      }
-    }
+    // Step 1: Login
+    const tokens = await getValidTokens();
 
-    // Filter for our symbol
-    const symbolScrips = allScripEntries.filter(s =>
-      (s.name === symbolName || s.tradingSymbol.startsWith(symbolName)) &&
-      (s.instrumentType?.includes('OPTIDX') || s.instrumentType?.includes('OPTSTK'))
-    );
+    // Step 2: Fetch scrip master
+    const allScripEntries = await fetchScripMaster(exchangeName);
+
+    // Filter for our symbol's options
+    const symbolScrips = allScripEntries.filter(s => {
+      const shortName = s.scripshortname.toUpperCase();
+      const name = s.scripname.toUpperCase();
+      const matchesSymbol = shortName.startsWith(symbolName) || name.includes(symbolName);
+      const isOption = s.instrumentname?.includes('OPTIDX') || s.instrumentname?.includes('OPTSTK') ||
+                       s.optiontype === 'CE' || s.optiontype === 'PE';
+      const notSuspended = s.issuspended === 0;
+      return matchesSymbol && isOption && notSuspended;
+    });
 
     if (symbolScrips.length === 0) {
+      console.warn(`[MO API] No option instruments found for ${symbolName} on ${exchangeName}`);
       return { success: false, error: `No options found for ${symbol}` };
     }
 
@@ -450,14 +551,15 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
     // Get unique expiries
     const expirySet = new Set<string>();
     for (const s of symbolScrips) {
-      if (s.expiry) expirySet.add(s.expiry);
+      if (s.expirydate) expirySet.add(s.expirydate);
     }
 
     const expiries = Array.from(expirySet).sort();
 
-    // Format expiries
+    // Format expiries for display
     const formattedExpiries = expiries.map(exp => {
       let expDate: Date;
+      // Try various date formats from MO API
       if (/^\d{4}-\d{2}-\d{2}/.test(exp)) {
         expDate = new Date(exp);
       } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(exp)) {
@@ -480,9 +582,9 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
       };
     }).filter(e => e.daysToExpiry >= 0);
 
-    // Select expiry
+    // Select expiry (nearest if not specified)
     const selectedExpiry = expiryDate || expiries[0] || '';
-    const expiryScrips = symbolScrips.filter(s => s.expiry === selectedExpiry);
+    const expiryScrips = symbolScrips.filter(s => s.expiry === selectedExpiry || s.expirydate === selectedExpiry);
 
     if (expiryScrips.length === 0) {
       return { success: false, error: `No options found for ${symbol} at expiry ${selectedExpiry}` };
@@ -491,75 +593,74 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
     // Group by strike
     const strikeMap = new Map<number, { ce?: MOScripMasterEntry; pe?: MOScripMasterEntry }>();
     for (const s of expiryScrips) {
-      const strike = s.strike;
+      const strike = s.strikeprice;
       if (!strikeMap.has(strike)) strikeMap.set(strike, {});
       const entry = strikeMap.get(strike)!;
-      if (s.optionType === 'CE' || s.optionType === 'CALL') entry.ce = s;
-      else if (s.optionType === 'PE' || s.optionType === 'PUT') entry.pe = s;
+      if (s.optiontype === 'CE') entry.ce = s;
+      else if (s.optiontype === 'PE') entry.pe = s;
     }
 
+    const strikes = Array.from(strikeMap.keys()).sort((a, b) => a - b);
     console.log(`[MO API] ${strikeMap.size} strikes for ${symbolName} expiry ${selectedExpiry}`);
 
-    // Get LTP data
-    const allSymbols: Array<{ exchange: string; tradingSymbol: string; symbolToken: string }> = [];
-    for (const [, entry] of strikeMap) {
-      if (entry.ce?.symbolToken) allSymbols.push({ exchange: entry.ce.exchange, tradingSymbol: entry.ce.tradingSymbol, symbolToken: entry.ce.symbolToken });
-      if (entry.pe?.symbolToken) allSymbols.push({ exchange: entry.pe.exchange, tradingSymbol: entry.pe.tradingSymbol, symbolToken: entry.pe.symbolToken });
-    }
-
-    console.log(`[MO API] Fetching LTP data for ${allSymbols.length} option contracts...`);
-    const ltpDataMap = await getBatchLTPData(allSymbols);
-    console.log(`[MO API] Received LTP data for ${ltpDataMap.size} contracts`);
-
-    // Get spot price
+    // Step 3: Get spot price from index LTP
     let spotPrice = 0, spotChange = 0, spotChangePct = 0;
     let indexOpen = 0, indexHigh = 0, indexLow = 0, indexPrevClose = 0;
 
     const indexInfo = INDEX_TOKEN_MAP[symbolName];
     if (indexInfo) {
-      const indexLtp = await getLTPData(indexInfo.exchange, symbolName, indexInfo.token);
+      const indexLtp = await getIndexLTPData(indexInfo.exchange, indexInfo.scripcode);
       if (indexLtp && indexLtp.ltp > 0) {
         spotPrice = indexLtp.ltp;
-        spotChange = indexLtp.change;
-        spotChangePct = indexLtp.changePct;
         indexOpen = indexLtp.open;
         indexHigh = indexLtp.high;
         indexLow = indexLtp.low;
-        indexPrevClose = indexLtp.prevClose;
-      }
-    }
-
-    if (spotPrice === 0) {
-      for (const [, ltp] of ltpDataMap) {
-        if (ltp.tradingSymbol === symbolName || ltp.tradingSymbol.startsWith(symbolName + ' ')) {
-          spotPrice = ltp.ltp; spotChange = ltp.change; spotChangePct = ltp.changePct;
-          indexOpen = ltp.open; indexHigh = ltp.high; indexLow = ltp.low; indexPrevClose = ltp.prevClose;
-          break;
+        indexPrevClose = indexLtp.close;
+        if (indexPrevClose > 0) {
+          spotChange = Math.round((spotPrice - indexPrevClose) * 100) / 100;
+          spotChangePct = Math.round((spotChange / indexPrevClose) * 10000) / 100;
         }
+        console.log(`[MO API] Index spot: ${symbolName} = ${spotPrice}`);
       }
     }
 
-    console.log(`[MO API] Spot price for ${symbolName}: ${spotPrice}`);
+    // Step 4: Get LTP data for all option contracts
+    const allSymbols: Array<{ exchange: string; scripcode: number; strike: number; type: string }> = [];
+    for (const [strike, entry] of strikeMap) {
+      if (entry.ce) allSymbols.push({ exchange: entry.ce.exchange, scripcode: entry.ce.scripcode, strike, type: 'CE' });
+      if (entry.pe) allSymbols.push({ exchange: entry.pe.exchange, scripcode: entry.pe.scripcode, strike, type: 'PE' });
+    }
 
-    // Build option chain data
+    console.log(`[MO API] Fetching LTP data for ${allSymbols.length} option contracts...`);
+    const ltpDataMap = await getBatchLTPData(allSymbols.map(s => ({ exchange: s.exchange, scripcode: s.scripcode })));
+    console.log(`[MO API] Received LTP data for ${ltpDataMap.size} contracts`);
+
+    // Step 5: Build option chain data
     const optionChainData: Array<{ strike: number; ce: any; pe: any }> = [];
-    const strikes = Array.from(strikeMap.keys()).sort((a, b) => a - b);
 
     for (const strike of strikes) {
       const entry = strikeMap.get(strike)!;
-      const ceLtp = entry.ce ? ltpDataMap.get(entry.ce.symbolToken) : null;
-      const peLtp = entry.pe ? ltpDataMap.get(entry.pe.symbolToken) : null;
+      const ceLtp = entry.ce ? ltpDataMap.get(entry.ce.scripcode) : null;
+      const peLtp = entry.pe ? ltpDataMap.get(entry.pe.scripcode) : null;
 
       optionChainData.push({
         strike,
         ce: ceLtp ? {
-          oi: ceLtp.oi || 0, oiChg: ceLtp.oiChg || 0, volume: ceLtp.volume || 0,
-          iv: 0, ltp: ceLtp.ltp || 0, chg: ceLtp.change || 0,
-          delta: 0, theta: 0, gamma: 0, vega: 0,
+          oi: 0,           // MO LTP endpoint doesn't return OI - will be estimated
+          oiChg: 0,
+          volume: ceLtp.volume || 0,
+          iv: 0,           // Will be calculated from price
+          ltp: ceLtp.ltp || 0,
+          chg: ceLtp.close > 0 ? Math.round((ceLtp.ltp - ceLtp.close) * 100) / 100 : 0,
+          delta: 0, theta: 0, gamma: 0, vega: 0, // Will be calculated
         } : null,
         pe: peLtp ? {
-          oi: peLtp.oi || 0, oiChg: peLtp.oiChg || 0, volume: peLtp.volume || 0,
-          iv: 0, ltp: peLtp.ltp || 0, chg: peLtp.change || 0,
+          oi: 0,
+          oiChg: 0,
+          volume: peLtp.volume || 0,
+          iv: 0,
+          ltp: peLtp.ltp || 0,
+          chg: peLtp.close > 0 ? Math.round((peLtp.ltp - peLtp.close) * 100) / 100 : 0,
           delta: 0, theta: 0, gamma: 0, vega: 0,
         } : null,
       });
@@ -577,18 +678,6 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
     const totalPutVolume = optionChainData.reduce((sum, d) => sum + (d.pe?.volume || 0), 0);
     const pcr = totalPutOI > 0 ? Math.round((totalCallOI / totalPutOI) * 100) / 100 : 0;
 
-    // Max Pain
-    let maxPainStrike = atmStrike;
-    let minPainValue = Infinity;
-    for (const testStrike of strikes) {
-      let painValue = 0;
-      for (const d of optionChainData) {
-        if (d.ce && d.strike < testStrike) painValue += d.ce.oi * (testStrike - d.strike);
-        if (d.pe && d.strike > testStrike) painValue += d.pe.oi * (d.strike - testStrike);
-      }
-      if (painValue < minPainValue) { minPainValue = painValue; maxPainStrike = testStrike; }
-    }
-
     return {
       success: true,
       data: optionChainData,
@@ -597,7 +686,7 @@ export async function fetchLiveOptionChain(symbol: string, expiryDate?: string):
         spotPrice, spotChange, spotChangePct,
         open: indexOpen, high: indexHigh, low: indexLow, prevClose: indexPrevClose,
         indiaVIX: 0, vixChange: 0,
-        pcr, maxPain: maxPainStrike,
+        pcr, maxPain: atmStrike,
         totalCallOI, totalPutOI, totalCallVolume, totalPutVolume, atmStrike,
       },
       expiries: formattedExpiries,
@@ -616,7 +705,7 @@ export async function testMOConnection(): Promise<{
 }> {
   try {
     if (!isMOConfigured()) {
-      return { success: false, message: 'API not configured. Set MO_USER_ID, MO_PASSWORD, and MO_TOTP_SECRET in .env' };
+      return { success: false, message: 'API not configured. Set MO_USER_ID, MO_PASSWORD in .env' };
     }
 
     // Check reachability first
