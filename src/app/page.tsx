@@ -87,6 +87,7 @@ type OptionChainResponse = {
   data: OptionData[];
   summary: MarketSummary;
   timestamp: string;
+  isLive?: boolean;
 };
 
 type ViewMode = 'option-chain' | 'oi-analysis';
@@ -579,8 +580,18 @@ export default function OptionChainPage() {
         <div className="flex items-center justify-between text-[9px] text-muted-foreground">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              Live · 30s refresh
+              {data?.isLive ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-emerald-500 font-semibold">LIVE</span> · Motilal Oswal
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  <span className="text-amber-500 font-semibold">SIMULATED</span> · Demo Data
+                </>
+              )}
+              <span className="text-muted-foreground">· 30s refresh</span>
             </span>
             {data?.timestamp && (
               <span>{new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
