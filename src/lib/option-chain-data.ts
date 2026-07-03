@@ -1,6 +1,8 @@
 // Option Chain Data Generator for Indian Markets (NIFTY, BANKNIFTY, FINNIFTY)
 // Generates realistic simulated options data
 
+import { CandleData } from "@/types/sdm";
+
 export interface OptionData {
   strike: number;
   ce: {
@@ -62,6 +64,7 @@ export interface OptionChainResponse {
   data: OptionData[];
   summary: MarketSummary;
   timestamp: string;
+  candles?: Record<string, CandleData[]>;
 }
 
 // Seeded random number generator for consistent data
@@ -201,10 +204,59 @@ export interface MarketOverrides {
   vixChange?: number;
 }
 
+// Generate realistic OHLCV candle data for a given symbol, timeframe, and count
+const TIMEFRAME_MS: Record<string, number> = {
+  '1m': 60 * 1000,
+  '3m': 3 * 60 * 1000,
+  '5m': 5 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+};
+
+export function generateCandles(symbol: string, timeframe: string, count: number): CandleData[] {
+  const config = SYMBOL_CONFIG[symbol] || SYMBOL_CONFIG.NIFTY;
+  const intervalMs = TIMEFRAME_MS[timeframe] || TIMEFRAME_MS['5m'];
+  const now = Date.now();
+  const seed = now - (now % intervalMs);
+  const rand = seededRandom(seed + symbol.charCodeAt(0));
+
+  const candles: CandleData[] = [];
+  let price = config.basePrice;
+
+  for (let i = count - 1; i >= 0; i--) {
+    const time = now - i * intervalMs;
+    const volatility = 0.003 + rand() * 0.005;
+    const drift = (rand() - 0.48) * price * volatility;
+    const open = Math.round(price * 100) / 100;
+    const close = Math.round((open + drift) * 100) / 100;
+    const high = Math.round(Math.max(open, close) * (1 + rand() * volatility * 0.5) * 100) / 100;
+    const low = Math.round(Math.min(open, close) * (1 - rand() * volatility * 0.5) * 100) / 100;
+    const volume = Math.round(50000 + rand() * 500000);
+
+    candles.push({ time, open, high, low, close, volume });
+    price = close;
+  }
+
+  return candles;
+}
+
 // Generate option chain data
 export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: string, overrides?: MarketOverrides): OptionChainResponse {
   const config = SYMBOL_CONFIG[symbol] || SYMBOL_CONFIG.NIFTY;
-  const rand = seededRandom(Date.now());
+  // Two seeds: daily seed for market direction bias, 5-min candle seed for price stability
+  const today = new Date();
+  const dailySeed = today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
+  const CANDLE_MS = 5 * 60 * 1000;
+  const candleSeed = Math.floor(Date.now() / CANDLE_MS) * CANDLE_MS;
+  // Daily seed determines market direction bias, hour adds intra-day variation
+  const dailyRand = seededRandom(dailySeed);
+  const hourRand = seededRandom(dailySeed + today.getHours());
+  const marketBias = dailyRand() > 0.5 ? 1 : -1;
+  // Hour variation shifts the OI balance throughout the day
+  const hourBiasShift = (hourRand() - 0.5) * 0.3; // -0.15 to +0.15
+  // Candle seed for stable prices within 5-min window
+  const rand = seededRandom(candleSeed);
 
   // Use real spot price if provided, otherwise generate simulated
   const spotPrice = overrides?.spotPrice || Math.round((config.basePrice + (rand() - 0.48) * config.basePrice * 0.02) * 100) / 100;
@@ -246,16 +298,20 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
     const peIV = Math.round(Math.max(0.05, baseIV + 0.01 + (rand() - 0.5) * 0.03) * 10000) / 100;
 
     // OI pattern - higher near ATM, realistic distribution
+    // Apply marketBias + hour variation for intra-day signal changes
     const oiMultiplier = Math.exp(-distanceFromATM * 0.15);
+    const baseBias = marketBias > 0 ? 0.15 : -0.15;
+    const ceBias = 1.0 + (baseBias + hourBiasShift);
+    const peBias = 1.0 - (baseBias + hourBiasShift);
     const roundNumberOI = Math.random() > 0.3;
 
     const baseCallOI = roundNumberOI
-      ? Math.round((50000 + rand() * 500000) * oiMultiplier / 100) * 100
-      : Math.round((50000 + rand() * 500000) * oiMultiplier);
+      ? Math.round((50000 + rand() * 500000) * oiMultiplier * ceBias / 100) * 100
+      : Math.round((50000 + rand() * 500000) * oiMultiplier * ceBias);
 
     const basePutOI = roundNumberOI
-      ? Math.round((40000 + rand() * 400000) * oiMultiplier / 100) * 100
-      : Math.round((40000 + rand() * 400000) * oiMultiplier);
+      ? Math.round((40000 + rand() * 400000) * oiMultiplier * peBias / 100) * 100
+      : Math.round((40000 + rand() * 400000) * oiMultiplier * peBias);
 
     // Add significant OI at round numbers and support/resistance levels
     let callOI = baseCallOI;
@@ -354,6 +410,12 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
     atmStrike,
   };
 
+  const allTimeframes = ['1m', '3m', '5m', '15m', '30m', '1h'];
+  const candles: Record<string, CandleData[]> = {};
+  for (const tf of allTimeframes) {
+    candles[tf] = generateCandles(symbol, tf, 100);
+  }
+
   return {
     symbol,
     spotPrice,
@@ -362,6 +424,7 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
     data,
     summary,
     timestamp: new Date().toISOString(),
+    candles,
   };
 }
 

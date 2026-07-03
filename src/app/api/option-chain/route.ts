@@ -1,8 +1,16 @@
+// API Route - Option Chain with SDM Analysis
+// Fetch option chain data and run SDM analysis
+
 import { NextRequest, NextResponse } from 'next/server';
+import { getOptionChain, getOptionChainExpiries } from '@/lib/icici-breeze/option-chain';
+import { initSession } from '@/lib/icici-breeze/auth';
 import { generateOptionChain } from '@/lib/option-chain-data';
-import { fetchLiveOptionChain, isMOConfigured } from '@/lib/motilal-oswal-api';
-import { fetchYahooIndexData, fetchIndiaVIX } from '@/lib/yahoo-finance-api';
-import { calculateGreeks } from '@/lib/greeks';
+import { runFullAnalysis } from '@/lib/sdm-engine';
+import { validateAndSanitize } from '@/lib/data-validation';
+import type { OptionChainStrike } from '@/lib/sdm-engine';
+
+// Init Breeze session on first request
+let sessionInitialized = false;
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,168 +18,181 @@ export async function GET(request: NextRequest) {
     const symbol = searchParams.get('symbol') || 'NIFTY';
     const expiry = searchParams.get('expiry') || undefined;
 
-    // ─── Strategy 1: Try MO API for full live option chain ───
-    if (isMOConfigured()) {
-      try {
-        const liveResult = await fetchLiveOptionChain(symbol, expiry);
-
-        if (liveResult.success && liveResult.data && liveResult.summary) {
-          const spotPrice = liveResult.spotPrice || liveResult.summary.spotPrice;
-          const selectedExpiry = expiry || liveResult.expiries?.[0]?.date || '';
-          const expiryInfo = liveResult.expiries?.find(e => e.date === selectedExpiry);
-          const daysToExpiry = expiryInfo?.daysToExpiry || 1;
-          const timeToExpiry = Math.max(daysToExpiry / 365, 1 / 365);
-
-          const dataWithGreeks = liveResult.data.map(row => {
-            const ceGreeks = row.ce && row.ce.iv > 0
-              ? calculateGreeks(spotPrice, row.strike, timeToExpiry, row.ce.iv / 100, true)
-              : null;
-            const peGreeks = row.pe && row.pe.iv > 0
-              ? calculateGreeks(spotPrice, row.strike, timeToExpiry, row.pe.iv / 100, false)
-              : null;
-
-            return {
-              strike: row.strike,
-              ce: row.ce ? {
-                ...row.ce,
-                iv: row.ce.iv || estimateIV(row.ce.ltp, spotPrice, row.strike, timeToExpiry, true),
-                delta: ceGreeks?.delta ?? 0,
-                theta: ceGreeks?.theta ?? 0,
-                gamma: ceGreeks?.gamma ?? 0,
-                vega: ceGreeks?.vega ?? 0,
-              } : null,
-              pe: row.pe ? {
-                ...row.pe,
-                iv: row.pe.iv || estimateIV(row.pe.ltp, spotPrice, row.strike, timeToExpiry, false),
-                delta: peGreeks?.delta ?? 0,
-                theta: peGreeks?.theta ?? 0,
-                gamma: peGreeks?.gamma ?? 0,
-                vega: peGreeks?.vega ?? 0,
-              } : null,
-            };
-          });
-
-          // Try to get real VIX from Yahoo
-          const vixData = await fetchIndiaVIX();
-
-          return NextResponse.json({
-            symbol,
-            spotPrice,
-            expiries: liveResult.expiries || [],
-            selectedExpiry,
-            data: dataWithGreeks,
-            summary: {
-              ...liveResult.summary,
-              indiaVIX: vixData?.value || liveResult.summary.indiaVIX,
-              vixChange: vixData?.change || liveResult.summary.vixChange,
-            },
-            timestamp: new Date().toISOString(),
-            isLive: true,
-            dataSource: 'motilal-oswal',
-          });
-        }
-      } catch (liveError) {
-        console.error('[Option Chain] MO API failed, trying Yahoo fallback:', liveError);
-      }
+    // Initialize session once
+    if (!sessionInitialized) {
+      sessionInitialized = true;
+      await initSession().catch(() => {});
     }
-
-    // ─── Strategy 2: Yahoo Finance for real spot prices + enhanced simulation ───
+    
+    let chainData: any = null;
+    let source = 'simulation';
+    
+    // Try ICICI Breeze API first
     try {
-      const [indexData, vixData] = await Promise.all([
-        fetchYahooIndexData(symbol),
-        fetchIndiaVIX(),
-      ]);
-
-      if (indexData) {
-        console.log(`[Option Chain] Using Yahoo Finance data for ${symbol}: ${indexData.regularMarketPrice}`);
-        
-        // Generate simulated option chain but with REAL spot price and VIX
-        const simData = generateOptionChain(symbol, expiry, {
-          spotPrice: indexData.regularMarketPrice,
-          spotChange: indexData.change,
-          spotChangePct: indexData.changePct,
-          open: indexData.open,
-          high: indexData.dayHigh,
-          low: indexData.dayLow,
-          prevClose: indexData.previousClose,
-          indiaVIX: vixData?.value,
-          vixChange: vixData?.change,
-        });
-
-        return NextResponse.json({
-          ...simData,
-          isLive: false,
-          dataSource: 'yahoo-finance-spot',
-          spotPriceReal: true,
-          vixReal: !!vixData,
-        });
+      if (expiry) {
+        const chain = await getOptionChain(symbol, expiry);
+        if (chain) {
+          chainData = chain;
+          source = 'icici-breeze';
+        }
+      } else {
+        const expiries = await getOptionChainExpiries(symbol);
+        // Try each expiry until one works
+        for (const exp of expiries) {
+          const chain = await getOptionChain(symbol, exp);
+          if (chain) {
+            chainData = { ...chain, expiries };
+            source = 'icici-breeze';
+            break;
+          }
+        }
       }
-    } catch (yahooError) {
-      console.error('[Option Chain] Yahoo Finance fallback also failed:', yahooError);
+    } catch (breezeError) {
+      console.warn('[API] ICICI Breeze failed, using simulation:', breezeError);
     }
+    
+    // Fallback to simulation
+    if (!chainData) {
+      chainData = generateOptionChain(symbol, expiry);
+      source = 'simulation';
+    }
+    
+    // Build SDM analysis strikes from either format
+    let optionChainStrikes: OptionChainStrike[] = [];
+    
+    if (chainData.data) {
+      // Simulation format: data is array of {strike, ce, pe}
+      optionChainStrikes = chainData.data.map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? {
+          ltp: row.ce.ltp || 0,
+          oi: row.ce.oi || 0,
+          oiChg: row.ce.oiChg || 0,
+          volume: row.ce.volume || 0,
+          iv: row.ce.iv || 0,
+          delta: row.ce.delta || 0,
+          gamma: row.ce.gamma || 0,
+          theta: row.ce.theta || 0,
+          vega: row.ce.vega || 0,
+          bid: 0,
+          ask: 0,
+        } : null,
+        pe: row.pe ? {
+          ltp: row.pe.ltp || 0,
+          oi: row.pe.oi || 0,
+          oiChg: row.pe.oiChg || 0,
+          volume: row.pe.volume || 0,
+          iv: row.pe.iv || 0,
+          delta: row.pe.delta || 0,
+          gamma: row.pe.gamma || 0,
+          theta: row.pe.theta || 0,
+          vega: row.pe.vega || 0,
+          bid: 0,
+          ask: 0,
+        } : null,
+      }));
+    } else if (chainData.calls && chainData.puts) {
+      // Breeze format: calls and puts arrays
+      const callMap = new Map<number, any>();
+      const putMap = new Map<number, any>();
+      for (const c of chainData.calls) callMap.set(c.strikePrice, c);
+      for (const p of chainData.puts) putMap.set(p.strikePrice, p);
+      
+      const allStrikes = [...new Set([...callMap.keys(), ...putMap.keys()])].sort((a, b) => a - b);
+      optionChainStrikes = allStrikes.map(strike => ({
+        strike,
+        ce: callMap.has(strike) ? {
+          ltp: callMap.get(strike).ltp || 0,
+          oi: callMap.get(strike).openInterest || 0,
+          oiChg: callMap.get(strike).oiChange || 0,
+          volume: callMap.get(strike).volume || 0,
+          iv: callMap.get(strike).iv || 0,
+          delta: callMap.get(strike).delta || 0,
+          gamma: callMap.get(strike).gamma || 0,
+          theta: callMap.get(strike).theta || 0,
+          vega: callMap.get(strike).vega || 0,
+          bid: callMap.get(strike).bid || 0,
+          ask: callMap.get(strike).ask || 0,
+        } : null,
+        pe: putMap.has(strike) ? {
+          ltp: putMap.get(strike).ltp || 0,
+          oi: putMap.get(strike).openInterest || 0,
+          oiChg: putMap.get(strike).oiChange || 0,
+          volume: putMap.get(strike).volume || 0,
+          iv: putMap.get(strike).iv || 0,
+          delta: putMap.get(strike).delta || 0,
+          gamma: putMap.get(strike).gamma || 0,
+          theta: putMap.get(strike).theta || 0,
+          vega: putMap.get(strike).vega || 0,
+          bid: putMap.get(strike).bid || 0,
+          ask: putMap.get(strike).ask || 0,
+        } : null,
+      }));
+    }
+    
+    const spotPrice = chainData.spotPrice || chainData.summary?.spotPrice || 0;
+    
+    // Validate and sanitize the data
+    const validation = validateAndSanitize(optionChainStrikes, spotPrice, source);
+    if (!validation.valid) {
+      console.warn('[API] Data validation failed:', validation.errors);
+      // Fall back to simulation
+      chainData = generateOptionChain(symbol, expiry);
+      source = 'simulation';
+      optionChainStrikes = chainData.data.map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0, theta: row.ce.theta || 0, vega: row.ce.vega || 0, bid: 0, ask: 0 } : null,
+        pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, gamma: row.pe.gamma || 0, theta: row.pe.theta || 0, vega: row.pe.vega || 0, bid: 0, ask: 0 } : null,
+      }));
+    } else if (validation.warnings.length > 0) {
+      console.warn('[API] Data warnings:', validation.warnings);
+    }
+    const selectedExpiry = expiry || chainData.selectedExpiry || chainData.expiries?.[0]?.date || chainData.expiries?.[0] || '';
 
-    // ─── Strategy 3: Pure simulation fallback ───
-    const data = generateOptionChain(symbol, expiry);
+    // Build summary for frontend compatibility
+    if (!chainData.summary) {
+      // Compute from strikes data
+      const totalCallOI = optionChainStrikes.reduce((sum, s) => sum + (s.ce?.oi || 0), 0);
+      const totalPutOI = optionChainStrikes.reduce((sum, s) => sum + (s.pe?.oi || 0), 0);
+      const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+      // Max pain: strike with highest total OI
+      let maxPain = spotPrice;
+      let maxTotalOI = 0;
+      for (const s of optionChainStrikes) {
+        const total = (s.ce?.oi || 0) + (s.pe?.oi || 0);
+        if (total > maxTotalOI) { maxTotalOI = total; maxPain = s.strike; }
+      }
 
+      chainData.summary = {
+        spotPrice,
+        spotChange: 0,
+        spotChangePct: 0,
+        indiaVIX: 15,
+        pcr,
+        maxPain,
+        totalCallOI,
+        totalPutOI,
+        atmStrike: chainData.atmStrike || 0,
+        selectedExpiry,
+      };
+    }
+    
+    // Run full SDM analysis
+    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
+    
     return NextResponse.json({
-      ...data,
-      isLive: false,
-      dataSource: 'simulation',
+      success: true,
+      source,
+      lastUpdate: new Date().toISOString(),
+      data: { ...chainData, dataSource: source },
+      analysis,
     });
-  } catch (error) {
-    console.error('Error generating option chain:', error);
+    
+  } catch (error: any) {
+    console.error('[API] Option chain error:', error);
     return NextResponse.json(
-      { error: 'Failed to generate option chain data' },
+      { success: false, error: error.message || 'Failed to fetch option chain' },
       { status: 500 }
     );
   }
-}
-
-// Estimate IV from option price using Newton-Raphson method
-function estimateIV(
-  optionPrice: number,
-  spot: number,
-  strike: number,
-  timeToExpiry: number,
-  isCall: boolean
-): number {
-  if (optionPrice <= 0 || timeToExpiry <= 0) return 15;
-
-  let iv = 0.2;
-  const r = 0.07;
-  const maxIterations = 20;
-  const precision = 0.0001;
-
-  for (let i = 0; i < maxIterations; i++) {
-    const greeks = calculateGreeks(spot, strike, timeToExpiry, iv, isCall);
-    const modelPrice = isCall
-      ? spot * normalCDF(greeks.d1) - strike * Math.exp(-r * timeToExpiry) * normalCDF(greeks.d2)
-      : strike * Math.exp(-r * timeToExpiry) * normalCDF(-greeks.d2) - spot * normalCDF(-greeks.d1);
-
-    const diff = modelPrice - optionPrice;
-    if (Math.abs(diff) < precision) break;
-
-    const vega = spot * Math.sqrt(timeToExpiry) * normalPDF(greeks.d1) / 100;
-    if (vega < 0.0001) break;
-
-    iv = iv - diff / (vega * 100);
-    if (iv <= 0.01) iv = 0.01;
-    if (iv > 5) iv = 5;
-  }
-
-  return Math.round(iv * 10000) / 100;
-}
-
-function normalCDF(x: number): number {
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
-  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  x = Math.abs(x) / Math.SQRT2;
-  const t = 1.0 / (1.0 + p * x);
-  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-  return 0.5 * (1.0 + sign * y);
-}
-
-function normalPDF(x: number): number {
-  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 }

@@ -30,3 +30,30 @@ model Post {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model Trade {
+  id               String   @id @default(cuid())
+  tradeId          String   @unique
+  symbol           String
+  strike           Float
+  type             String
+  entryTime        DateTime
+  entryPrice       Float
+  exitTime         DateTime?
+  exitPrice        Float?
+  pnl              Float?
+  holdingTimeMin   Float?
+  confidence       Float
+  qualityScore     Float
+  qualityGrade     String
+  aiReasonSnapshot String
+  exitReason       String?
+  status           String   @default("OPEN")
+  riskPerTrade     Float
+  positionSize     Float
+  stopLoss         Float
+  target1          Float?
+  target2          Float?
+  target3          Float?
+  createdAt        DateTime @default(now())
+}

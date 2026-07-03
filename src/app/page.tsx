@@ -1,25 +1,16 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  ArrowUpDown,
-  TrendingUp,
-  TrendingDown,
-  RefreshCw,
   BarChart3,
-  Activity,
+  RefreshCw,
   Settings2,
   Sun,
   Moon,
-  Eye,
-  EyeOff,
-  Wifi,
-  WifiOff,
-  Info,
-  ExternalLink,
-  Copy,
-  Check,
+  Activity,
+  Zap,
+  Brain,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -38,10 +29,21 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { useTheme } from 'next-themes';
+import { useTradingStore } from '@/stores/useTradingStore';
+import { OrderPanel } from '@/components/dashboard/OrderPanel';
+import { OrderBook } from '@/components/dashboard/OrderBook';
+import { PositionTracker } from '@/components/dashboard/PositionTracker';
+import { MarketStatus } from '@/components/dashboard/MarketStatus';
+import { SDMDashboard } from '@/components/dashboard/SDMDashboard';
+import { SDMOptionsPanel } from '@/components/dashboard/SDMOptionsPanel';
+import { SDMBot } from '@/components/option-chain/SDMBot';
+import { SimpleMode } from '@/components/dashboard/SimpleMode';
+import type { FullAnalysis } from '@/lib/sdm-engine';
+import type { SDMRecommendation } from '@/types/sdm';
+import { getCurrentSession } from '@/lib/market-session';
 
-// Types
+// ─── Types ────────────────────────────────────────────────────────
 type OptionSide = {
   oi: number;
   oiChg: number;
@@ -71,18 +73,11 @@ type MarketSummary = {
   spotPrice: number;
   spotChange: number;
   spotChangePct: number;
-  open: number;
-  high: number;
-  low: number;
-  prevClose: number;
   indiaVIX: number;
-  vixChange: number;
   pcr: number;
   maxPain: number;
   totalCallOI: number;
   totalPutOI: number;
-  totalCallVolume: number;
-  totalPutVolume: number;
   atmStrike: number;
 };
 
@@ -96,13 +91,9 @@ type OptionChainResponse = {
   timestamp: string;
   isLive?: boolean;
   dataSource?: string;
-  spotPriceReal?: boolean;
-  vixReal?: boolean;
 };
 
-type ViewMode = 'option-chain' | 'oi-analysis';
-
-// Format helpers
+// ─── Helpers ──────────────────────────────────────────────────────
 function formatIndian(num: number): string {
   if (num >= 10000000) return (num / 10000000).toFixed(2) + ' Cr';
   if (num >= 100000) return (num / 100000).toFixed(2) + ' L';
@@ -114,7 +105,6 @@ function fmt(num: number, d: number = 2): string {
   return num.toFixed(d);
 }
 
-// OI Heat intensity
 function oiHeat(oi: number, maxOI: number, isCall: boolean): React.CSSProperties {
   const pct = Math.min(oi / maxOI, 1);
   if (isCall) {
@@ -123,279 +113,184 @@ function oiHeat(oi: number, maxOI: number, isCall: boolean): React.CSSProperties
   return { background: `linear-gradient(to right, rgba(34,197,94,${pct * 0.35}), transparent)` };
 }
 
-// ─── Live Data Setup Dialog ───
-function LiveDataSetupDialog() {
-  const [copied, setCopied] = useState<string | null>(null);
-
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(id);
-      setTimeout(() => setCopied(null), 2000);
-    });
-  };
-
-  const envContent = `# Motilal Oswal OpenAPI Credentials
-MO_BASE_URL=https://openapi.motilaloswal.com
-MO_API_KEY=your_api_key_here
-MO_API_SECRET=your_api_secret_here
-MO_USER_ID=your_client_code
-MO_PASSWORD=your_password
-MO_TOTP_SECRET=your_totp_secret_here
-MO_TWO_FA=DD/MM/YYYY
-MO_STATIC_IP=your_static_ip`;
-
-  const runLocalCommands = `# 1. Install Bun (if not installed)
-curl -fsSL https://bun.sh/install | bash
-
-# 2. Clone/navigate to project
-cd option-chain
-
-# 3. Install dependencies
-bun install
-
-# 4. Edit .env with your MO API credentials
-# Fill in: MO_API_KEY, MO_API_SECRET, MO_USER_ID,
-#          MO_PASSWORD, MO_TOTP_SECRET, MO_TWO_FA
-
-# 5. Start the dev server
-bun run dev
-
-# 6. Open in browser
-# http://localhost:3000`;
-
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-5 text-[9px] px-1.5 gap-1 text-amber-500 hover:text-amber-400">
-          <Info className="h-2.5 w-2.5" />
-          Get Live Data
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Wifi className="h-5 w-5 text-emerald-500" />
-            Get Live Market Data
-          </DialogTitle>
-          <DialogDescription>
-            Connect to Motilal Oswal API for real-time option chain data with live prices, OI, and Greeks.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 mt-2">
-          {/* Prerequisites */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">📋 Prerequisites</h4>
-            <ul className="text-xs space-y-1.5 text-muted-foreground">
-              <li className="flex items-start gap-2">
-                <span className="text-emerald-500 mt-0.5">✓</span>
-                <span>Active Motilal Oswal trading account</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-emerald-500 mt-0.5">✓</span>
-                <span>API key from <a href="https://invest.motilaloswal.com/OpenApi/Dashboard" target="_blank" rel="noopener noreferrer" className="text-primary underline inline-flex items-center gap-0.5">developer portal <ExternalLink className="h-2.5 w-2.5" /></a></span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-emerald-500 mt-0.5">✓</span>
-                <span>Registered Static IP (whitelisted in MO portal)</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-emerald-500 mt-0.5">✓</span>
-                <span>TOTP secret key (from authenticator setup)</span>
-              </li>
-            </ul>
-          </div>
-
-          <Separator />
-
-          {/* Current Data Source */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">📊 Current Data Source</h4>
-            <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="font-semibold text-emerald-500">LIVE</span>
-                <span className="text-muted-foreground">— Full live data from Motilal Oswal API</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-blue-500" />
-                <span className="font-semibold text-blue-500">REAL PRICES</span>
-                <span className="text-muted-foreground">— Real spot price from Yahoo Finance, OI simulated</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500" />
-                <span className="font-semibold text-amber-500">SIMULATED</span>
-                <span className="text-muted-foreground">— All data simulated for demo purposes</span>
-              </div>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* .env Setup */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">⚙️ Environment Configuration</h4>
-            <p className="text-xs text-muted-foreground mb-2">
-              Add these variables to your <code className="bg-muted px-1 rounded">.env</code> file:
-            </p>
-            <div className="relative">
-              <pre className="bg-muted/80 rounded-lg p-3 text-[10px] font-mono overflow-x-auto leading-relaxed">
-                {envContent}
-              </pre>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="absolute top-1 right-1 h-6 w-6 p-0"
-                onClick={() => copyToClipboard(envContent, 'env')}
-              >
-                {copied === 'env' ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-              </Button>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Important Notes */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">⚠️ Important Notes</h4>
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs space-y-1.5">
-              <p><strong>Static IP Required:</strong> The MO API only accepts requests from your registered IP. The app <strong>must run on a machine</strong> with that IP address.</p>
-              <p><strong>2FA Field:</strong> Set <code className="bg-muted px-0.5 rounded">MO_TWO_FA</code> to your date of birth in <strong>DD/MM/YYYY</strong> format (e.g., <code className="bg-muted px-0.5 rounded">15/03/1995</code>).</p>
-              <p><strong>Password Hashing:</strong> The password is automatically hashed as SHA-256(password + apiKey) before sending. Enter your plain password in .env.</p>
-              <p><strong>TOTP:</strong> The TOTP secret is the base32 key from your authenticator app setup. A fresh TOTP is generated every 30 seconds automatically.</p>
-              <p><strong>Token Expiry:</strong> Auth tokens expire daily at 6:00 AM IST and are auto-refreshed.</p>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Run Locally */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">🚀 Run Locally</h4>
-            <div className="relative">
-              <pre className="bg-muted/80 rounded-lg p-3 text-[10px] font-mono overflow-x-auto leading-relaxed">
-                {runLocalCommands}
-              </pre>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="absolute top-1 right-1 h-6 w-6 p-0"
-                onClick={() => copyToClipboard(runLocalCommands, 'commands')}
-              >
-                {copied === 'commands' ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-              </Button>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* How It Works */}
-          <div>
-            <h4 className="text-sm font-bold mb-2">🔄 Data Flow</h4>
-            <div className="text-xs text-muted-foreground space-y-1.5">
-              <p><strong>1.</strong> App generates TOTP from your secret key</p>
-              <p><strong>2.</strong> Logs in to MO API with credentials + TOTP</p>
-              <p><strong>3.</strong> Gets AuthToken and AccessToken</p>
-              <p><strong>4.</strong> Downloads Scrip Master (option instruments list)</p>
-              <p><strong>5.</strong> Fetches Index LTP (spot price)</p>
-              <p><strong>6.</strong> Fetches LTP for each option contract</p>
-              <p><strong>7.</strong> Calculates Greeks using Black-Scholes model</p>
-              <p><strong>8.</strong> Falls back to Yahoo Finance → Simulation if MO API is unreachable</p>
-            </div>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export default function OptionChainPage() {
+// ─── Main Page ────────────────────────────────────────────────────
+export default function TradingDashboard() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(false);
-  const [showOIChg, setShowOIChg] = useState(true);
-  const [selectedStrike, setSelectedStrike] = useState<number | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>('option-chain');
-  const [strikesAroundATM, setStrikesAroundATM] = useState<number | null>(null);
-  const [showOI, setShowOI] = useState(true);
-  const atmRef = useRef<HTMLTableRowElement>(null);
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm'>('chain');
+  const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
+  const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
   const { theme, setTheme } = useTheme();
-
-  // Fetch option chain data
-  const { data, isLoading, refetch, isFetching } = useQuery<OptionChainResponse>({
+  
+  const {
+    setOptionChain,
+    setSelectedSymbol,
+    setSelectedExpiry: setStoreExpiry,
+    setSelectedStrike,
+    setSelectedOption,
+    setShowOrderPanel,
+    spotPrice,
+  } = useTradingStore();
+  
+  const atmRef = useRef<HTMLTableRowElement>(null);
+  
+  const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
+  const [breezeStatus, setBreezeStatus] = useState<{ isConnected: boolean; loginInProgress: boolean; message: string }>({
+    isConnected: false,
+    loginInProgress: false,
+    message: '',
+  });
+  
+  // Fetch option chain
+  const { data, isLoading, refetch, isFetching } = useQuery<any>({
     queryKey: ['option-chain', symbol, selectedExpiry],
     queryFn: async () => {
       const params = new URLSearchParams({ symbol });
       if (selectedExpiry) params.set('expiry', selectedExpiry);
       const res = await fetch(`/api/option-chain?${params}`);
       if (!res.ok) throw new Error('Failed to fetch');
-      return res.json();
+      const json = await res.json();
+      // Store analysis
+      if (json.analysis) {
+        setAnalysis(json.analysis);
+      }
+      // Flatten chain data
+      return json.data || json;
     },
-    refetchInterval: autoRefresh ? 30000 : false,
-    staleTime: 10000,
+    refetchInterval: autoRefresh ? 15000 : false,
+    staleTime: 5000,
   });
-
-  // Set default expiry when data loads
-  const expiries = data?.expiries;
-  if (expiries && expiries.length > 0 && !selectedExpiry) {
-    setSelectedExpiry(expiries[0].date);
-  }
-
-  // Scroll to ATM on data load
-  const atmStrike = data?.summary?.atmStrike;
+  
+  // Update store
   useEffect(() => {
-    if (atmStrike && atmRef.current) {
-      const timer = setTimeout(() => {
+    if (data) {
+      setOptionChain(data as any);
+      setSelectedSymbol(symbol);
+    }
+  }, [data]);
+  
+  // Set default expiry
+  useEffect(() => {
+    if (data?.expiries?.length && !selectedExpiry) {
+      setSelectedExpiry(data.expiries[0].date);
+      setStoreExpiry(data.expiries[0].date);
+    }
+  }, [data]);
+  
+  // Scroll to ATM
+  useEffect(() => {
+    if (data?.summary?.atmStrike && atmRef.current) {
+      setTimeout(() => {
         atmRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 300);
-      return () => clearTimeout(timer);
     }
-  }, [atmStrike, selectedExpiry, symbol]);
+  }, [data?.summary?.atmStrike, selectedExpiry, symbol]);
+  
+  // Max OI for heat map
+  const chainData = useMemo(() => {
+    if (Array.isArray(data?.data)) return data.data;
+    return [];
+  }, [data?.data]);
 
-  // Calculate max OI for heat map
-  const chainData = data?.data;
-  const maxCallOI = useMemo(() => {
-    if (!chainData) return 1;
-    return Math.max(...chainData.map(d => d.ce?.oi || 0), 1);
-  }, [chainData]);
+  // Market session info
+  const marketSession = useMemo(() => getCurrentSession(), []);
 
-  const maxPutOI = useMemo(() => {
-    if (!chainData) return 1;
-    return Math.max(...chainData.map(d => d.pe?.oi || 0), 1);
-  }, [chainData]);
+  // Check Breeze connection status on mount
+  useEffect(() => {
+    fetch('/api/breeze-connect')
+      .then(r => r.json())
+      .then(json => {
+        if (json.success) {
+          setBreezeStatus(prev => ({
+            ...prev,
+            isConnected: json.data.isConnected,
+          }));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
+  // Poll login status when in progress
+  useEffect(() => {
+    if (!breezeStatus.loginInProgress) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/breeze-connect/status');
+        const json = await res.json();
+        if (json.success) {
+          const s = json.data;
+          setBreezeStatus({
+            isConnected: s.isConnected,
+            loginInProgress: s.status !== 'success' && s.status !== 'failed',
+            message: s.message || '',
+          });
+          if (s.status === 'success') {
+            refetch();
+          }
+        }
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [breezeStatus.loginInProgress]);
+
+  const handleBreezeConnect = async () => {
+    setBreezeStatus(prev => ({ ...prev, loginInProgress: true, message: 'Generating session...' }));
+    try {
+      const res = await fetch('/api/breeze-connect', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setBreezeStatus({ isConnected: true, loginInProgress: false, message: 'Connected!' });
+        refetch();
+      } else {
+        setBreezeStatus(prev => ({ ...prev, loginInProgress: false, message: json.error || 'Failed' }));
+      }
+    } catch (err: any) {
+      setBreezeStatus(prev => ({ ...prev, loginInProgress: false, message: err.message }));
+    }
+  };
+  const maxCallOI = useMemo(() => chainData.length ? Math.max(...chainData.map(d => d.ce?.oi || 0)) : 1, [chainData]);
+  const maxPutOI = useMemo(() => chainData.length ? Math.max(...chainData.map(d => d.pe?.oi || 0)) : 1, [chainData]);
   const maxOI = Math.max(maxCallOI, maxPutOI);
-
+  
   const summary = data?.summary;
   const isPositive = (summary?.spotChange || 0) >= 0;
-
-  // Filtered data based on strikes around ATM
-  const filteredData = useMemo(() => {
-    if (!chainData || !atmStrike || strikesAroundATM === null) return chainData || [];
-    return chainData.filter(d => Math.abs(d.strike - atmStrike) <= strikesAroundATM * (symbol === 'NIFTY' || symbol === 'FINNIFTY' ? 50 : symbol === 'BANKNIFTY' || symbol === 'SENSEX' ? 100 : 25));
-  }, [chainData, atmStrike, strikesAroundATM, symbol]);
-
+  
+  // Handle buy/sell click
+  const handleTrade = (strike: number, side: 'call' | 'put', action: 'buy' | 'sell') => {
+    setSelectedStrike(strike);
+    setSelectedOption(side);
+    setShowOrderPanel(true);
+  };
+  
   if (isLoading) {
-    return <LoadingScreen />;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <RefreshCw className="h-8 w-8 animate-spin text-primary mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">Loading trading dashboard...</p>
+        </div>
+      </div>
+    );
   }
-
+  
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
       {/* ─── Header ─── */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur-md">
-        <div className="flex items-center justify-between px-2 md:px-4 py-2 gap-2">
+        <div className="flex items-center justify-between px-3 py-2 gap-2">
           {/* Left: Logo + Symbol */}
-          <div className="flex items-center gap-2 md:gap-4 shrink-0">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-2">
               <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-md">
-                <BarChart3 className="h-4 w-4 text-white" />
+                <Zap className="h-4 w-4 text-white" />
               </div>
-              <h1 className="font-bold text-base hidden sm:block tracking-tight">OptionChain</h1>
+              <h1 className="font-bold text-base tracking-tight hidden sm:block">SD PRO</h1>
             </div>
-
-            <Select value={symbol} onValueChange={(v) => { setSymbol(v); setSelectedExpiry(''); setStrikesAroundATM(null); }}>
-              <SelectTrigger className="w-[120px] md:w-[150px] h-8 text-sm font-bold">
+            
+            <Select value={symbol} onValueChange={(v) => { setSymbol(v); setSelectedExpiry(''); }}>
+              <SelectTrigger className="w-[120px] h-8 text-sm font-bold">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -407,985 +302,354 @@ export default function OptionChainPage() {
               </SelectContent>
             </Select>
           </div>
-
-          {/* Center: Expiry Tabs */}
-          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none flex-1 justify-center">
-            {data?.expiries?.slice(0, 6).map((exp) => (
+          
+          {/* Center: View Tabs + Expiry Tabs */}
+          <div className="flex items-center gap-2 flex-1 justify-center">
+            {/* View Mode Tabs */}
+            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
               <Button
-                key={exp.date}
-                variant={selectedExpiry === exp.date ? 'default' : 'ghost'}
+                variant={viewMode === 'chain' ? 'default' : 'ghost'}
                 size="sm"
-                className={`h-7 text-[11px] px-2 md:px-3 shrink-0 font-medium ${
-                  selectedExpiry === exp.date
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
+                className={`h-7 text-[11px] px-3 font-bold ${
+                  viewMode === 'chain' ? 'bg-background shadow-sm' : 'text-muted-foreground'
                 }`}
-                onClick={() => setSelectedExpiry(exp.date)}
+                onClick={() => setViewMode('chain')}
               >
-                {exp.label.split(' ').slice(0, 2).join(' ')}
-                <span className="ml-0.5 text-[9px] opacity-60">({exp.daysToExpiry}d)</span>
+                <Activity className="h-3 w-3 mr-1" /> Chain
               </Button>
-            ))}
-          </div>
+              <Button
+                variant={viewMode === 'sdm' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-7 text-[11px] px-3 font-bold ${
+                  viewMode === 'sdm' ? 'bg-background shadow-sm' : 'text-muted-foreground'
+                }`}
+                onClick={() => setViewMode('sdm')}
+              >
+                <Brain className="h-3 w-3 mr-1" /> SDM AI
+              </Button>
+            </div>
 
+            <div className="w-px h-5 bg-border" />
+
+            {/* Simple/Pro Toggle */}
+            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
+              <Button
+                variant={displayMode === 'simple' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-7 text-[11px] px-3 font-bold ${
+                  displayMode === 'simple' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
+                }`}
+                onClick={() => setDisplayMode('simple')}
+              >
+                Simple
+              </Button>
+              <Button
+                variant={displayMode === 'pro' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-7 text-[11px] px-3 font-bold ${
+                  displayMode === 'pro' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
+                }`}
+                onClick={() => setDisplayMode('pro')}
+              >
+                Pro
+              </Button>
+            </div>
+            
+            <div className="w-px h-5 bg-border" />
+            
+            {/* Expiry Tabs */}
+            <div className="flex items-center gap-1 overflow-x-auto">
+              {data?.expiries?.slice(0, 5).map((exp) => (
+                <Button
+                  key={exp.date}
+                  variant={selectedExpiry === exp.date ? 'default' : 'ghost'}
+                  size="sm"
+                  className={`h-7 text-[11px] px-2 shrink-0 font-medium ${
+                    selectedExpiry === exp.date ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
+                  }`}
+                  onClick={() => { setSelectedExpiry(exp.date); setStoreExpiry(exp.date); }}
+                >
+                  {exp.label.split(' ').slice(0, 2).join(' ')}
+                  <span className="ml-0.5 text-[9px] opacity-60">({exp.daysToExpiry}d)</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+          
           {/* Right: Controls */}
-          <div className="flex items-center gap-1 md:gap-2 shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            >
+          <div className="flex items-center gap-2 shrink-0">
+            <MarketStatus />
+            
+            <Separator orientation="vertical" className="h-4" />
+            
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
             </Button>
-
+            
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2">
                   <Settings2 className="h-3 w-3" />
-                  <span className="hidden md:inline">Settings</span>
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-52" align="end">
+              <PopoverContent className="w-48" align="end">
                 <div className="space-y-3">
-                  <h4 className="font-semibold text-sm">Display Options</h4>
+                  <h4 className="font-semibold text-sm">Settings</h4>
                   <Separator />
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="show-greeks" className="text-sm cursor-pointer">Greeks</Label>
-                    <Switch id="show-greeks" checked={showGreeks} onCheckedChange={setShowGreeks} />
+                    <Label className="text-sm cursor-pointer">Greeks</Label>
+                    <Switch checked={showGreeks} onCheckedChange={setShowGreeks} />
                   </div>
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="show-oichg" className="text-sm cursor-pointer">OI Change</Label>
-                    <Switch id="show-oichg" checked={showOIChg} onCheckedChange={setShowOIChg} />
-                  </div>
-                  <Separator />
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="auto-refresh" className="text-sm cursor-pointer">Auto Refresh</Label>
-                    <Switch id="auto-refresh" checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+                    <Label className="text-sm cursor-pointer">Auto Refresh</Label>
+                    <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
                   </div>
                 </div>
               </PopoverContent>
             </Popover>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              onClick={() => refetch()}
-              disabled={isFetching}
-            >
+            
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refetch()} disabled={isFetching}>
               <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
             </Button>
           </div>
         </div>
-
-        {/* ─── View Mode Tabs ─── */}
-        <div className="flex items-center gap-1 px-2 md:px-4 pb-1.5 border-t border-border/50">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`h-7 text-[11px] px-3 font-medium rounded-md ${
-              viewMode === 'option-chain'
-                ? 'bg-primary/10 text-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setViewMode('option-chain')}
-          >
-            Option Chain
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`h-7 text-[11px] px-3 font-medium rounded-md ${
-              viewMode === 'oi-analysis'
-                ? 'bg-primary/10 text-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setViewMode('oi-analysis')}
-          >
-            <Activity className="h-3 w-3 mr-1" />
-            OI Analysis
-          </Button>
-        </div>
-      </header>
-
-      {/* ─── Market Summary Bar ─── */}
-      {summary && (
-        <div className="border-b bg-card">
-          <div className="flex items-center gap-2 md:gap-4 px-2 md:px-4 py-2 overflow-x-auto scrollbar-none text-sm">
-            {/* Spot */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Spot</span>
-              <span className="font-bold text-base tabular-nums">{fmt(summary.spotPrice)}</span>
-              <Badge
-                className={`text-[10px] h-5 px-1.5 font-semibold ${
-                  isPositive ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
-                } text-white border-0`}
-              >
-                {isPositive ? <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> : <TrendingDown className="h-2.5 w-2.5 mr-0.5" />}
-                {isPositive ? '+' : ''}{fmt(summary.spotChange)} ({isPositive ? '+' : ''}{fmt(summary.spotChangePct)}%)
-              </Badge>
-            </div>
-
-            <div className="w-px h-5 bg-border shrink-0" />
-
-            {/* VIX */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">VIX</span>
-              <span className="font-semibold tabular-nums">{fmt(summary.indiaVIX)}</span>
-              <span className={`text-[10px] font-semibold ${
-                summary.vixChange >= 0 ? 'text-red-500' : 'text-emerald-500'
-              }`}>
-                {summary.vixChange >= 0 ? '+' : ''}{fmt(summary.vixChange)}
-              </span>
-            </div>
-
-            <div className="w-px h-5 bg-border shrink-0" />
-
-            {/* PCR */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">PCR</span>
-              <span className={`font-semibold tabular-nums ${
-                summary.pcr > 1.2 ? 'text-emerald-500' : summary.pcr < 0.7 ? 'text-red-500' : 'text-foreground'
-              }`}>
-                {fmt(summary.pcr)}
-              </span>
-            </div>
-
-            <div className="w-px h-5 bg-border shrink-0" />
-
-            {/* Max Pain */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Max Pain</span>
-              <span className="font-semibold text-amber-500 tabular-nums">{fmt(summary.maxPain)}</span>
-            </div>
-
-            <div className="w-px h-5 bg-border shrink-0" />
-
-            {/* OI Summary */}
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                <span className="text-[10px] text-muted-foreground">CE OI</span>
-                <span className="text-[11px] font-semibold text-red-500 tabular-nums">{formatIndian(summary.totalCallOI)}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span className="text-[10px] text-muted-foreground">PE OI</span>
-                <span className="text-[11px] font-semibold text-emerald-500 tabular-nums">{formatIndian(summary.totalPutOI)}</span>
-              </div>
-            </div>
-
-            {/* OHLC */}
-            <div className="hidden lg:flex items-center gap-2 shrink-0 text-[11px]">
-              <span className="text-muted-foreground">O <span className="text-foreground font-medium tabular-nums">{fmt(summary.open)}</span></span>
-              <span className="text-muted-foreground">H <span className="text-emerald-500 font-medium tabular-nums">{fmt(summary.high)}</span></span>
-              <span className="text-muted-foreground">L <span className="text-red-500 font-medium tabular-nums">{fmt(summary.low)}</span></span>
-              <span className="text-muted-foreground">PC <span className="text-foreground font-medium tabular-nums">{fmt(summary.prevClose)}</span></span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── Conditional View ─── */}
-      {viewMode === 'oi-analysis' && chainData ? (
-        <OIAnalysisView
-          data={filteredData}
-          spotPrice={data!.spotPrice}
-          maxOI={maxOI}
-          atmStrike={data!.summary.atmStrike}
-          showOI={showOI}
-          setShowOI={setShowOI}
-          strikesAroundATM={strikesAroundATM}
-          setStrikesAroundATM={setStrikesAroundATM}
-        />
-      ) : viewMode === 'option-chain' && chainData ? (
-        <>
-          {/* ─── OI Summary Strip ─── */}
-          <OIStrip data={chainData} spotPrice={data!.spotPrice} maxOI={maxOI} atmStrike={data!.summary.atmStrike} />
-
-          {/* ─── Option Chain Table ─── */}
-          <div className="flex-1 overflow-auto">
-            <table className="w-full border-collapse text-[11px] md:text-xs">
-              <thead className="sticky top-0 z-40">
-                {/* Section Headers */}
-                <tr>
-                  <th colSpan={showGreeks ? 10 : showOIChg ? 7 : 6} className="py-1.5 text-center bg-red-500/10 dark:bg-red-500/20 border-b-2 border-red-500/30">
-                    <span className="text-red-600 dark:text-red-400 font-bold text-xs tracking-widest">CALLS</span>
-                  </th>
-                  <th className="py-1.5 text-center bg-muted border-b-2 border-border">
-                    <span className="font-bold text-xs"><ArrowUpDown className="h-3 w-3 inline" /> STRIKE</span>
-                  </th>
-                  <th colSpan={showGreeks ? 10 : showOIChg ? 7 : 6} className="py-1.5 text-center bg-emerald-500/10 dark:bg-emerald-500/20 border-b-2 border-emerald-500/30">
-                    <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xs tracking-widest">PUTS</span>
-                  </th>
-                </tr>
-                {/* Column Headers */}
-                <tr className="text-[9px] md:text-[10px] font-semibold text-muted-foreground bg-muted/70">
-                  {/* Call columns */}
-                  <th className="px-1.5 py-1 text-right bg-red-500/5">OI</th>
-                  {showOIChg && <th className="px-1.5 py-1 text-right bg-red-500/5">Chg OI</th>}
-                  <th className="px-1.5 py-1 text-right bg-red-500/5">Vol</th>
-                  <th className="px-1.5 py-1 text-right bg-red-500/5">IV</th>
-                  <th className="px-1.5 py-1 text-right bg-red-500/5">LTP</th>
-                  <th className="px-1.5 py-1 text-right bg-red-500/5">Chg</th>
-                  {showGreeks && (
-                    <>
-                      <th className="px-1 py-1 text-right bg-red-500/5">&Delta;</th>
-                      <th className="px-1 py-1 text-right bg-red-500/5">&Gamma;</th>
-                      <th className="px-1 py-1 text-right bg-red-500/5">&Theta;</th>
-                      <th className="px-1 py-1 text-right bg-red-500/5">&nu;</th>
-                    </>
-                  )}
-                  {/* Strike */}
-                  <th className="px-2 py-1 text-center bg-muted font-bold">&#8377;</th>
-                  {/* Put columns */}
-                  <th className="px-1.5 py-1 text-left bg-emerald-500/5">Chg</th>
-                  <th className="px-1.5 py-1 text-left bg-emerald-500/5">LTP</th>
-                  <th className="px-1.5 py-1 text-left bg-emerald-500/5">IV</th>
-                  <th className="px-1.5 py-1 text-left bg-emerald-500/5">Vol</th>
-                  {showOIChg && <th className="px-1.5 py-1 text-left bg-emerald-500/5">Chg OI</th>}
-                  <th className="px-1.5 py-1 text-left bg-emerald-500/5">OI</th>
-                  {showGreeks && (
-                    <>
-                      <th className="px-1 py-1 text-left bg-emerald-500/5">&Delta;</th>
-                      <th className="px-1 py-1 text-left bg-emerald-500/5">&Gamma;</th>
-                      <th className="px-1 py-1 text-left bg-emerald-500/5">&Theta;</th>
-                      <th className="px-1 py-1 text-left bg-emerald-500/5">&nu;</th>
-                    </>
-                  )}
-                </tr>
-              </thead>
-
-              <tbody>
-                {filteredData.map((row) => {
-                  const isATM = row.strike === data?.summary?.atmStrike;
-                  const spot = data?.spotPrice || 0;
-                  const isITMCall = row.strike < spot;
-                  const isITMPut = row.strike > spot;
-                  const isSelected = selectedStrike === row.strike;
-
-                  return (
-                    <tr
-                      key={row.strike}
-                      ref={isATM ? atmRef : undefined}
-                      className={`
-                        border-b border-border/30 cursor-pointer transition-colors duration-75
-                        ${isATM ? 'bg-primary/8 ring-1 ring-inset ring-primary/20' : ''}
-                        ${isSelected && !isATM ? 'bg-accent/40' : ''}
-                        hover:bg-accent/20
-                      `}
-                      onClick={() => setSelectedStrike(isSelected ? null : row.strike)}
-                    >
-                      {/* ── CALL Side ── */}
-                      <td className="px-1.5 py-1 text-right font-mono tabular-nums" style={row.ce ? oiHeat(row.ce.oi, maxOI, true) : undefined}>
-                        <span className={row.ce && row.ce.oi > maxCallOI * 0.7 ? 'font-bold text-red-600 dark:text-red-400' : ''}>
-                          {row.ce ? formatIndian(row.ce.oi) : '\u2014'}
-                        </span>
-                      </td>
-                      {showOIChg && (
-                        <td className={`px-1.5 py-1 text-right font-mono tabular-nums ${
-                          row.ce?.oiChg && row.ce.oiChg > 0 ? 'text-red-500' : row.ce?.oiChg && row.ce.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'
-                        }`}>
-                          {row.ce ? (row.ce.oiChg > 0 ? '+' : '') + formatIndian(row.ce.oiChg) : '\u2014'}
-                        </td>
-                      )}
-                      <td className="px-1.5 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                        {row.ce ? formatIndian(row.ce.volume) : '\u2014'}
-                      </td>
-                      <td className="px-1.5 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                        {row.ce ? fmt(row.ce.iv) : '\u2014'}
-                      </td>
-                      <td className={`px-1.5 py-1 text-right font-mono tabular-nums font-semibold ${
-                        isITMCall ? 'bg-red-500/8 dark:bg-red-500/10' : ''
-                      }`}>
-                        {row.ce ? fmt(row.ce.ltp) : '\u2014'}
-                      </td>
-                      <td className={`px-1.5 py-1 text-right font-mono tabular-nums ${
-                        row.ce?.chg && row.ce.chg > 0 ? 'text-red-500' : row.ce?.chg && row.ce.chg < 0 ? 'text-emerald-500' : ''
-                      }`}>
-                        {row.ce ? (row.ce.chg > 0 ? '+' : '') + fmt(row.ce.chg) : '\u2014'}
-                      </td>
-                      {showGreeks && row.ce && (
-                        <>
-                          <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground/60">{fmt(row.ce.delta)}</td>
-                          <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground/60">{fmt(row.ce.gamma, 4)}</td>
-                          <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground/60">{fmt(row.ce.theta)}</td>
-                          <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground/60">{fmt(row.ce.vega)}</td>
-                        </>
-                      )}
-                      {showGreeks && !row.ce && <><td /><td /><td /><td /></>}
-
-                      {/* ── STRIKE ── */}
-                      <td className={`px-2 py-1 text-center font-bold font-mono tabular-nums bg-muted/50 ${
-                        isATM ? 'bg-primary/15 text-primary text-[12px]' : ''
-                      }`}>
-                        {row.strike}
-                        {isATM && <span className="ml-1 text-[8px] font-medium text-primary/70">ATM</span>}
-                      </td>
-
-                      {/* ── PUT Side ── */}
-                      <td className={`px-1.5 py-1 text-left font-mono tabular-nums ${
-                        row.pe?.chg && row.pe.chg > 0 ? 'text-red-500' : row.pe?.chg && row.pe.chg < 0 ? 'text-emerald-500' : ''
-                      }`}>
-                        {row.pe ? (row.pe.chg > 0 ? '+' : '') + fmt(row.pe.chg) : '\u2014'}
-                      </td>
-                      <td className={`px-1.5 py-1 text-left font-mono tabular-nums font-semibold ${
-                        isITMPut ? 'bg-emerald-500/8 dark:bg-emerald-500/10' : ''
-                      }`}>
-                        {row.pe ? fmt(row.pe.ltp) : '\u2014'}
-                      </td>
-                      <td className="px-1.5 py-1 text-left font-mono tabular-nums text-muted-foreground">
-                        {row.pe ? fmt(row.pe.iv) : '\u2014'}
-                      </td>
-                      <td className="px-1.5 py-1 text-left font-mono tabular-nums text-muted-foreground">
-                        {row.pe ? formatIndian(row.pe.volume) : '\u2014'}
-                      </td>
-                      {showOIChg && (
-                        <td className={`px-1.5 py-1 text-left font-mono tabular-nums ${
-                          row.pe?.oiChg && row.pe.oiChg > 0 ? 'text-red-500' : row.pe?.oiChg && row.pe.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'
-                        }`}>
-                          {row.pe ? (row.pe.oiChg > 0 ? '+' : '') + formatIndian(row.pe.oiChg) : '\u2014'}
-                        </td>
-                      )}
-                      <td className="px-1.5 py-1 text-left font-mono tabular-nums" style={row.pe ? oiHeat(row.pe.oi, maxOI, false) : undefined}>
-                        <span className={row.pe && row.pe.oi > maxPutOI * 0.7 ? 'font-bold text-emerald-600 dark:text-emerald-400' : ''}>
-                          {row.pe ? formatIndian(row.pe.oi) : '\u2014'}
-                        </span>
-                      </td>
-                      {showGreeks && row.pe && (
-                        <>
-                          <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground/60">{fmt(row.pe.delta)}</td>
-                          <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground/60">{fmt(row.pe.gamma, 4)}</td>
-                          <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground/60">{fmt(row.pe.theta)}</td>
-                          <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground/60">{fmt(row.pe.vega)}</td>
-                        </>
-                      )}
-                      {showGreeks && !row.pe && <><td /><td /><td /><td /></>}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      ) : null}
-
-      {/* ─── Footer ─── */}
-      <footer className="border-t bg-card/95 backdrop-blur-sm px-2 md:px-4 py-1.5 mt-auto">
-        <div className="flex items-center justify-between text-[9px] text-muted-foreground">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              {data?.isLive ? (
-                <>
-                  <Wifi className="h-3 w-3 text-emerald-500" />
-                  <span className="text-emerald-500 font-semibold">LIVE</span> · Motilal Oswal
-                </>
-              ) : data?.spotPriceReal ? (
-                <>
-                  <Wifi className="h-3 w-3 text-blue-500" />
-                  <span className="text-blue-500 font-semibold">REAL PRICES</span> · Yahoo Finance
-                  <span className="text-muted-foreground">· OI simulated</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="h-3 w-3 text-amber-500" />
-                  <span className="text-amber-500 font-semibold">SIMULATED</span> · Demo Data
-                </>
-              )}
-              <span className="text-muted-foreground">· 30s refresh</span>
+        
+        {/* Market Summary Strip */}
+        {summary && (
+          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-border/50 overflow-x-auto text-[11px]">
+            <span className="text-muted-foreground">Spot</span>
+            <span className="font-bold tabular-nums">{fmt(summary.spotPrice)}</span>
+            <Badge className={`text-[9px] h-4 px-1 ${isPositive ? 'bg-emerald-600' : 'bg-red-600'} text-white`}>
+              {isPositive ? '+' : ''}{fmt(summary.spotChange)} ({isPositive ? '+' : ''}{fmt(summary.spotChangePct)}%)
+            </Badge>
+            <div className="w-px h-3 bg-border" />
+            <span className="text-muted-foreground">VIX</span>
+            <span className="font-semibold tabular-nums">{fmt(summary.indiaVIX)}</span>
+            <div className="w-px h-3 bg-border" />
+            <span className="text-muted-foreground">PCR</span>
+            <span className={`font-semibold tabular-nums ${summary.pcr > 1.2 ? 'text-emerald-500' : summary.pcr < 0.7 ? 'text-red-500' : ''}`}>
+              {fmt(summary.pcr)}
             </span>
-            {data?.timestamp && (
-              <span>{new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
+            <div className="w-px h-3 bg-border" />
+            <span className="text-muted-foreground">ATM</span>
+            <span className="font-semibold text-primary tabular-nums">{summary.atmStrike}</span>
+            <div className="w-px h-3 bg-border" />
+            <Badge
+              className={`text-[8px] h-4 ${
+                marketSession.confidenceMultiplier >= 0.8
+                  ? 'bg-emerald-600 text-white'
+                  : marketSession.confidenceMultiplier >= 0.5
+                  ? 'bg-yellow-600 text-white'
+                  : 'bg-gray-600 text-white'
+              }`}
+            >
+              {marketSession.label}
+            </Badge>
+            <div className="w-px h-3 bg-border" />
+            <span className="text-muted-foreground">CE OI</span>
+            <span className="text-red-500 font-semibold tabular-nums">{formatIndian(summary.totalCallOI)}</span>
+            <span className="text-muted-foreground">PE OI</span>
+            <span className="text-emerald-500 font-semibold tabular-nums">{formatIndian(summary.totalPutOI)}</span>
+            {data?.dataSource && (
+              <>
+                <div className="w-px h-3 bg-border" />
+                <Badge className="text-[8px]" variant={data.dataSource === 'simulation' ? 'outline' : 'default'}>
+                  {data.dataSource === 'icici-breeze' ? 'LIVE' : data.dataSource === 'simulation' ? 'DEMO' : 'Yahoo'}
+                </Badge>
+              </>
+            )}
+            {data?.dataSource === 'simulation' && !breezeStatus.isConnected && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] px-2 gap-1 border-emerald-500/50 text-emerald-500 hover:bg-emerald-500/10"
+                onClick={handleBreezeConnect}
+                disabled={breezeStatus.loginInProgress}
+              >
+                <Zap className="h-2.5 w-2.5" />
+                {breezeStatus.loginInProgress ? breezeStatus.message || 'Connecting...' : 'Connect to Breeze'}
+              </Button>
             )}
           </div>
+        )}
+      </header>
+      
+      {/* ─── Main Content ─── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* ─── Simple Mode: Clean AI Recommendation ─── */}
+        {displayMode === 'simple' ? (
+          <div className="flex-1 overflow-auto">
+            <SimpleMode
+              recommendation={recommendation}
+              spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+              symbol={symbol}
+            />
+          </div>
+        ) : viewMode === 'chain' ? (
+          <>
+            {/* Left: Option Chain */}
+            <div className="flex-1 flex flex-col overflow-hidden">
+              {/* Column Headers */}
+              <table className="w-full border-collapse text-[11px]">
+                <thead className="sticky top-0 z-40">
+                  <tr>
+                    <th colSpan={showGreeks ? 7 : 5} className="py-1.5 text-center bg-red-500/10 dark:bg-red-500/20 border-b-2 border-red-500/30">
+                      <span className="text-red-600 dark:text-red-400 font-bold text-xs tracking-widest">CALLS</span>
+                    </th>
+                    <th className="py-1.5 text-center bg-muted border-b-2 border-border">
+                      <span className="font-bold text-xs"><Activity className="h-3 w-3 inline" /> STRIKE</span>
+                    </th>
+                    <th colSpan={showGreeks ? 7 : 5} className="py-1.5 text-center bg-emerald-500/10 dark:bg-emerald-500/20 border-b-2 border-emerald-500/30">
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xs tracking-widest">PUTS</span>
+                    </th>
+                  </tr>
+              <tr className="text-[9px] font-semibold text-muted-foreground bg-muted/70">
+                <th className="px-1 py-1 text-right">OI</th>
+                <th className="px-1 py-1 text-right">Chg</th>
+                <th className="px-1 py-1 text-right">Vol</th>
+                <th className="px-1 py-1 text-right">LTP</th>
+                {showGreeks && <><th className="px-1 py-1 text-right">Δ</th><th className="px-1 py-1 text-right">Θ</th><th className="px-1 py-1 text-right">γ</th></>}
+                <th className="px-1 py-1 text-center font-bold">₹</th>
+                {showGreeks && <><th className="px-1 py-1 text-left">γ</th><th className="px-1 py-1 text-left">Θ</th><th className="px-1 py-1 text-left">Δ</th></>}
+                <th className="px-1 py-1 text-left">LTP</th>
+                <th className="px-1 py-1 text-left">Vol</th>
+                <th className="px-1 py-1 text-left">Chg</th>
+                <th className="px-1 py-1 text-left">OI</th>
+              </tr>
+            </thead>
+            <tbody className="overflow-auto">
+              {chainData.map((row) => {
+                const isATM = row.strike === data?.summary?.atmStrike;
+                const spot = data?.spotPrice || 0;
+                const isITMCall = row.strike < spot;
+                const isITMPut = row.strike > spot;
+                
+                return (
+                  <tr
+                    key={row.strike}
+                    ref={isATM ? atmRef : undefined}
+                    className={`border-b border-border/30 transition-colors duration-75 hover:bg-accent/20 ${
+                      isATM ? 'bg-primary/8 ring-1 ring-inset ring-primary/20' : ''
+                    }`}
+                  >
+                    {/* CALL Side */}
+                    <td className="px-1 py-1 text-right font-mono tabular-nums cursor-pointer" style={row.ce ? oiHeat(row.ce.oi, maxOI, true) : undefined}
+                      onClick={() => row.ce && handleTrade(row.strike, 'call', 'buy')}>
+                      <span className={row.ce && row.ce.oi > maxCallOI * 0.7 ? 'font-bold text-red-600 dark:text-red-400' : ''}>
+                        {row.ce ? formatIndian(row.ce.oi) : '—'}
+                      </span>
+                    </td>
+                    <td className={`px-1 py-1 text-right font-mono tabular-nums text-xs ${row.ce?.oiChg > 0 ? 'text-red-500' : row.ce?.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'}`}>
+                      {row.ce ? (row.ce.oiChg > 0 ? '+' : '') + formatIndian(row.ce.oiChg) : '—'}
+                    </td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                      {row.ce ? formatIndian(row.ce.volume) : '—'}
+                    </td>
+                    <td className={`px-1 py-1 text-right font-mono tabular-nums font-semibold ${isITMCall ? 'bg-red-500/8' : ''}`}>
+                      {row.ce ? fmt(row.ce.ltp) : '—'}
+                    </td>
+                    {showGreeks && row.ce && (
+                      <><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.delta)}</td><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.theta)}</td><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.gamma, 4)}</td></>
+                    )}
+                    {showGreeks && !row.ce && <><td /><td /><td /></>}
+                    
+                    {/* STRIKE */}
+                    <td className={`px-2 py-1 text-center font-bold font-mono tabular-nums bg-muted/50 ${isATM ? 'bg-primary/15 text-primary text-[12px]' : ''}`}>
+                      {row.strike}
+                      {isATM && <span className="ml-1 text-[8px] font-medium text-primary/70">ATM</span>}
+                    </td>
+                    
+                    {/* PUT Side */}
+                    {showGreeks && row.pe && (
+                      <><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.gamma, 4)}</td><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.theta)}</td><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.delta)}</td></>
+                    )}
+                    {showGreeks && !row.pe && <><td /><td /><td /></>}
+                    <td className={`px-1 py-1 text-left font-mono tabular-nums font-semibold ${isITMPut ? 'bg-emerald-500/8' : ''}`}
+                      onClick={() => row.pe && handleTrade(row.strike, 'put', 'buy')}>
+                      {row.pe ? fmt(row.pe.ltp) : '—'}
+                    </td>
+                    <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground">
+                      {row.pe ? formatIndian(row.pe.volume) : '—'}
+                    </td>
+                    <td className={`px-1 py-1 text-left font-mono tabular-nums text-xs ${row.pe?.oiChg > 0 ? 'text-red-500' : row.pe?.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'}`}>
+                      {row.pe ? (row.pe.oiChg > 0 ? '+' : '') + formatIndian(row.pe.oiChg) : '—'}
+                    </td>
+                    <td className="px-1 py-1 text-left font-mono tabular-nums cursor-pointer" style={row.pe ? oiHeat(row.pe.oi, maxOI, false) : undefined}
+                      onClick={() => row.pe && handleTrade(row.strike, 'put', 'buy')}>
+                      <span className={row.pe && row.pe.oi > maxPutOI * 0.7 ? 'font-bold text-emerald-600 dark:text-emerald-400' : ''}>
+                        {row.pe ? formatIndian(row.pe.oi) : '—'}
+                      </span>
+                    </td>
+                    
+                    {/* Buy/Sell Buttons */}
+                    <td className="px-1 py-1">
+                      <div className="flex gap-0.5">
+                        {row.ce && (
+                          <Button size="sm" className="h-5 w-8 text-[8px] px-0 bg-emerald-600 hover:bg-emerald-700"
+                            onClick={() => handleTrade(row.strike, 'call', 'buy')}>
+                            B
+                          </Button>
+                        )}
+                        {row.pe && (
+                          <Button size="sm" className="h-5 w-8 text-[8px] px-0 bg-red-600 hover:bg-red-700"
+                            onClick={() => handleTrade(row.strike, 'put', 'sell')}>
+                            S
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Right Sidebar: SDM AI + Orders + Positions */}
+        <div className="w-[340px] border-l overflow-auto hidden lg:block">
+          <div className="space-y-0">
+            {/* SDM AI Dashboard */}
+            <SDMDashboard analysis={analysis} loading={isLoading} />
+            <OrderBook />
+            <PositionTracker />
+          </div>
+        </div>
+        </>
+        ) : (
+        /* ═══════ SDM OPTIONS AI FULL VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <SDMOptionsPanel analysis={analysis} chainData={chainData} loading={isLoading} />
+        </div>
+        )}
+      </div>
+      
+      {/* ─── Footer ─── */}
+      <footer className="border-t bg-card/95 px-3 py-1.5">
+        <div className="flex items-center justify-between text-[9px] text-muted-foreground">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-red-500/40 inline-block" /> Call OI</span>
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-emerald-500/40 inline-block" /> Put OI</span>
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" /> ATM</span>
-            
-            {/* Live Data Setup Dialog */}
-            <LiveDataSetupDialog />
           </div>
+          {data?.timestamp && (
+            <span>Updated: {new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
+          )}
         </div>
       </footer>
-    </div>
-  );
-}
-
-// ─── OI Strip Component ───
-function OIStrip({ data, spotPrice, maxOI, atmStrike }: {
-  data: OptionData[];
-  spotPrice: number;
-  maxOI: number;
-  atmStrike: number;
-}) {
-  const topCallOI = useMemo(() =>
-    [...data].sort((a, b) => (b.ce?.oi || 0) - (a.ce?.oi || 0)).slice(0, 5),
-    [data]
-  );
-  const topPutOI = useMemo(() =>
-    [...data].sort((a, b) => (b.pe?.oi || 0) - (a.pe?.oi || 0)).slice(0, 5),
-    [data]
-  );
-
-  const topCallMax = Math.max(...topCallOI.map(d => d.ce?.oi || 0), 1);
-  const topPutMax = Math.max(...topPutOI.map(d => d.pe?.oi || 0), 1);
-
-  return (
-    <div className="border-b bg-card">
-      <div className="flex items-stretch gap-4 md:gap-6 px-2 md:px-4 py-3 overflow-x-auto scrollbar-none">
-        {/* Top Call OI */}
-        <div className="shrink-0 min-w-[240px] md:min-w-[280px]">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Activity className="h-3 w-3 text-red-500" />
-            <span className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider">Call OI · Resistance</span>
-          </div>
-          <div className="space-y-1">
-            {topCallOI.map((d) => (
-              <div key={d.strike} className="flex items-center gap-2 text-[11px]">
-                <span className="w-12 text-right font-mono tabular-nums text-muted-foreground shrink-0">{d.strike}</span>
-                <div className="flex-1 h-3 bg-muted/50 rounded-sm overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-red-400 to-red-500 rounded-sm oi-bar"
-                    style={{ width: `${((d.ce?.oi || 0) / topCallMax) * 100}%` }}
-                  />
-                </div>
-                <span className="w-14 text-right font-mono tabular-nums text-muted-foreground shrink-0">{formatIndian(d.ce?.oi || 0)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="w-px bg-border shrink-0" />
-
-        {/* Top Put OI */}
-        <div className="shrink-0 min-w-[240px] md:min-w-[280px]">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Activity className="h-3 w-3 text-emerald-500" />
-            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Put OI · Support</span>
-          </div>
-          <div className="space-y-1">
-            {topPutOI.map((d) => (
-              <div key={d.strike} className="flex items-center gap-2 text-[11px]">
-                <span className="w-12 text-right font-mono tabular-nums text-muted-foreground shrink-0">{d.strike}</span>
-                <div className="flex-1 h-3 bg-muted/50 rounded-sm overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-emerald-400 to-emerald-500 rounded-sm oi-bar"
-                    style={{ width: `${((d.pe?.oi || 0) / topPutMax) * 100}%` }}
-                  />
-                </div>
-                <span className="w-14 text-right font-mono tabular-nums text-muted-foreground shrink-0">{formatIndian(d.pe?.oi || 0)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="w-px bg-border shrink-0 hidden md:block" />
-
-        {/* OI Distribution Chart */}
-        <div className="hidden md:block shrink-0 flex-1 min-w-[300px]">
-          <div className="flex items-center gap-1.5 mb-2">
-            <BarChart3 className="h-3 w-3 text-primary" />
-            <span className="text-[10px] font-bold uppercase tracking-wider">OI Distribution</span>
-          </div>
-          <div className="flex items-end gap-[1px] h-14 relative">
-            {data.length > 0 && (
-              <div
-                className="absolute bottom-0 w-px bg-primary/30 z-10"
-                style={{
-                  left: `${((atmStrike - data[0]?.strike) / (data[data.length - 1]?.strike - data[0]?.strike)) * 100}%`,
-                  height: '100%'
-                }}
-              />
-            )}
-            {data.filter(d => d.ce || d.pe).map((d) => {
-              const callPct = maxOI > 0 ? ((d.ce?.oi || 0) / maxOI) * 100 : 0;
-              const putPct = maxOI > 0 ? ((d.pe?.oi || 0) / maxOI) * 100 : 0;
-              const isATM = d.strike === atmStrike;
-
-              return (
-                <div
-                  key={d.strike}
-                  className={`flex-1 flex flex-col-reverse gap-[1px] min-w-[2px] ${isATM ? 'opacity-100' : 'opacity-60 hover:opacity-100'} transition-opacity`}
-                >
-                  <div
-                    className="w-full bg-emerald-500/70 rounded-t-[1px] transition-all duration-500"
-                    style={{ height: `${Math.max(putPct, 0.5)}%`, minHeight: d.pe?.oi ? '1px' : '0' }}
-                  />
-                  <div
-                    className="w-full bg-red-500/70 rounded-t-[1px] transition-all duration-500"
-                    style={{ height: `${Math.max(callPct, 0.5)}%`, minHeight: d.ce?.oi ? '1px' : '0' }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex justify-between text-[8px] text-muted-foreground mt-1 tabular-nums">
-            <span>{data[0]?.strike}</span>
-            <span className="text-primary font-medium">{atmStrike} ATM</span>
-            <span>{data[data.length - 1]?.strike}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── OI Analysis View (Sensibull-style) ───
-function OIAnalysisView({ data, spotPrice, maxOI, atmStrike, showOI, setShowOI, strikesAroundATM, setStrikesAroundATM }: {
-  data: OptionData[];
-  spotPrice: number;
-  maxOI: number;
-  atmStrike: number;
-  showOI: boolean;
-  setShowOI: (v: boolean) => void;
-  strikesAroundATM: number | null;
-  setStrikesAroundATM: (v: number | null) => void;
-}) {
-  const [analysisMode, setAnalysisMode] = useState<'oi-change' | 'open-interest'>('oi-change');
-  const chartRef = useRef<HTMLDivElement>(null);
-
-  // Get data for the chart
-  const chartData = useMemo(() => {
-    return data.filter(d => d.ce || d.pe);
-  }, [data]);
-
-  // Calculate max values for scaling
-  const maxOIChg = useMemo(() => {
-    if (chartData.length === 0) return 1;
-    const maxCeChg = Math.max(...chartData.map(d => Math.abs(d.ce?.oiChg || 0)));
-    const maxPeChg = Math.max(...chartData.map(d => Math.abs(d.pe?.oiChg || 0)));
-    return Math.max(maxCeChg, maxPeChg, 1);
-  }, [chartData]);
-
-  const maxOIVal = useMemo(() => {
-    if (chartData.length === 0) return 1;
-    const maxCe = Math.max(...chartData.map(d => d.ce?.oi || 0));
-    const maxPe = Math.max(...chartData.map(d => d.pe?.oi || 0));
-    return Math.max(maxCe, maxPe, 1);
-  }, [chartData]);
-
-  const scaleMax = analysisMode === 'oi-change' ? maxOIChg : maxOIVal;
-
-  // Strike range options
-  const strikeRangeOptions = [
-    { label: 'All', value: null },
-    { label: '5', value: 5 },
-    { label: '10', value: 10 },
-    { label: '15', value: 15 },
-    { label: '20', value: 20 },
-  ];
-
-  // Top Call/Put OI
-  const topCallOI = useMemo(() =>
-    [...data].sort((a, b) => (b.ce?.oi || 0) - (a.ce?.oi || 0)).slice(0, 5),
-    [data]
-  );
-  const topPutOI = useMemo(() =>
-    [...data].sort((a, b) => (b.pe?.oi || 0) - (a.pe?.oi || 0)).slice(0, 5),
-    [data]
-  );
-
-  const topCallChg = useMemo(() =>
-    [...data].filter(d => d.ce && d.ce.oiChg !== 0).sort((a, b) => Math.abs(b.ce?.oiChg || 0) - Math.abs(a.ce?.oiChg || 0)).slice(0, 5),
-    [data]
-  );
-  const topPutChg = useMemo(() =>
-    [...data].filter(d => d.pe && d.pe.oiChg !== 0).sort((a, b) => Math.abs(b.pe?.oiChg || 0) - Math.abs(a.ce?.oiChg || 0)).slice(0, 5),
-    [data]
-  );
-
-  return (
-    <div className="flex-1 overflow-auto">
-      {/* Controls Bar */}
-      <div className="border-b bg-card px-2 md:px-4 py-2">
-        <div className="flex flex-wrap items-center gap-2 md:gap-4">
-          {/* Analysis Mode Tabs */}
-          <div className="flex items-center bg-muted rounded-md p-0.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              className={`h-6 text-[11px] px-2.5 rounded-sm ${
-                analysisMode === 'oi-change'
-                  ? 'bg-card text-foreground shadow-sm'
-                  : 'text-muted-foreground'
-              }`}
-              onClick={() => setAnalysisMode('oi-change')}
-            >
-              OI Change
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={`h-6 text-[11px] px-2.5 rounded-sm ${
-                analysisMode === 'open-interest'
-                  ? 'bg-card text-foreground shadow-sm'
-                  : 'text-muted-foreground'
-              }`}
-              onClick={() => setAnalysisMode('open-interest')}
-            >
-              Open Interest
-            </Button>
-          </div>
-
-          {/* Strikes Around ATM */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] text-muted-foreground font-medium mr-1">Strikes:</span>
-            {strikeRangeOptions.map(opt => (
-              <Button
-                key={opt.label}
-                variant="ghost"
-                size="sm"
-                className={`h-6 text-[10px] px-2 rounded-sm ${
-                  strikesAroundATM === opt.value
-                    ? 'bg-primary/10 text-primary font-semibold'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-                onClick={() => setStrikesAroundATM(opt.value)}
-              >
-                {opt.label}
-              </Button>
-            ))}
-          </div>
-
-          {/* Show OI Toggle */}
-          <div className="flex items-center gap-1.5 ml-auto">
-            <Label htmlFor="show-oi-toggle" className="text-[10px] text-muted-foreground cursor-pointer">Show OI</Label>
-            <Switch id="show-oi-toggle" checked={showOI} onCheckedChange={setShowOI} className="scale-75" />
-          </div>
-        </div>
-      </div>
-
-      {/* Main Chart Area */}
-      <div className="px-2 md:px-4 py-4">
-        {/* Chart Title */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-bold">
-              {analysisMode === 'oi-change' ? 'Call / Put OI Change' : 'Call / Put Open Interest'}
-            </h3>
-            <span className="text-[10px] text-muted-foreground">
-              {data.length > 0 && `${data[0]?.strike} - ${data[data.length - 1]?.strike}`}
-            </span>
-          </div>
-          <div className="flex items-center gap-3 text-[10px]">
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-2 rounded-sm bg-red-500/80 inline-block" /> Call
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-2 rounded-sm bg-emerald-500/80 inline-block" /> Put
-            </span>
-          </div>
-        </div>
-
-        {/* Bar Chart */}
-        <div className="relative border rounded-lg bg-card/50 p-4" ref={chartRef}>
-          {/* Y-axis labels */}
-          <div className="absolute left-1 top-4 bottom-6 flex flex-col justify-between text-[8px] text-muted-foreground tabular-nums">
-            <span>+{formatIndian(scaleMax)}</span>
-            <span>0</span>
-            <span>-{formatIndian(scaleMax)}</span>
-          </div>
-
-          {/* Chart Body */}
-          <div className="ml-10">
-            {/* Zero line */}
-            <div className="relative h-48 md:h-64">
-              {/* Center line (zero) */}
-              <div className="absolute left-0 right-0 top-1/2 h-px bg-border z-10" />
-
-              {/* Spot price vertical line */}
-              {chartData.length > 0 && (
-                <div
-                  className="absolute top-0 bottom-0 w-px bg-primary/40 z-10"
-                  style={{
-                    left: `${((atmStrike - chartData[0]?.strike) / (chartData[chartData.length - 1]?.strike - chartData[0]?.strike)) * 100}%`
-                  }}
-                >
-                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 text-[8px] text-primary font-bold whitespace-nowrap">
-                    {spotPrice}
-                  </div>
-                </div>
-              )}
-
-              {/* Bars */}
-              <div className="flex items-stretch h-full gap-[1px]">
-                {chartData.map((d) => {
-                  const isATM = d.strike === atmStrike;
-
-                  if (analysisMode === 'oi-change') {
-                    const ceChg = d.ce?.oiChg || 0;
-                    const peChg = d.pe?.oiChg || 0;
-                    const ceHeight = scaleMax > 0 ? (Math.abs(ceChg) / scaleMax) * 50 : 0;
-                    const peHeight = scaleMax > 0 ? (Math.abs(peChg) / scaleMax) * 50 : 0;
-
-                    return (
-                      <div
-                        key={d.strike}
-                        className={`flex-1 flex flex-col items-center justify-center min-w-[3px] md:min-w-[5px] group relative ${isATM ? 'opacity-100' : 'opacity-70 hover:opacity-100'} transition-opacity`}
-                      >
-                        {/* Call bar (top = positive, bottom = negative) */}
-                        {ceChg >= 0 ? (
-                          <div
-                            className="w-full bg-red-500/80 rounded-t-sm transition-all duration-300"
-                            style={{ height: `${Math.max(ceHeight, ceChg ? 1 : 0)}%`, marginTop: 'auto', marginBottom: '50%' }}
-                          />
-                        ) : (
-                          <div style={{ marginTop: '50%' }}>
-                            <div
-                              className="w-full bg-red-500/80 rounded-b-sm transition-all duration-300"
-                              style={{ height: `${Math.max(ceHeight, 1)}%` }}
-                            />
-                          </div>
-                        )}
-
-                        {/* Put bar (opposite direction) */}
-                        {peChg >= 0 ? (
-                          <div
-                            className="w-full bg-emerald-500/80 rounded-t-sm transition-all duration-300 absolute"
-                            style={{ height: `${Math.max(peHeight, peChg ? 1 : 0)}%`, top: `${50 - peHeight}%` }}
-                          />
-                        ) : (
-                          <div
-                            className="w-full bg-emerald-500/80 rounded-b-sm transition-all duration-300 absolute"
-                            style={{ height: `${Math.max(peHeight, 1)}%`, top: '50%' }}
-                          />
-                        )}
-
-                        {/* Hover tooltip */}
-                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-popover border rounded px-1.5 py-0.5 text-[8px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-20 shadow-sm pointer-events-none">
-                          <span className="text-red-500">C:{formatIndian(ceChg)}</span>
-                          {' | '}
-                          <span className="text-emerald-500">P:{formatIndian(peChg)}</span>
-                          <br />
-                          <span className="text-foreground">{d.strike}</span>
-                        </div>
-                      </div>
-                    );
-                  } else {
-                    // Open Interest mode
-                    const ceOI = d.ce?.oi || 0;
-                    const peOI = d.pe?.oi || 0;
-                    const ceHeight = maxOIVal > 0 ? (ceOI / maxOIVal) * 50 : 0;
-                    const peHeight = maxOIVal > 0 ? (peOI / maxOIVal) * 50 : 0;
-
-                    return (
-                      <div
-                        key={d.strike}
-                        className={`flex-1 flex flex-col items-center min-w-[3px] md:min-w-[5px] group relative ${isATM ? 'opacity-100' : 'opacity-70 hover:opacity-100'} transition-opacity`}
-                      >
-                        {/* Call OI bar (grows downward from center) */}
-                        {showOI && (
-                          <div
-                            className="w-full bg-red-500/70 rounded-b-sm transition-all duration-300"
-                            style={{ height: `${Math.max(ceHeight, ceOI ? 1 : 0)}%`, marginTop: '50%' }}
-                          />
-                        )}
-
-                        {/* Put OI bar (grows upward from center) */}
-                        {showOI && (
-                          <div
-                            className="w-full bg-emerald-500/70 rounded-t-sm transition-all duration-300 absolute"
-                            style={{ height: `${Math.max(peHeight, peOI ? 1 : 0)}%`, top: `${50 - peHeight}%` }}
-                          />
-                        )}
-
-                        {/* Hover tooltip */}
-                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-popover border rounded px-1.5 py-0.5 text-[8px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-20 shadow-sm pointer-events-none">
-                          <span className="text-red-500">C:{formatIndian(ceOI)}</span>
-                          {' | '}
-                          <span className="text-emerald-500">P:{formatIndian(peOI)}</span>
-                          <br />
-                          <span className="text-foreground">{d.strike}</span>
-                        </div>
-                      </div>
-                    );
-                  }
-                })}
-              </div>
-            </div>
-
-            {/* X-axis labels */}
-            <div className="flex justify-between text-[8px] text-muted-foreground mt-1 tabular-nums overflow-hidden">
-              {chartData.filter((_, i) => i % Math.max(1, Math.floor(chartData.length / 8)) === 0).map(d => (
-                <span key={d.strike} className="shrink-0">{d.strike}</span>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-          {/* Top Call OI Resistance */}
-          <div className="border rounded-lg p-3 bg-card">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Activity className="h-3 w-3 text-red-500" />
-              <span className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase">Call Resistance</span>
-            </div>
-            <div className="space-y-1">
-              {topCallOI.slice(0, 3).map(d => (
-                <div key={d.strike} className="flex items-center justify-between text-[11px]">
-                  <span className="font-mono tabular-nums text-muted-foreground">{d.strike}</span>
-                  <span className="font-mono tabular-nums font-semibold text-red-500">{formatIndian(d.ce?.oi || 0)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Top Put OI Support */}
-          <div className="border rounded-lg p-3 bg-card">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Activity className="h-3 w-3 text-emerald-500" />
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase">Put Support</span>
-            </div>
-            <div className="space-y-1">
-              {topPutOI.slice(0, 3).map(d => (
-                <div key={d.strike} className="flex items-center justify-between text-[11px]">
-                  <span className="font-mono tabular-nums text-muted-foreground">{d.strike}</span>
-                  <span className="font-mono tabular-nums font-semibold text-emerald-500">{formatIndian(d.pe?.oi || 0)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Top Call OI Change */}
-          <div className="border rounded-lg p-3 bg-card">
-            <div className="flex items-center gap-1.5 mb-2">
-              <TrendingUp className="h-3 w-3 text-red-500" />
-              <span className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase">CE OI Change</span>
-            </div>
-            <div className="space-y-1">
-              {topCallChg.slice(0, 3).map(d => (
-                <div key={d.strike} className="flex items-center justify-between text-[11px]">
-                  <span className="font-mono tabular-nums text-muted-foreground">{d.strike}</span>
-                  <span className={`font-mono tabular-nums font-semibold ${(d.ce?.oiChg || 0) >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                    {(d.ce?.oiChg || 0) >= 0 ? '+' : ''}{formatIndian(d.ce?.oiChg || 0)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Top Put OI Change */}
-          <div className="border rounded-lg p-3 bg-card">
-            <div className="flex items-center gap-1.5 mb-2">
-              <TrendingDown className="h-3 w-3 text-emerald-500" />
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase">PE OI Change</span>
-            </div>
-            <div className="space-y-1">
-              {topPutChg.slice(0, 3).map(d => (
-                <div key={d.strike} className="flex items-center justify-between text-[11px]">
-                  <span className="font-mono tabular-nums text-muted-foreground">{d.strike}</span>
-                  <span className={`font-mono tabular-nums font-semibold ${(d.pe?.oiChg || 0) >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                    {(d.pe?.oiChg || 0) >= 0 ? '+' : ''}{formatIndian(d.pe?.oiChg || 0)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* OI Data Table */}
-        {showOI && (
-          <div className="mt-4 border rounded-lg overflow-hidden">
-            <div className="bg-card px-3 py-2 border-b">
-              <h4 className="text-xs font-bold">
-                {analysisMode === 'oi-change' ? 'OI Change by Strike' : 'Open Interest by Strike'}
-              </h4>
-            </div>
-            <div className="max-h-72 overflow-y-auto">
-              <table className="w-full border-collapse text-[11px]">
-                <thead className="sticky top-0 bg-muted/90">
-                  <tr className="text-[9px] font-semibold text-muted-foreground">
-                    <th className="px-2 py-1 text-left">Strike</th>
-                    <th className="px-2 py-1 text-right text-red-500">CE {analysisMode === 'oi-change' ? 'Chg' : 'OI'}</th>
-                    <th className="px-2 py-1 text-right text-emerald-500">PE {analysisMode === 'oi-change' ? 'Chg' : 'OI'}</th>
-                    <th className="px-2 py-1 text-right">CE Vol</th>
-                    <th className="px-2 py-1 text-right">PE Vol</th>
-                    <th className="px-2 py-1 text-right">CE IV</th>
-                    <th className="px-2 py-1 text-right">PE IV</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {chartData.map((d) => {
-                    const isATM = d.strike === atmStrike;
-                    return (
-                      <tr
-                        key={d.strike}
-                        className={`border-b border-border/20 ${isATM ? 'bg-primary/5 font-semibold' : ''}`}
-                      >
-                        <td className="px-2 py-1 font-mono tabular-nums">
-                          {d.strike}
-                          {isATM && <span className="ml-1 text-[7px] text-primary font-bold">ATM</span>}
-                        </td>
-                        <td className={`px-2 py-1 text-right font-mono tabular-nums ${
-                          analysisMode === 'oi-change'
-                            ? (d.ce?.oiChg || 0) > 0 ? 'text-red-500' : (d.ce?.oiChg || 0) < 0 ? 'text-emerald-500' : ''
-                            : ''
-                        }`}>
-                          {analysisMode === 'oi-change'
-                            ? ((d.ce?.oiChg || 0) >= 0 ? '+' : '') + formatIndian(d.ce?.oiChg || 0)
-                            : formatIndian(d.ce?.oi || 0)
-                          }
-                        </td>
-                        <td className={`px-2 py-1 text-right font-mono tabular-nums ${
-                          analysisMode === 'oi-change'
-                            ? (d.pe?.oiChg || 0) > 0 ? 'text-red-500' : (d.pe?.oiChg || 0) < 0 ? 'text-emerald-500' : ''
-                            : ''
-                        }`}>
-                          {analysisMode === 'oi-change'
-                            ? ((d.pe?.oiChg || 0) >= 0 ? '+' : '') + formatIndian(d.pe?.oiChg || 0)
-                            : formatIndian(d.pe?.oi || 0)
-                          }
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                          {formatIndian(d.ce?.volume || 0)}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                          {formatIndian(d.pe?.volume || 0)}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                          {d.ce ? fmt(d.ce.iv) : '\u2014'}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                          {d.pe ? fmt(d.pe.iv) : '\u2014'}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Loading Screen ───
-function LoadingScreen() {
-  return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <header className="border-b bg-card p-4">
-        <div className="flex items-center gap-4">
-          <div className="h-8 w-8 rounded-lg bg-muted animate-pulse" />
-          <div className="h-8 w-[150px] rounded-md bg-muted animate-pulse" />
-          <div className="h-8 w-[120px] rounded-md bg-muted animate-pulse" />
-        </div>
-      </header>
-      <div className="h-16 bg-muted/30 animate-pulse" />
-      <div className="h-24 bg-muted/20 animate-pulse" />
-      <div className="flex-1 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-          <div className="text-center">
-            <p className="text-lg font-medium">Loading Option Chain</p>
-            <p className="text-sm text-muted-foreground mt-1">Fetching real-time data...</p>
-          </div>
-        </div>
+      
+      {/* ─── Order Panel (Modal) ─── */}
+      <OrderPanel />
+      
+      {/* ─── SDM Bot (Fixed Overlay) ─── */}
+      <div className="fixed top-4 right-4 z-50 w-80">
+        <SDMBot
+          optionChainData={data}
+          spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+          symbol={symbol}
+          expiryDate={selectedExpiry}
+          onRecommendation={setRecommendation}
+        />
       </div>
     </div>
   );
