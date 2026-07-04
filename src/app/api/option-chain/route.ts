@@ -7,6 +7,8 @@ import { initSession } from '@/lib/icici-breeze/auth';
 import { generateOptionChain } from '@/lib/option-chain-data';
 import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
+import { generateDayCandles } from '@/lib/historical-data';
+import { calculateGreeks } from '@/lib/greeks';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -166,7 +168,38 @@ export async function GET(request: NextRequest) {
     } else if (validation.warnings.length > 0) {
       console.warn('[API] Data warnings:', validation.warnings);
     }
+
+    // Calculate Greeks if missing (Breeze doesn't return them)
     const selectedExpiry = expiry || chainData.selectedExpiry || chainData.expiries?.[0]?.date || chainData.expiries?.[0] || '';
+    const now = new Date();
+    const expiryDate = new Date(selectedExpiry);
+    const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    const tte = daysToExpiry / 365; // time to expiry in years
+
+    for (const strike of optionChainStrikes) {
+      // Estimate IV from moneyness if not provided
+      const moneyness = Math.abs(strike.strike - spotPrice) / spotPrice;
+      const baseIV = 0.15 + moneyness * 2 + (daysToExpiry < 7 ? 0.05 : 0); // ATM ~15%, increases with distance
+
+      if (strike.ce) {
+        const iv = strike.ce.iv > 0 ? strike.ce.iv / 100 : baseIV;
+        const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, true);
+        strike.ce.delta = greeks.delta;
+        strike.ce.gamma = greeks.gamma;
+        strike.ce.theta = greeks.theta;
+        strike.ce.vega = greeks.vega;
+        if (strike.ce.iv === 0) strike.ce.iv = Math.round(iv * 10000) / 100; // store as percentage
+      }
+      if (strike.pe) {
+        const iv = strike.pe.iv > 0 ? strike.pe.iv / 100 : baseIV;
+        const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, false);
+        strike.pe.delta = greeks.delta;
+        strike.pe.gamma = greeks.gamma;
+        strike.pe.theta = greeks.theta;
+        strike.pe.vega = greeks.vega;
+        if (strike.pe.iv === 0) strike.pe.iv = Math.round(iv * 10000) / 100;
+      }
+    }
 
     // Build summary for frontend compatibility
     if (!chainData.summary) {
@@ -209,12 +242,16 @@ export async function GET(request: NextRequest) {
       const daysToExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
       return { date: dateStr, label: dateStr, daysToExpiry };
     });
+
+    // Generate intraday candles for chart
+    const today = new Date().toISOString().split('T')[0];
+    const candles5m = generateDayCandles(symbol, today);
     
     return NextResponse.json({
       success: true,
       source,
       lastUpdate: new Date().toISOString(),
-      data: { ...chainData, data: optionChainStrikes, expiries, dataSource: source },
+      data: { ...chainData, data: optionChainStrikes, expiries, dataSource: source, candles: candles5m },
       analysis,
     });
     

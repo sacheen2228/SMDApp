@@ -25,7 +25,7 @@ const CLEANUP_INTERVAL = 5 * 60 * 1000;
 let lastCleanup = Date.now();
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.url.replace(request.nextUrl.origin, "");
+  const pathname = request.nextUrl.pathname;
 
   // Only apply to API routes
   if (!pathname.startsWith("/api/")) {
