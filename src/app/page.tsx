@@ -644,18 +644,26 @@ export default function TradingDashboard() {
         /* ═══════ TRADINGVIEW CHART VIEW ═══════ */
         <div className="flex-1 overflow-hidden p-4">
           <TVChart
-            data={(data?.candles || []).map((c: any) => ({
-              time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000) as any,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-            }))}
-            volume={(data?.candles || []).map((c: any) => ({
-              time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000) as any,
-              value: c.volume || 0,
-              color: c.close >= c.open ? "hsl(142 76% 36% / 0.3)" : "hsl(0 84% 60% / 0.3)",
-            }))}
+            data={(data?.candles || []).map((c: any) => {
+              const ts = c.timestamp || c.time;
+              const date = new Date(ts.includes(':') && !ts.includes('T') ? `2026-07-04T${ts}:00` : ts);
+              return {
+                time: Math.floor(date.getTime() / 1000) as any,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+              };
+            }).filter((c: any) => c.time > 0)}
+            volume={(data?.candles || []).map((c: any) => {
+              const ts = c.timestamp || c.time;
+              const date = new Date(ts.includes(':') && !ts.includes('T') ? `2026-07-04T${ts}:00` : ts);
+              return {
+                time: Math.floor(date.getTime() / 1000) as any,
+                value: c.volume || 0,
+                color: c.close >= c.open ? "#22c55e40" : "#ef444440",
+              };
+            }).filter((c: any) => c.time > 0)}
             height={400}
           />
         </div>
