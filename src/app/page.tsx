@@ -645,14 +645,14 @@ export default function TradingDashboard() {
         <div className="flex-1 overflow-hidden p-4">
           <TVChart
             data={(data?.candles || []).map((c: any) => ({
-              time: Math.floor(new Date(c.time || c.timestamp).getTime() / 1000) as any,
+              time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000) as any,
               open: c.open,
               high: c.high,
               low: c.low,
               close: c.close,
             }))}
             volume={(data?.candles || []).map((c: any) => ({
-              time: Math.floor(new Date(c.time || c.timestamp).getTime() / 1000) as any,
+              time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000) as any,
               value: c.volume || 0,
               color: c.close >= c.open ? "hsl(142 76% 36% / 0.3)" : "hsl(0 84% 60% / 0.3)",
             }))}

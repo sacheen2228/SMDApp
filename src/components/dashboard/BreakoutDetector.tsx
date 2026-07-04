@@ -112,7 +112,7 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
             Candlestick Breakout + Fakeout Detection
           </h1>
           <p className="text-[10px] text-muted-foreground">
-            {SYMBOL_CONFIGS[symbol]?.name || symbol} • Live Strategy Engine
+            {SYMBOL_CONFIGS[symbol]?.label || symbol} • Live Strategy Engine
           </p>
         </div>
         <div className="flex items-center gap-2">

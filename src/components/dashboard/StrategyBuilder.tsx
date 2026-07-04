@@ -45,57 +45,87 @@ function PayoffChart({ curve, spotPrice }: { curve: { price: number; pnl: number
 
   const maxPnL = Math.max(...curve.map((c) => c.pnl));
   const minPnL = Math.min(...curve.map((c) => c.pnl));
-  const range = maxPnL - minPnL || 1;
+  const absMax = Math.max(Math.abs(maxPnL), Math.abs(minPnL), 1);
   const width = 400;
-  const height = 120;
-  const padding = 10;
+  const height = 160;
+  const pad = { top: 20, bottom: 25, left: 50, right: 10 };
+  const chartW = width - pad.left - pad.right;
+  const chartH = height - pad.top - pad.bottom;
 
   const xScale = (price: number) => {
     const minP = curve[0].price;
     const maxP = curve[curve.length - 1].price;
-    return padding + ((price - minP) / (maxP - minP)) * (width - 2 * padding);
+    return pad.left + ((price - minP) / (maxP - minP)) * chartW;
   };
 
   const yScale = (pnl: number) => {
-    return padding + ((maxPnL - pnl) / range) * (height - 2 * padding);
+    return pad.top + chartH / 2 - (pnl / absMax) * (chartH / 2);
   };
 
-  // Build SVG path
+  const zeroY = yScale(0);
+
+  // Build filled areas
+  const profitPoints = curve.filter((c) => c.pnl >= 0);
+  const lossPoints = curve.filter((c) => c.pnl <= 0);
+
+  const profitAreaPath = profitPoints.length > 1
+    ? `M ${xScale(profitPoints[0].price)} ${zeroY} ` +
+      profitPoints.map((c) => `L ${xScale(c.price)} ${yScale(c.pnl)}`).join(" ") +
+      ` L ${xScale(profitPoints[profitPoints.length - 1].price)} ${zeroY} Z`
+    : "";
+
+  const lossAreaPath = lossPoints.length > 1
+    ? `M ${xScale(lossPoints[0].price)} ${zeroY} ` +
+      lossPoints.map((c) => `L ${xScale(c.price)} ${yScale(c.pnl)}`).join(" ") +
+      ` L ${xScale(lossPoints[lossPoints.length - 1].price)} ${zeroY} Z`
+    : "";
+
   const linePath = curve
     .map((c, i) => `${i === 0 ? "M" : "L"} ${xScale(c.price)} ${yScale(c.pnl)}`)
     .join(" ");
 
-  // Zero line Y
-  const zeroY = yScale(0);
-
-  // Profit area (above zero)
-  const profitArea = curve
-    .filter((c) => c.pnl >= 0)
-    .map((c, i, arr) => `${i === 0 ? "M" : "L"} ${xScale(c.price)} ${yScale(Math.max(0, c.pnl))}`)
-    .join(" ");
-
-  // Loss area (below zero)
-  const lossArea = curve
-    .filter((c) => c.pnl <= 0)
-    .map((c, i, arr) => `${i === 0 ? "M" : "L"} ${xScale(c.price)} ${yScale(Math.min(0, c.pnl))}`)
-    .join(" ");
+  // Y-axis labels
+  const yTicks = [-absMax, -absMax / 2, 0, absMax / 2, absMax];
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto">
-      {/* Zero line */}
-      <line x1={padding} y1={zeroY} x2={width - padding} y2={zeroY} stroke="hsl(240 3.7% 44.9% / 0.3)" strokeWidth="0.5" strokeDasharray="2,2" />
+      {/* Y-axis grid + labels */}
+      {yTicks.map((tick) => (
+        <g key={tick}>
+          <line
+            x1={pad.left} y1={yScale(tick)} x2={width - pad.right} y2={yScale(tick)}
+            stroke="hsl(240 3.7% 44.9% / 0.15)" strokeWidth="0.5"
+          />
+          <text x={pad.left - 4} y={yScale(tick) + 3} textAnchor="end" fontSize="7" fill="hsl(240 3.7% 44.9% / 0.5)">
+            {tick >= 0 ? "+" : ""}{Math.round(tick).toLocaleString("en-IN")}
+          </text>
+        </g>
+      ))}
 
-      {/* Spot price line */}
-      <line x1={xScale(spotPrice)} y1={padding} x2={xScale(spotPrice)} y2={height - padding} stroke="hsl(240 3.7% 44.9% / 0.5)" strokeWidth="0.5" strokeDasharray="4,2" />
-      <text x={xScale(spotPrice)} y={padding - 2} textAnchor="middle" fontSize="7" fill="hsl(240 3.7% 44.9% / 0.7)">
-        Spot
-      </text>
+      {/* Zero line (thicker) */}
+      <line x1={pad.left} y1={zeroY} x2={width - pad.right} y2={zeroY} stroke="hsl(240 3.7% 44.9% / 0.4)" strokeWidth="1" />
+
+      {/* Profit area fill */}
+      {profitAreaPath && <path d={profitAreaPath} fill="hsl(142 76% 36% / 0.15)" />}
+      {/* Loss area fill */}
+      {lossAreaPath && <path d={lossAreaPath} fill="hsl(0 84% 60% / 0.15)" />}
 
       {/* P&L line */}
-      <path d={linePath} fill="none" stroke="hsl(220 9% 46%)" strokeWidth="1.5" />
+      <path d={linePath} fill="none" stroke="hsl(220 9% 46%)" strokeWidth="2" />
 
-      {/* Current price dot */}
-      <circle cx={xScale(spotPrice)} cy={yScale(0)} r="3" fill="hsl(220 9% 46%)" />
+      {/* Spot price marker */}
+      <line x1={xScale(spotPrice)} y1={pad.top} x2={xScale(spotPrice)} y2={height - pad.bottom} stroke="hsl(262 83% 58% / 0.6)" strokeWidth="1" strokeDasharray="4,2" />
+      <circle cx={xScale(spotPrice)} cy={yScale(0)} r="4" fill="hsl(262 83% 58%)" />
+      <text x={xScale(spotPrice)} y={pad.top - 4} textAnchor="middle" fontSize="8" fontWeight="bold" fill="hsl(262 83% 58%)">
+        Spot ₹{spotPrice.toLocaleString("en-IN")}
+      </text>
+
+      {/* X-axis labels */}
+      {[curve[0], curve[Math.floor(curve.length / 4)], curve[Math.floor(curve.length / 2)], curve[Math.floor(3 * curve.length / 4)], curve[curve.length - 1]].map((c, i) => (
+        <text key={i} x={xScale(c.price)} y={height - 5} textAnchor="middle" fontSize="7" fill="hsl(240 3.7% 44.9% / 0.5)">
+          {(c.price / 1000).toFixed(1)}k
+        </text>
+      ))}
     </svg>
   );
 }
@@ -261,28 +291,45 @@ export function StrategyBuilder({ spotPrice, chainData, symbol }: StrategyBuilde
           {/* Legs */}
           <Card className="border-border bg-card">
             <CardContent className="p-2">
-              <div className="flex items-center gap-2 mb-2">
-                <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-[9px] text-muted-foreground font-bold uppercase">Strategy Legs</span>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-[9px] text-muted-foreground font-bold uppercase">Strategy Legs</span>
+                </div>
+                <span className="text-[8px] text-muted-foreground">Lot: {lotSize} qty</span>
               </div>
               <div className="space-y-1">
-                {analysis.strategy.legs.map((leg, i) => (
-                  <div
-                    key={i}
-                    className={`flex items-center justify-between p-1.5 rounded text-[10px] ${
-                      leg.action === "BUY" ? "bg-green-500/10" : "bg-red-500/10"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Badge className={`text-[8px] ${leg.action === "BUY" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                        {leg.action}
-                      </Badge>
-                      <span className="text-foreground font-bold">{leg.strike.toLocaleString("en-IN")}</span>
-                      <span className="text-muted-foreground">{leg.type}</span>
+                {analysis.strategy.legs.map((leg, i) => {
+                  const legCost = leg.premium * leg.lotSize * leg.lots;
+                  return (
+                    <div
+                      key={i}
+                      className={`flex items-center justify-between p-1.5 rounded text-[10px] ${
+                        leg.action === "BUY" ? "bg-green-500/10" : "bg-red-500/10"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Badge className={`text-[8px] ${leg.action === "BUY" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                          {leg.action}
+                        </Badge>
+                        <span className="text-foreground font-bold">{leg.strike.toLocaleString("en-IN")}</span>
+                        <span className="text-muted-foreground">{leg.type}</span>
+                        <span className="text-muted-foreground/60 text-[8px]">×{leg.lots} lot</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-foreground">₹{leg.premium}</span>
+                        <span className="text-muted-foreground/60 text-[8px] ml-1">₹{legCost.toLocaleString("en-IN")}</span>
+                      </div>
                     </div>
-                    <span className="text-foreground">₹{leg.premium}</span>
-                  </div>
-                ))}
+                  );
+                })}
+              </div>
+              {/* Total cost */}
+              <div className="flex justify-between mt-2 pt-1 border-t border-border/30 text-[10px]">
+                <span className="text-muted-foreground">Total Premium</span>
+                <span className="font-bold text-foreground">
+                  ₹{analysis.strategy.legs.reduce((sum, leg) => sum + leg.premium * leg.lotSize * leg.lots, 0).toLocaleString("en-IN")}
+                </span>
               </div>
             </CardContent>
           </Card>

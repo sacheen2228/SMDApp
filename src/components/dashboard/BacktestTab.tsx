@@ -860,7 +860,7 @@ export function BacktestTab({ trades, symbol }: BacktestTabProps) {
                 <div className="flex items-center gap-2">
                   <BarChart3 className="w-3.5 h-3.5 text-muted-foreground" />
                   <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                    {SYMBOL_CONFIGS[symbol]?.name || symbol} — {bt.totalCandles} candles
+                    {SYMBOL_CONFIGS[symbol]?.label || symbol} — {bt.totalCandles} candles
                   </span>
                 </div>
                 <div className="flex gap-2 text-[8px]">
