@@ -1,54 +1,53 @@
-// TradingView Lightweight Chart — candlestick + volume + indicators
+// TradingView Lightweight Chart — candlestick + volume
 
 "use client";
 
 import { useEffect, useRef, memo } from "react";
-import { createChart, ColorType, CandlestickData, HistogramData, LineData } from "lightweight-charts";
+import { createChart, ColorType } from "lightweight-charts";
+import type { IChartApi, ISeriesApi, CandlestickData, HistogramData } from "lightweight-charts";
 
 interface TVChartProps {
   data: CandlestickData[];
   volume?: HistogramData[];
-  ema20?: LineData[];
-  ema50?: LineData[];
   height?: number;
-  autoScroll?: boolean;
 }
 
 export const TVChart = memo(function TVChart({
   data,
   volume,
-  ema20,
-  ema50,
-  height = 300,
-  autoScroll = true,
+  height = 400,
 }: TVChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
-    if (!containerRef.current || !data.length) return;
+    if (!containerRef.current || !data || data.length === 0) return;
+
+    // Clean up previous chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+    }
 
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "hsl(240 3.7% 44.9%)",
-        fontSize: 10,
+        textColor: "#9e9e9e",
+        fontSize: 11,
       },
       grid: {
-        vertLines: { color: "hsl(240 3.7% 15% / 0.3)" },
-        horzLines: { color: "hsl(240 3.7% 15% / 0.3)" },
+        vertLines: { color: "#1e1e2e" },
+        horzLines: { color: "#1e1e2e" },
       },
       crosshair: {
         mode: 0,
-        vertLine: { color: "hsl(240 3.7% 44.9% / 0.4)", width: 1, style: 2 },
-        horzLine: { color: "hsl(240 3.7% 44.9% / 0.4)", width: 1, style: 2 },
       },
       rightPriceScale: {
-        borderColor: "hsl(240 3.7% 15% / 0.5)",
-        scaleMargins: { top: 0.1, bottom: volume && volume.length ? 0.25 : 0.1 },
+        borderColor: "#2d2d3d",
+        scaleMargins: { top: 0.05, bottom: volume && volume.length ? 0.25 : 0.05 },
       },
       timeScale: {
-        borderColor: "hsl(240 3.7% 15% / 0.5)",
+        borderColor: "#2d2d3d",
         timeVisible: true,
         secondsVisible: false,
       },
@@ -58,12 +57,12 @@ export const TVChart = memo(function TVChart({
 
     // Candlestick series
     const candleSeries = chart.addCandlestickSeries({
-      upColor: "hsl(142 76% 36%)",
-      downColor: "hsl(0 84% 60%)",
-      borderDownColor: "hsl(0 84% 60%)",
-      borderUpColor: "hsl(142 76% 36%)",
-      wickDownColor: "hsl(0 84% 60% / 0.6)",
-      wickUpColor: "hsl(142 76% 36% / 0.6)",
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderDownColor: "#ef4444",
+      borderUpColor: "#22c55e",
+      wickDownColor: "#ef444480",
+      wickUpColor: "#22c55e80",
     });
     candleSeries.setData(data);
 
@@ -79,57 +78,41 @@ export const TVChart = memo(function TVChart({
       volumeSeries.setData(volume);
     }
 
-    // EMA 20
-    if (ema20 && ema20.length) {
-      const ema20Series = chart.addLineSeries({
-        color: "hsl(262 83% 58% / 0.7)",
-        lineWidth: 1,
-        crosshairMarkerVisible: false,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      ema20Series.setData(ema20);
-    }
-
-    // EMA 50
-    if (ema50 && ema50.length) {
-      const ema50Series = chart.addLineSeries({
-        color: "hsl(38 92% 50% / 0.7)",
-        lineWidth: 1,
-        crosshairMarkerVisible: false,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      ema50Series.setData(ema50);
-    }
-
-    // Auto-scroll to last candle
-    if (autoScroll) {
-      chart.timeScale().scrollToRealTime();
-    }
-
+    // Fit content
+    chart.timeScale().fitContent();
     chartRef.current = chart;
 
     // Resize observer
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        chart.applyOptions({ width: entry.contentRect.width });
+        if (chartRef.current && entry.contentRect.width > 0) {
+          chartRef.current.applyOptions({ width: entry.contentRect.width });
+        }
       }
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
-      chart.remove();
-      chartRef.current = null;
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
     };
-  }, [data, volume, ema20, ema50, height, autoScroll]);
+  }, [data, volume, height]);
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center text-muted-foreground text-xs" style={{ height }}>
+        No candle data available
+      </div>
+    );
+  }
 
   return (
     <div
       ref={containerRef}
       className="w-full rounded overflow-hidden"
-      style={{ height: `${height}px` }}
     />
   );
 });
