@@ -55,6 +55,8 @@ import { BreakoutDetector } from '@/components/dashboard/BreakoutDetector';
 import { StrategyBuilder } from '@/components/dashboard/StrategyBuilder';
 import { GreeksHeatmap } from '@/components/dashboard/GreeksHeatmap';
 import { TVChart } from '@/components/dashboard/TVChart';
+import { ResizablePanel } from '@/components/ui/resizable-panel';
+import { MobileNav } from '@/components/dashboard/MobileNav';
 import { VirtualOptionChain } from '@/components/option-chain/VirtualOptionChain';
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -322,7 +324,7 @@ export default function TradingDashboard() {
   }
   
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
+    <div className="min-h-screen flex flex-col bg-background text-foreground pb-14 lg:pb-0">
       {/* ─── Header ─── */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur-md">
         {/* Row 1: Logo + Symbol + Controls */}
@@ -561,9 +563,9 @@ export default function TradingDashboard() {
 
         {/* Right Sidebar: SDM AI + Orders + Positions */}
         {showSidebar ? (
-        <div className="w-[320px] border-l overflow-auto hidden lg:block shrink-0 relative">
-          <Button variant="ghost" size="sm" className="absolute top-1 right-1 z-10 h-6 w-6 p-0 text-muted-foreground"
-            onClick={() => setShowSidebar(false)}>
+        <ResizablePanel defaultSize={28} minSize={18} maxSize={45} className="border-l overflow-auto hidden lg:block">
+          <Button variant="ghost" size="sm" className="absolute top-1 right-3 z-10 h-6 w-6 p-0 text-muted-foreground"
+            onClick={() => setShowSidebar(false)} aria-label="Close sidebar">
             ✕
           </Button>
           <div className="space-y-0">
@@ -571,7 +573,7 @@ export default function TradingDashboard() {
             <OrderBook />
             <PositionTracker />
           </div>
-        </div>
+        </ResizablePanel>
         ) : (
         <div className="hidden lg:flex flex-col items-center border-l py-2 gap-2 shrink-0">
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
@@ -703,7 +705,7 @@ export default function TradingDashboard() {
       <OrderPanel />
       
       {/* ─── SDM Bot (Fixed Overlay) ─── */}
-      <div className="fixed top-4 right-4 z-50 w-80">
+      <div className="fixed top-4 right-4 z-50 w-80 hidden lg:block">
         <SDMBot
           optionChainData={data}
           spotPrice={data?.spotPrice || summary?.spotPrice || 0}
@@ -712,6 +714,9 @@ export default function TradingDashboard() {
           onRecommendation={setRecommendation}
         />
       </div>
+
+      {/* ─── Mobile Navigation ─── */}
+      <MobileNav viewMode={viewMode} onViewChange={setViewMode} />
     </div>
   );
 }
