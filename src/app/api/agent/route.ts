@@ -77,6 +77,16 @@ export async function POST(req: NextRequest) {
     let response: string;
     let toolCallsMade: string[] = [];
 
+    // Fetch ORCA signal for context
+    let orcaSignal: any = null;
+    try {
+      const orcaRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/orca?symbol=${sym}`, { signal: AbortSignal.timeout(15000) });
+      const orcaData = await orcaRes.json();
+      if (orcaData.success) orcaSignal = orcaData.signal;
+    } catch {
+      // ORCA fetch failed — continue without it
+    }
+
     try {
       const llmResult = await agentRespondLLM(message, {
         symbol: sym,
@@ -87,6 +97,7 @@ export async function POST(req: NextRequest) {
         session,
         trades,
         conversationHistory,
+        orcaSignal,
       });
       response = llmResult.response;
       toolCallsMade = llmResult.toolCallsMade;

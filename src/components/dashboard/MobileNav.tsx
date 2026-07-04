@@ -17,7 +17,7 @@ import {
   LineChart,
 } from "lucide-react";
 
-type ViewMode = 'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart';
+type ViewMode = 'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest';
 
 interface MobileNavProps {
   viewMode: ViewMode;
@@ -25,6 +25,8 @@ interface MobileNavProps {
 }
 
 const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
+  { mode: "orca", label: "ORCA", icon: Target, color: "text-emerald-500" },
+  { mode: "orcaBacktest", label: "ORCA Test", icon: CalendarClock, color: "text-cyan-500" },
   { mode: "chain", label: "Chain", icon: Activity, color: "text-cyan-500" },
   { mode: "sdm", label: "SDM", icon: Brain, color: "text-violet-500" },
   { mode: "strategy", label: "Strategy", icon: TrendingUp, color: "text-indigo-500" },

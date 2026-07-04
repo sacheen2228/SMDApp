@@ -53,122 +53,69 @@ export interface DayOHLC {
 }
 
 // ─── Generate Full Day Candles ──────────────────────────────────
-// 75 five-minute candles (9:15-15:25) with realistic volatility
-// Candles are designed to cross S/R levels to trigger breakout signals
+// 75 five-minute candles (9:15-15:25) with realistic market behavior
+// Natural reversals, pullbacks, both green/red candles, proper wicks
 export function generateDayCandles(symbol: string, dateStr: string): HistoricalCandle[] {
   const basePrice = SYMBOL_BASE[symbol] || 24800;
   const seed = hashString(`${symbol}-${dateStr}`);
   const rng = mulberry32(seed);
 
-  // Daily parameters
-  const dailyVol = 0.006 + rng() * 0.014; // 0.6-2% daily range
-  const dailyBias = (rng() - 0.45) * dailyVol * 2; // slight upward bias
-  const dayOpen = basePrice * (1 + (rng() - 0.5) * dailyVol * 0.5);
-
-  // Generate intraday S/R levels (these will be "broken" during the day)
-  const srOffset1 = dayOpen * dailyVol * (0.3 + rng() * 0.4); // 0.3-0.7% from open
-  const srOffset2 = dayOpen * dailyVol * (0.5 + rng() * 0.5); // 0.5-1% from open
-  const sr1 = dayOpen + srOffset1 * (rng() > 0.5 ? 1 : -1); // resistance or support
-  const sr2 = dayOpen - srOffset1 * (rng() > 0.5 ? 1 : -1); // opposite side
-  const sr3 = dayOpen + srOffset2 * (rng() > 0.5 ? 1 : -1); // farther level
-
-  // Create a path that WILL cross at least one S/R level
   const totalCandles = 75;
   const [year, month, day] = dateStr.split("-").map(Number);
 
-  // Phase 1: Opening range (9:15-9:45) - establishes initial direction
-  // Phase 2: Trend phase - moves toward first S/R
-  // Phase 3: Breakout phase - crosses S/R level
-  // Phase 4: Continuation or reversal
-  // Phase 5: Closing phase
+  // Daily volatility: 0.5-1.5%
+  const dailyVol = 0.005 + rng() * 0.01;
+  const dayOpen = basePrice * (1 + (rng() - 0.5) * dailyVol * 0.3);
 
-  const path: number[] = [];
-  let currentPrice = dayOpen;
-
-  // Determine which S/R to break first
-  const breakTarget = rng() > 0.5 ? sr1 : sr2;
-  const breakDirection = breakTarget > dayOpen ? 1 : -1;
+  // Generate a realistic random walk with mean reversion
+  const closes: number[] = [];
+  let price = dayOpen;
+  const dayHigh = dayOpen * (1 + dailyVol * (0.3 + rng() * 0.7));
+  const dayLow = dayOpen * (1 - dailyVol * (0.3 + rng() * 0.7));
+  const range = dayHigh - dayLow;
+  const targetClose = dayLow + range * rng(); // random ending price
 
   for (let i = 0; i < totalCandles; i++) {
-    const progress = i / totalCandles;
-    let move = 0;
-
-    if (progress < 0.15) {
-      // Phase 1: Opening range - small moves
-      move = (rng() - 0.5) * dailyVol * basePrice * 0.003;
-    } else if (progress < 0.35) {
-      // Phase 2: Trend toward S/R - directional move
-      const distToTarget = (breakTarget - currentPrice) / currentPrice;
-      move = distToTarget * basePrice * 0.08 + (rng() - 0.5) * dailyVol * basePrice * 0.002;
-    } else if (progress < 0.50) {
-      // Phase 3: Breakout - strong move through S/R
-      const distToTarget = (breakTarget - currentPrice) / currentPrice;
-      move = distToTarget * basePrice * 0.15 + (rng() - 0.5) * dailyVol * basePrice * 0.003;
-    } else if (progress < 0.70) {
-      // Phase 4: Continuation or pullback
-      const momentum = breakDirection * dailyVol * basePrice * 0.001;
-      move = momentum + (rng() - 0.5) * dailyVol * basePrice * 0.004;
-    } else {
-      // Phase 5: Closing - can reverse or continue
-      const closeBias = dailyBias * basePrice * 0.0005;
-      move = closeBias + (rng() - 0.5) * dailyVol * basePrice * 0.003;
-    }
-
-    currentPrice += move;
-
-    // Add realistic noise (candle-to-candle volatility)
-    const noise = (rng() - 0.5) * dailyVol * basePrice * 0.002;
-    currentPrice += noise;
-
-    // Clamp to reasonable range (within 2% of open)
-    const maxMove = dayOpen * 0.02;
-    currentPrice = Math.max(dayOpen - maxMove, Math.min(dayOpen + maxMove, currentPrice));
-
-    path.push(currentPrice);
+    const progress = i / (totalCandles - 1);
+    // Mean reversion toward target with noise
+    const reversion = (targetClose - price) * 0.03;
+    // Random walk component
+    const walk = (rng() - 0.5) * dailyVol * basePrice * 0.004;
+    // Intraday volatility pattern: high at open/close, low at lunch
+    const timeMult = progress < 0.15 ? 1.5 : progress < 0.45 ? 0.6 : progress < 0.75 ? 0.5 : 1.2;
+    // Occasional larger moves (every ~15 candles)
+    const shock = rng() < 0.07 ? (rng() - 0.5) * dailyVol * basePrice * 0.008 : 0;
+    price += reversion + (walk + shock) * timeMult;
+    // Respect range boundaries
+    price = Math.max(dayLow, Math.min(dayHigh, price));
+    closes.push(price);
   }
 
-  // Ensure path crosses at least one S/R level
-  const crossesSR = path.some((p) => Math.abs(p - sr1) / sr1 < 0.002 || Math.abs(p - sr2) / sr2 < 0.002);
-  if (!crossesSR) {
-    // Force a crossing at candle 35-45
-    const crossIdx = 35 + Math.floor(rng() * 10);
-    path[crossIdx] = breakTarget;
-    path[crossIdx + 1] = breakTarget + breakDirection * dayOpen * 0.001;
-  }
-
-  // Convert path to OHLCV candles
+  // Build OHLCV candles with realistic wicks
   const candles: HistoricalCandle[] = [];
   for (let i = 0; i < totalCandles; i++) {
     const minutesFromOpen = i * 5;
     const totalMinutes = 9 * 60 + 15 + minutesFromOpen;
     const hour = Math.floor(totalMinutes / 60);
     const minute = totalMinutes % 60;
-
-    const open = i === 0 ? dayOpen : path[i - 1];
-    const close = path[i];
-
-    // Realistic wicks (10-40% of body in each direction)
+    const open = i === 0 ? dayOpen : closes[i - 1];
+    const close = closes[i];
+    // Wick size: 20-80% of body in each direction (larger for visual clarity)
     const bodySize = Math.abs(close - open);
-    const wickUp = bodySize * (0.1 + rng() * 0.4);
-    const wickDown = bodySize * (0.1 + rng() * 0.4);
+    const minWick = bodySize * 0.2;
+    const maxWick = bodySize * 0.8 + range * 0.001; // minimum wick even for doji
+    const wickUp = minWick + rng() * (maxWick - minWick);
+    const wickDown = minWick + rng() * (maxWick - minWick);
     const high = Math.max(open, close) + wickUp;
     const low = Math.min(open, close) - wickDown;
-
-    // Volume pattern: higher at open/close, lower midday
+    // Volume: U-shaped pattern (high at open/close, low midday)
     const timeOfDay = minutesFromOpen / (totalCandles * 5);
-    let volMultiplier = 1;
-    if (timeOfDay < 0.1) volMultiplier = 2.5;
-    else if (timeOfDay > 0.9) volMultiplier = 2.0;
-    else if (timeOfDay > 0.3 && timeOfDay < 0.5) volMultiplier = 0.6;
-
-    // Breakout candles get extra volume
-    const isNearSR = Math.abs(close - sr1) / sr1 < 0.003 || Math.abs(close - sr2) / sr2 < 0.003;
-    if (isNearSR) volMultiplier *= 1.8;
-
-    const volume = Math.round((800000 + rng() * 1200000) * volMultiplier);
-
+    const baseVol = 3000000 + rng() * 4000000;
+    const volMult = timeOfDay < 0.15 ? 1.8 : timeOfDay < 0.45 ? 0.6 : timeOfDay < 0.75 ? 0.5 : 1.5;
+    const volume = Math.round(baseVol * volMult * (0.7 + rng() * 0.6));
+    const pad = (n: number) => String(n).padStart(2, "0");
     candles.push({
-      time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+      time: `${pad(hour)}:${pad(minute)}`,
       open: Math.round(open * 100) / 100,
       high: Math.round(high * 100) / 100,
       low: Math.round(low * 100) / 100,
@@ -177,7 +124,6 @@ export function generateDayCandles(symbol: string, dateStr: string): HistoricalC
       timestamp: new Date(year, month - 1, day, hour, minute),
     });
   }
-
   return candles;
 }
 
