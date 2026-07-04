@@ -14,6 +14,7 @@ import {
   type DataHealthReport,
 } from "@/lib/data-health";
 import * as tracker from "@/lib/sdm-trade-tracker";
+import { getLotSize } from "@/lib/symbol-config";
 import { SDMExpiryMode } from "./SDMExpiryMode";
 import { SDMNormalMode } from "./SDMNormalMode";
 import { SDMScoresPanel } from "./SDMScoresPanel";
@@ -21,6 +22,7 @@ import { SDMTradeHistory } from "./SDMTradeHistory";
 import { DataHealthStrip } from "./DataHealthStrip";
 import { TimeframePanel } from "./TimeframePanel";
 import { TradeJournal } from "./TradeJournal";
+import { BacktestReport } from "@/components/dashboard/BacktestReport";
 import { Badge } from "@/components/ui/badge";
 import {
   ChevronDown,
@@ -62,13 +64,52 @@ export function SDMBot({
   // Anti-repaint state (5-min candle lock)
   const candleTimeRef = useRef(0);
   const lastRecRef = useRef<SDMRecommendation | null>(null);
+  const validationIssuesRef = useRef<string[]>([]);
+  const healthReportRef = useRef<DataHealthReport | null>(null);
+  const recommendationRef = useRef<SDMRecommendation | null>(null);
 
   // Process option chain data into SDM format (handles both simulation + Breeze)
   const processOptionChain = useCallback(
     (data: any): SDMOptionStrike[] => {
-      if (!data?.data) return [];
+      if (!data) return [];
 
-      const chainData = data.data;
+      // data.data is the combined strikes array [{strike, ce, pe}] (API response format)
+      if (Array.isArray(data.data)) {
+        return data.data.map((row: any) => ({
+          strike: row.strike,
+          ce: row.ce ? {
+            ltp: row.ce.ltp || 0,
+            oi: row.ce.oi || 0,
+            oiChg: row.ce.oiChg || 0,
+            volume: row.ce.volume || 0,
+            iv: row.ce.iv || 0,
+            delta: row.ce.delta || 0,
+            theta: row.ce.theta || 0,
+            gamma: row.ce.gamma || 0,
+            vega: row.ce.vega || 0,
+            bid: row.ce.bid || 0,
+            ask: row.ce.ask || 0,
+          } : null,
+          pe: row.pe ? {
+            ltp: row.pe.ltp || 0,
+            oi: row.pe.oi || 0,
+            oiChg: row.pe.oiChg || 0,
+            volume: row.pe.volume || 0,
+            iv: row.pe.iv || 0,
+            delta: row.pe.delta || 0,
+            theta: row.pe.theta || 0,
+            gamma: row.pe.gamma || 0,
+            vega: row.pe.vega || 0,
+            bid: row.pe.bid || 0,
+            ask: row.pe.ask || 0,
+          } : null,
+        }));
+      }
+
+      // Fallback: data.data might be a nested object with calls/puts
+      const chainData = data.data || data;
+      if (!chainData) return [];
+
       const rows = chainData.data || chainData.calls || null;
 
       // Breeze format: calls/puts arrays -> group by strike
@@ -151,12 +192,16 @@ export function SDMBot({
   useEffect(() => {
     if (!optionChainData || spotPrice <= 0) return;
 
+    tracker.setLotSize(getLotSize(symbol));
+
     const chain = processOptionChain(optionChainData);
     if (chain.length === 0) return;
 
     // Self-validation
     const validation = validateOptionChain(chain, spotPrice, symbol);
-    setValidationIssues([...validation.issues, ...validation.warnings]);
+    const issues = [...validation.issues, ...validation.warnings];
+    // Use ref to avoid cascading renders from synchronous setState in effect
+    validationIssuesRef.current = issues;
 
     // Extract V2 inputs from optionChainData
     const source = optionChainData?.source || "simulation";
@@ -186,7 +231,7 @@ export function SDMBot({
         : false,
       source,
     });
-    setHealthReport(hr);
+    healthReportRef.current = hr;
 
     // Anti-repaint: same 5-min candle → use cached recommendation
     const nowMs = Date.now();
@@ -198,7 +243,7 @@ export function SDMBot({
       nowMs < candleTimeRef.current + CANDLE_INTERVAL &&
       lastRecRef.current
     ) {
-      setRecommendation(lastRecRef.current);
+      recommendationRef.current = lastRecRef.current;
 
       // Still update active trades with current LTP
       const selectedData = chain.find(
@@ -251,7 +296,7 @@ export function SDMBot({
             !directionChanged &&
             currentCandleStart === candleTimeRef.current
           ) {
-      setRecommendation(lastRecRef.current);
+      recommendationRef.current = lastRecRef.current;
       onRecommendation?.(lastRecRef.current);
             return;
           }
@@ -259,7 +304,7 @@ export function SDMBot({
 
         candleTimeRef.current = currentCandleStart;
         lastRecRef.current = rec;
-        setRecommendation(rec);
+        recommendationRef.current = rec;
         onRecommendation?.(rec);
 
         // Auto-add trade only if it's a new signal (not duplicate of last trade)
@@ -320,11 +365,30 @@ export function SDMBot({
     };
   }, [optionChainData, spotPrice, symbol, expiryDate, processOptionChain]);
 
+  // Sync refs to state (avoids cascading renders in effect)
+  useEffect(() => {
+    if (validationIssuesRef.current.length > 0) {
+      setValidationIssues(validationIssuesRef.current);
+    }
+  });
+
+  useEffect(() => {
+    if (healthReportRef.current) {
+      setHealthReport(healthReportRef.current);
+    }
+  });
+
+  useEffect(() => {
+    if (recommendationRef.current) {
+      setRecommendation(recommendationRef.current);
+    }
+  });
+
   // No data state
   if (!optionChainData || spotPrice <= 0) {
     return (
-      <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl p-4 shadow-2xl">
-        <div className="flex items-center gap-2 text-gray-400 text-sm">
+      <div className="bg-card/80 backdrop-blur-xl border border-border rounded-xl p-4 shadow-2xl">
+        <div className="flex items-center gap-2 text-muted-foreground text-sm">
           <Bot className="w-4 h-4 animate-pulse" />
           <span>Waiting for data...</span>
         </div>
@@ -334,8 +398,8 @@ export function SDMBot({
 
   if (!recommendation) {
     return (
-      <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl p-4 shadow-2xl">
-        <div className="flex items-center gap-2 text-gray-400 text-sm">
+      <div className="bg-card/80 backdrop-blur-xl border border-border rounded-xl p-4 shadow-2xl">
+        <div className="flex items-center gap-2 text-muted-foreground text-sm">
           <Bot className="w-4 h-4 animate-pulse" />
           <span>Analyzing...</span>
         </div>
@@ -373,7 +437,7 @@ export function SDMBot({
           );
         default:
           return (
-            <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30 text-[9px]">
+            <Badge className="bg-muted text-muted-foreground border-border text-[9px]">
               WAIT
             </Badge>
           );
@@ -383,12 +447,12 @@ export function SDMBot({
     return (
       <button
         onClick={() => setIsExpanded(true)}
-        className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl hover:bg-black/90 transition-all cursor-pointer w-full"
+        className="bg-card/80 backdrop-blur-xl border border-border rounded-xl px-3 py-2 shadow-2xl hover:bg-card/90 transition-all cursor-pointer w-full"
       >
         <div className="flex items-center gap-2">
           <Bot className="w-4 h-4 text-amber-400" />
           {getDirBadge()}
-          <span className="text-[10px] text-gray-300 flex-1 text-left">
+          <span className="text-[10px] text-foreground flex-1 text-left">
             {recommendation.strike}{" "}
             {recommendation.isExpiryDay ? "⚡" : "📅"}
           </span>
@@ -398,12 +462,12 @@ export function SDMBot({
                 ? "bg-emerald-500/20 text-emerald-400"
                 : recommendation.tradeGrade === "B"
                   ? "bg-yellow-500/20 text-yellow-400"
-                  : "bg-gray-500/20 text-gray-400"
+                  : "bg-muted text-muted-foreground"
             }`}
           >
             {recommendation.tradeGrade}
           </Badge>
-          <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
             <div
               className="h-full rounded-full"
               style={{
@@ -413,7 +477,7 @@ export function SDMBot({
               }}
             />
           </div>
-          <ChevronDown className="w-3 h-3 text-gray-400" />
+          <ChevronDown className="w-3 h-3 text-muted-foreground" />
         </div>
       </button>
     );
@@ -421,9 +485,9 @@ export function SDMBot({
 
   // ── Expanded view ──
   return (
-    <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
+    <div className="bg-card/80 backdrop-blur-xl border border-border rounded-xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-white/5">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-accent/50">
         <div className="flex items-center gap-2">
           <Bot className="w-4 h-4 text-amber-400" />
           <span className="text-xs font-medium text-white">SDM Bot</span>
@@ -438,13 +502,13 @@ export function SDMBot({
           >
             {recommendation.dataHealth.status}
           </Badge>
-          <span className="text-[9px] text-gray-400">
+          <span className="text-[9px] text-muted-foreground">
             Latency: {recommendation.dataHealth.latency}ms
           </span>
         </div>
         <button
           onClick={() => setIsExpanded(false)}
-          className="text-gray-400 hover:text-white transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
         >
           <ChevronUp className="w-4 h-4" />
         </button>
@@ -460,14 +524,14 @@ export function SDMBot({
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex border-b border-white/10 px-3 mt-2">
+      <div className="flex border-b border-border px-3 mt-2">
         <button
           onClick={() => setActiveTab("overview")}
           className={cn(
             "px-3 py-1.5 text-[10px] font-medium transition-colors border-b-2",
             activeTab === "overview"
               ? "text-amber-400 border-amber-400"
-              : "text-gray-400 border-transparent hover:text-gray-300"
+              : "text-muted-foreground border-transparent hover:text-foreground"
           )}
         >
           Overview
@@ -478,7 +542,7 @@ export function SDMBot({
             "px-3 py-1.5 text-[10px] font-medium transition-colors border-b-2 flex items-center gap-1",
             activeTab === "journal"
               ? "text-amber-400 border-amber-400"
-              : "text-gray-400 border-transparent hover:text-gray-300"
+              : "text-muted-foreground border-transparent hover:text-foreground"
           )}
         >
           <BookOpen className="w-3 h-3" />
@@ -499,12 +563,12 @@ export function SDMBot({
             {/* Smart Entry / Exit Actions */}
             {recommendation.direction !== "WAIT" && (
               <div className="space-y-1.5">
-                <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+                <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
                   Smart Actions
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-white/5 rounded p-2">
-                    <div className="text-[8px] text-gray-500">
+                  <div className="bg-accent/50 rounded p-2">
+                    <div className="text-[8px] text-muted-foreground">
                       Entry Action
                     </div>
                     <div
@@ -518,8 +582,8 @@ export function SDMBot({
                       {recommendation.smartEntry.replace(/_/g, " ")}
                     </div>
                   </div>
-                  <div className="bg-white/5 rounded p-2">
-                    <div className="text-[8px] text-gray-500">
+                  <div className="bg-accent/50 rounded p-2">
+                    <div className="text-[8px] text-muted-foreground">
                       Exit Action
                     </div>
                     <div
@@ -546,7 +610,7 @@ export function SDMBot({
             {recommendation.qualityScore &&
               recommendation.qualityScore.factors.length > 0 && (
                 <div className="space-y-1.5">
-                  <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+                  <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
                     14-Factor Quality Score ({recommendation.qualityScore.overall} — Grade{" "}
                     {recommendation.qualityScore.grade})
                   </div>
@@ -556,7 +620,7 @@ export function SDMBot({
                         key={factor.name}
                         className="flex items-center gap-2"
                       >
-                        <span className="text-[9px] text-gray-400 w-24 truncate">
+                        <span className="text-[9px] text-muted-foreground w-24 truncate">
                           {factor.name}
                         </span>
                         <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
@@ -604,18 +668,24 @@ export function SDMBot({
             />
           </>
         ) : (
-          <TradeJournal
-            trades={tracker.getTradesToday()}
-            winRate={tracker.getWinRate()}
-            avgGrade={tracker.getAverageGrade()}
-            dailyPnL={tracker.getDailyPnL()}
-          />
+          <div className="space-y-3">
+            <TradeJournal
+              trades={tracker.getTradesToday()}
+              winRate={tracker.getWinRate()}
+              avgGrade={tracker.getAverageGrade()}
+              dailyPnL={tracker.getDailyPnL()}
+            />
+            <BacktestReport
+              trades={tracker.getTradesToday()}
+              symbol={symbol}
+            />
+          </div>
         )}
       </div>
 
       {/* Footer */}
-      <div className="px-3 py-1.5 border-t border-white/10 bg-white/5">
-        <div className="text-[8px] text-gray-500 truncate">
+      <div className="px-3 py-1.5 border-t border-border bg-accent/50">
+        <div className="text-[8px] text-muted-foreground truncate">
           {recommendation.reason}
         </div>
         {validationIssues.length > 0 && (

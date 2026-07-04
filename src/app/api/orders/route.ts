@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       expiryDate: body.expiryDate,
       right: body.right,
       strikePrice: body.strikePrice,
-      userRemark: body.userRemark || 'SD PRO Order',
+      userRemark: body.userRemark || 'Angel Order',
     };
     
     const result = await placeOrder(orderRequest);

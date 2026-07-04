@@ -131,23 +131,35 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
 
     console.log('[Breeze SDK] Fetching expiries for:', stockCode);
 
-    // Use futures to get available expiry dates
-    const result = await breeze.getOptionChainQuotes({
+    // Fetch monthly expiries from futures
+    const futuresResult = await breeze.getOptionChainQuotes({
       stockCode,
       exchangeCode: 'NFO',
       productType: 'futures',
-    });
-
-    console.log('[Breeze SDK] Expiry result status:', result?.Status);
-
-    if (!result || !result.Success) return [];
+    }).catch(() => null);
 
     const expiries = new Set<string>();
-    for (const opt of result.Success) {
-      if (opt.expiry_date) {
-        expiries.add(opt.expiry_date);
+
+    if (futuresResult?.Success) {
+      for (const opt of futuresResult.Success) {
+        if (opt.expiry_date) {
+          expiries.add(opt.expiry_date);
+        }
       }
     }
+
+    // Add weekly expiry dates (NIFTY weekly options expire on Tuesdays)
+    const now = new Date();
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    for (let i = 0; i < 10; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      while (d.getDay() !== 2) d.setDate(d.getDate() + 1); // Tuesday = 2
+      const dd = d.getDate().toString().padStart(2, '0');
+      expiries.add(`${dd}-${months[d.getMonth()]}-${d.getFullYear()}`);
+    }
+
+    console.log('[Breeze SDK] Found %d expiries (futures + weekly probe)', expiries.size);
 
     // Sort chronologically (nearest expiry first)
     const expiryList = Array.from(expiries).sort((a, b) => {

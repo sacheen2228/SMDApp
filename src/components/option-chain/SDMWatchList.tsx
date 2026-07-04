@@ -31,7 +31,7 @@ export function SDMWatchList({ items }: SDMWatchListProps) {
   const getDistanceColor = (distance: number) => {
     if (distance < 0.5) return "text-red-400";
     if (distance < 1) return "text-amber-400";
-    return "text-gray-400";
+    return "text-muted-foreground";
   };
 
   return (
@@ -42,7 +42,7 @@ export function SDMWatchList({ items }: SDMWatchListProps) {
       {items.slice(0, 8).map((item, i) => (
         <div
           key={i}
-          className="flex items-center gap-2 text-[10px] text-gray-300"
+          className="flex items-center gap-2 text-[10px] text-foreground"
         >
           <span>{getTypeIcon(item.type)}</span>
           <span className="flex-1 truncate">{item.description}</span>
@@ -51,7 +51,7 @@ export function SDMWatchList({ items }: SDMWatchListProps) {
           </span>
         </div>
       ))}
-      <div className="text-[9px] text-gray-500 italic pt-1">
+      <div className="text-[9px] text-muted-foreground italic pt-1">
         Waiting for spot to approach seller SL zone
       </div>
     </div>

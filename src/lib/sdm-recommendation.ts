@@ -828,7 +828,9 @@ export async function generateTradeRecommendation(
       currentWindow, timeInMinutes, currentTime, vix, source, lastUpdate,
       lotSize, healthReport,
       validation.reason,
-      action === 'NO_TRADE' ? 'NO_TRADE' : undefined
+      action === 'NO_TRADE' ? 'NO_TRADE' : undefined,
+      undefined, undefined, gexResult, marketStructure, consensus,
+      volumeAnalysis, oiAnalysis, atr
     );
   }
 
@@ -1186,11 +1188,16 @@ function buildWAITRecommendation(
   };
 
   const emptyMarketContext: MarketContext = {
-    spot, change: 0, changePercent: 0, pcr: 0, maxPain: spot, vix, trend: 'sideways', regime: 'trending',
+    spot, change: 0, changePercent: 0,
+    pcr: oiAnalysis?.pcrOI || oiAnalysis?.pcrVolume || 0,
+    maxPain: oiAnalysis?.maxPain || spot,
+    vix, trend: 'sideways', regime: 'trending',
   };
 
   const emptyScores: SDMScores = {
-    sellerStopLoss: 0, expiryGammaTheta: 0, pcr: 0, oiConcentration: 0,
+    sellerStopLoss: 0, expiryGammaTheta: 0,
+    pcr: oiAnalysis ? clamp(oiAnalysis.pcrOI * 50, 0, 100) : 0,
+    oiConcentration: 0,
     oiChange: 0, delta: 0, iv: 0, volume: 0, maxPain: 0, liquidity: 0,
   };
 

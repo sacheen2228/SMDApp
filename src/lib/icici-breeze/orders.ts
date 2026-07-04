@@ -22,7 +22,7 @@ export async function placeOrder(order: OrderRequest): Promise<{ orderId: string
     expiryDate: order.expiryDate || '',
     right: order.right || 'others',
     strikePrice: order.strikePrice || '0',
-    userRemark: order.userRemark || 'SD PRO Order',
+    userRemark: order.userRemark || 'Angel Order',
   });
 
   return {

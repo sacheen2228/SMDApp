@@ -52,7 +52,7 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
       case "SELL_PUT":
         return { text: "▲ SELL PUT", color: "text-purple-400" };
       default:
-        return { text: "⏸ WAIT", color: "text-gray-400" };
+        return { text: "⏸ WAIT", color: "text-muted-foreground" };
     }
   };
 
@@ -66,7 +66,7 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
       case "bearish":
         return <span className="text-red-400">↓ Bearish</span>;
       default:
-        return <span className="text-gray-400">→ Sideways</span>;
+        return <span className="text-muted-foreground">→ Sideways</span>;
     }
   };
 
@@ -90,66 +90,78 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
           dataHealth.status === "STALE" ? "bg-amber-400" :
           "bg-red-400"
         }`} title={`Data: ${dataHealth.status} (${dataHealth.score}/100)`} />
-        <span className="text-[9px] text-gray-400">
+        <span className="text-[9px] text-muted-foreground">
           {daysToExpiry} days to expiry
         </span>
-        <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30 text-[9px]">
+        <Badge className="bg-muted text-muted-foreground border-border text-[9px]">
           🧊 SWING MODE
         </Badge>
         <Badge className={`text-[9px] ${
           tradeGrade.startsWith("A") ? "bg-emerald-500/20 text-emerald-400" :
           tradeGrade === "B" ? "bg-yellow-500/20 text-yellow-400" :
-          "bg-gray-500/20 text-gray-400"
+          "bg-muted text-muted-foreground"
         }`}>
           Grade: {tradeGrade}
         </Badge>
-        <Badge className="text-[9px] bg-gray-500/20 text-gray-400">
+        <Badge className="text-[9px] bg-muted text-muted-foreground">
           Regime: {marketRegime.replace(/_/g, " ")}
         </Badge>
       </div>
 
+      {/* Gamma Blast Alert */}
+      {(recommendation as any).gammaBlastDetected && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-center">
+          <div className="text-amber-400 font-bold text-sm animate-pulse">
+            ⚡ GAMMA BLAST DETECTED ⚡
+          </div>
+          <div className="text-[10px] text-amber-300 mt-1">
+            Low VIX + Volume spike + Extreme PCR — expect explosive move
+          </div>
+        </div>
+      )}
+
       {/* Main Signal Card */}
       {direction !== "WAIT" && (
-        <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+        <div className="bg-accent/50 rounded-lg p-3 border border-border">
           <div className={`text-lg font-bold ${dirDisplay.color}`}>
             {dirDisplay.text}
           </div>
-          <div className="text-sm text-gray-300 mt-1">
+          <div className="text-sm text-foreground mt-1">
             NIFTY {strike} {isCE ? "CE" : "PE"} ({strikeType})
           </div>
           <div className="flex gap-4 mt-2 text-[11px]">
-            <span className="text-gray-400">
-              Entry: <span className="text-white">₹{entry.toFixed(1)}</span>
+            <span className="text-muted-foreground">
+              Entry: <span className="text-foreground">₹{entry.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP1: <span className="text-white">₹{tp1.toFixed(1)}</span>
+              TP1: <span className="text-foreground">₹{tp1.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP2: <span className="text-white">₹{tp2.toFixed(1)}</span>
+              TP2: <span className="text-foreground">₹{tp2.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP3: <span className="text-white">₹{tp3.toFixed(1)}</span>
+              TP3: <span className="text-foreground">₹{tp3.toFixed(1)}</span>
             </span>
             <span className="text-red-400">
-              SL: <span className="text-white">₹{sl.toFixed(1)}</span>
+              SL: <span className="text-foreground">₹{sl.toFixed(1)}</span>
             </span>
           </div>
           <div className="flex gap-4 mt-1 text-[10px]">
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               R:R 1:{riskReward.toFixed(1)}
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Confidence: {confidence.toFixed(1)}%
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               P(TP1): {probabilities.tp1}% | P(TP2): {probabilities.tp2}% | P(SL): {probabilities.sl}%
             </span>
           </div>
           <div className="flex gap-4 mt-1 text-[10px]">
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Entry: <span className={smartEntry === "ENTER_NOW" ? "text-emerald-400" : "text-yellow-400"}>{smartEntry.replace(/_/g, " ")}</span>
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Exit: <span className={smartExit === "HOLD" ? "text-emerald-400" : "text-yellow-400"}>{smartExit.replace(/_/g, " ")}</span>
             </span>
           </div>
@@ -161,42 +173,42 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
 
       {/* Market Context */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Market Context
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Spot</div>
-            <div className="text-[11px] text-white font-medium">
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Spot</div>
+            <div className="text-[11px] text-foreground font-medium">
               {marketContext.spot.toFixed(0)}
             </div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">PCR</div>
-            <div className="text-[11px] text-white font-medium">
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">PCR</div>
+            <div className="text-[11px] text-foreground font-medium">
               {marketContext.pcr.toFixed(2)}
             </div>
-            <div className="text-[8px] text-gray-400">{getPcrLabel()}</div>
+            <div className="text-[8px] text-muted-foreground">{getPcrLabel()}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Max Pain</div>
-            <div className="text-[11px] text-white font-medium">
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Max Pain</div>
+            <div className="text-[11px] text-foreground font-medium">
               {marketContext.maxPain}
             </div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">VIX</div>
-            <div className="text-[11px] text-white font-medium">
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">VIX</div>
+            <div className="text-[11px] text-foreground font-medium">
               {marketContext.vix > 0 ? marketContext.vix.toFixed(1) : "—"}
             </div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Trend</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Trend</div>
             <div className="text-[11px]">{getTrendIcon()}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Bias</div>
-            <div className="text-[11px] text-white font-medium">
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Bias</div>
+            <div className="text-[11px] text-foreground font-medium">
               {marketContext.spot > marketContext.maxPain ? "↑ Above" : "↓ Below"}
             </div>
           </div>
@@ -205,45 +217,45 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
 
       {/* Premium Fair Value */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Premium Fair Value
         </div>
-        <div className="bg-white/5 rounded p-2">
+        <div className="bg-accent/50 rounded p-2">
           <div className="flex justify-between text-[10px]">
-            <span className="text-gray-400">Status:</span>
-            <span className={premiumFairValue.status === "undervalued" ? "text-emerald-400" : premiumFairValue.status === "overpriced" ? "text-red-400" : "text-gray-400"}>
+            <span className="text-muted-foreground">Status:</span>
+            <span className={premiumFairValue.status === "undervalued" ? "text-emerald-400" : premiumFairValue.status === "overpriced" ? "text-red-400" : "text-muted-foreground"}>
               {premiumFairValue.status.toUpperCase()}
             </span>
           </div>
           <div className="flex justify-between text-[10px]">
-            <span className="text-gray-400">Difference:</span>
-            <span className="text-white">{premiumFairValue.differencePercent.toFixed(1)}%</span>
+            <span className="text-muted-foreground">Difference:</span>
+            <span className="text-foreground">{premiumFairValue.differencePercent.toFixed(1)}%</span>
           </div>
-          <div className="text-[9px] text-gray-400 mt-1">{premiumFairValue.reason}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">{premiumFairValue.reason}</div>
         </div>
       </div>
 
       {/* Position Sizing */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Position Sizing (1% Risk)
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Lots</div>
-            <div className="text-[11px] text-white font-medium">{positionSizing.lots}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Lots</div>
+            <div className="text-[11px] text-foreground font-medium">{positionSizing.lots}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Quantity</div>
-            <div className="text-[11px] text-white font-medium">{positionSizing.quantity}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Quantity</div>
+            <div className="text-[11px] text-foreground font-medium">{positionSizing.quantity}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Risk</div>
-            <div className="text-[11px] text-white font-medium">₹{positionSizing.riskAmount.toFixed(0)}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Risk</div>
+            <div className="text-[11px] text-foreground font-medium">₹{positionSizing.riskAmount.toFixed(0)}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Max Loss</div>
-            <div className="text-[11px] text-white font-medium">₹{positionSizing.maxLoss.toFixed(0)}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Max Loss</div>
+            <div className="text-[11px] text-foreground font-medium">₹{positionSizing.maxLoss.toFixed(0)}</div>
           </div>
         </div>
       </div>
@@ -251,37 +263,37 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
       {/* Smart Entry / Exit Actions */}
       {direction !== "WAIT" && (
         <div className="space-y-1.5">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Smart Actions
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="bg-white/5 rounded p-2">
-              <div className="text-[8px] text-gray-500">Entry Action</div>
+            <div className="bg-accent/50 rounded p-2">
+              <div className="text-[8px] text-muted-foreground">Entry Action</div>
               <div className={`text-[11px] font-medium ${
                 smartEntry === "ENTER_NOW" ? "text-emerald-400" : "text-yellow-400"
               }`}>
                 {smartEntry.replace(/_/g, " ")}
               </div>
               {smartEntryResult && (
-                <div className="text-[8px] text-gray-400 mt-0.5">{smartEntryResult.reason}</div>
+                <div className="text-[8px] text-muted-foreground mt-0.5">{smartEntryResult.reason}</div>
               )}
               {smartEntryResult && (
-                <div className="text-[8px] text-gray-500 mt-px">
+                <div className="text-[8px] text-muted-foreground mt-px">
                   Price: {smartEntryResult.currentPrice} | Ref: {smartEntryResult.referenceLevel} | ATR: {smartEntryResult.atr.toFixed(1)}
                 </div>
               )}
             </div>
             {smartExit !== "HOLD" && (
-              <div className="bg-white/5 rounded p-2">
-                <div className="text-[8px] text-gray-500">Exit Action</div>
+              <div className="bg-accent/50 rounded p-2">
+                <div className="text-[8px] text-muted-foreground">Exit Action</div>
                 <div className="text-[11px] font-medium text-yellow-400">
                   {smartExit.replace(/_/g, " ")}
                 </div>
                 {smartExitResult && (
-                  <div className="text-[8px] text-gray-400 mt-0.5">{smartExitResult.reason}</div>
+                  <div className="text-[8px] text-muted-foreground mt-0.5">{smartExitResult.reason}</div>
                 )}
                 {smartExitResult && (
-                  <div className="text-[8px] text-gray-500 mt-px">
+                  <div className="text-[8px] text-muted-foreground mt-px">
                     PnL: {smartExitResult.unrealizedPnLPercent.toFixed(1)}% | T{smartExitResult.targetHit}
                     {smartExitResult.gexRegimeFlipped ? " | GEX Flip" : ""}
                     {smartExitResult.structureReversal ? " | Rev" : ""}
@@ -296,19 +308,19 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
       {/* Market Structure */}
       {marketStructure && (
         <div className="space-y-1.5">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Market Structure
           </div>
-          <div className="bg-white/5 rounded p-2">
+          <div className="bg-accent/50 rounded p-2">
             <div className="flex items-center gap-2 mb-1">
               <span className={`text-[10px] font-medium ${
                 marketStructure.trend === "UPTREND" ? "text-emerald-400" :
                 marketStructure.trend === "DOWNTREND" ? "text-red-400" :
-                "text-gray-400"
+                "text-muted-foreground"
               }`}>
                 {marketStructure.trend === "UPTREND" ? "↑" : marketStructure.trend === "DOWNTREND" ? "↓" : "→"} {marketStructure.trend}
               </span>
-              <span className="text-[9px] text-gray-500">
+              <span className="text-[9px] text-muted-foreground">
                 SH: {marketStructure.lastSwingHigh} | SL: {marketStructure.lastSwingLow}
               </span>
             </div>
@@ -339,16 +351,16 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
       {/* Quality Score Breakdown */}
       {qualityScore && qualityScore.factors.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Quality Score ({qualityScore.overall} — Grade {qualityScore.grade})
           </div>
           <div className="space-y-1">
             {qualityScore.factors.map((factor) => (
               <div key={factor.name} className="flex items-center gap-2">
-                <span className="text-[9px] text-gray-400 w-24 truncate">
+                <span className="text-[9px] text-muted-foreground w-24 truncate">
                   {factor.name}
                 </span>
-                <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${
                       factor.score >= 70 ? "bg-emerald-500" :
@@ -373,7 +385,7 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
 
       {/* Data Health */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Data Health
         </div>
         <div className="flex items-center gap-2 text-[10px]">
@@ -384,16 +396,16 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
           }`}>
             {dataHealth.status}
           </Badge>
-          <span className="text-gray-400">Score: {dataHealth.score}/100</span>
-          <span className="text-gray-400">Latency: {dataHealth.latency}ms</span>
-          <span className="text-gray-400">Source: {dataHealth.source}</span>
+          <span className="text-muted-foreground">Score: {dataHealth.score}/100</span>
+          <span className="text-muted-foreground">Latency: {dataHealth.latency}ms</span>
+          <span className="text-muted-foreground">Source: {dataHealth.source}</span>
         </div>
       </div>
 
       {/* Why This Trade */}
       {whyThisTrade.length > 0 && (
         <div className="space-y-1">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Signal Analysis
           </div>
           {whyThisTrade.slice(0, 6).map((item, i) => (
@@ -429,14 +441,14 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
 
       {/* Seller SL Zone Visual */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Seller SL Zone
         </div>
         <div className="flex items-center gap-1 text-[9px]">
           <span className="text-blue-400 w-20 text-right">
             PE SL: {sellerSLZone.peSellerSL}
           </span>
-          <div className="flex-1 h-px bg-gray-600 relative mx-1">
+          <div className="flex-1 h-px bg-muted relative mx-1">
             <div
               className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-white"
               style={{
@@ -463,7 +475,7 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
             CE SL: {sellerSLZone.ceSellerSL}
           </span>
         </div>
-        <div className="text-center text-[10px] text-gray-300">
+        <div className="text-center text-[10px] text-foreground">
           ● SPOT {marketContext.spot.toFixed(0)}
         </div>
         {sellerSLZone.sellerExhaustion && (
@@ -482,8 +494,8 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
 
       {/* Normal Day Rules */}
       {direction !== "WAIT" && (
-        <div className="space-y-1 text-[9px] text-gray-500">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="space-y-1 text-[9px] text-muted-foreground">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Rules
           </div>
           <div>• No time pressure — hold for structure</div>

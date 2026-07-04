@@ -42,27 +42,27 @@ export function SDMTradeHistory({ trades, pnl, winRate, avgGrade }: SDMTradeHist
           </span>
         );
       case "expired":
-        return <span className="text-gray-500 text-[10px]">EXPIRED</span>;
+        return <span className="text-muted-foreground text-[10px]">EXPIRED</span>;
     }
   };
 
   const getGradeColor = (grade: string) => {
     if (grade.startsWith("A")) return "bg-emerald-500/20 text-emerald-400";
     if (grade === "B") return "bg-yellow-500/20 text-yellow-400";
-    return "bg-gray-500/20 text-gray-400";
+    return "bg-muted text-muted-foreground";
   };
 
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+      <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
         ── Today&apos;s Trades ──
       </div>
 
       {/* Stats Bar */}
       <div className="flex gap-3 text-[9px]">
-        <span className="text-gray-400">Win Rate: <span className="text-white">{winRate?.toFixed(0) || 0}%</span></span>
-        <span className="text-gray-400">Avg Grade: <Badge className={`text-[8px] ${getGradeColor(avgGrade || "C")}`}>{avgGrade || "N/A"}</Badge></span>
-        <span className="text-gray-400">Trades: <span className="text-white">{trades.length}</span></span>
+        <span className="text-muted-foreground">Win Rate: <span className="text-foreground">{winRate?.toFixed(0) || 0}%</span></span>
+        <span className="text-muted-foreground">Avg Grade: <Badge className={`text-[8px] ${getGradeColor(avgGrade || "C")}`}>{avgGrade || "N/A"}</Badge></span>
+        <span className="text-muted-foreground">Trades: <span className="text-foreground">{trades.length}</span></span>
       </div>
 
       {trades.map((trade) => (
@@ -70,17 +70,17 @@ export function SDMTradeHistory({ trades, pnl, winRate, avgGrade }: SDMTradeHist
           key={trade.id}
           className="flex items-center gap-1.5 text-[10px]"
         >
-          <span className="text-gray-500 font-mono w-14">{trade.time}</span>
+          <span className="text-muted-foreground font-mono w-14">{trade.time}</span>
           <Badge
             variant="outline"
             className={`text-[8px] px-1 py-0 h-4 ${getDirectionColor(trade.direction)}`}
           >
             {trade.direction.replace("_", " ")}
           </Badge>
-          <span className="text-gray-300 w-16">
+          <span className="text-foreground w-16">
             {trade.strike} {trade.direction.includes("CALL") ? "CE" : "PE"}
           </span>
-          <span className="text-gray-400 w-10">₹{trade.entry}</span>
+          <span className="text-muted-foreground w-10">₹{trade.entry}</span>
           <Badge className={`text-[8px] ${getGradeColor(trade.grade)}`}>
             {trade.grade}
           </Badge>
@@ -91,7 +91,7 @@ export function SDMTradeHistory({ trades, pnl, winRate, avgGrade }: SDMTradeHist
                 ? "text-emerald-400"
                 : trade.pnl < 0
                   ? "text-red-400"
-                  : "text-gray-500"
+                  : "text-muted-foreground"
             }`}
           >
             {trade.pnl > 0 ? "+" : ""}
@@ -102,7 +102,7 @@ export function SDMTradeHistory({ trades, pnl, winRate, avgGrade }: SDMTradeHist
 
       {/* Partial Exits */}
       {trades.some(t => t.partialExits.length > 0) && (
-        <div className="text-[9px] text-gray-500 space-y-0.5">
+        <div className="text-[9px] text-muted-foreground space-y-0.5">
           {trades.filter(t => t.partialExits.length > 0).map(t => (
             <div key={t.id} className="flex gap-2">
               <span>{t.strike} {t.direction.includes("CALL") ? "CE" : "PE"}:</span>
@@ -116,15 +116,15 @@ export function SDMTradeHistory({ trades, pnl, winRate, avgGrade }: SDMTradeHist
         </div>
       )}
 
-      <div className="border-t border-white/10 pt-1 flex justify-between text-[10px]">
-        <span className="text-gray-400">Daily P&L</span>
+      <div className="border-t border-border pt-1 flex justify-between text-[10px]">
+        <span className="text-muted-foreground">Daily P&L</span>
         <span
           className={`font-bold ${
             pnl > 0
               ? "text-emerald-400"
               : pnl < 0
                 ? "text-red-400"
-                : "text-gray-400"
+                : "text-muted-foreground"
           }`}
         >
           {pnl > 0 ? "+" : ""}

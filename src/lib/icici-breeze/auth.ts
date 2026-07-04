@@ -88,21 +88,29 @@ export async function generateSession(apiSession?: string): Promise<any> {
   const breeze = getBreezeClient();
   console.log('[Breeze SDK] Generating session with:', session.substring(0, 10) + '...');
 
-  const result = await breeze.generateSession(config.secretKey, session);
-  currentApiSession = session;
+    const result = await breeze.generateSession(config.secretKey, session);
 
-  // Cache the session
-  const cached: CachedSession = {
-    apiSession: session,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-  };
-  try {
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(cached, null, 2));
-  } catch {}
+    // Check if session generation actually succeeded
+    if (!result || (result as any)?.Status === 401 || (result as any)?.Error) {
+      const errMsg = (result as any)?.Error || 'Authentication failed — token may be expired';
+      console.error('[Breeze SDK] Session generation failed:', errMsg);
+      throw new Error(`Breeze auth failed: ${errMsg}. Please generate a new session token at https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(config.appKey)}`);
+    }
 
-  console.log('[Breeze SDK] Session generated successfully');
-  return result;
+    currentApiSession = session;
+
+    // Cache the session
+    const cached: CachedSession = {
+      apiSession: session,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    };
+    try {
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(cached, null, 2));
+    } catch {}
+
+    console.log('[Breeze SDK] Session generated successfully');
+    return result;
 }
 
 // ─── Initialize from Cache ────────────────────────────────────────

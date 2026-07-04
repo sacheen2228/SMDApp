@@ -80,7 +80,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
       case "SELL_PUT":
         return { text: "▲ SELL PUT", color: "text-purple-400" };
       default:
-        return { text: "⏸ WAIT", color: "text-gray-400" };
+        return { text: "⏸ WAIT", color: "text-muted-foreground" };
     }
   };
 
@@ -100,63 +100,63 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
           "bg-red-400"
         }`} title={`Data: ${dataHealth.status} (${dataHealth.score}/100)`} />
         {getWindowBadge()}
-        <span className="text-[9px] text-gray-400">
+        <span className="text-[9px] text-muted-foreground">
           ⏰ {windowTimeRemaining}
         </span>
         <Badge className={`text-[9px] ${
           tradeGrade.startsWith("A") ? "bg-emerald-500/20 text-emerald-400" :
           tradeGrade === "B" ? "bg-yellow-500/20 text-yellow-400" :
-          "bg-gray-500/20 text-gray-400"
+          "bg-muted text-muted-foreground"
         }`}>
           Grade: {tradeGrade}
         </Badge>
-        <span className="text-[9px] text-gray-500 ml-auto">
+        <span className="text-[9px] text-muted-foreground ml-auto">
           Trade {tradesTakenToday + 1}/{tradesTakenToday + tradesRemaining}
         </span>
       </div>
 
       {/* Main Signal Card */}
       {direction !== "WAIT" && (
-        <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+        <div className="bg-accent/50 rounded-lg p-3 border border-border">
           <div className={`text-lg font-bold ${dirDisplay.color}`}>
             {dirDisplay.text}
           </div>
-          <div className="text-sm text-gray-300 mt-1">
+          <div className="text-sm text-muted-foreground mt-1">
             NIFTY {strike} {isCE ? "CE" : "PE"} ({strikeType})
           </div>
           <div className="flex gap-4 mt-2 text-[11px]">
-            <span className="text-gray-400">
-              Entry: <span className="text-white">₹{entry.toFixed(1)}</span>
+            <span className="text-muted-foreground">
+              Entry: <span className="text-foreground">₹{entry.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP1: <span className="text-white">₹{tp1.toFixed(1)}</span>
+              TP1: <span className="text-foreground">₹{tp1.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP2: <span className="text-white">₹{tp2.toFixed(1)}</span>
+              TP2: <span className="text-foreground">₹{tp2.toFixed(1)}</span>
             </span>
             <span className="text-emerald-400">
-              TP3: <span className="text-white">₹{tp3.toFixed(1)}</span>
+              TP3: <span className="text-foreground">₹{tp3.toFixed(1)}</span>
             </span>
             <span className="text-red-400">
-              SL: <span className="text-white">₹{sl.toFixed(1)}</span>
+              SL: <span className="text-foreground">₹{sl.toFixed(1)}</span>
             </span>
           </div>
           <div className="flex gap-4 mt-1 text-[10px]">
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               R:R 1:{riskReward.toFixed(1)}
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Confidence: {confidence.toFixed(1)}%
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               P(TP1): {probabilities.tp1}% | P(TP2): {probabilities.tp2}% | P(SL): {probabilities.sl}%
             </span>
           </div>
           <div className="flex gap-4 mt-1 text-[10px]">
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Entry: <span className={smartEntry === "ENTER_NOW" ? "text-emerald-400" : "text-yellow-400"}>{smartEntry.replace(/_/g, " ")}</span>
             </span>
-            <span className="text-gray-400">
+            <span className="text-muted-foreground">
               Exit: <span className={smartExit === "HOLD" ? "text-emerald-400" : "text-yellow-400"}>{smartExit.replace(/_/g, " ")}</span>
             </span>
           </div>
@@ -192,7 +192,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
             {smartEntryResult?.reason || smartEntry.replace(/_/g, " ")}
           </div>
           {smartEntryResult && (
-            <div className="text-[9px] text-gray-400 mt-0.5">
+            <div className="text-[9px] text-muted-foreground mt-0.5">
               Price: {smartEntryResult.currentPrice} | Ref: {smartEntryResult.referenceLevel} | ATR: {smartEntryResult.atr.toFixed(1)}
             </div>
           )}
@@ -209,7 +209,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
             {smartExitResult?.reason || smartExit.replace(/_/g, " ")}
           </div>
           {smartExitResult && (
-            <div className="text-[9px] text-gray-400 mt-0.5">
+            <div className="text-[9px] text-muted-foreground mt-0.5">
               PnL: {smartExitResult.unrealizedPnLPercent.toFixed(1)}% | Target: T{smartExitResult.targetHit}
               {smartExitResult.gexRegimeFlipped ? " | GEX Flip" : ""}
               {smartExitResult.structureReversal ? " | Structure Rev" : ""}
@@ -220,8 +220,8 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
 
       {/* Market Structure Event */}
       {marketStructure?.structureEvent && (
-        <div className="bg-white/5 rounded-lg p-2 border border-white/10">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider mb-1">
+        <div className="bg-accent/50 rounded-lg p-2 border border-border">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">
             Market Structure
           </div>
           <div className="flex items-center gap-2">
@@ -241,7 +241,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
             }`}>
               {marketStructure.structureEvent.direction === "BULLISH" ? "↑" : "↓"} @ {marketStructure.structureEvent.price}
             </span>
-            <span className="text-[9px] text-gray-500 ml-auto">
+            <span className="text-[9px] text-muted-foreground ml-auto">
               Trend: {marketStructure.trend}
             </span>
           </div>
@@ -250,7 +250,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
 
       {/* Expiry Time Windows */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Time Windows
         </div>
         {[
@@ -271,7 +271,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
                   ? "bg-white/10 border border-white/20"
                   : isPast
                     ? "bg-emerald-500/10"
-                    : "bg-gray-800/50"
+                    : "bg-accent/50"
               }`}
             >
               <span
@@ -280,17 +280,17 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
                     ? "bg-emerald-500"
                     : isCurrent
                       ? "bg-amber-500 animate-pulse"
-                      : "bg-gray-600"
+                      : "bg-muted"
                 }`}
               />
               <span
                 className={`flex-1 ${
-                  isCurrent ? "text-white font-medium" : "text-gray-400"
+                  isCurrent ? "text-foreground font-medium" : "text-muted-foreground"
                 }`}
               >
                 {w.name}
               </span>
-              <span className="text-gray-500">{w.time}</span>
+              <span className="text-muted-foreground">{w.time}</span>
               {isPast && <span className="text-emerald-400">✓</span>}
             </div>
           );
@@ -299,14 +299,14 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
 
       {/* Seller SL Zone Visual */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Seller SL Zone
         </div>
         <div className="flex items-center gap-1 text-[9px]">
           <span className="text-blue-400 w-20 text-right">
             PE SL: {sellerSLZone.peSellerSL}
           </span>
-          <div className="flex-1 h-px bg-gray-600 relative mx-1">
+          <div className="flex-1 h-px bg-muted relative mx-1">
             <div
               className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-white"
               style={{
@@ -333,7 +333,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
             CE SL: {sellerSLZone.ceSellerSL}
           </span>
         </div>
-        <div className="text-center text-[10px] text-gray-300">
+        <div className="text-center text-[10px] text-foreground">
           ● SPOT {marketContext.spot.toFixed(0)}
         </div>
         {sellerSLZone.sellerExhaustion && (
@@ -347,52 +347,52 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
 
       {/* Position Sizing */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Position Sizing (1% Risk)
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Lots</div>
-            <div className="text-[11px] text-white font-medium">{positionSizing.lots}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Lots</div>
+            <div className="text-[11px] text-foreground font-medium">{positionSizing.lots}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Qty</div>
-            <div className="text-[11px] text-white font-medium">{positionSizing.quantity}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Qty</div>
+            <div className="text-[11px] text-foreground font-medium">{positionSizing.quantity}</div>
           </div>
-          <div className="bg-white/5 rounded p-2 text-center">
-            <div className="text-[8px] text-gray-500">Max Loss</div>
-            <div className="text-[11px] text-white font-medium">₹{positionSizing.maxLoss.toFixed(0)}</div>
+          <div className="bg-accent/50 rounded p-2 text-center">
+            <div className="text-[8px] text-muted-foreground">Max Loss</div>
+            <div className="text-[11px] text-foreground font-medium">₹{positionSizing.maxLoss.toFixed(0)}</div>
           </div>
         </div>
       </div>
 
       {/* Premium Fair Value */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Premium Fair Value
         </div>
-        <div className="bg-white/5 rounded p-2">
+        <div className="bg-accent/50 rounded p-2">
           <div className="flex justify-between text-[10px]">
-            <span className="text-gray-400">Status:</span>
-            <span className={premiumFairValue.status === "undervalued" ? "text-emerald-400" : premiumFairValue.status === "overpriced" ? "text-red-400" : "text-gray-400"}>
+            <span className="text-muted-foreground">Status:</span>
+            <span className={premiumFairValue.status === "undervalued" ? "text-emerald-400" : premiumFairValue.status === "overpriced" ? "text-red-400" : "text-muted-foreground"}>
               {premiumFairValue.status.toUpperCase()}
             </span>
           </div>
           <div className="flex justify-between text-[10px]">
-            <span className="text-gray-400">Difference:</span>
-            <span className="text-white">{premiumFairValue.differencePercent.toFixed(1)}%</span>
+            <span className="text-muted-foreground">Difference:</span>
+            <span className="text-foreground">{premiumFairValue.differencePercent.toFixed(1)}%</span>
           </div>
         </div>
       </div>
 
       {/* Expected Move */}
       <div className="space-y-1.5">
-        <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+        <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
           Expected Move
         </div>
-        <div className="bg-white/5 rounded p-2 text-center">
-          <div className="text-[11px] text-white font-medium">±{expectedMove.toFixed(0)} points</div>
-          <div className="text-[8px] text-gray-400">
+        <div className="bg-accent/50 rounded p-2 text-center">
+          <div className="text-[11px] text-foreground font-medium">±{expectedMove.toFixed(0)} points</div>
+          <div className="text-[8px] text-muted-foreground">
             Range: {(marketContext.spot - expectedMove).toFixed(0)} — {(marketContext.spot + expectedMove).toFixed(0)}
           </div>
         </div>
@@ -401,7 +401,7 @@ export function SDMExpiryMode({ recommendation }: SDMExpiryModeProps) {
       {/* Why This Trade (Enhanced V2 Explainability) */}
       {whyThisTrade && whyThisTrade.length > 0 && (
         <div className="space-y-1">
-          <div className="text-[9px] text-gray-400 uppercase tracking-wider">
+          <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
             Why This Trade
           </div>
           {whyThisTrade.slice(0, 8).map((item, i) => (
