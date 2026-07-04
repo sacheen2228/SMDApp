@@ -7,6 +7,8 @@
 
 import type { SDMOptionStrike } from "@/types/sdm";
 import { calculateGreeks } from "./greeks";
+import { type StrategyConfig, loadStrategyConfig } from "./strategy-config";
+
 import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
 
 // ─── Types ──────────────────────────────────────────────────────
