@@ -41,16 +41,16 @@ interface AgentChatProps {
 }
 
 const QUICK_ACTIONS = [
+  { label: "ORCA Signal", icon: Target, query: "Give me the ORCA live signal right now" },
   { label: "Best Trade", icon: Target, query: "What's the best trade right now?" },
-  { label: "Market Trend", icon: TrendingUp, query: "What's the market trend?" },
-  { label: "Key Levels", icon: BarChart3, query: "Show me key levels and support/resistance" },
-  { label: "PCR & OI", icon: Activity, query: "What's the PCR and OI buildup?" },
+  { label: "Market Structure", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
+  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis? Delta, Gamma, Theta, Vega" },
+  { label: "OI Analysis", icon: BarChart3, query: "OI buildup patterns — long/short, fresh writing, PCR" },
+  { label: "Smart Money", icon: Brain, query: "Any smart money signals? Liquidity sweeps, fakeouts" },
+  { label: "Entry Check", icon: Zap, query: "Should I enter a trade now? Check all entry conditions" },
+  { label: "Risk Check", icon: Shield, query: "Check my risk — position sizing, max loss" },
+  { label: "0DTE Setup", icon: Clock, query: "Any 0DTE expiry setup?" },
   { label: "Scanner", icon: Zap, query: "Show me top scanner picks" },
-  { label: "News", icon: AlertTriangle, query: "What's the latest news sentiment?" },
-  { label: "Backtest", icon: Shield, query: "Run backtest for last 30 days" },
-  { label: "Breakout", icon: Brain, query: "Any breakout signals?" },
-  { label: "Position Size", icon: Target, query: "Calculate position size for 10L capital" },
-  { label: "Performance", icon: Shield, query: "Show my trading performance" },
 ];
 
 function escapeHtml(str: string): string {
@@ -102,7 +102,7 @@ export function AgentChat({
         {
           id: "welcome",
           role: "agent",
-          content: `👋 **Hi Sachin! I'm your Angel.**\n\n${sEmoji} **${symbol}** is currently **${sentiment.toUpperCase()}** | Spot ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}\n\nAsk me anything about the market, trades, or analysis. Try:\n• "What's the best trade?"\n• "Show today's trades"\n• "Market trend"\n• "Key levels"`,
+          content: `**Welcome Sachin! I'm your Angel — ORCA Trading AI.**\n\n${sEmoji} **${symbol}** | Spot ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}\n\nI analyze live market data using institutional-grade modules:\n• Market Structure • Greeks • OI • Smart Money • Flow\n• Entry/Exit Conditions • Risk Engine • 0DTE Expiry\n\n**Quick Actions:**\n• "ORCA Signal" — Full institutional trade signal\n• "Best Trade" — Top recommendation\n• "Market Structure" — Trend & S/R analysis\n• "Greeks" — Delta/Gamma/Theta/Vega\n• "Entry Check" — Should you trade now?\n\nI never force a trade. Capital preservation first.`,
           timestamp: new Date(),
         },
       ]);
@@ -173,16 +173,16 @@ export function AgentChat({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0">
-        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-md">
+        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-600 flex items-center justify-center shadow-md">
           <Bot className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-bold">Angel</p>
+          <p className="text-xs font-bold">Angel <span className="text-[8px] text-emerald-400 font-normal">ORCA</span></p>
           <p className="text-[9px] text-muted-foreground">
             {symbol} • {analysis?.sentiment?.toUpperCase() || "NEUTRAL"} • Spot ₹{spotPrice.toLocaleString("en-IN")}
           </p>
         </div>
-        <Badge variant="outline" className="text-[8px] bg-violet-500/10 text-violet-500 border-violet-500/20">
+        <Badge variant="outline" className="text-[8px] bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
           LIVE
         </Badge>
       </div>

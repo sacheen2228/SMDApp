@@ -55,6 +55,8 @@ import { BreakoutDetector } from '@/components/dashboard/BreakoutDetector';
 import { StrategyBuilder } from '@/components/dashboard/StrategyBuilder';
 import { GreeksHeatmap } from '@/components/dashboard/GreeksHeatmap';
 import { TVChart } from '@/components/dashboard/TVChart';
+import { OrcaSignalPanel } from '@/components/dashboard/OrcaSignal';
+import { OrcaBacktestPanel } from '@/components/dashboard/OrcaBacktest';
 import { ResizablePanel } from '@/components/ui/resizable-panel';
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { VirtualOptionChain } from '@/components/option-chain/VirtualOptionChain';
@@ -139,7 +141,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -443,6 +445,16 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('chart'); setDisplayMode('pro'); }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Chart
             </Button>
+            <Button variant={viewMode === 'orca' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orca' ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
+              onClick={() => { setViewMode('orca'); setDisplayMode('pro'); }}>
+              <Target className="h-2.5 w-2.5 mr-0.5" /> ORCA
+            </Button>
+            <Button variant={viewMode === 'orcaBacktest' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orcaBacktest' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
+              onClick={() => { setViewMode('orcaBacktest'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> ORCA Test
+            </Button>
           </div>
 
           <div className="w-px h-4 bg-border shrink-0" />
@@ -666,6 +678,16 @@ export default function TradingDashboard() {
             }).filter((c: any) => c.time > 0)}
             height={500}
           />
+        </div>
+        ) : viewMode === 'orca' ? (
+        /* ═══════ ORCA LIVE SIGNAL VIEW ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <OrcaSignalPanel symbol={symbol} autoRefresh={true} refreshInterval={30000} />
+        </div>
+        ) : viewMode === 'orcaBacktest' ? (
+        /* ═══════ ORCA BACKTEST VIEW ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <OrcaBacktestPanel symbol={symbol} />
         </div>
         ) : (
         /* ═══════ GAP ANALYSIS VIEW ═══════ */
