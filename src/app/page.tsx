@@ -642,7 +642,7 @@ export default function TradingDashboard() {
         </div>
         ) : viewMode === 'chart' ? (
         /* ═══════ TRADINGVIEW CHART VIEW ═══════ */
-        <div className="flex-1 overflow-hidden p-4">
+        <div className="flex-1 overflow-hidden p-2">
           <TVChart
             data={(data?.candles || []).map((c: any) => {
               const ts = c.timestamp || c.time;
@@ -661,10 +661,10 @@ export default function TradingDashboard() {
               return {
                 time: Math.floor(date.getTime() / 1000) as any,
                 value: c.volume || 0,
-                color: c.close >= c.open ? "#22c55e40" : "#ef444440",
+                color: c.close >= c.open ? "#26a69a80" : "#ef535080",
               };
             }).filter((c: any) => c.time > 0)}
-            height={400}
+            height={500}
           />
         </div>
         ) : (
