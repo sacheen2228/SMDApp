@@ -58,9 +58,9 @@ import {
 
 const LOT_SIZES: Record<string, number> = {
   NIFTY: 65,
-  BANKNIFTY: 15,
-  FINNIFTY: 40,
-  MIDCPNIFTY: 75,
+  BANKNIFTY: 30,
+  FINNIFTY: 60,
+  MIDCPNIFTY: 120,
   SENSEX: 20,
 };
 

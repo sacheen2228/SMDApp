@@ -81,7 +81,7 @@ You have deep expertise in:
 5. **Backtesting** — Multi-day backtest with OI/Greek quality scoring. Equity curve, Sharpe ratio, drawdown, win rate analysis.
 6. **Option Chain Analysis** — OI buildup patterns, fresh writing/unwinding, seller SL detection, gamma exposure, GEX regime.
 7. **Greeks** — Delta, gamma, theta, vega interpretation. Black-Scholes pricing. IV skew analysis.
-8. **Risk Management** — Position sizing (1% risk rule), lot sizes (NIFTY=75, BANKNIFTY=35, FINNIFTY=40, MIDCPNIFTY=100, SENSEX=20), stop loss placement, trailing stops.
+8. **Risk Management** — Position sizing (1% risk rule), lot sizes (NIFTY=65, BANKNIFTY=30, FINNIFTY=60, MIDCPNIFTY=120, SENSEX=20), stop loss placement, trailing stops.
 9. **Market Microstructure** — Order flow, absorption, exhaustion, delta analysis, VWAP, POC, value area.
 10. **India F&O Specifics** — GIFT Nifty bias, ORB (Opening Range Breakout), pivot points, session timings (9:15-15:30 IST), expiry dynamics.
 
@@ -221,7 +221,7 @@ export async function executeTool(
   switch (name) {
     case "get_option_chain": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch option chain";
         const chain = data.data?.strikes || [];
@@ -239,7 +239,7 @@ export async function executeTool(
         const days = args.days || 30;
         const end = new Date().toISOString().split("T")[0];
         const start = new Date(Date.now() - days * 86400000).toISOString().split("T")[0];
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/backtest?symbol=${symbol}&startDate=${start}&endDate=${end}`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/backtest?symbol=${symbol}&startDate=${start}&endDate=${end}`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to run backtest";
         const p = data.data.performance;
@@ -249,7 +249,7 @@ export async function executeTool(
 
     case "get_scanner_picks": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${symbol}`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch scanner";
         const picks = (data.data?.candidates || []).slice(0, 10);
@@ -260,7 +260,7 @@ export async function executeTool(
 
     case "get_news_sentiment": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/news`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/news`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch news";
         const market = data.data?.market || {};
@@ -271,7 +271,7 @@ export async function executeTool(
 
     case "get_breakout_signals": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/breakout?symbol=${symbol}`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/breakout?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch breakout data";
         const s = data.data?.signal;
@@ -284,7 +284,7 @@ export async function executeTool(
     case "get_trade_history": {
       try {
         const limit = args.limit || 20;
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/trade-journal?symbol=${symbol}`);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/trade-journal?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         const trades = (data.trades || []).slice(0, limit);
         const stats = data.stats || {};
@@ -358,7 +358,12 @@ export async function agentRespondLLM(
     });
 
     for (const toolCall of result.toolCalls) {
-      const args = JSON.parse(toolCall.function.arguments || "{}");
+      let args: any = {};
+      try {
+        args = JSON.parse(toolCall.function.arguments || "{}");
+      } catch {
+        args = {};
+      }
       toolCallsMade.push(toolCall.function.name);
 
       const toolResult = await executeTool(toolCall.function.name, args, ctx);

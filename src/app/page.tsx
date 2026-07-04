@@ -198,7 +198,7 @@ export default function TradingDashboard() {
       setOptionChain(data as any);
       setSelectedSymbol(symbol);
     }
-  }, [data]);
+  }, [data, setOptionChain, setSelectedSymbol, symbol]);
   
   // Set default expiry
   useEffect(() => {
@@ -206,14 +206,15 @@ export default function TradingDashboard() {
       setSelectedExpiry(data.expiries[0].date);
       setStoreExpiry(data.expiries[0].date);
     }
-  }, [data]);
+  }, [data, selectedExpiry, setSelectedExpiry, setStoreExpiry]);
   
   // Scroll to ATM
   useEffect(() => {
     if (data?.summary?.atmStrike && atmRef.current) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         atmRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 300);
+      return () => clearTimeout(timer);
     }
   }, [data?.summary?.atmStrike, selectedExpiry, symbol]);
   

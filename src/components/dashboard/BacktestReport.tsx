@@ -37,13 +37,13 @@ interface SimResult {
 
 function getLotSize(symbol: string): number {
   const map: Record<string, number> = {
-    NIFTY: 75,
-    BANKNIFTY: 35,
-    FINNIFTY: 40,
-    MIDCPNIFTY: 100,
+    NIFTY: 65,
+    BANKNIFTY: 30,
+    FINNIFTY: 60,
+    MIDCPNIFTY: 120,
     SENSEX: 20,
   };
-  return map[symbol] || 75;
+  return map[symbol] || 65;
 }
 
 function simulateLots(

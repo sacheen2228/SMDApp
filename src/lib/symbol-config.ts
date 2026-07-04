@@ -13,7 +13,7 @@ export const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
   NIFTY: {
     symbol: "NIFTY",
     label: "NIFTY 50",
-    lotSize: 75,
+    lotSize: 65,
     tickSize: 0.05,
     maxLots: 25,
     typicalPremium: 120,
@@ -21,7 +21,7 @@ export const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
   BANKNIFTY: {
     symbol: "BANKNIFTY",
     label: "BANK NIFTY",
-    lotSize: 35,
+    lotSize: 30,
     tickSize: 0.05,
     maxLots: 25,
     typicalPremium: 200,
@@ -29,7 +29,7 @@ export const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
   FINNIFTY: {
     symbol: "FINNIFTY",
     label: "FIN NIFTY",
-    lotSize: 40,
+    lotSize: 60,
     tickSize: 0.05,
     maxLots: 25,
     typicalPremium: 100,
@@ -37,7 +37,7 @@ export const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
   MIDCPNIFTY: {
     symbol: "MIDCPNIFTY",
     label: "MIDCAP NIFTY",
-    lotSize: 100,
+    lotSize: 120,
     tickSize: 0.05,
     maxLots: 25,
     typicalPremium: 80,

@@ -83,11 +83,11 @@ const SYMBOL_CONFIG: Record<string, {
   rangeFactor: number;
   basePrice: number;
 }> = {
-  NIFTY: { lotSize: 25, stepSize: 50, rangeFactor: 0.08, basePrice: 24000 },
-  BANKNIFTY: { lotSize: 15, stepSize: 100, rangeFactor: 0.10, basePrice: 51000 },
-  FINNIFTY: { lotSize: 25, stepSize: 50, rangeFactor: 0.08, basePrice: 23000 },
-  MIDCPNIFTY: { lotSize: 50, stepSize: 25, rangeFactor: 0.08, basePrice: 12000 },
-  SENSEX: { lotSize: 10, stepSize: 100, rangeFactor: 0.08, basePrice: 79000 },
+  NIFTY: { lotSize: 65, stepSize: 50, rangeFactor: 0.08, basePrice: 24000 },
+  BANKNIFTY: { lotSize: 30, stepSize: 100, rangeFactor: 0.10, basePrice: 51000 },
+  FINNIFTY: { lotSize: 60, stepSize: 50, rangeFactor: 0.08, basePrice: 23000 },
+  MIDCPNIFTY: { lotSize: 120, stepSize: 25, rangeFactor: 0.08, basePrice: 12000 },
+  SENSEX: { lotSize: 20, stepSize: 100, rangeFactor: 0.08, basePrice: 79000 },
 };
 
 // Generate expiry dates (weekly + monthly)
@@ -378,7 +378,7 @@ export function generateOptionChain(symbol: string = 'NIFTY', expiryDate?: strin
   const totalPutOI = data.reduce((sum, d) => sum + (d.pe?.oi || 0), 0);
   const totalCallVolume = data.reduce((sum, d) => sum + (d.ce?.volume || 0), 0);
   const totalPutVolume = data.reduce((sum, d) => sum + (d.pe?.volume || 0), 0);
-  const pcr = totalPutOI > 0 ? Math.round((totalCallOI / totalPutOI) * 100) / 100 : 0;
+  const pcr = totalCallOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : 0;
 
   // Max Pain calculation - find strike where combined OI is maximum
   let maxPainStrike = atmStrike;

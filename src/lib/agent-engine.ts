@@ -373,8 +373,8 @@ const intents: Intent[] = [
   {
     patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i],
     handler: (ctx) => {
-      const lotSizes: Record<string, number> = { NIFTY: 75, BANKNIFTY: 35, FINNIFTY: 40, MIDCPNIFTY: 100, SENSEX: 20 };
-      const lot = lotSizes[ctx.symbol] || 75;
+      const lotSizes: Record<string, number> = { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20 };
+      const lot = lotSizes[ctx.symbol] || 65;
       const price = ctx.analysis?.recommendation?.entryPrice || 0;
       const sl = ctx.analysis?.recommendation?.stopLoss || 0;
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
