@@ -11,6 +11,12 @@ import {
   Activity,
   Zap,
   Brain,
+  Timer,
+  CalendarClock,
+  Bot,
+  Scan,
+  Newspaper,
+  Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +45,15 @@ import { SDMDashboard } from '@/components/dashboard/SDMDashboard';
 import { SDMOptionsPanel } from '@/components/dashboard/SDMOptionsPanel';
 import { SDMBot } from '@/components/option-chain/SDMBot';
 import { SimpleMode } from '@/components/dashboard/SimpleMode';
+import { GapAnalysis } from '@/components/dashboard/GapAnalysis';
+import { BacktestReport } from '@/components/dashboard/BacktestReport';
+import { BacktestTab } from '@/components/dashboard/BacktestTab';
+import { AgentChat } from '@/components/dashboard/AgentChat';
+import { ScannerPanel } from '@/components/dashboard/ScannerPanel';
+import { NewsPanel } from '@/components/dashboard/NewsPanel';
+import { BreakoutDetector } from '@/components/dashboard/BreakoutDetector';
+import { VirtualOptionChain } from '@/components/option-chain/VirtualOptionChain';
+import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
 import type { SDMRecommendation } from '@/types/sdm';
 import { getCurrentSession } from '@/lib/market-session';
@@ -117,10 +132,11 @@ function oiHeat(oi: number, maxOI: number, isCall: boolean): React.CSSProperties
 export default function TradingDashboard() {
   const [symbol, setSymbol] = useState('NIFTY');
   const [selectedExpiry, setSelectedExpiry] = useState('');
-  const [showGreeks, setShowGreeks] = useState(false);
+  const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
+  const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
   const { theme, setTheme } = useTheme();
   
@@ -137,6 +153,7 @@ export default function TradingDashboard() {
   const atmRef = useRef<HTMLTableRowElement>(null);
   
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
+  const [refreshCountdown, setRefreshCountdown] = useState(15);
   const [breezeStatus, setBreezeStatus] = useState<{ isConnected: boolean; loginInProgress: boolean; message: string }>({
     isConnected: false,
     loginInProgress: false,
@@ -161,6 +178,18 @@ export default function TradingDashboard() {
     },
     refetchInterval: autoRefresh ? 15000 : false,
     staleTime: 5000,
+  });
+  
+  // Fetch trade journal
+  const { data: journalData } = useQuery<any[]>({
+    queryKey: ['trade-journal'],
+    queryFn: async () => {
+      const res = await fetch('/api/trade-journal');
+      if (!res.ok) return [];
+      const json = await res.json();
+      return Array.isArray(json.trades) ? json.trades : Array.isArray(json) ? json : [];
+    },
+    staleTime: 30000,
   });
   
   // Update store
@@ -188,6 +217,19 @@ export default function TradingDashboard() {
     }
   }, [data?.summary?.atmStrike, selectedExpiry, symbol]);
   
+  // Auto-refresh countdown
+  useEffect(() => {
+    if (!autoRefresh) { setRefreshCountdown(0); return; }
+    setRefreshCountdown(15);
+    const interval = setInterval(() => {
+      setRefreshCountdown((prev) => {
+        if (prev <= 1) return 15;
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, data]);
+
   // Max OI for heat map
   const chainData = useMemo(() => {
     if (Array.isArray(data?.data)) return data.data;
@@ -279,18 +321,15 @@ export default function TradingDashboard() {
     <div className="min-h-screen flex flex-col bg-background text-foreground">
       {/* ─── Header ─── */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur-md">
-        <div className="flex items-center justify-between px-3 py-2 gap-2">
-          {/* Left: Logo + Symbol */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-md">
-                <Zap className="h-4 w-4 text-white" />
-              </div>
-              <h1 className="font-bold text-base tracking-tight hidden sm:block">SD PRO</h1>
+        {/* Row 1: Logo + Symbol + Controls */}
+        <div className="flex items-center justify-between px-3 py-1.5 gap-2">
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-md">
+              <Zap className="h-3.5 w-3.5 text-white" />
             </div>
-            
+            <h1 className="font-bold text-sm tracking-tight hidden sm:block">Angel</h1>
             <Select value={symbol} onValueChange={(v) => { setSymbol(v); setSelectedExpiry(''); }}>
-              <SelectTrigger className="w-[120px] h-8 text-sm font-bold">
+              <SelectTrigger className="w-[100px] h-7 text-xs font-bold">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -302,94 +341,15 @@ export default function TradingDashboard() {
               </SelectContent>
             </Select>
           </div>
-          
-          {/* Center: View Tabs + Expiry Tabs */}
-          <div className="flex items-center gap-2 flex-1 justify-center">
-            {/* View Mode Tabs */}
-            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
-              <Button
-                variant={viewMode === 'chain' ? 'default' : 'ghost'}
-                size="sm"
-                className={`h-7 text-[11px] px-3 font-bold ${
-                  viewMode === 'chain' ? 'bg-background shadow-sm' : 'text-muted-foreground'
-                }`}
-                onClick={() => setViewMode('chain')}
-              >
-                <Activity className="h-3 w-3 mr-1" /> Chain
-              </Button>
-              <Button
-                variant={viewMode === 'sdm' ? 'default' : 'ghost'}
-                size="sm"
-                className={`h-7 text-[11px] px-3 font-bold ${
-                  viewMode === 'sdm' ? 'bg-background shadow-sm' : 'text-muted-foreground'
-                }`}
-                onClick={() => setViewMode('sdm')}
-              >
-                <Brain className="h-3 w-3 mr-1" /> SDM AI
-              </Button>
-            </div>
-
-            <div className="w-px h-5 bg-border" />
-
-            {/* Simple/Pro Toggle */}
-            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
-              <Button
-                variant={displayMode === 'simple' ? 'default' : 'ghost'}
-                size="sm"
-                className={`h-7 text-[11px] px-3 font-bold ${
-                  displayMode === 'simple' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
-                }`}
-                onClick={() => setDisplayMode('simple')}
-              >
-                Simple
-              </Button>
-              <Button
-                variant={displayMode === 'pro' ? 'default' : 'ghost'}
-                size="sm"
-                className={`h-7 text-[11px] px-3 font-bold ${
-                  displayMode === 'pro' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
-                }`}
-                onClick={() => setDisplayMode('pro')}
-              >
-                Pro
-              </Button>
-            </div>
-            
-            <div className="w-px h-5 bg-border" />
-            
-            {/* Expiry Tabs */}
-            <div className="flex items-center gap-1 overflow-x-auto">
-              {data?.expiries?.slice(0, 5).map((exp) => (
-                <Button
-                  key={exp.date}
-                  variant={selectedExpiry === exp.date ? 'default' : 'ghost'}
-                  size="sm"
-                  className={`h-7 text-[11px] px-2 shrink-0 font-medium ${
-                    selectedExpiry === exp.date ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
-                  }`}
-                  onClick={() => { setSelectedExpiry(exp.date); setStoreExpiry(exp.date); }}
-                >
-                  {exp.label.split(' ').slice(0, 2).join(' ')}
-                  <span className="ml-0.5 text-[9px] opacity-60">({exp.daysToExpiry}d)</span>
-                </Button>
-              ))}
-            </div>
-          </div>
-          
-          {/* Right: Controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <MarketStatus />
-            
-            <Separator orientation="vertical" className="h-4" />
-            
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0"
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
             </Button>
-            
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2">
+                <Button variant="outline" size="sm" className="h-7 w-7 p-0">
                   <Settings2 className="h-3 w-3" />
                 </Button>
               </PopoverTrigger>
@@ -408,16 +368,94 @@ export default function TradingDashboard() {
                 </div>
               </PopoverContent>
             </Popover>
-            
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refetch()} disabled={isFetching}>
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { refetch(); setRefreshCountdown(15); }} disabled={isFetching}>
               <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
             </Button>
+            {autoRefresh && (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground tabular-nums">
+                <Timer className="h-3 w-3" />
+                <span>{refreshCountdown}s</span>
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Row 2: View Tabs + Simple/Pro + Expiry */}
+        <div className="flex items-center gap-1.5 px-3 pb-1.5 overflow-x-auto">
+          <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
+            <Button variant={viewMode === 'chain' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'chain' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
+              onClick={() => { setViewMode('chain'); setDisplayMode('pro'); }}>
+              <Activity className="h-2.5 w-2.5 mr-0.5" /> Chain
+            </Button>
+            <Button variant={viewMode === 'sdm' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'sdm' ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/25' : 'text-muted-foreground hover:text-violet-500'}`}
+              onClick={() => { setViewMode('sdm'); setDisplayMode('pro'); }}>
+              <Brain className="h-2.5 w-2.5 mr-0.5" /> SDM AI
+            </Button>
+            <Button variant={viewMode === 'gap' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'gap' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('gap'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Gap
+            </Button>
+            <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25' : 'text-muted-foreground hover:text-blue-500'}`}
+              onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
+              <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Backtest
+            </Button>
+            <Button variant={viewMode === 'agent' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'agent' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
+              onClick={() => { setViewMode('agent'); setDisplayMode('pro'); }}>
+              <Bot className="h-2.5 w-2.5 mr-0.5" /> Agent
+            </Button>
+            <Button variant={viewMode === 'scanner' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'scanner' ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/25' : 'text-muted-foreground hover:text-teal-500'}`}
+              onClick={() => { setViewMode('scanner'); setDisplayMode('pro'); }}>
+              <Scan className="h-2.5 w-2.5 mr-0.5" /> Scanner
+            </Button>
+            <Button variant={viewMode === 'news' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'news' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
+              onClick={() => { setViewMode('news'); setDisplayMode('pro'); }}>
+              <Newspaper className="h-2.5 w-2.5 mr-0.5" /> News
+            </Button>
+            <Button variant={viewMode === 'breakout' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'breakout' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
+              onClick={() => { setViewMode('breakout'); setDisplayMode('pro'); }}>
+              <Target className="h-2.5 w-2.5 mr-0.5" /> Breakout
+            </Button>
+          </div>
+
+          <div className="w-px h-4 bg-border shrink-0" />
+
+          <div className="flex items-center bg-muted/50 rounded-lg p-0.5 shrink-0">
+            <Button variant={displayMode === 'simple' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${displayMode === 'simple' ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
+              onClick={() => setDisplayMode('simple')}>
+              Simple
+            </Button>
+            <Button variant={displayMode === 'pro' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${displayMode === 'pro' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
+              onClick={() => setDisplayMode('pro')}>
+              Pro
+            </Button>
+          </div>
+          
+          <div className="w-px h-4 bg-border shrink-0 hidden sm:block" />
+          
+          <div className="flex items-center gap-0.5 overflow-x-auto shrink-0 hidden sm:flex">
+            {data?.expiries?.slice(0, 5).map((exp) => (
+              <Button key={exp.date} variant={selectedExpiry === exp.date ? 'default' : 'ghost'} size="sm"
+                className={`h-6 text-[9px] px-1.5 shrink-0 font-medium ${selectedExpiry === exp.date ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'}`}
+                onClick={() => { setSelectedExpiry(exp.date); setStoreExpiry(exp.date); }}>
+                {exp.label.split(' ').slice(0, 2).join(' ')}
+                <span className="ml-0.5 text-[7px] opacity-60">({exp.daysToExpiry}d)</span>
+              </Button>
+            ))}
           </div>
         </div>
         
         {/* Market Summary Strip */}
         {summary && (
-          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-border/50 overflow-x-auto text-[11px]">
+          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-border/50 overflow-x-auto text-[11px] scrollbar-hide">
             <span className="text-muted-foreground">Spot</span>
             <span className="font-bold tabular-nums">{fmt(summary.spotPrice)}</span>
             <Badge className={`text-[9px] h-4 px-1 ${isPositive ? 'bg-emerald-600' : 'bg-red-600'} text-white`}>
@@ -484,142 +522,97 @@ export default function TradingDashboard() {
               recommendation={recommendation}
               spotPrice={data?.spotPrice || summary?.spotPrice || 0}
               symbol={symbol}
+              onSwitchToPro={() => setDisplayMode('pro')}
             />
           </div>
         ) : viewMode === 'chain' ? (
           <>
-            {/* Left: Option Chain */}
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Column Headers */}
-              <table className="w-full border-collapse text-[11px]">
-                <thead className="sticky top-0 z-40">
-                  <tr>
-                    <th colSpan={showGreeks ? 7 : 5} className="py-1.5 text-center bg-red-500/10 dark:bg-red-500/20 border-b-2 border-red-500/30">
-                      <span className="text-red-600 dark:text-red-400 font-bold text-xs tracking-widest">CALLS</span>
-                    </th>
-                    <th className="py-1.5 text-center bg-muted border-b-2 border-border">
-                      <span className="font-bold text-xs"><Activity className="h-3 w-3 inline" /> STRIKE</span>
-                    </th>
-                    <th colSpan={showGreeks ? 7 : 5} className="py-1.5 text-center bg-emerald-500/10 dark:bg-emerald-500/20 border-b-2 border-emerald-500/30">
-                      <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xs tracking-widest">PUTS</span>
-                    </th>
-                  </tr>
-              <tr className="text-[9px] font-semibold text-muted-foreground bg-muted/70">
-                <th className="px-1 py-1 text-right">OI</th>
-                <th className="px-1 py-1 text-right">Chg</th>
-                <th className="px-1 py-1 text-right">Vol</th>
-                <th className="px-1 py-1 text-right">LTP</th>
-                {showGreeks && <><th className="px-1 py-1 text-right">Δ</th><th className="px-1 py-1 text-right">Θ</th><th className="px-1 py-1 text-right">γ</th></>}
-                <th className="px-1 py-1 text-center font-bold">₹</th>
-                {showGreeks && <><th className="px-1 py-1 text-left">γ</th><th className="px-1 py-1 text-left">Θ</th><th className="px-1 py-1 text-left">Δ</th></>}
-                <th className="px-1 py-1 text-left">LTP</th>
-                <th className="px-1 py-1 text-left">Vol</th>
-                <th className="px-1 py-1 text-left">Chg</th>
-                <th className="px-1 py-1 text-left">OI</th>
-              </tr>
-            </thead>
-            <tbody className="overflow-auto">
-              {chainData.map((row) => {
-                const isATM = row.strike === data?.summary?.atmStrike;
-                const spot = data?.spotPrice || 0;
-                const isITMCall = row.strike < spot;
-                const isITMPut = row.strike > spot;
-                
-                return (
-                  <tr
-                    key={row.strike}
-                    ref={isATM ? atmRef : undefined}
-                    className={`border-b border-border/30 transition-colors duration-75 hover:bg-accent/20 ${
-                      isATM ? 'bg-primary/8 ring-1 ring-inset ring-primary/20' : ''
-                    }`}
-                  >
-                    {/* CALL Side */}
-                    <td className="px-1 py-1 text-right font-mono tabular-nums cursor-pointer" style={row.ce ? oiHeat(row.ce.oi, maxOI, true) : undefined}
-                      onClick={() => row.ce && handleTrade(row.strike, 'call', 'buy')}>
-                      <span className={row.ce && row.ce.oi > maxCallOI * 0.7 ? 'font-bold text-red-600 dark:text-red-400' : ''}>
-                        {row.ce ? formatIndian(row.ce.oi) : '—'}
-                      </span>
-                    </td>
-                    <td className={`px-1 py-1 text-right font-mono tabular-nums text-xs ${row.ce?.oiChg > 0 ? 'text-red-500' : row.ce?.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'}`}>
-                      {row.ce ? (row.ce.oiChg > 0 ? '+' : '') + formatIndian(row.ce.oiChg) : '—'}
-                    </td>
-                    <td className="px-1 py-1 text-right font-mono tabular-nums text-muted-foreground">
-                      {row.ce ? formatIndian(row.ce.volume) : '—'}
-                    </td>
-                    <td className={`px-1 py-1 text-right font-mono tabular-nums font-semibold ${isITMCall ? 'bg-red-500/8' : ''}`}>
-                      {row.ce ? fmt(row.ce.ltp) : '—'}
-                    </td>
-                    {showGreeks && row.ce && (
-                      <><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.delta)}</td><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.theta)}</td><td className="px-1 py-1 text-right font-mono text-muted-foreground/60">{fmt(row.ce.gamma, 4)}</td></>
-                    )}
-                    {showGreeks && !row.ce && <><td /><td /><td /></>}
-                    
-                    {/* STRIKE */}
-                    <td className={`px-2 py-1 text-center font-bold font-mono tabular-nums bg-muted/50 ${isATM ? 'bg-primary/15 text-primary text-[12px]' : ''}`}>
-                      {row.strike}
-                      {isATM && <span className="ml-1 text-[8px] font-medium text-primary/70">ATM</span>}
-                    </td>
-                    
-                    {/* PUT Side */}
-                    {showGreeks && row.pe && (
-                      <><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.gamma, 4)}</td><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.theta)}</td><td className="px-1 py-1 text-left font-mono text-muted-foreground/60">{fmt(row.pe.delta)}</td></>
-                    )}
-                    {showGreeks && !row.pe && <><td /><td /><td /></>}
-                    <td className={`px-1 py-1 text-left font-mono tabular-nums font-semibold ${isITMPut ? 'bg-emerald-500/8' : ''}`}
-                      onClick={() => row.pe && handleTrade(row.strike, 'put', 'buy')}>
-                      {row.pe ? fmt(row.pe.ltp) : '—'}
-                    </td>
-                    <td className="px-1 py-1 text-left font-mono tabular-nums text-muted-foreground">
-                      {row.pe ? formatIndian(row.pe.volume) : '—'}
-                    </td>
-                    <td className={`px-1 py-1 text-left font-mono tabular-nums text-xs ${row.pe?.oiChg > 0 ? 'text-red-500' : row.pe?.oiChg < 0 ? 'text-emerald-500' : 'text-muted-foreground'}`}>
-                      {row.pe ? (row.pe.oiChg > 0 ? '+' : '') + formatIndian(row.pe.oiChg) : '—'}
-                    </td>
-                    <td className="px-1 py-1 text-left font-mono tabular-nums cursor-pointer" style={row.pe ? oiHeat(row.pe.oi, maxOI, false) : undefined}
-                      onClick={() => row.pe && handleTrade(row.strike, 'put', 'buy')}>
-                      <span className={row.pe && row.pe.oi > maxPutOI * 0.7 ? 'font-bold text-emerald-600 dark:text-emerald-400' : ''}>
-                        {row.pe ? formatIndian(row.pe.oi) : '—'}
-                      </span>
-                    </td>
-                    
-                    {/* Buy/Sell Buttons */}
-                    <td className="px-1 py-1">
-                      <div className="flex gap-0.5">
-                        {row.ce && (
-                          <Button size="sm" className="h-5 w-8 text-[8px] px-0 bg-emerald-600 hover:bg-emerald-700"
-                            onClick={() => handleTrade(row.strike, 'call', 'buy')}>
-                            B
-                          </Button>
-                        )}
-                        {row.pe && (
-                          <Button size="sm" className="h-5 w-8 text-[8px] px-0 bg-red-600 hover:bg-red-700"
-                            onClick={() => handleTrade(row.strike, 'put', 'sell')}>
-                            S
-                          </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        
+            {/* Left: Option Chain (Virtualized) */}
+            <VirtualOptionChain
+              data={chainData}
+              maxOI={maxOI}
+              maxCallOI={maxCallOI}
+              maxPutOI={maxPutOI}
+              atmStrike={data?.summary?.atmStrike ?? 0}
+              spot={data?.spotPrice || 0}
+              showGreeks={showGreeks}
+              onTrade={handleTrade}
+              scrollToATM
+            />
+
         {/* Right Sidebar: SDM AI + Orders + Positions */}
-        <div className="w-[340px] border-l overflow-auto hidden lg:block">
+        {showSidebar ? (
+        <div className="w-[320px] border-l overflow-auto hidden lg:block shrink-0 relative">
+          <Button variant="ghost" size="sm" className="absolute top-1 right-1 z-10 h-6 w-6 p-0 text-muted-foreground"
+            onClick={() => setShowSidebar(false)}>
+            ✕
+          </Button>
           <div className="space-y-0">
-            {/* SDM AI Dashboard */}
             <SDMDashboard analysis={analysis} loading={isLoading} />
             <OrderBook />
             <PositionTracker />
           </div>
         </div>
-        </>
         ) : (
+        <div className="hidden lg:flex flex-col items-center border-l py-2 gap-2 shrink-0">
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+            onClick={() => setShowSidebar(true)}>
+            ☰
+          </Button>
+        </div>
+        )}
+        </>
+        ) : viewMode === 'sdm' ? (
         /* ═══════ SDM OPTIONS AI FULL VIEW ═══════ */
         <div className="flex-1 overflow-hidden">
           <SDMOptionsPanel analysis={analysis} chainData={chainData} loading={isLoading} />
+        </div>
+        ) : viewMode === 'backtest' ? (
+        /* ═══════ BACKTEST VIEW ═══════ */
+        <div className="flex-1 overflow-auto p-3">
+          <BacktestTab trades={journalData || []} symbol={symbol} />
+        </div>
+        ) : viewMode === 'agent' ? (
+        /* ═══════ AGENT VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <AgentChat
+            symbol={symbol}
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+            analysis={analysis}
+            summary={summary}
+            gammaBlast={null}
+            expiryDate={selectedExpiry}
+          />
+        </div>
+        ) : viewMode === 'scanner' ? (
+        /* ═══════ INTRADAY SCANNER VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <ScannerPanel
+            symbol={symbol}
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+          />
+        </div>
+        ) : viewMode === 'news' ? (
+        /* ═══════ NEWS SENTIMENT VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <NewsPanel symbol={symbol} />
+        </div>
+        ) : viewMode === 'breakout' ? (
+        /* ═══════ BREAKOUT DETECTOR VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <BreakoutDetector />
+        </div>
+        ) : (
+        /* ═══════ GAP ANALYSIS VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <GapAnalysis
+            analysis={analysis}
+            summary={summary}
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+            symbol={symbol}
+            expiryDate={selectedExpiry}
+            chainData={chainData}
+          />
         </div>
         )}
       </div>
@@ -631,10 +624,23 @@ export default function TradingDashboard() {
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-red-500/40 inline-block" /> Call OI</span>
             <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-emerald-500/40 inline-block" /> Put OI</span>
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" /> ATM</span>
+            <span className="border-l border-border pl-2">Lot: {getLotSize(symbol)}</span>
+            <span>Lot × 25 = {getLotSize(symbol) * 25} qty</span>
           </div>
-          {data?.timestamp && (
-            <span>Updated: {new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
-          )}
+          <div className="flex items-center gap-3">
+            {marketSession && (
+              <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium ${
+                marketSession.session === 'primary' ? 'bg-emerald-500/20 text-emerald-500' :
+                marketSession.session === 'closed' ? 'bg-red-500/20 text-red-500' :
+                'bg-yellow-500/20 text-yellow-500'
+              }`}>
+                {marketSession.label}
+              </span>
+            )}
+            {data?.timestamp && (
+              <span>Updated: {new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
+            )}
+          </div>
         </div>
       </footer>
       

@@ -1,0 +1,16 @@
+npm install -g opencode-ai
+opencode
+/models
+/init
+sudo npm install -g opencode-ai
+cd ~/Desktop/SMDApp
+opencode --continue
+/compact
+# Morning
+cd ~/Desktop/SMDApp
+opencode --continue
+
+# Check model
+/models  → select MiMo V2.5 Free
+
+# Continue working...

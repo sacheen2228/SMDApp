@@ -1253,6 +1253,7 @@ export function runFullAnalysis(
       putWriting: totalPEOI > totalCEOI,
     },
     greeks: {
+      vix: 15,
       ivRank: 50,
       ivPercentile: 50,
       overallGreeksScore: Math.round(confidence),

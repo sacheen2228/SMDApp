@@ -51,7 +51,7 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
       case "SELL_PUT":
         return <span className="text-purple-400">▲</span>;
       default:
-        return <span className="text-gray-400">⏸</span>;
+        return <span className="text-muted-foreground">⏸</span>;
     }
   };
 
@@ -79,11 +79,11 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
       {/* Toggle */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center gap-1 text-[10px] text-gray-400 hover:text-gray-300 transition-colors w-full"
+        className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors w-full"
       >
         {getDirectionIcon()}
         <span>SDM Scores</span>
-        <span className="text-[9px] text-gray-500 ml-auto">
+        <span className="text-[9px] text-muted-foreground ml-auto">
           {strongCount} strong · {weakCount} weak
         </span>
         {isExpanded ? (
@@ -100,7 +100,7 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
             <div key={entry.label} className="flex items-center gap-2">
               <span
                 className={`text-[9px] w-16 text-right ${
-                  entry.highlight ? "text-amber-400 font-bold" : "text-gray-400"
+                  entry.highlight ? "text-amber-400 font-bold" : "text-muted-foreground"
                 }`}
               >
                 {entry.label}
@@ -138,7 +138,7 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
             </div>
           ))}
           {/* Legend */}
-          <div className="flex justify-between text-[8px] text-gray-500 mt-1 pt-1 border-t border-white/5">
+          <div className="flex justify-between text-[8px] text-muted-foreground mt-1 pt-1 border-t border-border">
             <span>0-39: Weak</span>
             <span>40-59: Moderate</span>
             <span>60-79: Strong</span>

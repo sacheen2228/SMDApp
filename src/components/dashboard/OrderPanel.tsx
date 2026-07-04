@@ -52,7 +52,7 @@ export function OrderPanel() {
           expiryDate: selectedExpiry,
           right: selectedOption,
           strikePrice: String(selectedStrike),
-          userRemark: `SD PRO ${action} ${selectedStrike} ${selectedOption}`,
+          userRemark: `Angel ${action} ${selectedStrike} ${selectedOption}`,
         }),
       });
       

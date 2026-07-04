@@ -26,19 +26,19 @@ export function DataHealthStrip({ health, source, lastUpdate }: DataHealthStripP
   const isLive = source.toLowerCase().includes("live") || source.toLowerCase().includes("breeze");
 
   return (
-    <div className="bg-slate-900/80 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-3 max-h-8 text-xs overflow-x-auto">
+    <div className="bg-card/80 border border-border rounded-lg px-3 py-1.5 flex items-center gap-3 max-h-8 text-xs overflow-x-auto">
       {/* Connection status */}
       <div className="flex items-center gap-1.5 shrink-0">
         <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
-        <StatusIcon className="w-3 h-3 text-gray-400" />
-        <span className="text-gray-300">{statusLabel}</span>
+        <StatusIcon className="w-3 h-3 text-muted-foreground" />
+        <span className="text-foreground">{statusLabel}</span>
       </div>
 
       <span className="text-gray-600">|</span>
 
       {/* Latency */}
       <div className="flex items-center gap-1 shrink-0">
-        <Activity className="w-3 h-3 text-gray-500" />
+        <Activity className="w-3 h-3 text-muted-foreground" />
         <span className={latencyColor}>{health.latencyMs}ms</span>
       </div>
 

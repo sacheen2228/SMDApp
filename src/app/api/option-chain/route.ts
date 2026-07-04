@@ -12,6 +12,23 @@ import type { OptionChainStrike } from '@/lib/sdm-engine';
 // Init Breeze session on first request
 let sessionInitialized = false;
 
+function parseBreezeDate(dateStr: string): Date {
+  if (!dateStr) return new Date();
+  // Format: "28-Jul-2026"
+  const months: Record<string, number> = {
+    Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+    Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+  };
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const day = parseInt(parts[0], 10);
+    const month = months[parts[1]] ?? 0;
+    const year = parseInt(parts[2], 10);
+    return new Date(year, month, day);
+  }
+  return new Date(dateStr);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -37,12 +54,14 @@ export async function GET(request: NextRequest) {
         }
       } else {
         const expiries = await getOptionChainExpiries(symbol);
-        // Try each expiry until one works
+        // Try each expiry and pick the nearest one with valid data
         for (const exp of expiries) {
           const chain = await getOptionChain(symbol, exp);
           if (chain) {
             chainData = { ...chain, expiries };
             source = 'icici-breeze';
+            // Don't break — keep trying to find the nearest valid expiry
+            // (some generated dates may not have data, so continue to find nearest)
             break;
           }
         }
@@ -179,12 +198,23 @@ export async function GET(request: NextRequest) {
     
     // Run full SDM analysis
     const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
+
+    // Transform expiry strings into objects the frontend expects
+    const rawExpiries = chainData.expiries || [];
+    const expiries = rawExpiries.map((e: any) => {
+      const dateStr = typeof e === 'string' ? e : e?.date || '';
+      const dateObj = parseBreezeDate(dateStr);
+      const now = new Date();
+      const diffMs = dateObj.getTime() - now.getTime();
+      const daysToExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+      return { date: dateStr, label: dateStr, daysToExpiry };
+    });
     
     return NextResponse.json({
       success: true,
       source,
       lastUpdate: new Date().toISOString(),
-      data: { ...chainData, dataSource: source },
+      data: { ...chainData, data: optionChainStrikes, expiries, dataSource: source },
       analysis,
     });
     
