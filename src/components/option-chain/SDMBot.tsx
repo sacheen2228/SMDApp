@@ -4,7 +4,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { SDMOptionStrike, SDMRecommendation } from "@/types/sdm";
+import type { SDMOptionStrike, SDMRecommendation, CandleData } from "@/types/sdm";
 import {
   generateTradeRecommendation,
   validateOptionChain,
@@ -207,7 +207,18 @@ export function SDMBot({
     const source = optionChainData?.source || "simulation";
     const lastUpdate =
       optionChainData?.lastUpdate || new Date().toISOString();
-    const candles = optionChainData?.candles || {};
+    const rawCandles = optionChainData?.candles;
+    // API returns flat array; wrap into Record<string, CandleData[]> for multi-timeframe engine
+    const candles: Record<string, CandleData[]> = Array.isArray(rawCandles) && rawCandles.length > 0
+      ? { '5m': rawCandles.map((c: any) => ({
+          time: typeof c.time === 'string' ? new Date(c.timestamp || c.time).getTime() : (c.time || 0),
+          open: c.open || 0,
+          high: c.high || 0,
+          low: c.low || 0,
+          close: c.close || 0,
+          volume: c.volume || 0,
+        }))}
+      : {};
     const vix = optionChainData?.vix || 15;
 
     // Compute data health for DataHealthStrip
