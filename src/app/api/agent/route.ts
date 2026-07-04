@@ -7,8 +7,34 @@ import { db } from "@/lib/db";
 import { getCurrentSession } from "@/lib/market-session";
 import type { LLMMessage } from "@/lib/llm-client";
 
-// In-memory conversation store (per symbol, last 20 messages)
-const conversationStore = new Map<string, LLMMessage[]>();
+// In-memory conversation store (per symbol, last 20 messages, max 50 symbols)
+const conversationStore = new Map<string, { messages: LLMMessage[]; lastAccess: number }>();
+const MAX_SYMBOLS = 50;
+const MAX_MESSAGES = 20;
+
+function getConversation(sym: string): LLMMessage[] {
+  const now = Date.now();
+  const existing = conversationStore.get(sym);
+  if (existing) {
+    existing.lastAccess = now;
+    return existing.messages;
+  }
+  // Evict oldest if at capacity
+  if (conversationStore.size >= MAX_SYMBOLS) {
+    let oldestKey = "";
+    let oldestTime = Infinity;
+    for (const [key, val] of conversationStore) {
+      if (val.lastAccess < oldestTime) {
+        oldestTime = val.lastAccess;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) conversationStore.delete(oldestKey);
+  }
+  const messages: LLMMessage[] = [];
+  conversationStore.set(sym, { messages, lastAccess: now });
+  return messages;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -37,16 +63,13 @@ export async function POST(req: NextRequest) {
     const sym = symbol || "NIFTY";
 
     // Get or create conversation history
-    if (!conversationStore.has(sym)) {
-      conversationStore.set(sym, []);
-    }
-    const conversationHistory = conversationStore.get(sym)!;
+    const conversationHistory = getConversation(sym);
 
     // Add user message to history
     conversationHistory.push({ role: "user", content: message });
 
     // Keep only last 20 messages to avoid token limits
-    while (conversationHistory.length > 20) {
+    while (conversationHistory.length > MAX_MESSAGES) {
       conversationHistory.shift();
     }
 
