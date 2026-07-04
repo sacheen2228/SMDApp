@@ -108,10 +108,10 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-base font-bold text-[#e0e0e0]">
+          <h1 className="text-base font-bold text-foreground">
             Candlestick Breakout + Fakeout Detection
           </h1>
-          <p className="text-[10px] text-[#9e9e9e]">
+          <p className="text-[10px] text-muted-foreground">
             {SYMBOL_CONFIGS[symbol]?.name || symbol} • Live Strategy Engine
           </p>
         </div>
@@ -125,23 +125,23 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
                 size="sm"
                 className={`h-7 px-3 text-[10px] font-bold ${
                   symbol === sym
-                    ? "bg-[#e91e63] text-white"
-                    : "text-[#9e9e9e] hover:text-[#e0e0e0]"
+                    ? "bg-pink-600 text-white"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {sym}
               </Button>
             ))}
           </div>
-          <Button onClick={() => refetch()} variant="ghost" size="sm" className="h-7 w-7 p-0">
+          <Button onClick={() => refetch()} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Refresh breakout data">
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
         </div>
       </div>
 
       {isLoading ? (
-        <Card className="border-[#2d2d2d] bg-[#1e1e1e]">
-          <CardContent className="p-6 text-center text-[#9e9e9e] text-xs">
+        <Card className="border-border bg-card">
+          <CardContent className="p-6 text-center text-muted-foreground text-xs">
             Loading strategy signals...
           </CardContent>
         </Card>
@@ -152,51 +152,51 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
             <Card
               className="border"
               style={{
-                borderColor: trade.type === "BREAKOUT_SIGNAL" ? "#4caf5060" : trade.type === "FAKEOUT_ALERT" ? "#ff980060" : "#333",
-                backgroundColor: trade.type === "BREAKOUT_SIGNAL" ? "#1b2a1b" : trade.type === "FAKEOUT_ALERT" ? "#2a2a1b" : "#1e1e1e",
+                borderColor: trade.type === "BREAKOUT_SIGNAL" ? "hsl(var(--green) / 0.3)" : trade.type === "FAKEOUT_ALERT" ? "hsl(var(--orange) / 0.3)" : "hsl(var(--border))",
+                backgroundColor: trade.type === "BREAKOUT_SIGNAL" ? "hsl(var(--green) / 0.08)" : trade.type === "FAKEOUT_ALERT" ? "hsl(var(--orange) / 0.08)" : "hsl(var(--card))",
               }}
             >
               <CardContent className="p-3">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     {trade.type === "BREAKOUT_SIGNAL" ? (
-                      <CheckCircle className="w-4 h-4 text-[#4caf50]" />
+                      <CheckCircle className="w-4 h-4 text-green-500" />
                     ) : trade.type === "FAKEOUT_ALERT" ? (
-                      <AlertTriangle className="w-4 h-4 text-[#ff9800]" />
+                      <AlertTriangle className="w-4 h-4 text-orange-500" />
                     ) : (
-                      <XCircle className="w-4 h-4 text-[#757575]" />
+                      <XCircle className="w-4 h-4 text-muted-foreground" />
                     )}
-                    <span className="text-xs font-bold text-[#e0e0e0]">
+                    <span className="text-xs font-bold text-foreground">
                       {trade.type === "BREAKOUT_SIGNAL"
                         ? "VALID BREAKOUT"
                         : trade.type === "FAKEOUT_ALERT"
                           ? "FAKEOUT ALERT"
                           : "NO PATTERN"}
                     </span>
-                    <Badge className="text-[9px] bg-[#333] text-[#ccc]">
+                    <Badge className="text-[9px] bg-muted text-muted-foreground">
                       {Math.round(trade.confidence || 0)}% confidence
                     </Badge>
                   </div>
-                  <span className="text-[9px] text-[#9e9e9e]">{trade.marketTime}</span>
+                  <span className="text-[9px] text-muted-foreground">{trade.marketTime}</span>
                 </div>
 
                 {/* Entry / SL / Target */}
                 <div className="grid grid-cols-3 gap-3 mb-3">
-                  <div className="text-center p-2 rounded bg-[#111]">
-                    <div className="text-[8px] text-[#9e9e9e] mb-1">ENTRY</div>
-                    <div className="text-sm font-bold text-[#e0e0e0]">
+                  <div className="text-center p-2 rounded bg-muted/30">
+                    <div className="text-[8px] text-muted-foreground mb-1">ENTRY</div>
+                    <div className="text-sm font-bold text-foreground">
                       ₹{Math.round(trade.entryPrice || trade.level || 0).toLocaleString("en-IN")}
                     </div>
                   </div>
-                  <div className="text-center p-2 rounded bg-[#111]">
-                    <div className="text-[8px] text-[#9e9e9e] mb-1">STOP LOSS</div>
-                    <div className="text-sm font-bold text-[#ff5252]">
+                  <div className="text-center p-2 rounded bg-muted/30">
+                    <div className="text-[8px] text-muted-foreground mb-1">STOP LOSS</div>
+                    <div className="text-sm font-bold text-red-500">
                       ₹{Math.round(trade.slPrice || 0).toLocaleString("en-IN")}
                     </div>
                   </div>
-                  <div className="text-center p-2 rounded bg-[#111]">
-                    <div className="text-[8px] text-[#9e9e9e] mb-1">TARGET</div>
-                    <div className="text-sm font-bold text-[#4caf50]">
+                  <div className="text-center p-2 rounded bg-muted/30">
+                    <div className="text-[8px] text-muted-foreground mb-1">TARGET</div>
+                    <div className="text-sm font-bold text-green-500">
                       ₹{Math.round(trade.targetPrice || 0).toLocaleString("en-IN")}
                     </div>
                   </div>
@@ -204,34 +204,26 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
 
                 {/* R:R + Pattern */}
                 <div className="flex items-center justify-between text-[9px]">
-                  <span className="text-[#9e9e9e]">
-                    Pattern: <span className="text-[#e0e0e0] font-bold">{trade.pattern || "none"}</span>
+                  <span className="text-muted-foreground">
+                    Pattern: <span className="text-foreground font-bold">{trade.pattern || "none"}</span>
                   </span>
-                  <span className="text-[#9e9e9e]">
-                    R:R: <span className="text-[#e0e0e0] font-bold">{trade.riskReward || "—"}</span>
+                  <span className="text-muted-foreground">
+                    R:R: <span className="text-foreground font-bold">{trade.riskReward || "—"}</span>
                   </span>
-                  <span className="text-[#9e9e9e]">
-                    Level: <span className="text-[#e0e0e0] font-bold">{trade.levelName}</span>
+                  <span className="text-muted-foreground">
+                    Level: <span className="text-foreground font-bold">{trade.levelName}</span>
                   </span>
                 </div>
 
                 {/* Action */}
                 <div className="flex gap-2 mt-3">
                   <button
-                    className="flex-1 py-2 rounded font-bold text-xs"
-                    style={{
-                      backgroundColor: trade.direction === "bullish" ? "#1b5e20" : "#b71c1c",
-                      color: "#fff",
-                    }}
+                    className="flex-1 py-2 rounded font-bold text-xs bg-green-700 text-white hover:bg-green-600 transition-colors"
                   >
                     BUY {trade.direction === "bullish" ? "CE" : "PE"}
                   </button>
                   <button
-                    className="flex-1 py-2 rounded font-bold text-xs"
-                    style={{
-                      backgroundColor: trade.direction === "bullish" ? "#b71c1c" : "#1b5e20",
-                      color: "#fff",
-                    }}
+                    className="flex-1 py-2 rounded font-bold text-xs bg-red-700 text-white hover:bg-red-600 transition-colors"
                   >
                     SELL {trade.direction === "bullish" ? "PE" : "CE"}
                   </button>
@@ -239,8 +231,8 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
               </CardContent>
             </Card>
           ) : (
-            <Card className="border-[#2d2d2d] bg-[#1e1e1e]">
-              <CardContent className="p-4 text-center text-[#9e9e9e] text-xs">
+            <Card className="border-border bg-card">
+              <CardContent className="p-4 text-center text-muted-foreground text-xs">
                 No signal currently. Strategy is scanning for breakout patterns.
               </CardContent>
             </Card>
@@ -248,12 +240,12 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
 
           {/* Candlestick Chart */}
           {candles.length > 0 && (
-            <Card className="border-[#2d2d2d] bg-[#1e1e1e]">
+            <Card className="border-border bg-card">
               <CardContent className="p-2">
                 <div className="flex items-center gap-2 mb-1">
-                  <Activity className="w-3.5 h-3.5 text-[#9e9e9e]" />
-                  <span className="text-[9px] text-[#9e9e9e] font-bold uppercase">Live Candles</span>
-                  <span className="text-[8px] text-[#666]">• {candles.length} bars</span>
+                  <Activity className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-[9px] text-muted-foreground font-bold uppercase">Live Candles</span>
+                  <span className="text-[8px] text-muted-foreground/60">• {candles.length} bars</span>
                 </div>
                 <MiniChart candles={candles} trades={recentSignals} />
               </CardContent>
@@ -263,16 +255,16 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
           {/* Stats Row */}
           <div className="grid grid-cols-5 gap-2">
             {[
-              { label: "Signals", value: stats.total || 0, color: "#e0e0e0" },
-              { label: "Valid", value: stats.valid || 0, color: "#4caf50" },
-              { label: "Fakeouts", value: stats.fakeouts || 0, color: "#ff9800" },
-              { label: "Win Rate", value: `${stats.winRate || 0}%`, color: (stats.winRate || 0) >= 50 ? "#4caf50" : "#ff5252" },
-              { label: "VIX", value: Math.round(signals.vix || 0), color: "#e0e0e0" },
+              { label: "Signals", value: stats.total || 0, color: "text-foreground" },
+              { label: "Valid", value: stats.valid || 0, color: "text-green-500" },
+              { label: "Fakeouts", value: stats.fakeouts || 0, color: "text-orange-500" },
+              { label: "Win Rate", value: `${stats.winRate || 0}%`, color: (stats.winRate || 0) >= 50 ? "text-green-500" : "text-red-500" },
+              { label: "VIX", value: Math.round(signals.vix || 0), color: "text-foreground" },
             ].map((s) => (
-              <Card key={s.label} className="border-[#2d2d2d] bg-[#1e1e1e]">
+              <Card key={s.label} className="border-border bg-card">
                 <CardContent className="p-2 text-center">
-                  <div className="text-[8px] text-[#9e9e9e]">{s.label}</div>
-                  <div className="text-sm font-bold" style={{ color: s.color }}>{s.value}</div>
+                  <div className="text-[8px] text-muted-foreground">{s.label}</div>
+                  <div className={`text-sm font-bold ${s.color}`}>{s.value}</div>
                 </CardContent>
               </Card>
             ))}
@@ -280,22 +272,21 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
 
           {/* S/R Levels */}
           {srLevels.length > 0 && (
-            <Card className="border-[#2d2d2d] bg-[#1e1e1e]">
+            <Card className="border-border bg-card">
               <CardContent className="p-2">
                 <div className="flex items-center gap-2 mb-2">
-                  <Shield className="w-3.5 h-3.5 text-[#9e9e9e]" />
-                  <span className="text-[9px] text-[#9e9e9e] font-bold uppercase">Support / Resistance</span>
+                  <Shield className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-[9px] text-muted-foreground font-bold uppercase">Support / Resistance</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {srLevels.map((l: any, i: number) => (
                     <div
                       key={i}
-                      className="px-3 py-1.5 rounded text-[10px] font-bold"
-                      style={{
-                        backgroundColor: l.type === "RESISTANCE" ? "#ff525215" : "#4caf5015",
-                        color: l.type === "RESISTANCE" ? "#ff5252" : "#4caf50",
-                        border: `1px solid ${l.type === "RESISTANCE" ? "#ff525230" : "#4caf5030"}`,
-                      }}
+                      className={`px-3 py-1.5 rounded text-[10px] font-bold border ${
+                        l.type === "RESISTANCE"
+                          ? "bg-red-500/10 text-red-500 border-red-500/20"
+                          : "bg-green-500/10 text-green-500 border-green-500/20"
+                      }`}
                     >
                       {l.name}: ₹{Math.round(l.price).toLocaleString("en-IN")}
                     </div>
@@ -307,31 +298,31 @@ export const BreakoutDetector = memo(function BreakoutDetector() {
 
           {/* Recent Signals */}
           {recentSignals.length > 0 && (
-            <Card className="border-[#2d2d2d] bg-[#1e1e1e]">
+            <Card className="border-border bg-card">
               <CardContent className="p-2">
                 <div className="flex items-center gap-2 mb-2">
-                  <Zap className="w-3.5 h-3.5 text-[#9e9e9e]" />
-                  <span className="text-[9px] text-[#9e9e9e] font-bold uppercase">Recent Signals</span>
+                  <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-[9px] text-muted-foreground font-bold uppercase">Recent Signals</span>
                 </div>
                 <div className="space-y-1 max-h-40 overflow-y-auto">
                   {recentSignals.map((sig: any, i: number) => (
-                    <div key={i} className="flex items-center gap-3 p-2 rounded bg-[#111] text-[10px]">
+                    <div key={i} className="flex items-center gap-3 p-2 rounded bg-muted/30 text-[10px]">
                       {sig.type === "BREAKOUT_SIGNAL" ? (
-                        <TrendingUp className="w-3.5 h-3.5 text-[#4caf50] shrink-0" />
+                        <TrendingUp className="w-3.5 h-3.5 text-green-500 shrink-0" />
                       ) : sig.type === "FAKEOUT_ALERT" ? (
-                        <AlertTriangle className="w-3.5 h-3.5 text-[#ff9800] shrink-0" />
+                        <AlertTriangle className="w-3.5 h-3.5 text-orange-500 shrink-0" />
                       ) : (
-                        <XCircle className="w-3.5 h-3.5 text-[#757575] shrink-0" />
+                        <XCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                       )}
-                      <span className="text-[#9e9e9e] flex-1">
+                      <span className="text-muted-foreground flex-1">
                         {sig.pattern || "no pattern"} • ₹{Math.round(sig.entryPrice || sig.level || 0).toLocaleString("en-IN")}
                       </span>
                       <Badge
-                        className="text-[8px]"
-                        style={{
-                          backgroundColor: sig.type === "BREAKOUT_SIGNAL" ? "#4caf5020" : sig.type === "FAKEOUT_ALERT" ? "#ff980020" : "#75757520",
-                          color: sig.type === "BREAKOUT_SIGNAL" ? "#4caf50" : sig.type === "FAKEOUT_ALERT" ? "#ff9800" : "#757575",
-                        }}
+                        className={`text-[8px] ${
+                          sig.type === "BREAKOUT_SIGNAL" ? "bg-green-500/20 text-green-500" :
+                          sig.type === "FAKEOUT_ALERT" ? "bg-orange-500/20 text-orange-500" :
+                          "bg-muted text-muted-foreground"
+                        }`}
                       >
                         {sig.type === "BREAKOUT_SIGNAL" ? "VALID" : sig.type === "FAKEOUT_ALERT" ? "FAKEOUT" : "SKIP"}
                       </Badge>

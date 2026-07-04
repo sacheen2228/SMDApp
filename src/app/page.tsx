@@ -52,6 +52,9 @@ import { AgentChat } from '@/components/dashboard/AgentChat';
 import { ScannerPanel } from '@/components/dashboard/ScannerPanel';
 import { NewsPanel } from '@/components/dashboard/NewsPanel';
 import { BreakoutDetector } from '@/components/dashboard/BreakoutDetector';
+import { StrategyBuilder } from '@/components/dashboard/StrategyBuilder';
+import { GreeksHeatmap } from '@/components/dashboard/GreeksHeatmap';
+import { TVChart } from '@/components/dashboard/TVChart';
 import { VirtualOptionChain } from '@/components/option-chain/VirtualOptionChain';
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -134,7 +137,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -423,6 +426,21 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('breakout'); setDisplayMode('pro'); }}>
               <Target className="h-2.5 w-2.5 mr-0.5" /> Breakout
             </Button>
+            <Button variant={viewMode === 'strategy' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'strategy' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
+              onClick={() => { setViewMode('strategy'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Strategy
+            </Button>
+            <Button variant={viewMode === 'greeks' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'greeks' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
+              onClick={() => { setViewMode('greeks'); setDisplayMode('pro'); }}>
+              <Activity className="h-2.5 w-2.5 mr-0.5" /> Greeks
+            </Button>
+            <Button variant={viewMode === 'chart' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'chart' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('chart'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Chart
+            </Button>
           </div>
 
           <div className="w-px h-4 bg-border shrink-0" />
@@ -602,6 +620,42 @@ export default function TradingDashboard() {
         /* ═══════ BREAKOUT DETECTOR VIEW ═══════ */
         <div className="flex-1 overflow-hidden">
           <BreakoutDetector />
+        </div>
+        ) : viewMode === 'strategy' ? (
+        /* ═══════ STRATEGY BUILDER VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <StrategyBuilder
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+            chainData={chainData}
+            symbol={symbol}
+          />
+        </div>
+        ) : viewMode === 'greeks' ? (
+        /* ═══════ GREEKS HEATMAP VIEW ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <GreeksHeatmap
+            chainData={chainData}
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+          />
+        </div>
+        ) : viewMode === 'chart' ? (
+        /* ═══════ TRADINGVIEW CHART VIEW ═══════ */
+        <div className="flex-1 overflow-hidden p-4">
+          <TVChart
+            data={(data?.candles || []).map((c: any) => ({
+              time: Math.floor(new Date(c.time || c.timestamp).getTime() / 1000) as any,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+            }))}
+            volume={(data?.candles || []).map((c: any) => ({
+              time: Math.floor(new Date(c.time || c.timestamp).getTime() / 1000) as any,
+              value: c.volume || 0,
+              color: c.close >= c.open ? "hsl(142 76% 36% / 0.3)" : "hsl(0 84% 60% / 0.3)",
+            }))}
+            height={400}
+          />
         </div>
         ) : (
         /* ═══════ GAP ANALYSIS VIEW ═══════ */
