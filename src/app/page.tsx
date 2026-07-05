@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -45,6 +45,7 @@ import { OrcaBacktestPanel } from '@/components/dashboard/OrcaBacktest';
 import { AdminPanel } from '@/components/dashboard/AdminPanel';
 import IVSurface from '@/components/dashboard/IVSurface';
 import CorrelationPanel from '@/components/dashboard/CorrelationPanel';
+import CheatSheetPanel from '@/components/dashboard/CheatSheetPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { runMLAnalysis } from '@/lib/ml-engine';
 import { ResizablePanel } from '@/components/ui/resizable-panel';
@@ -133,7 +134,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals' | 'correlation'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals' | 'correlation' | 'cheatSheet'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -467,6 +468,7 @@ export default function TradingDashboard() {
                 { mode: 'ivSurface', label: 'IV Surface', icon: Flame, color: 'pink' },
                 { mode: 'orcaBacktest', label: 'ORCA Backtest', icon: BarChart3, color: 'cyan' },
                 { mode: 'admin', label: 'Admin Panel', icon: Settings2, color: 'gray' },
+                { mode: 'cheatSheet', label: 'Cheat Sheet', icon: BookOpen, color: 'yellow' },
               ].map((item) => (
                 <button
                   key={item.mode}
@@ -775,6 +777,11 @@ export default function TradingDashboard() {
         /* ═══════ CORRELATION ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <CorrelationPanel />
+        </div>
+        ) : viewMode === 'cheatSheet' ? (
+        /* ═══════ CHEAT SHEET ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <CheatSheetPanel />
         </div>
         ) : (
         /* ═══════ GAP ANALYSIS VIEW ═══════ */
