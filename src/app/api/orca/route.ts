@@ -7,6 +7,7 @@ import { generateOptionChain } from "@/lib/option-chain-data";
 import { generateDayCandles } from "@/lib/historical-data";
 import { calculateGreeks } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
+import { sendTradeAlert } from "@/lib/telegram";
 import type { SDMOptionStrike } from "@/types/sdm";
 
 export async function GET(request: NextRequest) {
@@ -113,6 +114,21 @@ export async function GET(request: NextRequest) {
       isExpiryDay: isExpiry,
       prevDay,
     });
+
+    // Send Telegram alert for strong signals (confidence >= 60)
+    if (signal.confidence >= 60) {
+      sendTradeAlert({
+        symbol,
+        action: signal.action,
+        strike: signal.strike || spotPrice,
+        type: signal.optionType,
+        confidence: signal.confidence,
+        entry: signal.entry,
+        stopLoss: signal.stopLoss,
+        target1: signal.target1,
+        target2: signal.target2,
+      }).catch(() => {});
+    }
 
     return NextResponse.json({
       success: true,
