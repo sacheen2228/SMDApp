@@ -1,16 +1,25 @@
-// Agent Chat — AI-powered trading assistant (ChatGPT-style)
+// Agent Chat — AI-powered trading assistant with live market data
 
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Bot,
   Send,
+  TrendingUp,
+  BarChart3,
+  Target,
+  Shield,
+  Clock,
   Zap,
-  BookOpen,
+  Activity,
+  Brain,
+  AlertTriangle,
 } from "lucide-react";
 
 interface Message {
@@ -32,38 +41,34 @@ interface AgentChatProps {
 }
 
 const QUICK_ACTIONS = [
-  { label: "ORCA Signal", query: "Give me the ORCA live signal right now" },
-  { label: "Best Trade", query: "What's the best trade right now?" },
-  { label: "Market", query: "Analyze market structure" },
-  { label: "Greeks", query: "What's the Greeks analysis?" },
-  { label: "OI", query: "OI buildup patterns" },
-  { label: "Entry", query: "Should I enter a trade now?" },
-  { label: "Risk", query: "Check my risk" },
-  { label: "0DTE", query: "Any 0DTE setup?" },
-];
-
-const LEARN_ACTIONS = [
-  { label: "CE/PE?", query: "Explain Call and Put options simply" },
-  { label: "Delta?", query: "Explain Delta, Gamma, Theta, Vega" },
-  { label: "Straddle?", query: "What is a straddle?" },
-  { label: "Iron Condor?", query: "Explain Iron Condor" },
-  { label: "Stop Loss?", query: "How to set stop loss?" },
-  { label: "Position?", query: "How to calculate position size?" },
-  { label: "Strategy?", query: "Which strategy for this market?" },
-  { label: "Gambling?", query: "Is options trading gambling?" },
+  { label: "ORCA Signal", icon: Target, query: "Give me the ORCA live signal right now" },
+  { label: "Best Trade", icon: Target, query: "What's the best trade right now?" },
+  { label: "Market Structure", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
+  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis? Delta, Gamma, Theta, Vega" },
+  { label: "OI Analysis", icon: BarChart3, query: "OI buildup patterns — long/short, fresh writing, PCR" },
+  { label: "Smart Money", icon: Brain, query: "Any smart money signals? Liquidity sweeps, fakeouts" },
+  { label: "Entry Check", icon: Zap, query: "Should I enter a trade now? Check all entry conditions" },
+  { label: "Risk Check", icon: Shield, query: "Check my risk — position sizing, max loss" },
+  { label: "0DTE Setup", icon: Clock, query: "Any 0DTE expiry setup?" },
+  { label: "Scanner", icon: Zap, query: "Show me top scanner picks" },
 ];
 
 function escapeHtml(str: string): string {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function renderMarkdown(text: string): string {
   return escapeHtml(text)
-    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-foreground">$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
-    .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded text-[11px] font-mono">$1</code>')
-    .replace(/^• (.*$)/gm, '<div class="flex gap-1"><span class="text-primary">•</span><span>$1</span></div>')
-    .replace(/\n{2,}/g, '<div class="h-2" />')
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold">$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded text-[11px]">$1</code>')
+    .replace(/^• /gm, '<span class="text-primary mr-1">•</span> ')
+    .replace(/^---$/gm, '<hr class="border-border my-2" />')
     .replace(/\n/g, '<br />');
 }
 
@@ -78,16 +83,17 @@ export function AgentChat({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showLearn, setShowLearn] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Auto-scroll on new messages
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
 
+  // Welcome message on mount
   useEffect(() => {
     if (messages.length === 0) {
       const sentiment = analysis?.sentiment || "neutral";
@@ -96,23 +102,7 @@ export function AgentChat({
         {
           id: "welcome",
           role: "agent",
-          content: `**Welcome! I'm Angel — Your ORCA Trading AI.** 🧠
-
-${sEmoji} **${symbol}** ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}
-
-I know EVERYTHING about options trading. Ask me anything:
-
-**📊 Live Market Analysis**
-• "ORCA Signal" — Full trade signal
-• "Best Trade" — Top recommendation
-• "Greeks" — Delta, Gamma, Theta, Vega
-
-**📚 Learn Trading**
-• "What is a Call option?"
-• "Explain Delta simply"
-• "Which strategy for this market?"
-
-I never force trades. Capital preservation first! 💡`,
+          content: `**Welcome Sachin! I'm your Angel — ORCA Trading AI.**\n\n${sEmoji} **${symbol}** | Spot ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}\n\nI analyze live market data using institutional-grade modules:\n• Market Structure • Greeks • OI • Smart Money • Flow\n• Entry/Exit Conditions • Risk Engine • 0DTE Expiry\n\n**Quick Actions:**\n• "ORCA Signal" — Full institutional trade signal\n• "Best Trade" — Top recommendation\n• "Market Structure" — Trend & S/R analysis\n• "Greeks" — Delta/Gamma/Theta/Vega\n• "Entry Check" — Should you trade now?\n\nI never force a trade. Capital preservation first.`,
           timestamp: new Date(),
         },
       ]);
@@ -179,138 +169,118 @@ I never force trades. Capital preservation first! 💡`,
     }
   };
 
-  const actions = showLearn ? LEARN_ACTIONS : QUICK_ACTIONS;
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    <div className="flex flex-col h-full">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Bot style={{ width: 16, height: 16, color: 'white' }} />
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0">
+        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-600 flex items-center justify-center shadow-md">
+          <Bot className="h-4 w-4 text-white" />
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 12, fontWeight: 'bold', margin: 0 }}>Angel <span style={{ fontSize: 10, color: '#a78bfa' }}>AI</span></p>
-          <p style={{ fontSize: 10, color: 'var(--muted-foreground)', margin: 0 }}>
-            {symbol} ₹{spotPrice.toLocaleString("en-IN")} • Ask me anything
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-bold">Angel <span className="text-[8px] text-emerald-400 font-normal">ORCA</span></p>
+          <p className="text-[9px] text-muted-foreground">
+            {symbol} • {analysis?.sentiment?.toUpperCase() || "NEUTRAL"} • Spot ₹{spotPrice.toLocaleString("en-IN")}
           </p>
         </div>
-        <Badge variant="outline" style={{ fontSize: 8, background: 'rgba(139,92,246,0.1)', color: '#8b5cf6', borderColor: 'rgba(139,92,246,0.2)' }}>
+        <Badge variant="outline" className="text-[8px] bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
           LIVE
         </Badge>
       </div>
 
-      {/* Messages - scrollable area */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{ display: 'flex', justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}
-          >
+      {/* Messages */}
+      <ScrollArea className="flex-1 min-h-0">
+        <div ref={scrollRef} className="p-3 space-y-3">
+          {messages.map((msg) => (
             <div
-              style={{
-                maxWidth: '90%',
-                borderRadius: 12,
-                padding: '8px 12px',
-                background: msg.role === "user" ? '#7c3aed' : 'var(--card)',
-                color: msg.role === "user" ? 'white' : 'inherit',
-                border: msg.role === "user" ? 'none' : '1px solid var(--border)',
-              }}
+              key={msg.id}
+              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
-              {msg.loading ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--muted-foreground)' }}>
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', animation: 'bounce 1s infinite' }} />
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', animation: 'bounce 1s infinite 0.15s' }} />
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', animation: 'bounce 1s infinite 0.3s' }} />
-                  </div>
-                  Thinking...
-                </div>
-              ) : (
-                <>
-                  {msg.toolCallsMade && msg.toolCallsMade.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-                      {msg.toolCallsMade.map((tc) => (
-                        <span key={tc} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 8, background: 'rgba(139,92,246,0.1)', color: '#a78bfa', padding: '2px 6px', borderRadius: 4 }}>
-                          <Zap style={{ width: 8, height: 8 }} />
-                          {tc}
-                        </span>
-                      ))}
+              <div
+                className={`max-w-[92%] rounded-xl px-3 py-2 ${
+                  msg.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card border border-border/50"
+                }`}
+              >
+                {msg.loading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="flex gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
                     </div>
-                  )}
-                  <div
-                    style={{ fontSize: 11, lineHeight: 1.6 }}
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                  />
-                </>
-              )}
-              <p style={{ fontSize: 8, color: 'var(--muted-foreground)', marginTop: 4, opacity: 0.6 }}>
-                {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-              </p>
+                    Analyzing...
+                  </div>
+                ) : (
+                  <>
+                    {msg.toolCallsMade && msg.toolCallsMade.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {msg.toolCallsMade.map((tc) => (
+                          <span key={tc} className="inline-flex items-center gap-0.5 text-[8px] bg-violet-500/10 text-violet-400 px-1 py-0.5 rounded">
+                            <Zap className="h-2 w-2" />
+                            {tc}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div
+                      className="text-[11px] leading-relaxed"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                    />
+                  </>
+                )}
+                <p className="text-[8px] text-muted-foreground mt-1 opacity-60">
+                  {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                </p>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Quick Actions - fixed at bottom */}
-      <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--card)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px 0' }}>
-          <Button
-            variant="ghost"
-            size="sm"
-            style={{ height: 20, fontSize: 9, padding: '0 6px', color: !showLearn ? '#8b5cf6' : 'var(--muted-foreground)' }}
-            onClick={() => setShowLearn(false)}
-          >
-            <Zap style={{ width: 10, height: 10, marginRight: 2 }} /> Trade
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            style={{ height: 20, fontSize: 9, padding: '0 6px', color: showLearn ? '#8b5cf6' : 'var(--muted-foreground)' }}
-            onClick={() => setShowLearn(true)}
-          >
-            <BookOpen style={{ width: 10, height: 10, marginRight: 2 }} /> Learn
-          </Button>
+          ))}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px 6px', overflowX: 'auto' }}>
-          {actions.map((qa) => (
+      </ScrollArea>
+
+      {/* Quick Actions */}
+      <div className="px-2 py-1.5 border-t border-border/50 shrink-0 overflow-x-auto">
+        <div className="flex items-center gap-1">
+          {QUICK_ACTIONS.map((qa) => (
             <Button
               key={qa.label}
               variant="ghost"
               size="sm"
-              style={{ height: 20, fontSize: 9, padding: '0 6px', flexShrink: 0, color: 'var(--muted-foreground)' }}
+              className="h-6 text-[9px] px-1.5 shrink-0 gap-0.5 text-muted-foreground hover:text-foreground"
               onClick={() => sendMessage(qa.query)}
               disabled={loading}
             >
+              <qa.icon className="h-2.5 w-2.5" />
               {qa.label}
             </Button>
           ))}
         </div>
       </div>
 
-      {/* Input - fixed at very bottom */}
-      <div style={{ flexShrink: 0, padding: '8px 12px', borderTop: '1px solid var(--border)', background: 'var(--card)' }}>
+      {/* Input */}
+      <div className="px-3 py-2 border-t border-border/50 shrink-0">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             sendMessage(input);
           }}
-          style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+          className="flex items-center gap-2"
         >
           <Input
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask anything about trading..."
-            style={{ height: 32, fontSize: 12 }}
+            placeholder="Ask about market, trades, levels..."
+            className="h-8 text-xs"
             disabled={loading}
           />
           <Button
             type="submit"
             size="sm"
-            style={{ height: 32, width: 32, padding: 0, flexShrink: 0, background: '#7c3aed', color: 'white' }}
+            className="h-8 w-8 p-0 shrink-0 bg-violet-600 hover:bg-violet-700 text-white"
             disabled={loading || !input.trim()}
           >
-            <Send style={{ width: 14, height: 14 }} />
+            <Send className="h-3.5 w-3.5" />
           </Button>
         </form>
       </div>

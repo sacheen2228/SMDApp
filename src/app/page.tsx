@@ -28,6 +28,7 @@ import { PositionTracker } from '@/components/dashboard/PositionTracker';
 import { MarketStatus } from '@/components/dashboard/MarketStatus';
 import { SDMDashboard } from '@/components/dashboard/SDMDashboard';
 import { SDMOptionsPanel } from '@/components/dashboard/SDMOptionsPanel';
+import { SDMBot } from '@/components/option-chain/SDMBot';
 import { SimpleMode } from '@/components/dashboard/SimpleMode';
 import { GapAnalysis } from '@/components/dashboard/GapAnalysis';
 import { BacktestReport } from '@/components/dashboard/BacktestReport';
@@ -446,11 +447,6 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('correlation'); setDisplayMode('pro'); }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Corr
             </Button>
-            <Button variant={viewMode === 'agent' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'agent' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
-              onClick={() => { setViewMode('agent'); setDisplayMode('pro'); }}>
-              <Bot className="h-2.5 w-2.5 mr-0.5" /> Bot
-            </Button>
           </div>
 
           {/* More dropdown */}
@@ -464,6 +460,7 @@ export default function TradingDashboard() {
               {[
                 { mode: 'gap', label: 'Gap Analysis', icon: BarChart3, color: 'amber' },
                 { mode: 'backtest', label: 'Backtest', icon: CalendarClock, color: 'blue' },
+                { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
                 { mode: 'scanner', label: 'Scanner', icon: Scan, color: 'teal' },
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'breakout', label: 'Breakout', icon: Target, color: 'rose' },
@@ -637,9 +634,8 @@ export default function TradingDashboard() {
         </div>
         ) : viewMode === 'agent' ? (
         /* ═══════ AGENT VIEW ═══════ */
-        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+        <div className="flex-1 overflow-hidden">
           <AgentChat
-            key="agent-chat"
             symbol={symbol}
             spotPrice={data?.spotPrice || summary?.spotPrice || 0}
             analysis={analysis}
@@ -831,6 +827,17 @@ export default function TradingDashboard() {
       
       {/* ─── Order Panel (Modal) ─── */}
       <OrderPanel />
+      
+      {/* ─── SDM Bot (Fixed Overlay) ─── */}
+      <div className="fixed top-24 right-4 z-50 w-80 hidden lg:block">
+        <SDMBot
+          optionChainData={data}
+          spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+          symbol={symbol}
+          expiryDate={selectedExpiry}
+          onRecommendation={setRecommendation}
+        />
+      </div>
 
       {/* ─── Mobile Navigation ─── */}
       <MobileNav viewMode={viewMode} onViewChange={setViewMode} />
