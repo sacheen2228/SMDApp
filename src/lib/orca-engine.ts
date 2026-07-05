@@ -1,294 +1,83 @@
 // ═══════════════════════════════════════════════════════════════════
 // ORCA — Institutional Options Trading AI Engine
 // 15 Modules: Market Data, Structure, Greeks, OI, Smart Money,
-// Flow, Strike Selection, Entry, Avoid, Risk, Confidence, Alerts,
-// Output, Self-Learning, 0DTE
+// Flow, Entry, Risk, Confidence, Alerts, Output, Self-Learning, 0DTE
 // ═══════════════════════════════════════════════════════════════════
 
 import type { SDMOptionStrike } from "@/types/sdm";
 import { calculateGreeks } from "./greeks";
-import { type StrategyConfig, loadStrategyConfig } from "./strategy-config";
-
 import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
+import { loadStrategyConfig, type StrategyConfig } from "./strategy-config";
 
-// ─── Types ──────────────────────────────────────────────────────
-export type MarketBias = "STRONG_BULLISH" | "BULLISH" | "NEUTRAL" | "BEARISH" | "STRONG_BEARISH";
-export type TradeAction = "BUY_CALL" | "BUY_PUT" | "WAIT" | "NO_TRADE";
-export type TrendState = "BULLISH" | "BEARISH" | "SIDEWAYS" | "TRENDING" | "VOLATILE" | "COMPRESSION";
-export type StructureType = "UPTREND" | "DOWNTREND" | "RANGING";
-export type DealerRegime = "LONG_GAMMA" | "SHORT_GAMMA";
-export type ConfidenceLevel = "STRONG_BUY" | "BUY" | "WATCH" | "NO_TRADE";
-export type AlertType =
-  | "GAMMA_WALL_BREAK" | "IV_SPIKE" | "OI_SHIFT" | "PCR_SHIFT"
-  | "DELTA_EXPLOSION" | "DEALER_HEDGING" | "LIQUIDITY_SWEEP"
-  | "FAKE_BREAKOUT" | "SMART_MONEY_ENTRY" | "PREMIUM_EXPLOSION"
-  | "HIGH_PROBABILITY_SETUP" | "ZERO_hero_DETECTED" | "GAMMA_BLAST"
-  | "PREMIUM_EXPLOSION_0DTE" | "DEALER_HEDGE_0DTE" | "OI_ROTATION"
-  | "DELTA_EXPLOSION_0DTE" | "GAMMA_WALL_BREAK_0DTE"
-  | "LIQUIDITY_SWEEP_0DTE" | "SMART_MONEY_ENTRY_0DTE" | "IV_EXPANSION";
-
-export interface OrcaStrikeAnalysis {
-  strike: number;
-  ce: {
-    ltp: number; oi: number; oiChg: number; volume: number; iv: number;
-    delta: number; gamma: number; theta: number; vega: number;
-    bid: number; ask: number; spread: number;
-    pattern: string; // LONG_BUILDUP, SHORT_BUILDUP, etc.
-    freshBuying: boolean; freshWriting: boolean;
-    largeOrder: boolean; unusualVolume: boolean;
-  };
-  pe: {
-    ltp: number; oi: number; oiChg: number; volume: number; iv: number;
-    delta: number; gamma: number; theta: number; vega: number;
-    bid: number; ask: number; spread: number;
-    pattern: string;
-    freshBuying: boolean; freshWriting: boolean;
-    largeOrder: boolean; unusualVolume: boolean;
-  };
-  gammaExposure: number;
-  netGEX: number;
-  isGammaWall: boolean;
-  isLiquidityWall: boolean;
+// ─── ORCA Strategy Configuration ─────────────────────────────────
+export interface OrcaStrategyConfig extends StrategyConfig {
+  // ORCA-specific risk management settings
+  slPercent?: number;
+  tp1Multiplier?: number;
+  tp2Multiplier?: number;
+  tp3Multiplier?: number;
 }
 
-export interface MarketStructureAnalysis {
-  trend: TrendState;
-  structure: StructureType;
-  higherHigh: boolean;
-  higherLow: boolean;
-  lowerHigh: boolean;
-  lowerLow: boolean;
-  dailyHigh: number;
-  dailyLow: number;
-  openingRange: { high: number; low: number };
-  vwap: number;
-  ema9: number;
-  ema21: number;
-  supertrend: number;
-  prevDayHigh: number;
-  prevDayLow: number;
-  weeklyHigh: number;
-  weeklyLow: number;
-  monthlyHigh: number;
-  monthlyLow: number;
-  pivot: number;
-  r1: number; r2: number; r3: number;
-  s1: number; s2: number; s3: number;
-  nearestSupport: number;
-  nearestResistance: number;
-}
+function getOrcaStrategyConfig(symbol: string, overrideConfig?: Partial<OrcaStrategyConfig>): OrcaStrategyConfig {
+  const defaultStrategyConfig = loadStrategyConfig();
+  const config = getSymbolConfig(symbol);
 
-export interface GreeksAnalysis {
-  atmDelta: number;
-  atmGamma: number;
-  atmTheta: number;
-  atmVega: number;
-  deltaTrend: "INCREASING" | "DECREASING" | "STABLE";
-  gammaFlip: number;
-  dealerRegime: DealerRegime;
-  dealerBias: MarketBias;
-  gammaWall: { strike: number; type: "CE" | "PE"; gex: number } | null;
-  gammaSqueeze: boolean;
-  ivPercentile: number;
-  ivRank: number;
-  ivExpansion: boolean;
-  ivCrush: boolean;
-  thetaDecayRate: number;
-  rapidThetaBurn: boolean;
-}
-
-export interface OIAnalysisResult {
-  totalCallOI: number;
-  totalPutOI: number;
-  pcr: number;
-  dynamicPcr: number;
-  maxPain: number;
-  callLongBuildup: boolean;
-  putLongBuildup: boolean;
-  callUnwinding: boolean;
-  putUnwinding: boolean;
-  freshCallWriting: boolean;
-  freshPutWriting: boolean;
-  shortCovering: boolean;
-  oiShift: boolean;
-  supportShift: number | null;
-  resistanceShift: number | null;
-  strikeRotation: boolean;
-  topCallWalls: { strike: number; oi: number }[];
-  topPutWalls: { strike: number; oi: number }[];
-}
-
-export interface SmartMoneySignals {
-  liquiditySweep: { detected: boolean; direction: "BULLISH" | "BEARISH" | null; level: number };
-  equalHighSweep: boolean;
-  equalLowSweep: boolean;
-  stopHunt: { detected: boolean; direction: "BULLISH" | "BEARISH" | null };
-  fakeBreakout: { detected: boolean; direction: "BULLISH" | "BEARISH" | null };
-  breakOfStructure: { detected: boolean; direction: "BULLISH" | "BEARISH" | null };
-  marketStructureShift: boolean;
-  changeOfCharacter: boolean;
-  orderBlock: { price: number; type: "BULLISH" | "BEARISH" } | null;
-  fairValueGap: { top: number; bottom: number; type: "BULLISH" | "BEARISH" } | null;
-  imbalances: { price: number; type: "BUY" | "SELL" }[];
-}
-
-export interface OptionFlowSignals {
-  largePremiumBuying: boolean;
-  largePremiumSelling: boolean;
-  blockTrades: boolean;
-  institutionalOrders: boolean;
-  aggressiveBuyers: boolean;
-  aggressiveSellers: boolean;
-  volumeSpike: boolean;
-  unusualActivity: boolean;
-}
-
-export interface StrikeRecommendation {
-  action: TradeAction;
-  strike: number;
-  strikeType: "ATM" | "1_ITM" | "2_ITM" | "1_OTM" | "2_OTM";
-  expiry: string;
-  currentPremium: number;
-  entry: number;
-  stopLoss: number;
-  target1: number;
-  target2: number;
-  target3: number;
-  expectedPremiumMove: string;
-  riskReward: number;
-  reason: string;
-  confidence: number;
-  lotSize: number;
-  capitalRequired: number;
-  maxLots: number;
-  maxLoss: number;
-  maxProfit: number;
-  thetaRisk: string;
-  timeRisk: string;
-}
-
-export interface RiskCalculation {
-  entry: number;
-  stopLoss: number;
-  target1: number;
-  target2: number;
-  target3: number;
-  riskReward: number;
-  probability: number;
-  premiumRisk: number;
-  timeRisk: string;
-  thetaRisk: number;
-  capitalRequired: number;
-  maxLots: number;
-  maxLoss: number;
-  maxProfit: number;
-}
-
-export interface ConfidenceScore {
-  total: number;
-  level: ConfidenceLevel;
-  trend: number;
-  oi: number;
-  greeks: number;
-  liquidity: number;
-  volume: number;
-  priceAction: number;
-  institutionalFlow: number;
-  breakdown: string[];
-}
-
-export interface OrcaAlert {
-  type: AlertType;
-  message: string;
-  severity: "HIGH" | "MEDIUM" | "LOW";
-  timestamp: string;
-  strike?: number;
-}
-
-export interface OrcaSignal {
-  timestamp: string;
-  symbol: string;
-  spot: number;
-  expiry: string;
-  isExpiryDay: boolean;
-  timeToExpiry: string;
-
-  // Module 2 — Market Structure
-  marketBias: MarketBias;
-  marketStructure: MarketStructureAnalysis;
-
-  // Module 3 — Greeks
-  greeks: GreeksAnalysis;
-
-  // Module 4 — OI
-  oi: OIAnalysisResult;
-
-  // Module 5 — Smart Money
-  smartMoney: SmartMoneySignals;
-
-  // Module 6 — Option Flow
-  flow: OptionFlowSignals;
-
-  // Module 7 — Strike Recommendation
-  recommendation: StrikeRecommendation;
-
-  // Module 10 — Risk
-  risk: RiskCalculation;
-
-  // Module 11 — Confidence
-  confidence: ConfidenceScore;
-
-  // Module 12 — Alerts
-  alerts: OrcaAlert[];
-
-  // Module 13 — Output
-  reasons: string[];
-  greeksSummary: string;
-  oiSummary: string;
-  liquiditySummary: string;
-  smartMoneySummary: string;
-
-  // Module 15 — 0DTE
-  zeroDte: {
-    active: boolean;
-    gammaSqueeze: boolean;
-    dealerHedging: boolean;
-    gammaFlip: boolean;
-    vannaFlow: string;
-    charmFlow: string;
-    premiumExplosion: boolean;
-    premiumSpeed: string;
+  const mergedConfig: OrcaStrategyConfig = {
+    symbol: symbol,
+    label: `ORCA ${symbol}`, // Custom label for ORCA
+    lotSize: config.lotSize,
+    tickSize: config.tickSize,
+    maxLots: config.maxLots,
+    typicalPremium: config.typicalPremium,
+    version: defaultStrategyConfig.version,
+    name: defaultStrategyConfig.name,
+    lastModified: new Date().toISOString(),
+    modules: defaultStrategyConfig.modules,
+    confidence: defaultStrategyConfig.confidence,
+    entry: defaultStrategyConfig.entry,
+    greeks: defaultStrategyConfig.greeks,
+    oi: defaultStrategyConfig.oi,
+    smartMoney: defaultStrategyConfig.smartMoney,
+    risk: defaultStrategyConfig.risk,
+    strike: defaultStrategyConfig.strike,
+    session: defaultStrategyConfig.session,
+    symbolOverrides: defaultStrategyConfig.symbolOverrides,
+    // ORCA-specific defaults
+    slPercent: defaultStrategyConfig.risk.slPercent,
+    tp1Multiplier: defaultStrategyConfig.risk.tp1Multiplier,
+    tp2Multiplier: defaultStrategyConfig.risk.tp2Multiplier,
+    tp3Multiplier: defaultStrategyConfig.risk.tp3Multiplier,
   };
 
-  // Full strike analysis
-  strikes: OrcaStrikeAnalysis[];
+  if (overrideConfig) {
+    Object.assign(mergedConfig, overrideConfig);
+  }
+
+  return mergedConfig;
 }
 
-// ─── Helpers ────────────────────────────────────────────────────
-function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
-function round(v: number, d = 2) { return Math.round(v * 10 ** d) / 10 ** d; }
-function pct(v: number) { return `${(v * 100).toFixed(1)}%`; }
+function round(v: number, d = 2): string {
+  return Math.round(v * 10 ** d) / 10 ** d;
+}
 
-// ─── MODULE 2: Market Structure ─────────────────────────────────
+// ─── MODULES ────────────────────────────────────────────────────
+
+// Module 2: Market Structure
 function analyzeMarketStructure(
   spot: number, candles: any[], prevDay: { high: number; low: number; close: number }
-): MarketStructureAnalysis {
+) {
   const highs = candles.map((c: any) => c.high);
   const lows = candles.map((c: any) => c.low);
   const closes = candles.map((c: any) => c.close);
-  const volumes = candles.map((c: any) => c.volume || 0);
-
+  
   const dailyHigh = Math.max(...highs, spot);
   const dailyLow = Math.min(...lows, spot);
-
-  // Opening Range (first 30 min = 6 candles of 5min)
-  const orSlice = candles.slice(0, 6);
+  
   const openingRange = {
-    high: Math.max(...orSlice.map((c: any) => c.high)),
-    low: Math.min(...orSlice.map((c: any) => c.low)),
+    high: Math.max(...candles.slice(0, 6).map((c: any) => c.high)),
+    low: Math.min(...candles.slice(0, 6).map((c: any) => c.low)),
   };
 
-  // VWAP
   let cumVolPrice = 0, cumVol = 0;
   for (const c of candles) {
     const typical = (c.high + c.low + c.close) / 3;
@@ -297,63 +86,28 @@ function analyzeMarketStructure(
   }
   const vwap = cumVol > 0 ? cumVolPrice / cumVol : spot;
 
-  // EMAs
   const ema9 = calculateEMA(closes, 9);
   const ema21 = calculateEMA(closes, 21);
 
-  // SuperTrend (simplified)
   const atr = calculateATR(candles, 14);
   const hl2 = (dailyHigh + dailyLow) / 2;
   const supertrend = spot > hl2 + atr * 2 ? hl2 + atr * 2 : spot < hl2 - atr * 2 ? hl2 - atr * 2 : ema21;
 
-  // Previous levels
-  const prevDayHigh = prevDay.high;
-  const prevDayLow = prevDay.low;
-  const weeklyHigh = dailyHigh * (1 + 0.003);
-  const weeklyLow = dailyLow * (1 - 0.003);
-  const monthlyHigh = dailyHigh * (1 + 0.012);
-  const monthlyLow = dailyLow * (1 - 0.012);
-
-  // Pivots
-  const pivot = (prevDayHigh + prevDayLow + prevDay.close) / 3;
-  const r1 = 2 * pivot - prevDayLow;
-  const r2 = pivot + (prevDayHigh - prevDayLow);
-  const r3 = prevDayHigh + 2 * (pivot - prevDayLow);
-  const s1 = 2 * pivot - prevDayHigh;
-  const s2 = pivot - (prevDayHigh - prevDayLow);
-  const s3 = prevDayLow - 2 * (prevDayHigh - pivot);
-
-  // Nearest S/R
-  const supports = [s1, s2, s3, prevDayLow, weeklyLow, monthlyLow].filter(s => s < spot).sort((a, b) => b - a);
-  const resistances = [r1, r2, r3, prevDayHigh, weeklyHigh, monthlyHigh].filter(r => r > spot).sort((a, b) => a - b);
-  const nearestSupport = supports[0] || spot - atr * 2;
-  const nearestResistance = resistances[0] || spot + atr * 2;
-
-  // Trend detection
-  const recentCloses = closes.slice(-20);
-  const isUp = recentCloses[recentCloses.length - 1] > recentCloses[0];
-  const hh = dailyHigh > prevDayHigh;
-  const hl = dailyLow > prevDayLow;
-  const lh = dailyHigh < prevDayHigh;
-  const ll = dailyLow < prevDayLow;
-
-  let trend: TrendState;
-  let structure: StructureType;
-  if (hh && hl) { trend = "TRENDING"; structure = "UPTREND"; }
-  else if (lh && ll) { trend = "TRENDING"; structure = "DOWNTREND"; }
-  else if (Math.abs(dailyHigh - dailyLow) / spot < 0.005) { trend = "COMPRESSION"; structure = "RANGING"; }
-  else if (atr / spot > 0.015) { trend = "VOLATILE"; structure = "RANGING"; }
-  else if (isUp) { trend = "BULLISH"; structure = "UPTREND"; }
-  else if (!isUp) { trend = "BEARISH"; structure = "DOWNTREND"; }
-  else { trend = "SIDEWAYS"; structure = "RANGING"; }
-
   return {
-    trend, structure,
-    higherHigh: hh, higherLow: hl, lowerHigh: lh, lowerLow: ll,
-    dailyHigh, dailyLow, openingRange, vwap, ema9, ema21, supertrend,
-    prevDayHigh, prevDayLow, weeklyHigh, weeklyLow, monthlyHigh, monthlyLow,
-    pivot, r1, r2, r3, s1, s2, s3,
-    nearestSupport, nearestResistance,
+    trend: getTrend(dailyHigh, dailyLow, prevDay.high, prevDay.low, spot, atr),
+    structure: getStructure(dailyHigh, dailyLow, prevDay.high, prevDay.low, spot, atr),
+    higherHigh: dailyHigh > prevDay.high,
+    higherLow: dailyLow > prevDay.low,
+    lowerHigh: dailyHigh < prevDay.high,
+    lowerLow: dailyLow < prevDay.low,
+    dailyHigh, dailyLow,
+    openingRange,
+    vwap,
+    ema9,
+    ema21,
+    supertrend,
+    prevDayHigh: prevDay.high,
+    prevDayLow: prevDay.low,
   };
 }
 
@@ -364,7 +118,7 @@ function calculateEMA(data: number[], period: number): number {
   for (let i = 1; i < data.length; i++) {
     ema = data[i] * k + ema * (1 - k);
   }
-  return round(ema);
+  return ema;
 }
 
 function calculateATR(candles: any[], period: number): number {
@@ -382,10 +136,31 @@ function calculateATR(candles: any[], period: number): number {
   return slice.reduce((a, b) => a + b, 0) / slice.length || 0;
 }
 
-// ─── MODULE 3: Greeks Analysis ──────────────────────────────────
-function analyzeGreeks(
-  chain: SDMOptionStrike[], spot: number, atmStrike: number, timeToExpiry: number
-): GreeksAnalysis {
+function getTrend(dailyHigh: number, dailyLow: number, prevDayHigh: number, prevDayLow: number, spot: number, atr: number): string {
+  const hh = dailyHigh > prevDayHigh;
+  const hl = dailyLow > prevDayLow;
+  const lh = dailyHigh < prevDayHigh;
+  const ll = dailyLow < prevDayLow;
+  
+  if (hh && hl) return "TRENDING";
+  if (lh && ll) return "TRENDING";
+  if (Math.abs(dailyHigh - dailyLow) / spot < 0.005) return "COMPRESSION";
+  if (atr / spot > 0.015) return "VOLATILE";
+  if (spot > (dailyHigh + dailyLow) / 2) return "BULLISH";
+  return "BEARISH";
+}
+
+function getStructure(dailyHigh: number, dailyLow: number, prevDayHigh: number, prevDayLow: number, spot: number, atr: number): string {
+  const hh = dailyHigh > prevDayHigh;
+  const hl = dailyLow > prevDayLow;
+  
+  if (hh && hl) return "UPTREND";
+  if (dailyHigh < prevDayHigh && dailyLow < prevDayLow) return "DOWNTREND";
+  return "RANGING";
+}
+
+// Module 3: Greeks Analysis
+function analyzeGreeks(chain: SDMOptionStrike[], spot: number, atmStrike: number, timeToExpiry: number) {
   const atmCe = chain.find(s => s.strike === atmStrike)?.ce;
   const atmPe = chain.find(s => s.strike === atmStrike)?.pe;
 
@@ -394,7 +169,6 @@ function analyzeGreeks(
   const atmTheta = atmCe?.theta || 0;
   const atmVega = atmCe?.vega || 0;
 
-  // Gamma flip: where net GEX changes sign
   let cumGEX = 0;
   let gammaFlip = atmStrike;
   for (const s of chain) {
@@ -406,11 +180,10 @@ function analyzeGreeks(
     if (prevCum < 0 && cumGEX >= 0) gammaFlip = s.strike;
   }
 
-  const dealerRegime: DealerRegime = spot > gammaFlip ? "LONG_GAMMA" : "SHORT_GAMMA";
+  const dealerRegime = spot > gammaFlip ? "LONG_GAMMA" : "SHORT_GAMMA";
 
-  // Gamma walls
   let maxCallGEX = 0, maxPutGEX = 0;
-  let gammaWall: GreeksAnalysis["gammaWall"] = null;
+  let gammaWall: any = null;
   for (const s of chain) {
     const cgex = Math.abs((s.ce?.gamma || 0) * (s.ce?.oi || 0));
     const pgex = Math.abs((s.pe?.gamma || 0) * (s.pe?.oi || 0));
@@ -418,11 +191,10 @@ function analyzeGreeks(
     if (pgex > maxPutGEX) { maxPutGEX = pgex; if (pgex > maxCallGEX) gammaWall = { strike: s.strike, type: "PE", gex: pgex }; }
   }
 
-  // IV analysis
   const ivs = chain.flatMap(s => [s.ce?.iv || 0, s.pe?.iv || 0]).filter(v => v > 0);
   const avgIV = ivs.length > 0 ? ivs.reduce((a, b) => a + b, 0) / ivs.length : 0.15;
-  const ivPercentile = clamp((avgIV - 0.08) / (0.35 - 0.08) * 100, 0, 100);
-  const ivRank = clamp((avgIV - 0.10) / (0.30 - 0.10) * 100, 0, 100);
+  const ivPercentile = Math.min(Math.max((avgIV - 0.08) / (0.35 - 0.08) * 100, 0), 100);
+  const ivRank = Math.min(Math.max((avgIV - 0.10) / (0.30 - 0.10) * 100, 0), 100);
 
   return {
     atmDelta, atmGamma, atmTheta, atmVega,
@@ -438,8 +210,8 @@ function analyzeGreeks(
   };
 }
 
-// ─── MODULE 4: OI Analysis ─────────────────────────────────────
-function analyzeOI(chain: SDMOptionStrike[], spot: number): OIAnalysisResult {
+// Module 4: OI Analysis
+function analyzeOI(chain: SDMOptionStrike[], spot: number) {
   let totalCallOI = 0, totalPutOI = 0;
   let totalCallVol = 0, totalPutVol = 0;
   const topCallWalls: { strike: number; oi: number }[] = [];
@@ -471,7 +243,6 @@ function analyzeOI(chain: SDMOptionStrike[], spot: number): OIAnalysisResult {
   const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
   const dynamicPcr = totalCallVol > 0 ? totalPutVol / totalCallVol : pcr;
 
-  // Max Pain
   let minPain = Infinity, maxPainStrike = spot;
   for (const s of chain) {
     let pain = 0;
@@ -495,20 +266,19 @@ function analyzeOI(chain: SDMOptionStrike[], spot: number): OIAnalysisResult {
   };
 }
 
-// ─── MODULE 5: Smart Money ─────────────────────────────────────
-function analyzeSmartMoney(
-  spot: number, candles: any[], structure: MarketStructureAnalysis
-): SmartMoneySignals {
+// Module 5: Smart Money
+function analyzeSmartMoney(spot: number, candles: any[], structure: any) {
   const last3 = candles.slice(-3);
   const prev3 = candles.slice(-6, -3);
-  const lastRange = last3.length > 0 ? Math.max(...last3.map((c: any) => c.high)) - Math.min(...last3.map((c: any) => c.low)) : 0;
-  const prevRange = prev3.length > 0 ? Math.max(...prev3.map((c: any) => c.high)) - Math.min(...prev3.map((c: any) => c.low)) : 1;
+  
+  const lastRange = last3.length > 0 ? 
+    Math.max(...last3.map((c: any) => c.high)) - Math.min(...last3.map((c: any) => c.low)) : 0;
+  const prevRange = prev3.length > 0 ? 
+    Math.max(...prev3.map((c: any) => c.high)) - Math.min(...prev3.map((c: any) => c.low)) : 1;
 
-  // Liquidity sweep: price takes out a level then reverses
   const sweepBullish = spot > structure.dailyLow && spot < structure.dailyLow + (structure.dailyHigh - structure.dailyLow) * 0.15;
   const sweepBearish = spot < structure.dailyHigh && spot > structure.dailyHigh - (structure.dailyHigh - structure.dailyLow) * 0.15;
 
-  // Fake breakout: range expansion then contraction
   const fakeBreak = lastRange > prevRange * 1.5 && last3.length >= 2 && last3[last3.length - 1].close < last3[last3.length - 2].high;
 
   return {
@@ -530,8 +300,8 @@ function analyzeSmartMoney(
   };
 }
 
-// ─── MODULE 6: Option Flow ─────────────────────────────────────
-function analyzeFlow(chain: SDMOptionStrike[]): OptionFlowSignals {
+// Module 6: Option Flow
+function analyzeFlow(chain: SDMOptionStrike[]): any {
   let totalCEVol = 0, totalPEVol = 0;
   let maxCEVol = 0, maxPEVol = 0;
   let largeOrders = 0;
@@ -563,12 +333,17 @@ function analyzeFlow(chain: SDMOptionStrike[]): OptionFlowSignals {
   };
 }
 
-// ─── MODULE 7: Strike Recommendation ───────────────────────────
-function recommendStrike(
-  spot: number, chain: SDMOptionStrike[], config: SymbolConfig,
-  bias: MarketBias, confidence: ConfidenceScore, expiry: string, isExpiryDay: boolean,
+// Module 7: Entry Signal
+function getEntrySignal(
+  spot: number, 
+  chain: SDMOptionStrike[], 
+  config: OrcaStrategyConfig,
+  bias: "STRONG_BULLISH" | "BULLISH" | "NEUTRAL" | "BEARISH" | "STRONG_BEARISH",
+  confidenceScore: any,
+  expiry: string,
+  isExpiryDay: boolean,
   confidenceThreshold: number = 85
-): StrikeRecommendation {
+) {
   const atmStrike = chain.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   ).strike;
@@ -578,31 +353,29 @@ function recommendStrike(
 
   // Pick strike based on bias and confidence
   let strikeIdx = atmIdx;
-  let strikeType: StrikeRecommendation["strikeType"] = "ATM";
+  let strikeType: "ATM" | "1_ITM" | "2_ITM" | "1_OTM" | "2_OTM" = "ATM";
 
   if (bias === "STRONG_BULLISH" || bias === "BULLISH") {
-    if (confidence.total >= 90) { strikeIdx = atmIdx; strikeType = "ATM"; }
-    else if (confidence.total >= 80) { strikeIdx = Math.max(0, atmIdx - 1); strikeType = "1_OTM"; }
-    else { strikeIdx = Math.max(0, atmIdx - 2); strikeType = "2_OTM"; }
+    if (confidenceScore.total >= 90) { strikeIdx = atmIdx; strikeType = "ATM"; }
+    else if (confidenceScore.total >= 80) { strikeIdx = Math.max(0, atmIdx - 1); strikeType = "1_OTM"; }
+    else { strikeIdx = Math.max(0, atmIdx - (config.strike?.otmForLowConfidence ?? 2)); strikeType = "2_OTM"; }
   } else if (bias === "STRONG_BEARISH" || bias === "BEARISH") {
-    if (confidence.total >= 90) { strikeIdx = atmIdx; strikeType = "ATM"; }
-    else if (confidence.total >= 80) { strikeIdx = Math.min(chain.length - 1, atmIdx + 1); strikeType = "1_OTM"; }
-    else { strikeIdx = Math.min(chain.length - 1, atmIdx + 2); strikeType = "2_OTM"; }
+    if (confidenceScore.total >= 90) { strikeIdx = atmIdx; strikeType = "ATM"; }
+    else if (confidenceScore.total >= 80) { strikeIdx = Math.min(chain.length - 1, atmIdx + 1); strikeType = "1_OTM"; }
+    else { strikeIdx = Math.min(chain.length - 1, atmIdx + (config.strike?.otmForLowConfidence ?? 2)); strikeType = "2_OTM"; }
   }
 
-  const selectedStrike = strikes[clamp(strikeIdx, 0, strikes.length - 1)];
+  const selectedStrike = strikes[Math.min(Math.max(strikeIdx, 0), strikes.length - 1)];
   const strikeData = chain.find(s => s.strike === selectedStrike);
 
   const isCall = bias === "BULLISH" || bias === "STRONG_BULLISH";
   const premium = isCall ? (strikeData?.ce?.ltp || 0) : (strikeData?.pe?.ltp || 0);
-  const premiumATM = chain.find(s => s.strike === atmStrike);
-  const atmPremium = isCall ? (premiumATM?.ce?.ltp || 0) : (premiumATM?.pe?.ltp || 0);
 
-  // Risk levels based on premium
-  const sl = round(premium * 0.35);
-  const tp1 = round(premium * 1.5);
-  const tp2 = round(premium * 2.2);
-  const tp3 = round(premium * 3.5);
+  // Risk levels based on config
+  const sl = round(premium * (config.slPercent ?? 35) / 100);
+  const tp1 = round(premium * (config.tp1Multiplier ?? 1.5));
+  const tp2 = round(premium * (config.tp2Multiplier ?? 2.2));
+  const tp3 = round(premium * (config.tp3Multiplier ?? 3.5));
   const rr = tp1 > 0 && sl > 0 ? round((tp1 - premium) / (premium - sl)) : 0;
 
   const lots = 1;
@@ -611,20 +384,21 @@ function recommendStrike(
   const maxLoss = round((premium - sl) * qty);
   const maxProfit = round((tp2 - premium) * qty);
 
-  const action: TradeAction = confidence.total >= confidenceThreshold
-    ? (isCall ? "BUY_CALL" : "BUY_PUT")
-    : "WAIT";
+  const action: "BUY_CALL" | "BUY_PUT" | "WAIT" | "NO_TRADE" = 
+    confidenceScore.total >= confidenceThreshold
+      ? (isCall ? "BUY_CALL" : "BUY_PUT")
+      : "WAIT";
 
-  const reason = confidence.total >= confidenceThreshold
-    ? `${isCall ? "Bullish" : "Bearish"} setup with ${confidence.total}% confidence. ${isCall ? "Call" : "Put"} long buildup detected.`
-    : `Confidence ${confidence.total}% below ${confidenceThreshold}% threshold. Wait for stronger alignment.`;
+  const reason = confidenceScore.total >= confidenceThreshold
+    ? `${isCall ? "Bullish" : "Bearish"} setup with ${confidenceScore.total}% confidence. ${isCall ? "Call" : "Put"} long buildup detected.`
+    : `Confidence ${confidenceScore.total}% below ${confidenceThreshold}% threshold. Wait for stronger alignment.`;
 
   return {
     action, strike: selectedStrike, strikeType, expiry,
     currentPremium: premium, entry: premium, stopLoss: sl,
     target1: tp1, target2: tp2, target3: tp3,
     expectedPremiumMove: `+${round((tp2 / premium - 1) * 100)}%`,
-    riskReward: rr, reason, confidence: confidence.total,
+    riskReward: rr, reason, confidence: confidenceScore.total,
     lotSize: config.lotSize, capitalRequired: capital, maxLots: config.maxLots,
     maxLoss, maxProfit,
     thetaRisk: isExpiryDay ? "HIGH — 0DTE theta decay" : "MODERATE",
@@ -632,8 +406,8 @@ function recommendStrike(
   };
 }
 
-// ─── MODULE 10: Risk Engine ────────────────────────────────────
-function calculateRisk(rec: StrikeRecommendation, config: SymbolConfig): RiskCalculation {
+// Module 10: Risk Engine
+function calculateRisk(rec: any, config: OrcaStrategyConfig) {
   const qty = config.lotSize;
   const riskPerLot = rec.entry - rec.stopLoss;
   const rewardPerLot = rec.target2 - rec.entry;
@@ -643,7 +417,7 @@ function calculateRisk(rec: StrikeRecommendation, config: SymbolConfig): RiskCal
     stopLoss: rec.stopLoss,
     target1: rec.target1, target2: rec.target2, target3: rec.target3,
     riskReward: rec.riskReward,
-    probability: clamp(rec.confidence * 0.85, 0, 95),
+    probability: Math.min(rec.confidence * 0.85, 95),
     premiumRisk: round(rec.entry * qty),
     timeRisk: rec.timeRisk,
     thetaRisk: round(riskPerLot * qty * 0.1),
@@ -654,11 +428,8 @@ function calculateRisk(rec: StrikeRecommendation, config: SymbolConfig): RiskCal
   };
 }
 
-// ─── MODULE 11: Confidence Engine ──────────────────────────────
-function calculateConfidence(
-  market: MarketStructureAnalysis, oi: OIAnalysisResult, greeks: GreeksAnalysis,
-  flow: OptionFlowSignals, smartMoney: SmartMoneySignals, spot: number
-): ConfidenceScore {
+// Module 11: Confidence Engine
+function calculateConfidence(market: any, oi: any, greeks: any, flow: any, smartMoney: any, spot: number) {
   const breakdown: string[] = [];
   let trendScore = 0, oiScore = 0, greeksScore = 0, liqScore = 0, volScore = 0, paScore = 0, instScore = 0;
 
@@ -738,7 +509,7 @@ function calculateConfidence(
   }
 
   const total = trendScore + oiScore + greeksScore + liqScore + volScore + paScore + instScore;
-  let level: ConfidenceLevel;
+  let level: string;
   if (total >= 90) level = "STRONG_BUY";
   else if (total >= 80) level = "BUY";
   else if (total >= 70) level = "WATCH";
@@ -752,12 +523,9 @@ function calculateConfidence(
   };
 }
 
-// ─── MODULE 12: Alerts ─────────────────────────────────────────
-function generateAlerts(
-  greeks: GreeksAnalysis, oi: OIAnalysisResult, smartMoney: SmartMoneySignals,
-  flow: OptionFlowSignals, confidence: ConfidenceScore, spot: number
-): OrcaAlert[] {
-  const alerts: OrcaAlert[] = [];
+// Module 12: Alerts
+function generateAlerts(greeks: any, oi: any, smartMoney: any, flow: any, confidence: any, spot: number) {
+  const alerts: any[] = [];
   const now = new Date().toISOString();
 
   if (greeks.gammaWall && spot > greeks.gammaWall.strike)
@@ -782,10 +550,8 @@ function generateAlerts(
   return alerts;
 }
 
-// ─── MODULE 15: 0DTE Engine ────────────────────────────────────
-function analyzeZeroDte(
-  spot: number, chain: SDMOptionStrike[], greeks: GreeksAnalysis, isExpiryDay: boolean
-): OrcaSignal["zeroDte"] {
+// Module 15: 0DTE Engine
+function analyzeZeroDte(spot: number, chain: SDMOptionStrike[], greeks: any, isExpiryDay: boolean) {
   if (!isExpiryDay) {
     return {
       active: false, gammaSqueeze: false, dealerHedging: false,
@@ -794,10 +560,7 @@ function analyzeZeroDte(
     };
   }
 
-  // Gamma squeeze: spot near gamma flip with high gamma
   const gammaSqueeze = Math.abs(spot - greeks.gammaFlip) / spot < 0.002 && greeks.atmGamma > 0.001;
-
-  // Dealer hedging: when spot moves through gamma wall
   const dealerHedging = greeks.gammaWall !== null && spot > greeks.gammaWall.strike;
 
   return {
@@ -812,9 +575,7 @@ function analyzeZeroDte(
   };
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// MAIN ORCA ENGINE — Runs all 15 modules
-// ═══════════════════════════════════════════════════════════════════
+// Main ORCA Engine
 export function runOrcaEngine(input: {
   spot: number;
   chain: SDMOptionStrike[];
@@ -823,28 +584,26 @@ export function runOrcaEngine(input: {
   expiry: string;
   isExpiryDay: boolean;
   prevDay: { high: number; low: number; close: number };
-  vix?: number;
   confidenceThreshold?: number;
-}): OrcaSignal {
-  const { spot, chain, candles, symbol, expiry, isExpiryDay, prevDay, confidenceThreshold = 85 } = input;
-  const config = getSymbolConfig(symbol);
+  strategyConfig?: OrcaStrategyConfig;
+}) {
+  const { spot, chain, candles, symbol, expiry, isExpiryDay, prevDay, confidenceThreshold = 85, strategyConfig } = input;
+  
+  const config = getOrcaStrategyConfig(symbol, strategyConfig);
 
-  // Find ATM
   const atmStrike = chain.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   ).strike;
 
-  const timeToExpiry = isExpiryDay ? 0.02 : 7; // days
+  const timeToExpiry = isExpiryDay ? 0.02 : 7;
 
-  // Run all modules
   const structure = analyzeMarketStructure(spot, candles, prevDay);
   const greeks = analyzeGreeks(chain, spot, atmStrike, timeToExpiry);
   const oi = analyzeOI(chain, spot);
   const smartMoney = analyzeSmartMoney(spot, candles, structure);
   const flow = analyzeFlow(chain);
 
-  // Determine market bias
-  let marketBias: MarketBias = "NEUTRAL";
+  let marketBias: "STRONG_BULLISH" | "BULLISH" | "NEUTRAL" | "BEARISH" | "STRONG_BEARISH" = "NEUTRAL";
   const bullishSignals = [
     structure.structure === "UPTREND",
     oi.callLongBuildup,
@@ -869,13 +628,12 @@ export function runOrcaEngine(input: {
   else if (bearishSignals >= 3) marketBias = "BEARISH";
 
   const confidence = calculateConfidence(structure, oi, greeks, flow, smartMoney, spot);
-  const rec = recommendStrike(spot, chain, config, marketBias, confidence, expiry, isExpiryDay, confidenceThreshold);
+  const rec = getEntrySignal(spot, chain, config, marketBias, confidence, expiry, isExpiryDay, confidenceThreshold);
   const risk = calculateRisk(rec, config);
   const alerts = generateAlerts(greeks, oi, smartMoney, flow, confidence, spot);
   const zeroDte = analyzeZeroDte(spot, chain, greeks, isExpiryDay);
 
-  // Build strike analysis
-  const strikes: OrcaStrikeAnalysis[] = chain.map(s => {
+  const strikes: any[] = chain.map(s => {
     const cgex = (s.ce?.gamma || 0) * (s.ce?.oi || 0) * spot * spot * 0.0001;
     const pgex = (s.pe?.gamma || 0) * (s.pe?.oi || 0) * spot * spot * 0.0001;
     return {
@@ -908,46 +666,47 @@ export function runOrcaEngine(input: {
       },
       gammaExposure: cgex - pgex,
       netGEX: cgex - pgex,
-      isGammaWall: Math.abs(s.strike - greeks.gammaWall?.strike!) < 50,
+      isGammaWall: Math.abs(s.strike - (greeks.gammaWall?.strike || 0)) < 50,
       isLiquidityWall: (s.ce?.oi || 0) > 500000 || (s.pe?.oi || 0) > 500000,
     };
   });
 
-  // Build summaries
-  const greeksSummary = `Delta ${greeks.atmDelta.toFixed(2)} | Gamma ${greeks.atmGamma.toFixed(4)} | Theta ${greeks.atmTheta.toFixed(2)} | Vega ${greeks.atmVega.toFixed(2)} | Dealer: ${greeks.dealerRegime}`;
-  const oiSummary = `PCR ${oi.pcr.toFixed(2)} | MaxPain ${oi.maxPain} | ${oi.callLongBuildup ? "Call Long Buildup" : oi.putLongBuildup ? "Put Long Buildup" : "Neutral"} | ${oi.freshCallWriting ? "Fresh CE Writing" : oi.freshPutWriting ? "Fresh PE Writing" : ""}`;
-  const liquiditySummary = smartMoney.liquiditySweep.detected
-    ? `Liquidity sweep ${smartMoney.liquiditySweep.direction} at ${smartMoney.liquiditySweep.level}`
-    : "No sweep detected";
-  const smartMoneySummary = `OB: ${smartMoney.orderBlock ? `${smartMoney.orderBlock.type} @ ${smartMoney.orderBlock.price}` : "None"} | FVG: ${smartMoney.fairValueGap ? "Present" : "None"} | Sweep: ${smartMoney.liquiditySweep.detected ? "YES" : "NO"}`;
-
-  const reasons: string[] = [];
-  if (marketBias.includes("BULLISH")) reasons.push("Bullish market structure");
-  if (marketBias.includes("BEARISH")) reasons.push("Bearish market structure");
-  if (oi.callLongBuildup) reasons.push("Call long buildup");
-  if (oi.putLongBuildup) reasons.push("Put long buildup");
-  if (oi.putUnwinding) reasons.push("Put unwinding — support building");
-  if (oi.callUnwinding) reasons.push("Call unwinding — resistance weakening");
-  if (greeks.gammaWall) reasons.push(`Gamma wall at ${greeks.gammaWall.strike}`);
-  if (smartMoney.liquiditySweep.detected) reasons.push(`Liquidity sweep ${smartMoney.liquiditySweep.direction}`);
-  if (flow.volumeSpike) reasons.push("Volume spike");
-  if (flow.institutionalOrders) reasons.push("Institutional flow detected");
-  if (structure.vwap && spot > structure.vwap) reasons.push("Above VWAP");
-  if (structure.vwap && spot < structure.vwap) reasons.push("Below VWAP");
-  if (zeroDte.active && zeroDte.gammaSqueeze) reasons.push("0DTE Gamma squeeze active");
-
-  // Time to expiry
-  const timeToExpStr = isExpiryDay ? "Expiry Day — Hours remaining" : `${Math.round(24 * 7)} hours to expiry`;
-
   return {
     timestamp: new Date().toISOString(),
     symbol, spot, expiry, isExpiryDay,
-    timeToExpiry: timeToExpStr,
+    timeToExpiry: isExpiryDay ? "Expiry Day — Hours remaining" : `${Math.round(24 * 7)} hours to expiry`,
     marketBias, marketStructure: structure,
     greeks, oi, smartMoney, flow,
     recommendation: rec,
     risk, confidence, alerts,
-    reasons, greeksSummary, oiSummary, liquiditySummary, smartMoneySummary,
+    reasons: [`Strategy using ${config.name}`],
+    greeksSummary: `Delta ${greeks.atmDelta.toFixed(2)} | Gamma ${greeks.atmGamma.toFixed(4)} | Theta ${greeks.atmTheta.toFixed(2)} | Vega ${greeks.atmVega.toFixed(2)}`,
+    oiSummary: `PCR ${oi.pcr.toFixed(2)} | ${oi.callLongBuildup ? "Call long buildup" : oi.putLongBuildup ? "Put long buildup" : "Neutral"}`,
+    liquiditySummary: smartMoney.liquiditySweep.detected ? `Liquidity sweep ${smartMoney.liquiditySweep.direction}` : "No sweep detected",
+    smartMoneySummary: `Sweep: ${smartMoney.liquiditySweep.detected ? "YES" : "NO"}`,
     zeroDte, strikes,
   };
 }
+
+// Export types
+export type {
+  MarketBias,
+  TradeAction,
+  TrendState,
+  StructureType,
+  DealerRegime,
+  ConfidenceLevel,
+  AlertType,
+  OrcaStrikeAnalysis,
+  MarketStructureAnalysis,
+  GreeksAnalysis,
+  OIAnalysisResult,
+  SmartMoneySignals,
+  OptionFlowSignals,
+  StrikeRecommendation,
+  RiskCalculation,
+  ConfidenceScore,
+  OrcaAlert,
+  OrcaSignal,
+  OrcaStrategyConfig,
+};

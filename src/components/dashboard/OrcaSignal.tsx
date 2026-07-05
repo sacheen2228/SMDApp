@@ -10,6 +10,11 @@ import { useEffect, useState, useCallback } from "react";
 import type { OrcaSignal } from "@/lib/orca-engine";
 import { getSymbolConfig } from "@/lib/symbol-config";
 
+function sf(val: any, d: number = 2): string {
+  if (val === undefined || val === null || isNaN(val)) return '0';
+  return Number(val).toFixed(d);
+}
+
 interface OrcaSignalPanelProps {
   symbol: string;
   autoRefresh?: boolean;
@@ -204,38 +209,38 @@ export function OrcaSignalPanel({
             <div>
               <span className="text-muted-foreground text-[10px]">CMP</span>
               <div className="font-bold">
-                ₹{rec.currentPremium.toFixed(2)}
+                ₹{sf(rec.currentPremium, 2)}
               </div>
             </div>
             <div>
               <span className="text-muted-foreground text-[10px]">Entry</span>
               <div className="font-bold text-blue-400">
-                ₹{rec.entry.toFixed(2)}
+                ₹{sf(rec.entry, 2)}
               </div>
             </div>
             <div>
               <span className="text-muted-foreground text-[10px]">
                 Risk:Reward
               </span>
-              <div className="font-bold">1:{rec.riskReward.toFixed(1)}</div>
+              <div className="font-bold">1:{sf(rec.riskReward, 1)}</div>
             </div>
           </div>
           <div className="grid grid-cols-4 gap-2">
             <div>
               <span className="text-red-400 text-[10px]">Stop Loss</span>
-              <div className="text-red-400">₹{rec.stopLoss.toFixed(2)}</div>
+              <div className="text-red-400">₹{sf(rec.stopLoss, 2)}</div>
             </div>
             <div>
               <span className="text-emerald-400 text-[10px]">TP1</span>
-              <div className="text-emerald-400">₹{rec.target1.toFixed(2)}</div>
+              <div className="text-emerald-400">₹{sf(rec.target1, 2)}</div>
             </div>
             <div>
               <span className="text-emerald-400 text-[10px]">TP2</span>
-              <div className="text-emerald-400">₹{rec.target2.toFixed(2)}</div>
+              <div className="text-emerald-400">₹{sf(rec.target2, 2)}</div>
             </div>
             <div>
               <span className="text-emerald-400 text-[10px]">TP3</span>
-              <div className="text-emerald-400">₹{rec.target3.toFixed(2)}</div>
+              <div className="text-emerald-400">₹{sf(rec.target3, 2)}</div>
             </div>
           </div>
           <div className="grid grid-cols-3 gap-2 mt-2 text-[10px]">
@@ -271,23 +276,23 @@ export function OrcaSignalPanel({
                     : "text-red-400"
                 }
               >
-                {signal.greeks.atmDelta.toFixed(3)}
+                {sf(signal.greeks.atmDelta, 3)}
               </span>
             </div>
             <div>
               Gamma:{" "}
               <span className="text-blue-400">
-                {signal.greeks.atmGamma.toFixed(4)}
+                {sf(signal.greeks.atmGamma, 4)}
               </span>
             </div>
             <div>
               Theta:{" "}
               <span className="text-yellow-400">
-                {signal.greeks.atmTheta.toFixed(2)}
+                {sf(signal.greeks.atmTheta, 2)}
               </span>
             </div>
             <div>
-              Vega: <span>{signal.greeks.atmVega.toFixed(2)}</span>
+              Vega: <span>{sf(signal.greeks.atmVega, 2)}</span>
             </div>
             <div>
               Dealer:{" "}
@@ -302,7 +307,7 @@ export function OrcaSignalPanel({
               </span>
             </div>
             <div>
-              IV %ile: <span>{signal.greeks.ivPercentile.toFixed(0)}%</span>
+              IV %ile: <span>{sf(signal.greeks.ivPercentile, 0)}%</span>
             </div>
           </div>
         </div>
@@ -323,7 +328,7 @@ export function OrcaSignalPanel({
                     : ""
                 }
               >
-                {signal.oi.pcr.toFixed(2)}
+                {sf(signal.oi.pcr, 2)}
               </span>
             </div>
             <div>
@@ -331,11 +336,11 @@ export function OrcaSignalPanel({
             </div>
             <div>
               Call OI:{" "}
-              <span>{(signal.oi.totalCallOI / 100000).toFixed(1)}L</span>
+              <span>{sf(signal.oi.totalCallOI / 100000, 1)}L</span>
             </div>
             <div>
               Put OI:{" "}
-              <span>{(signal.oi.totalPutOI / 100000).toFixed(1)}L</span>
+              <span>{sf(signal.oi.totalPutOI / 100000, 1)}L</span>
             </div>
             <div>
               {signal.oi.callLongBuildup && (
@@ -548,22 +553,22 @@ export function OrcaSignalPanel({
         </div>
         <div className="grid grid-cols-4 gap-1 text-[10px]">
           <div>
-            VWAP: <span className="text-blue-400">{signal.marketStructure.vwap.toFixed(2)}</span>
+            VWAP: <span className="text-blue-400">{sf(signal.marketStructure.vwap, 2)}</span>
           </div>
           <div>
-            EMA9: <span>{signal.marketStructure.ema9.toFixed(2)}</span>
+            EMA9: <span>{sf(signal.marketStructure.ema9, 2)}</span>
           </div>
           <div>
-            EMA21: <span>{signal.marketStructure.ema21.toFixed(2)}</span>
+            EMA21: <span>{sf(signal.marketStructure.ema21, 2)}</span>
           </div>
           <div>
-            ATR: <span>{signal.marketStructure.dailyHigh > signal.marketStructure.dailyLow ? ((signal.marketStructure.dailyHigh - signal.marketStructure.dailyLow) / signal.spot * 100).toFixed(2) : "0"}%</span>
+            ATR: <span>{signal.marketStructure.dailyHigh > signal.marketStructure.dailyLow ? sf((signal.marketStructure.dailyHigh - signal.marketStructure.dailyLow) / signal.spot * 100, 2) : "0"}%</span>
           </div>
           <div>
-            R1: <span className="text-red-400">{signal.marketStructure.r1.toFixed(2)}</span>
+            R1: <span className="text-red-400">{sf(signal.marketStructure.r1, 2)}</span>
           </div>
           <div>
-            S1: <span className="text-emerald-400">{signal.marketStructure.s1.toFixed(2)}</span>
+            S1: <span className="text-emerald-400">{sf(signal.marketStructure.s1, 2)}</span>
           </div>
           <div>
             HH: <span>{signal.marketStructure.higherHigh ? "✓" : "✗"}</span>

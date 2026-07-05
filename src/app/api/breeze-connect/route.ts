@@ -3,9 +3,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateSession, validateSession, getConfig } from '@/lib/icici-breeze/auth';
 
-// ─── GET: Check connection status ─────────────────────────────────
-export async function GET() {
+// ─── GET: Check connection status (or activate via ?apisession=) ──
+export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const apiSessionParam = searchParams.get('apisession');
+
+    // If ?apisession= is provided, activate session immediately
+    if (apiSessionParam) {
+      try {
+        await generateSession(apiSessionParam);
+        return NextResponse.json({
+          success: true,
+          data: { isConnected: true, message: 'Session activated' },
+        });
+      } catch (err: any) {
+        return NextResponse.json({
+          success: false,
+          error: err.message,
+        });
+      }
+    }
+
     const isConnected = await validateSession();
     const config = getConfig();
 
