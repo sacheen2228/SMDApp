@@ -383,11 +383,85 @@ const intents: Intent[] = [
     },
   },
 
+  // ── Greeks questions ──
+  {
+    patterns: [/greek/i, /delta/i, /gamma/i, /theta/i, /vega/i, /iv\b/i, /implied\s*vol/i],
+    handler: (ctx) => {
+      const a = ctx.analysis;
+      if (!a) return "📊 Greeks data loading...";
+      return `📊 **Greeks Analysis — ${ctx.symbol}**\n\n**Delta:** Measures how much option moves when stock moves ₹1\n• ATM Delta ≈ 0.50\n• High delta = more responsive\n\n**Gamma:** How fast Delta changes\n• Highest for ATM options near expiry\n• High gamma = big swings\n\n**Theta:** Time decay (your ENEMY when buying)\n• Option loses value each day\n• Theta accelerates near expiry\n• Buy options with MORE days left\n\n**Vega:** Sensitivity to volatility\n• High IV = expensive options\n• After events: IV crashes (IV crush)\n\n💡 **Rule:** Buy when IV is LOW (<30th percentile). Sell when IV is HIGH (>70th percentile).`;
+    },
+  },
+
+  // ── Strategy questions ──
+  {
+    patterns: [/strateg/i, /which.*trade/i, /what.*trade/i, /best.*setup/i, /setup/i],
+    handler: (ctx) => {
+      const a = ctx.analysis;
+      const s = a?.sentiment || "neutral";
+      let rec = "";
+      if (s === "bullish") {
+        rec = "• **Long Call** — Buy ATM CE if bullish\n• **Bull Call Spread** — Buy lower CE + Sell higher CE (cheaper)\n• **Bull Put Spread** — Sell OTM PE + Buy lower PE";
+      } else if (s === "bearish") {
+        rec = "• **Long Put** — Buy ATM PE if bearish\n• **Bear Put Spread** — Buy higher PE + Sell lower PE (cheaper)\n• **Bear Call Spread** — Sell OTM CE + Buy higher CE";
+      } else {
+        rec = "• **Iron Condor** — Sell both sides if range-bound\n• **Straddle** — Buy both sides if big move expected\n• Wait for clearer direction before entering";
+      }
+      return `🎯 **Strategy Guide — ${ctx.symbol}**\n\n**Current Sentiment:** ${s.toUpperCase()}\n\n**Best strategies for ${s} market:**\n${rec}\n\n**Always remember:**\n• Risk max 2% per trade\n• Set SL before entering\n• Minimum 1:2 risk:reward\n• Close by 3:15 PM on expiry`;
+    },
+  },
+
+  // ── Entry / exit questions ──
+  {
+    patterns: [/entry/i, /enter/i, /should.*buy/i, /should.*sell/i, /exit/i, /close/i],
+    handler: (ctx) => {
+      const a = ctx.analysis;
+      if (!a) return "📊 Loading market data...";
+      const r = a.recommendation || {};
+      return `⚡ **Entry Check — ${ctx.symbol}**\n\n**Action:** ${r.action || "WAIT"}\n**Strike:** ₹${r.strike || "—"} ${r.optionType || ""}\n**Entry:** ₹${r.entryPrice || "—"}\n**Stop Loss:** ₹${r.stopLoss || "—"}\n**Target:** ₹${r.target1 || "—"}\n**Confidence:** ${r.confidence || 0}%\n\n**Entry Rules:**\n• Only enter if confidence > 85%\n• SL must be set BEFORE entering\n• Max 2% risk per trade\n• If SL hits on trade #1, NO trade #2\n\n💡 If confidence < 85%, the answer is NO TRADE.`;
+    },
+  },
+
+  // ── OI questions ──
+  {
+    patterns: [/oi\b/i, /open\s*interest/i, /buildup/i, /call.*oi/i, /put.*oi/i, /pcr/i],
+    handler: (ctx) => {
+      const a = ctx.analysis;
+      if (!a) return "📊 OI data loading...";
+      return `📊 **OI Analysis — ${ctx.symbol}**\n\n**Total Call OI:** ${fmt(a.totalCallOI)} | **Total Put OI:** ${fmt(a.totalPutOI)}\n**PCR:** ${a.pcr?.toFixed(2) || "—"}\n**Max Pain:** ₹${fmt(a.maxPain)}\n**ATM Strike:** ₹${fmt(ctx.analysis?.atmStrike)}\n\n**How to read OI:**\n• PCR > 1.2 = Bullish (more puts = protection buying)\n• PCR < 0.8 = Bearish (more calls = bearish bets)\n• PCR 0.8-1.2 = Neutral\n\n**OI Build-up:**\n• Price ↑ + OI ↑ = Long Build-up (bullish)\n• Price ↓ + OI ↑ = Short Build-up (bearish)\n• Price ↑ + OI ↓ = Short Covering (bullish)\n• Price ↓ + OI ↓ = Long Unwinding (bearish)`;
+    },
+  },
+
+  // ── Risk / position sizing ──
+  {
+    patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i, /stop\s*loss/i, /sl\b/i],
+    handler: (ctx) => {
+      const lotSizes: Record<string, number> = { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20 };
+      const lot = lotSizes[ctx.symbol] || 65;
+      const price = ctx.analysis?.recommendation?.entryPrice || 70;
+      const sl = ctx.analysis?.recommendation?.stopLoss || 45;
+      const riskPerLot = Math.abs(price - sl) * lot;
+      const capital = 100000;
+      const maxRisk = capital * 0.02;
+      const lots = riskPerLot > 0 ? Math.floor(maxRisk / riskPerLot) : 0;
+
+      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)} | **SL:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing (₹1L capital):**\n• Max risk = ₹1,00,000 × 2% = ₹2,000\n• Lots = ₹2,000 ÷ ₹${fmt(riskPerLot)} = ${lots} lots\n• Max loss = ₹${fmt(riskPerLot * lots)}\n\n**Stop Loss Rule:**\n• SL = Entry × 0.65 (lose 35% max)\n• Or SL = Entry - (1.5 × ATR)\n• ALWAYS set SL before entering\n\n**Take Profit Rule:**\n• TP = Entry + (Risk × 2) → min 1:2 R:R\n• Example: Buy ₹100, SL ₹65 → TP ₹170\n\n💡 Never risk more than 2% of capital per trade.`;
+    },
+  },
+
+  // ── Correlation questions ──
+  {
+    patterns: [/correlat/i, /nifty.*sensex/i, /sensex.*nifty/i],
+    handler: (ctx) => {
+      return `📊 **Nifty-Sensex Correlation**\n\nUse the **Corr** tab for live correlation analysis.\n\n**What it tells you:**\n• When Nifty & Sensex move together (correlation > 0.97)\n• When they drift apart (correlation < 0.94) — trade the comeback\n• Beta: If Sensex +1%, how much does Nifty move\n\n**Signal:**\n• Correlation < 0.94 + gap > 0.15% = TRADE\n• Buy the one BEHIND, sell the one AHEAD\n• Hold 1-3 days until correlation returns to 0.97+`;
+    },
+  },
+
   // ── Hello / help ──
   {
     patterns: [/^(hi|hello|hey|help|what can you do)/i, /^$/],
     handler: (ctx) => {
-      return `👋 **Hi Sachin! I'm your SDM Trading Agent.**\n\nI can help you with:\n\n**Market Analysis:**\n• "What's the market trend?"\n• "What's the PCR?"\n• "Show me key levels"\n• "Where is max pain?"\n• "What's the VIX?"\n• "Show OI data"\n\n**Trading:**\n• "What's the best trade?"\n• "Give me a trade recommendation"\n• "Show today's trades"\n• "Show trade history"\n• "What are my open positions?"\n\n**Risk & Performance:**\n• "What's my win rate?"\n• "Show performance"\n• "Risk management guide"\n• "What's my stop loss?"\n\n**Timing:**\n• "What session is it?"\n• "Is it expiry?"\n• "Any gamma blast?"\n\nJust type naturally — I'll understand! 🎯`;
+      return `👋 **Hi! I'm Angel — Your ORCA Trading AI.**\n\nI know EVERYTHING about options trading. Ask me:\n\n**📊 Market:** "What's the trend?", "PCR?", "Max pain?", "VIX?"\n**🎯 Trade:** "Best trade?", "Entry check?", "ORCA signal?"\n**📈 Greeks:** "Explain Delta", "What is Theta?", "IV?"\n**📋 Strategy:** "Which strategy?", "Iron Condor?", "Straddle?"\n**🛡️ Risk:** "Position sizing?", "Stop loss formula?"\n**📊 OI:** "OI buildup?", "PCR meaning?"\n**🔗 Correlation:** "Nifty vs Sensex?"\n\nI can explain like you're 5 years old or give professional analysis. Just ask! 💡`;
     },
   },
 
@@ -397,7 +471,7 @@ const intents: Intent[] = [
     handler: (ctx) => {
       const s = ctx.analysis?.sentiment || "neutral";
       const emoji = sentimentEmoji(s);
-      return `${emoji} I'm not sure what you're asking, but here's what I know about **${ctx.symbol}** right now:\n\n**Sentiment:** ${s.toUpperCase()}\n**PCR:** ${ctx.analysis?.pcr?.toFixed(2) || "—"}\n**Spot:** ₹${fmt(ctx.spotPrice)}\n**Max Pain:** ₹${fmt(ctx.analysis?.maxPain)}\n\nTry asking about:\n• Market trend, PCR, key levels, max pain\n• Best trade, today's trades, trade history\n• VIX, OI data, gamma, session, risk\n• Win rate, performance, expiry`;
+      return `${emoji} I'm not sure what you're asking, but here's what I know about **${ctx.symbol}** right now:\n\n**Sentiment:** ${s.toUpperCase()}\n**PCR:** ${ctx.analysis?.pcr?.toFixed(2) || "—"}\n**Spot:** ₹${fmt(ctx.spotPrice)}\n**Max Pain:** ₹${fmt(ctx.analysis?.maxPain)}\n\n**Try asking about:**\n• "What is Delta/Gamma/Theta?"\n• "Which strategy for this market?"\n• "Position sizing for ₹1L capital"\n• "Best trade right now?"\n• "Explain Iron Condor"\n• "How to set stop loss?"\n• "Nifty vs Sensex correlation?"`;
     },
   },
 ];
