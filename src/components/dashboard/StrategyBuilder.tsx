@@ -1,355 +1,376 @@
-// Strategy Builder UI — payoff diagram, risk analysis, pre-built strategies
-
 "use client";
 
-import { useState, useMemo } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Target,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  Zap,
-  AlertTriangle,
-} from "lucide-react";
-import {
-  type Strategy,
-  type StrategyAnalysis,
-  analyzeStrategy,
-  buildStraddle,
-  buildStrangle,
-  buildIronCondor,
-  buildBullCallSpread,
-  buildBearPutSpread,
-} from "@/lib/strategy-builder";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { createChart, ColorType, LineSeries } from "lightweight-charts";
+import type { IChartApi } from "lightweight-charts";
 
 interface StrategyBuilderProps {
   spotPrice: number;
-  chainData: any[];
   symbol: string;
 }
 
-const STRATEGY_PRESETS = [
-  { name: "Long Straddle", icon: Zap, view: "volatile" as const },
-  { name: "Long Strangle", icon: Zap, view: "volatile" as const },
-  { name: "Iron Condor", icon: Minus, view: "neutral" as const },
-  { name: "Bull Call Spread", icon: TrendingUp, view: "bullish" as const },
-  { name: "Bear Put Spread", icon: TrendingDown, view: "bearish" as const },
-];
-
-function PayoffChart({ curve, spotPrice }: { curve: { price: number; pnl: number }[]; spotPrice: number }) {
-  if (!curve.length) return null;
-
-  const maxPnL = Math.max(...curve.map((c) => c.pnl));
-  const minPnL = Math.min(...curve.map((c) => c.pnl));
-  const absMax = Math.max(Math.abs(maxPnL), Math.abs(minPnL), 1);
-  const width = 400;
-  const height = 160;
-  const pad = { top: 20, bottom: 25, left: 50, right: 10 };
-  const chartW = width - pad.left - pad.right;
-  const chartH = height - pad.top - pad.bottom;
-
-  const xScale = (price: number) => {
-    const minP = curve[0].price;
-    const maxP = curve[curve.length - 1].price;
-    return pad.left + ((price - minP) / (maxP - minP)) * chartW;
-  };
-
-  const yScale = (pnl: number) => {
-    return pad.top + chartH / 2 - (pnl / absMax) * (chartH / 2);
-  };
-
-  const zeroY = yScale(0);
-
-  // Build filled areas
-  const profitPoints = curve.filter((c) => c.pnl >= 0);
-  const lossPoints = curve.filter((c) => c.pnl <= 0);
-
-  const profitAreaPath = profitPoints.length > 1
-    ? `M ${xScale(profitPoints[0].price)} ${zeroY} ` +
-      profitPoints.map((c) => `L ${xScale(c.price)} ${yScale(c.pnl)}`).join(" ") +
-      ` L ${xScale(profitPoints[profitPoints.length - 1].price)} ${zeroY} Z`
-    : "";
-
-  const lossAreaPath = lossPoints.length > 1
-    ? `M ${xScale(lossPoints[0].price)} ${zeroY} ` +
-      lossPoints.map((c) => `L ${xScale(c.price)} ${yScale(c.pnl)}`).join(" ") +
-      ` L ${xScale(lossPoints[lossPoints.length - 1].price)} ${zeroY} Z`
-    : "";
-
-  const linePath = curve
-    .map((c, i) => `${i === 0 ? "M" : "L"} ${xScale(c.price)} ${yScale(c.pnl)}`)
-    .join(" ");
-
-  // Y-axis labels
-  const yTicks = [-absMax, -absMax / 2, 0, absMax / 2, absMax];
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto">
-      {/* Y-axis grid + labels */}
-      {yTicks.map((tick) => (
-        <g key={tick}>
-          <line
-            x1={pad.left} y1={yScale(tick)} x2={width - pad.right} y2={yScale(tick)}
-            stroke="hsl(240 3.7% 44.9% / 0.15)" strokeWidth="0.5"
-          />
-          <text x={pad.left - 4} y={yScale(tick) + 3} textAnchor="end" fontSize="7" fill="hsl(240 3.7% 44.9% / 0.5)">
-            {tick >= 0 ? "+" : ""}{Math.round(tick).toLocaleString("en-IN")}
-          </text>
-        </g>
-      ))}
-
-      {/* Zero line (thicker) */}
-      <line x1={pad.left} y1={zeroY} x2={width - pad.right} y2={zeroY} stroke="hsl(240 3.7% 44.9% / 0.4)" strokeWidth="1" />
-
-      {/* Profit area fill */}
-      {profitAreaPath && <path d={profitAreaPath} fill="hsl(142 76% 36% / 0.15)" />}
-      {/* Loss area fill */}
-      {lossAreaPath && <path d={lossAreaPath} fill="hsl(0 84% 60% / 0.15)" />}
-
-      {/* P&L line */}
-      <path d={linePath} fill="none" stroke="hsl(220 9% 46%)" strokeWidth="2" />
-
-      {/* Spot price marker */}
-      <line x1={xScale(spotPrice)} y1={pad.top} x2={xScale(spotPrice)} y2={height - pad.bottom} stroke="hsl(262 83% 58% / 0.6)" strokeWidth="1" strokeDasharray="4,2" />
-      <circle cx={xScale(spotPrice)} cy={yScale(0)} r="4" fill="hsl(262 83% 58%)" />
-      <text x={xScale(spotPrice)} y={pad.top - 4} textAnchor="middle" fontSize="8" fontWeight="bold" fill="hsl(262 83% 58%)">
-        Spot ₹{spotPrice.toLocaleString("en-IN")}
-      </text>
-
-      {/* X-axis labels */}
-      {[curve[0], curve[Math.floor(curve.length / 4)], curve[Math.floor(curve.length / 2)], curve[Math.floor(3 * curve.length / 4)], curve[curve.length - 1]].map((c, i) => (
-        <text key={i} x={xScale(c.price)} y={height - 5} textAnchor="middle" fontSize="7" fill="hsl(240 3.7% 44.9% / 0.5)">
-          {(c.price / 1000).toFixed(1)}k
-        </text>
-      ))}
-    </svg>
-  );
+interface LegDef {
+  id: string;
+  action: "BUY" | "SELL";
+  type: "CE" | "PE";
+  strikeOffset: number;
+  premium: number;
+  lots: number;
 }
 
-export function StrategyBuilder({ spotPrice, chainData, symbol }: StrategyBuilderProps) {
-  const [selectedPreset, setSelectedPreset] = useState<string>("Long Straddle");
+interface StrategyPreset {
+  name: string;
+  emoji: string;
+  view: "bullish" | "bearish" | "neutral" | "volatile";
+  description: string;
+  whenToUse: string;
+  build: (atm: number) => LegDef[];
+}
 
-  // Get ATM and nearby strikes
-  const strikes = useMemo(() => {
-    if (!chainData?.length) return [];
-    return chainData
-      .filter((s: any) => s.ce || s.pe)
-      .map((s: any) => ({
-        strike: s.strike,
-        cePremium: s.ce?.ltp || 0,
-        pePremium: s.pe?.ltp || 0,
-        ceOI: s.ce?.oi || 0,
-        peOI: s.pe?.oi || 0,
-      }))
-      .sort((a: any, b: any) => a.strike - b.strike);
-  }, [chainData]);
+const STRATEGIES: StrategyPreset[] = [
+  {
+    name: "Buy Call",
+    emoji: "📈",
+    view: "bullish",
+    description: "Bet market will go UP",
+    whenToUse: "When you're confident NIFTY will rise",
+    build: (atm) => [
+      { id: "lc1", action: "BUY", type: "CE", strikeOffset: 0, premium: 100, lots: 1 },
+    ],
+  },
+  {
+    name: "Buy Put",
+    emoji: "📉",
+    view: "bearish",
+    description: "Bet market will go DOWN",
+    whenToUse: "When you're confident NIFTY will fall",
+    build: (atm) => [
+      { id: "lp1", action: "BUY", type: "PE", strikeOffset: 0, premium: 100, lots: 1 },
+    ],
+  },
+  {
+    name: "Bull Spread",
+    emoji: "🐂",
+    view: "bullish",
+    description: "Buy cheap call + sell expensive call = lower cost",
+    whenToUse: "Market going up but want to reduce risk",
+    build: (atm) => [
+      { id: "bcs1", action: "BUY", type: "CE", strikeOffset: 0, premium: 120, lots: 1 },
+      { id: "bcs2", action: "SELL", type: "CE", strikeOffset: 100, premium: 60, lots: 1 },
+    ],
+  },
+  {
+    name: "Bear Spread",
+    emoji: "🐻",
+    view: "bearish",
+    description: "Buy cheap put + sell expensive put = lower cost",
+    whenToUse: "Market going down but want to reduce risk",
+    build: (atm) => [
+      { id: "bps1", action: "BUY", type: "PE", strikeOffset: 0, premium: 110, lots: 1 },
+      { id: "bps2", action: "SELL", type: "PE", strikeOffset: -100, premium: 55, lots: 1 },
+    ],
+  },
+  {
+    name: "Iron Condor",
+    emoji: "🦅",
+    view: "neutral",
+    description: "Market won't move much = collect premium",
+    whenToUse: "Market is calm, no big events expected",
+    build: (atm) => [
+      { id: "ic1", action: "BUY", type: "PE", strikeOffset: -300, premium: 20, lots: 1 },
+      { id: "ic2", action: "SELL", type: "PE", strikeOffset: -100, premium: 55, lots: 1 },
+      { id: "ic3", action: "SELL", type: "CE", strikeOffset: 100, premium: 60, lots: 1 },
+      { id: "ic4", action: "BUY", type: "CE", strikeOffset: 300, premium: 22, lots: 1 },
+    ],
+  },
+  {
+    name: "Straddle",
+    emoji: "🎰",
+    view: "volatile",
+    description: "Buy BOTH call + put = big move in any direction",
+    whenToUse: "Expecting big move but don't know direction (budget, results)",
+    build: (atm) => [
+      { id: "sd1", action: "BUY", type: "CE", strikeOffset: 0, premium: 100, lots: 1 },
+      { id: "sd2", action: "BUY", type: "PE", strikeOffset: 0, premium: 95, lots: 1 },
+    ],
+  },
+  {
+    name: "Strangle",
+    emoji: "🔀",
+    view: "volatile",
+    description: "Buy OTM call + OTM put = cheaper straddle",
+    whenToUse: "Expecting big move but want to pay less",
+    build: (atm) => [
+      { id: "sg1", action: "BUY", type: "CE", strikeOffset: 100, premium: 60, lots: 1 },
+      { id: "sg2", action: "BUY", type: "PE", strikeOffset: -100, premium: 55, lots: 1 },
+    ],
+  },
+  {
+    name: "Butterfly",
+    emoji: "🦋",
+    view: "neutral",
+    description: "Market stays at ONE price = max profit",
+    whenToUse: "Very confident market won't move at all",
+    build: (atm) => [
+      { id: "bf1", action: "BUY", type: "CE", strikeOffset: -100, premium: 130, lots: 1 },
+      { id: "bf2", action: "SELL", type: "CE", strikeOffset: 0, premium: 100, lots: 2 },
+      { id: "bf3", action: "BUY", type: "CE", strikeOffset: 100, premium: 65, lots: 1 },
+    ],
+  },
+];
 
-  const atmStrike = useMemo(() => {
-    if (!strikes.length) return spotPrice;
-    return strikes.reduce((best: any, s: any) =>
-      Math.abs(s.strike - spotPrice) < Math.abs(best.strike - spotPrice) ? s : best
-    ).strike;
-  }, [strikes, spotPrice]);
+function getLotSize(symbol: string): number {
+  if (symbol === "NIFTY") return 65;
+  if (symbol === "BANKNIFTY") return 30;
+  if (symbol === "FINNIFTY") return 60;
+  if (symbol === "MIDCPNIFTY") return 120;
+  return 20;
+}
 
-  const lotSize = symbol === "NIFTY" ? 65 : symbol === "BANKNIFTY" ? 30 : symbol === "FINNIFTY" ? 60 : symbol === "MIDCPNIFTY" ? 120 : 20;
+function getStrikeStep(symbol: string): number {
+  if (symbol === "NIFTY") return 50;
+  if (symbol === "BANKNIFTY") return 100;
+  if (symbol === "FINNIFTY") return 50;
+  if (symbol === "MIDCPNIFTY") return 25;
+  return 20;
+}
 
-  // Build strategy based on selection
-  const strategy = useMemo((): Strategy | null => {
-    if (!strikes.length) return null;
+function computePayoff(legs: LegDef[], spot: number, step: number, lot: number) {
+  const range = spot * 0.08;
+  const points: { price: number; pnl: number }[] = [];
 
-    const atmData = strikes.find((s: any) => s.strike === atmStrike);
-    const otmCE = strikes.find((s: any) => s.strike > atmStrike);
-    const otmPE = strikes.find((s: any) => s.strike < atmStrike);
-    const farOTMCE = strikes.find((s: any) => s.strike > atmStrike + (otmCE?.strike - atmStrike || 100));
-    const farOTMPE = strikes.find((s: any) => s.strike < atmStrike - (atmStrike - (otmPE?.strike || atmStrike - 100)));
+  // Calculate total premium cost (paid) / credit (received)
+  let totalPremium = 0;
+  for (const leg of legs) {
+    const premiumCost = leg.premium * lot * leg.lots;
+    totalPremium += leg.action === "BUY" ? -premiumCost : premiumCost;
+  }
 
-    const cePrem = atmData?.cePremium || 100;
-    const pePrem = atmData?.pePremium || 100;
-
-    switch (selectedPreset) {
-      case "Long Straddle":
-        return buildStraddle(atmStrike, (cePrem + pePrem) / 2, lotSize);
-      case "Long Strangle":
-        return buildStrangle(
-          otmCE?.strike || atmStrike + 100, otmPE?.strike || atmStrike - 100,
-          otmCE?.cePremium || cePrem * 0.5, otmPE?.pePremium || pePrem * 0.5, lotSize
-        );
-      case "Iron Condor":
-        return buildIronCondor(
-          farOTMPE?.strike || atmStrike - 300, otmPE?.strike || atmStrike - 100,
-          otmCE?.strike || atmStrike + 100, farOTMCE?.strike || atmStrike + 300,
-          (farOTMPE?.pePremium || pePrem * 0.2), (otmPE?.pePremium || pePrem * 0.5),
-          (otmCE?.cePremium || cePrem * 0.5), (farOTMCE?.cePremium || cePrem * 0.2), lotSize
-        );
-      case "Bull Call Spread":
-        return buildBullCallSpread(
-          atmStrike, otmCE?.strike || atmStrike + 100,
-          cePrem, otmCE?.cePremium || cePrem * 0.5, lotSize
-        );
-      case "Bear Put Spread":
-        return buildBearPutSpread(
-          otmPE?.strike || atmStrike - 100, atmStrike,
-          otmPE?.pePremium || pePrem * 0.5, pePrem, lotSize
-        );
-      default:
-        return null;
+  for (let i = 0; i <= 100; i++) {
+    const price = spot - range + (2 * range * i) / 100;
+    let intrinsicPnl = 0;
+    for (const leg of legs) {
+      const strike = spot + leg.strikeOffset * step;
+      const intrinsic = leg.type === "CE" ? Math.max(0, price - strike) : Math.max(0, strike - price);
+      // BUY: profit = intrinsic - premium paid; SELL: profit = premium received - intrinsic
+      const legPnl = leg.action === "BUY"
+        ? (intrinsic - leg.premium) * lot * leg.lots
+        : (leg.premium - intrinsic) * lot * leg.lots;
+      intrinsicPnl += legPnl;
     }
-  }, [selectedPreset, strikes, atmStrike, lotSize]);
+    points.push({ price: Math.round(price), pnl: Math.round(intrinsicPnl) });
+  }
+  return points;
+}
 
-  const analysis = useMemo((): StrategyAnalysis | null => {
-    if (!strategy) return null;
-    return analyzeStrategy(strategy, spotPrice);
-  }, [strategy, spotPrice]);
+function metric(legs: LegDef[], spot: number, step: number, lot: number) {
+  const data = computePayoff(legs, spot, step, lot);
+  const maxProfit = Math.max(...data.map((d) => d.pnl));
+  const maxLoss = Math.min(...data.map((d) => d.pnl));
+
+  // Net cost: positive = debit (you pay), negative = credit (you receive)
+  const netCost = legs.reduce((sum, l) => {
+    const premiumTotal = l.premium * lot * l.lots;
+    return sum + (l.action === "BUY" ? premiumTotal : -premiumTotal);
+  }, 0);
+
+  // Breakeven: linear interpolation where P&L crosses zero
+  const be: number[] = [];
+  for (let i = 1; i < data.length; i++) {
+    const prev = data[i - 1].pnl;
+    const curr = data[i].pnl;
+    if ((prev < 0 && curr >= 0) || (prev >= 0 && curr < 0)) {
+      const fraction = Math.abs(prev) / (Math.abs(prev) + Math.abs(curr) || 1);
+      const bePrice = data[i - 1].price + fraction * (data[i].price - data[i - 1].price);
+      be.push(Math.round(bePrice));
+    }
+  }
+
+  // Stop Loss: exit when loss reaches 50% of max loss (premium-based)
+  const stopLossPct = 0.5;
+  const stopLossAmount = Math.abs(maxLoss) * stopLossPct;
+  // Find stop loss price on the chart (where P&L = -stopLossAmount for BUY, or +stopLossAmount for SELL)
+  let stopLossPrice = spot;
+  const isCredit = netCost < 0;
+  const targetPnl = isCredit ? -stopLossAmount : stopLossAmount;
+  for (let i = 1; i < data.length; i++) {
+    const prev = data[i - 1].pnl;
+    const curr = data[i].pnl;
+    if ((prev <= targetPnl && curr > targetPnl) || (prev >= targetPnl && curr < targetPnl)) {
+      const fraction = Math.abs(prev - targetPnl) / (Math.abs(prev - targetPnl) + Math.abs(curr - targetPnl) || 1);
+      stopLossPrice = Math.round(data[i - 1].price + fraction * (data[i].price - data[i - 1].price));
+      break;
+    }
+  }
+
+  return { maxProfit, maxLoss, breakeven: be, netCost, stopLossPrice, stopLossAmount: Math.round(stopLossAmount) };
+}
+
+export function StrategyBuilder({ spotPrice, symbol }: StrategyBuilderProps) {
+  const [selected, setSelected] = useState(0);
+  const [editingPremiums, setEditingPremiums] = useState(false);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartApi = useRef<IChartApi | null>(null);
+  const lot = getLotSize(symbol);
+  const step = getStrikeStep(symbol);
+  const preset = STRATEGIES[selected];
+  const legs = useMemo(() => preset.build(spotPrice), [selected, spotPrice]);
+  const payoffs = useMemo(() => computePayoff(legs, spotPrice, step, lot), [legs, spotPrice, step, lot]);
+  const m = useMemo(() => metric(legs, spotPrice, step, lot), [legs, spotPrice, step, lot]);
+
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (chartApi.current) { chartApi.current.remove(); chartApi.current = null; }
+    const chart = createChart(chartRef.current, {
+      width: chartRef.current.clientWidth,
+      height: 200,
+      layout: { background: { type: ColorType.Solid, color: "#131722" }, textColor: "#d1d4dc", fontSize: 10 },
+      grid: { vertLines: { color: "#1e222d" }, horzLines: { color: "#1e222d" } },
+      rightPriceScale: { borderColor: "#2a2e39" },
+      timeScale: { borderColor: "#2a2e39", visible: false },
+    });
+    const s = chart.addSeries(LineSeries, {
+      color: "#22d3ee",
+      lineWidth: 2,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    s.setData(payoffs.map((p, i) => ({ time: i as any, value: p.pnl })));
+    chart.timeScale().fitContent();
+    chartApi.current = chart;
+    const ro = new ResizeObserver((e) => { if (chartApi.current && e[0]?.contentRect.width) chartApi.current.applyOptions({ width: e[0].contentRect.width }); });
+    ro.observe(chartRef.current);
+    return () => { ro.disconnect(); chartApi.current?.remove(); chartApi.current = null; };
+  }, [payoffs]);
+
+  const viewColor = { bullish: "emerald", bearish: "red", neutral: "blue", volatile: "amber" }[preset.view];
+  const viewLabel = { bullish: "BULLISH", bearish: "BEARISH", neutral: "NEUTRAL", volatile: "VOLATILE" }[preset.view];
 
   return (
-    <div className="flex flex-col h-full overflow-auto p-4 gap-3">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-base font-bold text-foreground">Strategy Builder</h1>
-          <p className="text-[10px] text-muted-foreground">
-            {symbol} • Spot ₹{spotPrice.toLocaleString("en-IN")} • ATM ₹{atmStrike.toLocaleString("en-IN")}
-          </p>
-        </div>
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <span className="font-mono font-bold text-sm">Strategy Builder</span>
+        <span className="text-[10px] text-muted-foreground">Pick a strategy → see payoff → take trade</span>
       </div>
 
-      {/* Strategy Selector */}
-      <div className="flex gap-1 flex-wrap">
-        {STRATEGY_PRESETS.map((preset) => (
-          <Button
-            key={preset.name}
-            variant="ghost"
-            size="sm"
-            className={`h-7 text-[10px] font-bold ${
-              selectedPreset === preset.name
-                ? "bg-violet-600 text-white"
-                : "text-muted-foreground hover:text-foreground"
+      {/* Strategy Cards */}
+      <div className="grid grid-cols-4 gap-2">
+        {STRATEGIES.map((s, i) => (
+          <button
+            key={s.name}
+            onClick={() => setSelected(i)}
+            className={`p-3 rounded-lg border text-left transition-all ${
+              selected === i
+                ? "bg-primary/10 border-primary/50 ring-1 ring-primary/30"
+                : "bg-muted/30 border-border hover:border-primary/30"
             }`}
-            onClick={() => setSelectedPreset(preset.name)}
           >
-            <preset.icon className="h-3 w-3 mr-1" />
-            {preset.name}
-          </Button>
+            <div className="text-lg mb-1">{s.emoji}</div>
+            <div className="text-[11px] font-bold">{s.name}</div>
+            <div className="text-[9px] text-muted-foreground mt-0.5">{s.description}</div>
+          </button>
         ))}
       </div>
 
-      {analysis && (
-        <>
-          {/* Payoff Diagram */}
-          <Card className="border-border bg-card">
-            <CardContent className="p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Target className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-[9px] text-muted-foreground font-bold uppercase">Payoff Diagram</span>
-                <Badge className="text-[8px] bg-violet-500/10 text-violet-400">
-                  {analysis.strategy.name}
-                </Badge>
-              </div>
-              <PayoffChart curve={analysis.payoffCurve} spotPrice={spotPrice} />
-              <p className="text-[8px] text-muted-foreground mt-1">{analysis.strategy.description}</p>
-            </CardContent>
-          </Card>
-
-          {/* Risk Metrics */}
-          <div className="grid grid-cols-2 gap-2">
-            <Card className="border-border bg-card">
-              <CardContent className="p-2 text-center">
-                <div className="text-[8px] text-muted-foreground">Max Profit</div>
-                <div className="text-sm font-bold text-green-500">{analysis.bestCase}</div>
-              </CardContent>
-            </Card>
-            <Card className="border-border bg-card">
-              <CardContent className="p-2 text-center">
-                <div className="text-[8px] text-muted-foreground">Max Loss</div>
-                <div className="text-sm font-bold text-red-500">{analysis.worstCase}</div>
-              </CardContent>
-            </Card>
-            <Card className="border-border bg-card">
-              <CardContent className="p-2 text-center">
-                <div className="text-[8px] text-muted-foreground">Breakeven</div>
-                <div className="text-sm font-bold text-foreground">
-                  {analysis.breakevens.length > 0
-                    ? analysis.breakevens.map((b) => `₹${b.toLocaleString("en-IN")}`).join(", ")
-                    : "—"}
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-border bg-card">
-              <CardContent className="p-2 text-center">
-                <div className="text-[8px] text-muted-foreground">Margin Required</div>
-                <div className="text-sm font-bold text-foreground">
-                  ₹{analysis.marginRequired.toLocaleString("en-IN")}
-                </div>
-              </CardContent>
-            </Card>
+      {/* Selected Strategy Detail */}
+      <div className="bg-muted/30 rounded-lg p-4 border">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xl">{preset.emoji}</span>
+              <span className="font-bold text-lg">{preset.name}</span>
+              <span className={`px-2 py-0.5 rounded text-[9px] font-bold bg-${viewColor}-500/20 text-${viewColor}-400`}>
+                {viewLabel}
+              </span>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-1">
+              When to use: <span className="text-foreground">{preset.whenToUse}</span>
+            </div>
           </div>
+          <div className="text-right text-[10px] text-muted-foreground">
+            Lot size: {lot} | Step: {step}
+          </div>
+        </div>
 
-          {/* Legs */}
-          <Card className="border-border bg-card">
-            <CardContent className="p-2">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-[9px] text-muted-foreground font-bold uppercase">Strategy Legs</span>
-                </div>
-                <span className="text-[8px] text-muted-foreground">Lot: {lotSize} qty</span>
-              </div>
-              <div className="space-y-1">
-                {analysis.strategy.legs.map((leg, i) => {
-                  const legCost = leg.premium * leg.lotSize * leg.lots;
-                  return (
-                    <div
-                      key={i}
-                      className={`flex items-center justify-between p-1.5 rounded text-[10px] ${
-                        leg.action === "BUY" ? "bg-green-500/10" : "bg-red-500/10"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Badge className={`text-[8px] ${leg.action === "BUY" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                          {leg.action}
-                        </Badge>
-                        <span className="text-foreground font-bold">{leg.strike.toLocaleString("en-IN")}</span>
-                        <span className="text-muted-foreground">{leg.type}</span>
-                        <span className="text-muted-foreground/60 text-[8px]">×{leg.lots} lot</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-foreground">₹{leg.premium}</span>
-                        <span className="text-muted-foreground/60 text-[8px] ml-1">₹{legCost.toLocaleString("en-IN")}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* Total cost */}
-              <div className="flex justify-between mt-2 pt-1 border-t border-border/30 text-[10px]">
-                <span className="text-muted-foreground">Total Premium</span>
-                <span className="font-bold text-foreground">
-                  ₹{analysis.strategy.legs.reduce((sum, leg) => sum + leg.premium * leg.lotSize * leg.lots, 0).toLocaleString("en-IN")}
+        {/* Legs */}
+        <div className="space-y-2 mb-4">
+          <div className="text-[10px] text-muted-foreground font-bold">YOUR TRADE</div>
+          {legs.map((leg) => {
+            const strike = spotPrice + leg.strikeOffset * step;
+            const isBuy = leg.action === "BUY";
+            return (
+              <div key={leg.id} className={`flex items-center gap-3 p-2 rounded ${isBuy ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
+                <span className={`px-2 py-1 rounded text-[10px] font-bold ${isBuy ? "bg-emerald-500 text-white" : "bg-red-500 text-white"}`}>
+                  {leg.action}
+                </span>
+                <span className="font-bold text-sm">{leg.type}</span>
+                <span className="text-muted-foreground">Strike:</span>
+                <span className="font-mono font-bold">{strike.toLocaleString("en-IN")}</span>
+                <span className="text-muted-foreground">Premium:</span>
+                <span className="font-mono">₹{leg.premium}</span>
+                <span className="text-muted-foreground">× {leg.lots} lot</span>
+                <span className="ml-auto font-mono font-bold">
+                  ₹{(leg.premium * lot * leg.lots).toLocaleString("en-IN")}
                 </span>
               </div>
-            </CardContent>
-          </Card>
+            );
+          })}
+        </div>
 
-          {/* Market View */}
-          <Card className="border-border bg-card">
-            <CardContent className="p-2 text-center">
-              <div className="text-[8px] text-muted-foreground mb-1">Market View</div>
-              <Badge className={`text-[10px] ${
-                analysis.strategy.marketView === "bullish" ? "bg-green-500/20 text-green-400" :
-                analysis.strategy.marketView === "bearish" ? "bg-red-500/20 text-red-400" :
-                analysis.strategy.marketView === "volatile" ? "bg-orange-500/20 text-orange-400" :
-                "bg-blue-500/20 text-blue-400"
-              }`}>
-                {analysis.strategy.marketView.toUpperCase()}
-              </Badge>
-            </CardContent>
-          </Card>
-        </>
-      )}
+        {/* Metrics */}
+        <div className="grid grid-cols-5 gap-3 mb-4">
+          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded p-2 text-center">
+            <div className="text-[9px] text-muted-foreground">MAX PROFIT</div>
+            <div className="text-sm font-bold text-emerald-400">
+              {m.maxProfit > 0 ? `₹${m.maxProfit.toLocaleString("en-IN")}` : "Unlimited"}
+            </div>
+          </div>
+          <div className="bg-red-500/10 border border-red-500/20 rounded p-2 text-center">
+            <div className="text-[9px] text-muted-foreground">MAX LOSS</div>
+            <div className="text-sm font-bold text-red-400">
+              {m.maxLoss < 0 ? `₹${Math.abs(m.maxLoss).toLocaleString("en-IN")}` : "₹0"}
+            </div>
+          </div>
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded p-2 text-center">
+            <div className="text-[9px] text-muted-foreground">STOP LOSS</div>
+            <div className="text-sm font-bold text-amber-400">
+              {m.stopLossPrice.toLocaleString("en-IN")}
+            </div>
+            <div className="text-[8px] text-amber-400/70">Exit if spot hits this</div>
+          </div>
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 text-center">
+            <div className="text-[9px] text-muted-foreground">BREAKEVEN</div>
+            <div className="text-sm font-bold text-blue-400">
+              {m.breakeven.length > 0 ? m.breakeven.map((b) => b.toLocaleString("en-IN")).join(", ") : "—"}
+            </div>
+          </div>
+          <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 text-center">
+            <div className="text-[9px] text-muted-foreground">NET COST</div>
+            <div className="text-sm font-bold text-purple-400">
+              ₹{Math.abs(m.netCost).toLocaleString("en-IN")}
+            </div>
+            <div className="text-[8px] text-purple-400/70">{m.netCost > 0 ? "Debit" : "Credit"}</div>
+          </div>
+        </div>
+
+        {/* Payoff Chart */}
+        <div className="bg-[#131722] rounded-lg p-3 border border-[#2a2e39]">
+          <div className="text-[10px] text-muted-foreground mb-2">
+            Green = Profit zone | Red = Loss zone | Dotted line = Breakeven
+          </div>
+          <div ref={chartRef} className="w-full" />
+        </div>
+
+        {/* Action */}
+        <div className="flex gap-3 mt-4">
+          <button className="flex-1 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-colors">
+            Place Order →
+          </button>
+          <button className="px-6 py-3 rounded-lg bg-muted hover:bg-muted/80 text-sm transition-colors">
+            Save Strategy
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

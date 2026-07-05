@@ -2,22 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  BarChart3,
-  RefreshCw,
-  Settings2,
-  Sun,
-  Moon,
-  Activity,
-  Zap,
-  Brain,
-  Timer,
-  CalendarClock,
-  Bot,
-  Scan,
-  Newspaper,
-  Target,
-} from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -57,6 +42,10 @@ import { GreeksHeatmap } from '@/components/dashboard/GreeksHeatmap';
 import { TVChart } from '@/components/dashboard/TVChart';
 import { OrcaSignalPanel } from '@/components/dashboard/OrcaSignal';
 import { OrcaBacktestPanel } from '@/components/dashboard/OrcaBacktest';
+import { AdminPanel } from '@/components/dashboard/AdminPanel';
+import IVSurface from '@/components/dashboard/IVSurface';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { runMLAnalysis } from '@/lib/ml-engine';
 import { ResizablePanel } from '@/components/ui/resizable-panel';
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { VirtualOptionChain } from '@/components/option-chain/VirtualOptionChain';
@@ -116,14 +105,16 @@ type OptionChainResponse = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
-function formatIndian(num: number): string {
+function formatIndian(num: number | undefined | null): string {
+  if (num === undefined || num === null || isNaN(num)) return '0';
   if (num >= 10000000) return (num / 10000000).toFixed(2) + ' Cr';
   if (num >= 100000) return (num / 100000).toFixed(2) + ' L';
   if (num >= 1000) return num.toLocaleString('en-IN');
   return num.toString();
 }
 
-function fmt(num: number, d: number = 2): string {
+function fmt(num: number | undefined | null, d: number = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return '0';
   return num.toFixed(d);
 }
 
@@ -141,7 +132,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -166,6 +157,9 @@ export default function TradingDashboard() {
     loginInProgress: false,
     message: '',
   });
+  
+  const { optionChain: wsData, price: wsPrice, signal: wsSignal, isConnected: wsConnected } = useWebSocket(symbol);
+  const [mlResult, setMlResult] = useState<any>(null);
   
   // Fetch option chain
   const { data, isLoading, refetch, isFetching } = useQuery<any>({
@@ -207,6 +201,14 @@ export default function TradingDashboard() {
     }
   }, [data, setOptionChain, setSelectedSymbol, symbol]);
   
+  // Run ML analysis on data change
+  useEffect(() => {
+    if (data?.data?.length && data?.candles?.length) {
+      const result = runMLAnalysis(data.candles, data.data, data.summary?.spotPrice || 0);
+      setMlResult(result);
+    }
+  }, [data]);
+  
   // Set default expiry
   useEffect(() => {
     if (data?.expiries?.length && !selectedExpiry) {
@@ -246,6 +248,24 @@ export default function TradingDashboard() {
 
   // Market session info
   const marketSession = useMemo(() => getCurrentSession(), []);
+
+  // Activate Breeze session from ?apisession= URL param
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const apiSession = params.get('apisession');
+    if (apiSession) {
+      fetch(`/api/breeze-connect?apisession=${apiSession}`)
+        .then(r => r.json())
+        .then(json => {
+          if (json.success) {
+            setBreezeStatus(prev => ({ ...prev, isConnected: true }));
+          } else {
+            console.error('[Breeze] Session activation failed:', json.error);
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   // Check Breeze connection status on mount
   useEffect(() => {
@@ -400,46 +420,6 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('sdm'); setDisplayMode('pro'); }}>
               <Brain className="h-2.5 w-2.5 mr-0.5" /> SDM AI
             </Button>
-            <Button variant={viewMode === 'gap' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'gap' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
-              onClick={() => { setViewMode('gap'); setDisplayMode('pro'); }}>
-              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Gap
-            </Button>
-            <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25' : 'text-muted-foreground hover:text-blue-500'}`}
-              onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
-              <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Backtest
-            </Button>
-            <Button variant={viewMode === 'agent' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'agent' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
-              onClick={() => { setViewMode('agent'); setDisplayMode('pro'); }}>
-              <Bot className="h-2.5 w-2.5 mr-0.5" /> Agent
-            </Button>
-            <Button variant={viewMode === 'scanner' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'scanner' ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/25' : 'text-muted-foreground hover:text-teal-500'}`}
-              onClick={() => { setViewMode('scanner'); setDisplayMode('pro'); }}>
-              <Scan className="h-2.5 w-2.5 mr-0.5" /> Scanner
-            </Button>
-            <Button variant={viewMode === 'news' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'news' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
-              onClick={() => { setViewMode('news'); setDisplayMode('pro'); }}>
-              <Newspaper className="h-2.5 w-2.5 mr-0.5" /> News
-            </Button>
-            <Button variant={viewMode === 'breakout' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'breakout' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
-              onClick={() => { setViewMode('breakout'); setDisplayMode('pro'); }}>
-              <Target className="h-2.5 w-2.5 mr-0.5" /> Breakout
-            </Button>
-            <Button variant={viewMode === 'strategy' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'strategy' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
-              onClick={() => { setViewMode('strategy'); setDisplayMode('pro'); }}>
-              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Strategy
-            </Button>
-            <Button variant={viewMode === 'greeks' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'greeks' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
-              onClick={() => { setViewMode('greeks'); setDisplayMode('pro'); }}>
-              <Activity className="h-2.5 w-2.5 mr-0.5" /> Greeks
-            </Button>
             <Button variant={viewMode === 'chart' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'chart' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('chart'); setDisplayMode('pro'); }}>
@@ -450,12 +430,51 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('orca'); setDisplayMode('pro'); }}>
               <Target className="h-2.5 w-2.5 mr-0.5" /> ORCA
             </Button>
-            <Button variant={viewMode === 'orcaBacktest' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orcaBacktest' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
-              onClick={() => { setViewMode('orcaBacktest'); setDisplayMode('pro'); }}>
-              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> ORCA Test
+            <Button variant={viewMode === 'strategies' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'strategies' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
+              onClick={() => { setViewMode('strategies'); setDisplayMode('pro'); }}>
+              <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> Strategy
+            </Button>
+            <Button variant={viewMode === 'mlSignals' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'mlSignals' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('mlSignals'); setDisplayMode('pro'); }}>
+              <Zap className="h-2.5 w-2.5 mr-0.5" /> ML AI
             </Button>
           </div>
+
+          {/* More dropdown */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 text-[9px] px-2 font-bold text-muted-foreground hover:text-foreground">
+                More ▾
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              {[
+                { mode: 'gap', label: 'Gap Analysis', icon: BarChart3, color: 'amber' },
+                { mode: 'backtest', label: 'Backtest', icon: CalendarClock, color: 'blue' },
+                { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
+                { mode: 'scanner', label: 'Scanner', icon: Scan, color: 'teal' },
+                { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
+                { mode: 'breakout', label: 'Breakout', icon: Target, color: 'rose' },
+                { mode: 'greeks', label: 'Greeks Heatmap', icon: Activity, color: 'cyan' },
+                { mode: 'ivSurface', label: 'IV Surface', icon: Flame, color: 'pink' },
+                { mode: 'orcaBacktest', label: 'ORCA Backtest', icon: BarChart3, color: 'cyan' },
+                { mode: 'admin', label: 'Admin Panel', icon: Settings2, color: 'gray' },
+              ].map((item) => (
+                <button
+                  key={item.mode}
+                  onClick={() => { setViewMode(item.mode as any); setDisplayMode('pro'); }}
+                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-[10px] text-left ${
+                    viewMode === item.mode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                  }`}
+                >
+                  <item.icon className="h-3 w-3" />
+                  {item.label}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
 
           <div className="w-px h-4 bg-border shrink-0" />
 
@@ -635,14 +654,10 @@ export default function TradingDashboard() {
         <div className="flex-1 overflow-hidden">
           <BreakoutDetector />
         </div>
-        ) : viewMode === 'strategy' ? (
+        ) : viewMode === 'strategy' || viewMode === 'strategies' ? (
         /* ═══════ STRATEGY BUILDER VIEW ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <StrategyBuilder
-            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
-            chainData={chainData}
-            symbol={symbol}
-          />
+        <div className="flex-1 overflow-auto p-2">
+          <StrategyBuilder spotPrice={data?.summary?.spotPrice || spotPrice || 0} symbol={symbol} />
         </div>
         ) : viewMode === 'greeks' ? (
         /* ═══════ GREEKS HEATMAP VIEW ═══════ */
@@ -688,6 +703,67 @@ export default function TradingDashboard() {
         /* ═══════ ORCA BACKTEST VIEW ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <OrcaBacktestPanel symbol={symbol} />
+        </div>
+        ) : viewMode === 'admin' ? (
+        /* ═══════ ADMIN PANEL ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <AdminPanel />
+        </div>
+        ) : viewMode === 'ivSurface' ? (
+        /* ═══════ IV SURFACE ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <IVSurface
+            strikes={data?.data || []}
+            spotPrice={data?.summary?.spotPrice || spotPrice || 0}
+            expiries={(data?.expiries || []).map((e: any) => e.date || e)}
+          />
+        </div>
+        ) : viewMode === 'mlSignals' ? (
+        /* ═══════ ML SIGNALS ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 mb-3">
+              <Brain className="h-4 w-4 text-amber-500" />
+              <span className="font-mono font-bold text-sm">ML SIGNAL ENGINE</span>
+              {wsConnected && <Badge className="bg-emerald-500/20 text-emerald-400 text-[9px]">LIVE</Badge>}
+            </div>
+            {mlResult ? (
+              <div className="space-y-3">
+                <div className={`p-3 rounded border ${
+                  mlResult.direction === 'BULLISH' ? 'bg-emerald-500/10 border-emerald-500/30' :
+                  mlResult.direction === 'BEARISH' ? 'bg-red-500/10 border-red-500/30' :
+                  'bg-muted/50 border-border'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold">Overall Signal</span>
+                    <Badge className={`text-[10px] ${
+                      mlResult.direction === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-400' :
+                      mlResult.direction === 'BEARISH' ? 'bg-red-500/20 text-red-400' :
+                      'bg-muted text-muted-foreground'
+                    }`}>{mlResult.direction}</Badge>
+                  </div>
+                  <div className="text-lg font-mono font-bold mb-1">{mlResult.confidence}% confidence</div>
+                  <div className="text-[10px] text-muted-foreground">Action: {mlResult.action}</div>
+                </div>
+                <div className="bg-muted/30 rounded p-3">
+                  <div className="text-[11px] font-bold mb-2">Top Reasons</div>
+                  {mlResult.reasons?.map((r: string, i: number) => (
+                    <div key={i} className="text-[10px] text-muted-foreground flex items-start gap-1 mb-1">
+                      <span className="text-primary">{i + 1}.</span> {r}
+                    </div>
+                  ))}
+                </div>
+                {wsSignal && (
+                  <div className="bg-muted/30 rounded p-3">
+                    <div className="text-[11px] font-bold mb-1">Live WebSocket Signal</div>
+                    <div className="text-[10px]">{JSON.stringify(wsSignal)}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">Loading ML analysis...</div>
+            )}
+          </div>
         </div>
         ) : (
         /* ═══════ GAP ANALYSIS VIEW ═══════ */
@@ -735,7 +811,7 @@ export default function TradingDashboard() {
       <OrderPanel />
       
       {/* ─── SDM Bot (Fixed Overlay) ─── */}
-      <div className="fixed top-4 right-4 z-50 w-80 hidden lg:block">
+      <div className="fixed top-24 right-4 z-50 w-80 hidden lg:block">
         <SDMBot
           optionChainData={data}
           spotPrice={data?.spotPrice || summary?.spotPrice || 0}

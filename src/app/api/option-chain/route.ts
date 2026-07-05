@@ -9,6 +9,7 @@ import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
 import { generateDayCandles } from '@/lib/historical-data';
 import { calculateGreeks } from '@/lib/greeks';
+import { getNSEOptionChain } from '@/lib/nse-api';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -69,10 +70,58 @@ export async function GET(request: NextRequest) {
         }
       }
     } catch (breezeError) {
-      console.warn('[API] ICICI Breeze failed, using simulation:', breezeError);
+      console.warn('[API] ICICI Breeze failed, trying NSE API:', breezeError);
     }
     
-    // Fallback to simulation
+    // Fallback to NSE API
+    if (!chainData) {
+      try {
+        const nseData = await getNSEOptionChain(symbol);
+        if (nseData?.records?.data) {
+          chainData = {
+            data: nseData.records.data.map((row: any) => ({
+              strike: row.strikePrice,
+              ce: row.CE ? {
+                ltp: row.CE.lastPrice || 0,
+                oi: row.CE.openInterest || 0,
+                oiChg: row.CE.changeinOpenInterest || 0,
+                volume: row.CE.totalTradedVolume || 0,
+                iv: row.CE.impliedVolatility || 0,
+                delta: row.CE.greeks?.delta || 0,
+                gamma: row.CE.greeks?.gamma || 0,
+                theta: row.CE.greeks?.theta || 0,
+                vega: row.CE.greeks?.vega || 0,
+                bid: row.CE.bid || 0,
+                ask: row.CE.ask || 0,
+              } : null,
+              pe: row.PE ? {
+                ltp: row.PE.lastPrice || 0,
+                oi: row.PE.openInterest || 0,
+                oiChg: row.PE.changeinOpenInterest || 0,
+                volume: row.PE.totalTradedVolume || 0,
+                iv: row.PE.impliedVolatility || 0,
+                delta: row.PE.greeks?.delta || 0,
+                gamma: row.PE.greeks?.gamma || 0,
+                theta: row.PE.greeks?.theta || 0,
+                vega: row.PE.greeks?.vega || 0,
+                bid: row.PE.bid || 0,
+                ask: row.PE.ask || 0,
+              } : null,
+            })),
+            spotPrice: nseData.records?.underlyingValue || 0,
+            expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
+            selectedExpiry: nseData.records?.expiryDates?.[0] || '',
+            summary: { spotPrice: nseData.records?.underlyingValue || 0 },
+          };
+          source = 'nse-api';
+          console.log('[API] NSE API data fetched successfully');
+        }
+      } catch (nseError) {
+        console.warn('[API] NSE API also failed, using simulation:', nseError);
+      }
+    }
+    
+    // Final fallback to simulation
     if (!chainData) {
       chainData = generateOptionChain(symbol, expiry);
       source = 'simulation';

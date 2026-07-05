@@ -46,7 +46,7 @@ bun run dev        # starts on :3000
 | `src/app/api/option-chain/route.ts` | Core API: orchestrates data sources + SDM analysis |
 | `src/lib/icici-breeze/` | ICICI Breeze API: auth, option chain, orders, positions |
 | `src/lib/sdm-engine.ts` | SDM Options Intelligence Engine (861 lines) |
-| `src/lib/motilal-oswal-api.ts` | MO API integration (exists but not used in current flow) |
+| `src/lib/yahoo-finance-api.ts` | Yahoo Finance index data + VIX (not used in current data flow) |
 | `src/lib/yahoo-finance-api.ts` | Yahoo Finance index data + VIX (exists but not used in current flow) |
 | `src/lib/option-chain-data.ts` | Simulated option chain generator |
 | `src/lib/greeks.ts` | Black-Scholes Greeks calculator |
