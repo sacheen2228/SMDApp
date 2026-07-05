@@ -24,7 +24,6 @@ const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
   { mode: "news", label: "News", icon: Newspaper, color: "text-orange-500" },
   { mode: "breakout", label: "Break", icon: Target, color: "text-rose-500" },
   { mode: "backtest", label: "Test", icon: CalendarClock, color: "text-blue-500" },
-  { mode: "agent", label: "Agent", icon: Bot, color: "text-purple-500" },
   { mode: "admin", label: "Admin", icon: Settings2, color: "text-gray-500" },
   { mode: "correlation", label: "Corr", icon: BarChart3, color: "text-teal-500" },
   { mode: "cheatSheet", label: "Cheat", icon: BookOpen, color: "text-yellow-500" },
