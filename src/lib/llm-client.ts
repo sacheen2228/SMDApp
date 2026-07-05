@@ -42,10 +42,19 @@ export async function callLLM(
   const apiKey = process.env.OPENROUTER_API_KEY || "";
   const selectedModel = model || FREE_MODELS[0];
 
+  // Truncate system prompt if too long (keep first 4000 chars + last 2000 chars)
+  const processedMessages = messages.map((msg) => {
+    if (msg.role === "system" && msg.content && msg.content.length > 8000) {
+      const truncated = msg.content.substring(0, 4000) + "\n\n... [Knowledge base truncated for token limits] ...\n\n" + msg.content.substring(msg.content.length - 2000);
+      return { ...msg, content: truncated };
+    }
+    return msg;
+  });
+
   const body: any = {
     model: selectedModel,
-    messages,
-    max_tokens: 2048,
+    messages: processedMessages,
+    max_tokens: 4096,
     temperature: 0.7,
   };
 
@@ -53,6 +62,8 @@ export async function callLLM(
     body.tools = tools;
     body.tool_choice = "auto";
   }
+
+  console.log(`[LLM] Calling ${selectedModel} with ${processedMessages.length} messages, system prompt length: ${processedMessages[0]?.role === 'system' ? processedMessages[0].content.length : 0} chars`);
 
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
@@ -67,11 +78,14 @@ export async function callLLM(
 
   if (!res.ok) {
     const err = await res.text();
+    console.error(`[LLM] API error ${res.status}:`, err);
     throw new Error(`LLM API error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
   const choice = data.choices?.[0];
+
+  console.log(`[LLM] Response: ${choice?.message?.content?.substring(0, 100)}...`);
 
   return {
     content: choice?.message?.content || null,
