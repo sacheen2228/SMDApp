@@ -1,9 +1,8 @@
-// Agent Chat — AI-powered trading assistant with live market data
+// Agent Chat — AI-powered trading assistant (ChatGPT-style)
 
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useState, useRef, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +18,9 @@ import {
   Zap,
   Activity,
   Brain,
+  BookOpen,
+  HelpCircle,
+  Lightbulb,
   AlertTriangle,
 } from "lucide-react";
 
@@ -43,14 +45,23 @@ interface AgentChatProps {
 const QUICK_ACTIONS = [
   { label: "ORCA Signal", icon: Target, query: "Give me the ORCA live signal right now" },
   { label: "Best Trade", icon: Target, query: "What's the best trade right now?" },
-  { label: "Market Structure", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
-  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis? Delta, Gamma, Theta, Vega" },
-  { label: "OI Analysis", icon: BarChart3, query: "OI buildup patterns — long/short, fresh writing, PCR" },
-  { label: "Smart Money", icon: Brain, query: "Any smart money signals? Liquidity sweeps, fakeouts" },
-  { label: "Entry Check", icon: Zap, query: "Should I enter a trade now? Check all entry conditions" },
-  { label: "Risk Check", icon: Shield, query: "Check my risk — position sizing, max loss" },
-  { label: "0DTE Setup", icon: Clock, query: "Any 0DTE expiry setup?" },
-  { label: "Scanner", icon: Zap, query: "Show me top scanner picks" },
+  { label: "Market", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
+  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis?" },
+  { label: "OI", icon: BarChart3, query: "OI buildup patterns — long/short, PCR" },
+  { label: "Entry", icon: Zap, query: "Should I enter a trade now?" },
+  { label: "Risk", icon: Shield, query: "Check my risk — position sizing" },
+  { label: "0DTE", icon: Clock, query: "Any 0DTE expiry setup?" },
+];
+
+const LEARN_ACTIONS = [
+  { label: "What is CE/PE?", query: "Explain Call and Put options like I'm 5 years old" },
+  { label: "What is Delta?", query: "Explain Delta, Gamma, Theta, Vega simply" },
+  { label: "Straddle?", query: "What is a straddle and when to use it?" },
+  { label: "Iron Condor?", query: "Explain Iron Condor strategy" },
+  { label: "Stop Loss?", query: "How to set stop loss for options?" },
+  { label: "Position Size?", query: "How to calculate position size?" },
+  { label: "Best Strategy?", query: "Which strategy should I use in this market?" },
+  { label: "Is this gambling?", query: "Is options trading gambling?" },
 ];
 
 function escapeHtml(str: string): string {
@@ -64,11 +75,13 @@ function escapeHtml(str: string): string {
 
 function renderMarkdown(text: string): string {
   return escapeHtml(text)
-    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold">$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded text-[11px]">$1</code>')
-    .replace(/^• /gm, '<span class="text-primary mr-1">•</span> ')
-    .replace(/^---$/gm, '<hr class="border-border my-2" />')
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-foreground">$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
+    .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded text-[11px] font-mono">$1</code>')
+    .replace(/^• (.*$)/gm, '<span class="flex gap-1"><span class="text-primary">•</span><span>$1</span></span>')
+    .replace(/^─{3,}$/gm, '<hr class="border-border my-2" />')
+    .replace(/^(#{1,3}) (.*$)/gm, (_, hashes, title) => `<div class="font-bold text-sm mt-2 mb-1">${title}</div>`)
+    .replace(/\n{2,}/g, '<div class="h-2" />')
     .replace(/\n/g, '<br />');
 }
 
@@ -83,17 +96,16 @@ export function AgentChat({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showLearn, setShowLearn] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll on new messages
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // Welcome message on mount
   useEffect(() => {
     if (messages.length === 0) {
       const sentiment = analysis?.sentiment || "neutral";
@@ -102,7 +114,30 @@ export function AgentChat({
         {
           id: "welcome",
           role: "agent",
-          content: `**Welcome Sachin! I'm your Angel — ORCA Trading AI.**\n\n${sEmoji} **${symbol}** | Spot ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}\n\nI analyze live market data using institutional-grade modules:\n• Market Structure • Greeks • OI • Smart Money • Flow\n• Entry/Exit Conditions • Risk Engine • 0DTE Expiry\n\n**Quick Actions:**\n• "ORCA Signal" — Full institutional trade signal\n• "Best Trade" — Top recommendation\n• "Market Structure" — Trend & S/R analysis\n• "Greeks" — Delta/Gamma/Theta/Vega\n• "Entry Check" — Should you trade now?\n\nI never force a trade. Capital preservation first.`,
+          content: `**Welcome! I'm Angel — Your ORCA Trading AI.** 🧠
+
+${sEmoji} **${symbol}** ₹${spotPrice.toLocaleString("en-IN")} | PCR ${analysis?.pcr?.toFixed(2) || "—"}
+
+I know EVERYTHING about options trading. Ask me anything:
+
+**📊 Live Market Analysis**
+• "ORCA Signal" — Full institutional trade signal
+• "Best Trade" — Top recommendation right now
+• "Market Structure" — Trend, support/resistance
+• "Greeks" — Delta, Gamma, Theta, Vega analysis
+
+**📚 Learn Trading (Ask Like You're 5)**
+• "What is a Call option?"
+• "Explain Delta simply"
+• "Which strategy for this market?"
+• "How to set stop loss?"
+
+**🎯 Strategy & Risk**
+• "Position sizing for ₹1L capital"
+• "Iron Condor explained"
+• "Is this a good trade?"
+
+I never force trades. Capital preservation first. Ask me anything! 💡`,
           timestamp: new Date(),
         },
       ]);
@@ -173,16 +208,16 @@ export function AgentChat({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0">
-        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-600 flex items-center justify-center shadow-md">
+        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-md">
           <Bot className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-bold">Angel <span className="text-[8px] text-emerald-400 font-normal">ORCA</span></p>
+          <p className="text-xs font-bold">Angel <span className="text-[8px] text-violet-400 font-normal">AI</span></p>
           <p className="text-[9px] text-muted-foreground">
-            {symbol} • {analysis?.sentiment?.toUpperCase() || "NEUTRAL"} • Spot ₹{spotPrice.toLocaleString("en-IN")}
+            {symbol} ₹{spotPrice.toLocaleString("en-IN")} • Ask me anything about trading
           </p>
         </div>
-        <Badge variant="outline" className="text-[8px] bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+        <Badge variant="outline" className="text-[8px] bg-violet-500/10 text-violet-500 border-violet-500/20">
           LIVE
         </Badge>
       </div>
@@ -198,7 +233,7 @@ export function AgentChat({
               <div
                 className={`max-w-[92%] rounded-xl px-3 py-2 ${
                   msg.role === "user"
-                    ? "bg-primary text-primary-foreground"
+                    ? "bg-violet-600 text-white"
                     : "bg-card border border-border/50"
                 }`}
               >
@@ -209,7 +244,7 @@ export function AgentChat({
                       <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
                       <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
                     </div>
-                    Analyzing...
+                    Thinking...
                   </div>
                 ) : (
                   <>
@@ -239,9 +274,27 @@ export function AgentChat({
       </ScrollArea>
 
       {/* Quick Actions */}
-      <div className="px-2 py-1.5 border-t border-border/50 shrink-0 overflow-x-auto">
-        <div className="flex items-center gap-1">
-          {QUICK_ACTIONS.map((qa) => (
+      <div className="px-2 py-1.5 border-t border-border/50 shrink-0">
+        <div className="flex items-center gap-1 mb-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-6 text-[9px] px-1.5 gap-0.5 ${!showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
+            onClick={() => setShowLearn(false)}
+          >
+            <Zap className="h-2.5 w-2.5" /> Trade
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-6 text-[9px] px-1.5 gap-0.5 ${showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
+            onClick={() => setShowLearn(true)}
+          >
+            <BookOpen className="h-2.5 w-2.5" /> Learn
+          </Button>
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {(showLearn ? LEARN_ACTIONS : QUICK_ACTIONS).map((qa) => (
             <Button
               key={qa.label}
               variant="ghost"
@@ -250,7 +303,6 @@ export function AgentChat({
               onClick={() => sendMessage(qa.query)}
               disabled={loading}
             >
-              <qa.icon className="h-2.5 w-2.5" />
               {qa.label}
             </Button>
           ))}
@@ -270,7 +322,7 @@ export function AgentChat({
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about market, trades, levels..."
+            placeholder="Ask anything about trading..."
             className="h-8 text-xs"
             disabled={loading}
           />
