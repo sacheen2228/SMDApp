@@ -638,8 +638,9 @@ export default function TradingDashboard() {
         </div>
         ) : viewMode === 'agent' ? (
         /* ═══════ AGENT VIEW ═══════ */
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
           <AgentChat
+            key="agent-chat"
             symbol={symbol}
             spotPrice={data?.spotPrice || summary?.spotPrice || 0}
             analysis={analysis}
