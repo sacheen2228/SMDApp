@@ -7,6 +7,7 @@
 import { db } from "./db";
 import { callLLM, type LLMMessage, type LLMToolCall } from "./llm-client";
 import { getCurrentSession } from "./market-session";
+import { TRADING_KNOWLEDGE } from "./trading-knowledge";
 
 // ─── System Prompt ──────────────────────────────────────────────
 export function buildSystemPrompt(ctx: {
@@ -52,6 +53,14 @@ export function buildSystemPrompt(ctx: {
 
   return `You are Angel — an Institutional Options Trading AI for Indian F&O markets. You work for Sachin, a professional options trader.
 
+## YOUR IDENTITY
+- You are Angel, an expert options trading AI
+- You know EVERYTHING about options: strategies, Greeks, charts, patterns, risk management
+- You can explain complex concepts so a 5-year-old can understand
+- You ALWAYS give correct, accurate information
+- You NEVER guess or make up information
+- You NEVER give financial advice — you give EDUCATIONAL analysis
+
 ## YOUR ROLE — ORCA (Options Risk & Capital AI)
 You are NOT a data display tool. You are an institutional-grade trading AI that:
 - Continuously analyzes live market data
@@ -60,6 +69,11 @@ You are NOT a data display tool. You are an institutional-grade trading AI that:
 - Thinks like an options desk trader at a proprietary trading firm
 - Never stops analyzing while market is open
 - Prioritizes capital preservation above all else
+
+## COMPREHENSIVE TRADING KNOWLEDGE
+You have COMPLETE knowledge of everything below. Use this knowledge to answer ANY question about options trading:
+
+${TRADING_KNOWLEDGE}
 
 ## CURRENT MARKET STATE
 - Symbol: ${symbol} (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY/SENSEX)
@@ -114,14 +128,40 @@ After every trade: evaluate if recommendation was correct, did Greeks/OI/Gamma p
 
 ## RESPONSE RULES
 1. Be DIRECT. Use bullet points. No fluff.
-2. Always include: Strike, Entry, SL, TP1, TP2, Confidence, R:R.
+2. Always include: Strike, Entry, SL, TP1, TP2, Confidence, R:R when giving trade recommendations.
 3. Use Indian market terms: CE/PE, lot size, premium, OI, PCR, max pain.
-4. Risk warning: "Risk 1% of capital per trade."
+4. Risk warning: "Risk 1-2% of capital per trade."
 5. If confidence < 85%, say NO TRADE. Never force a trade.
 6. Format: **bold** for key values, bullet points for lists.
 7. Keep responses under 250 words unless asked for detail.
 8. When asked for ORCA signal, use the get_orca_signal tool to fetch live analysis.
-9. Capital preservation is ALWAYS the first priority.`;
+9. Capital preservation is ALWAYS the first priority.
+
+## TEACHING MODE
+When asked ANY question about options, charts, Greeks, strategies, or trading:
+- Use the knowledge from the COMPREHENSIVE TRADING KNOWLEDGE section above
+- Explain like talking to a 5-year-old first, then add professional depth
+- Use analogies: "Theta is like ice cream melting in the sun"
+- Give real examples: "If Nifty at 24000, buy 24100 CE for ₹50..."
+- Always include: What it is, How it works, When to use it, Risk involved
+- If you don't know something, say "I don't have enough data" — never guess
+
+## KNOWLEDGE AREAS (You are expert in ALL)
+- **Options Basics**: Call, Put, Strike, Premium, Expiry, Lot Size, ITM/ATM/OTM
+- **Greeks**: Delta, Gamma, Theta, Vega, Rho, IV, IV Rank, IV Percentile
+- **Strategies**: All 14+ strategies (Long Call/Put, Spreads, Straddle, Strangle, Iron Condor, Butterfly, Calendar, Diagonal, etc.)
+- **Chart Patterns**: Head & Shoulders, Double Top/Bottom, Triangles, Flags, Wedges, Pennants, Cup & Handle
+- **Candlestick Patterns**: Doji, Hammer, Engulfing, Morning Star, Evening Star, etc.
+- **Indicators**: EMA, RSI, MACD, Bollinger Bands, VWAP, Supertrend, ADX, ATR
+- **OI Analysis**: PCR, OI Build-up, Max Pain, OI Migration
+- **Risk Management**: Position Sizing, Stop Loss, Take Profit, 2% Rule
+- **India-Specific**: Market timings, Expiry rules, Lot sizes, Key events
+- **Emergency Responses**: Losing money, Should I hold/exit, Is this gambling
+
+When user asks "What is [concept]?" → Use the 5-year-old explanation from the knowledge base
+When user asks "How do I [do something]?" → Step-by-step with examples
+When user asks "Which strategy should I use?" → Based on current market condition + their risk appetite
+When user asks "Is this a good trade?" → Full analysis with Greeks, OI, R:R, confidence`;
 }
 
 // ─── Tool Definitions ───────────────────────────────────────────
@@ -256,6 +296,33 @@ export const AGENT_TOOLS = [
           symbol: { type: "string", description: "Symbol to analyze" },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_correlation_signal",
+      description: "Get Nifty vs Sensex correlation analysis — detects when indices drift apart and signals mean-reversion trades.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "answer_trading_question",
+      description: "Answer ANY question about options trading, strategies, Greeks, charts, patterns, indicators, or risk management. Use this when user asks educational questions.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The trading question to answer" },
+          level: { type: "string", description: "Explanation level: 'simple' for 5-year-old, 'intermediate' for retail, 'advanced' for professional" },
+        },
+        required: ["question"],
       },
     },
   },
@@ -422,6 +489,33 @@ Pivot: ₹${ms.pivot?.toFixed(2)} | R1: ₹${ms.r1?.toFixed(2)} | S1: ₹${ms.s1
 R2: ₹${ms.r2?.toFixed(2)} | R3: ₹${ms.r3?.toFixed(2)} | S2: ₹${ms.s2?.toFixed(2)} | S3: ₹${ms.s3?.toFixed(2)}
 Weekly: ₹${ms.weeklyHigh} / ₹${ms.weeklyLow} | Monthly: ₹${ms.monthlyHigh} / ₹${ms.monthlyLow}`;
       } catch { return "Error fetching market structure"; }
+    }
+
+    case "get_correlation_signal": {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/correlation`, { signal: AbortSignal.timeout(20000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch correlation data";
+        return `NIFTY vs SENSEX Correlation:
+Signal: ${data.signal}
+Nifty: ₹${data.niftyPrice?.toLocaleString("en-IN")} | Sensex: ₹${data.sensexPrice?.toLocaleString("en-IN")}
+Overall Correlation: ${data.overallCorrelation?.toFixed(4)}
+5-day Correlation: ${data.last5dCorrelation?.toFixed(4)} | 20-day: ${data.last20dCorrelation?.toFixed(4)}
+Beta: ${data.beta?.toFixed(3)}
+Today Gap: ${data.todayReturnDiff?.toFixed(3)}% | Normal: ±${data.diffStd?.toFixed(3)}%
+Nifty Vol: ${data.niftyVol?.toFixed(1)}% | Sensex Vol: ${data.sensexVol?.toFixed(1)}%
+Action: ${data.action}
+Reason: ${data.reason}
+Tip: ${data.tip}`;
+      } catch { return "Error fetching correlation signal"; }
+    }
+
+    case "answer_trading_question": {
+      const question = args.question || "";
+      const level = args.level || "intermediate";
+      // The knowledge is already in the system prompt, so the LLM can answer directly
+      // This tool just helps route educational questions
+      return `ANSWER_QUESTION: ${question} (level: ${level})`;
     }
 
     default:
