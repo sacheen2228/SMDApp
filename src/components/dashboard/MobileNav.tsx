@@ -28,6 +28,7 @@ const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
   { mode: "admin", label: "Admin", icon: Settings2, color: "text-gray-500" },
   { mode: "correlation", label: "Corr", icon: BarChart3, color: "text-teal-500" },
   { mode: "cheatSheet", label: "Cheat", icon: BookOpen, color: "text-yellow-500" },
+  { mode: "agent", label: "Bot", icon: Bot, color: "text-purple-500" },
 ];
 
 export function MobileNav({ viewMode, onViewChange }: MobileNavProps) {

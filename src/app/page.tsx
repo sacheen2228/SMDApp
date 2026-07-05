@@ -447,6 +447,11 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('correlation'); setDisplayMode('pro'); }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Corr
             </Button>
+            <Button variant={viewMode === 'agent' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'agent' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
+              onClick={() => { setViewMode('agent'); setDisplayMode('pro'); }}>
+              <Bot className="h-2.5 w-2.5 mr-0.5" /> Bot
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -460,7 +465,6 @@ export default function TradingDashboard() {
               {[
                 { mode: 'gap', label: 'Gap Analysis', icon: BarChart3, color: 'amber' },
                 { mode: 'backtest', label: 'Backtest', icon: CalendarClock, color: 'blue' },
-                { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
                 { mode: 'scanner', label: 'Scanner', icon: Scan, color: 'teal' },
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'breakout', label: 'Breakout', icon: Target, color: 'rose' },
