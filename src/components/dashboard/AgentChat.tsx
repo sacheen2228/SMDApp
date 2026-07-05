@@ -6,7 +6,6 @@ import { useState, useRef, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Bot,
   Send,
@@ -19,9 +18,6 @@ import {
   Activity,
   Brain,
   BookOpen,
-  HelpCircle,
-  Lightbulb,
-  AlertTriangle,
 } from "lucide-react";
 
 interface Message {
@@ -43,34 +39,32 @@ interface AgentChatProps {
 }
 
 const QUICK_ACTIONS = [
-  { label: "ORCA Signal", icon: Target, query: "Give me the ORCA live signal right now" },
-  { label: "Best Trade", icon: Target, query: "What's the best trade right now?" },
-  { label: "Market", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
-  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis?" },
-  { label: "OI", icon: BarChart3, query: "OI buildup patterns — long/short, PCR" },
-  { label: "Entry", icon: Zap, query: "Should I enter a trade now?" },
-  { label: "Risk", icon: Shield, query: "Check my risk — position sizing" },
-  { label: "0DTE", icon: Clock, query: "Any 0DTE expiry setup?" },
+  { label: "ORCA Signal", query: "Give me the ORCA live signal right now" },
+  { label: "Best Trade", query: "What's the best trade right now?" },
+  { label: "Market", query: "Analyze market structure — trend, S/R, VWAP" },
+  { label: "Greeks", query: "What's the Greeks analysis?" },
+  { label: "OI", query: "OI buildup patterns — long/short, PCR" },
+  { label: "Entry", query: "Should I enter a trade now?" },
+  { label: "Risk", query: "Check my risk — position sizing" },
+  { label: "0DTE", query: "Any 0DTE expiry setup?" },
 ];
 
 const LEARN_ACTIONS = [
-  { label: "What is CE/PE?", query: "Explain Call and Put options like I'm 5 years old" },
-  { label: "What is Delta?", query: "Explain Delta, Gamma, Theta, Vega simply" },
-  { label: "Straddle?", query: "What is a straddle and when to use it?" },
+  { label: "CE/PE?", query: "Explain Call and Put options simply" },
+  { label: "Delta?", query: "Explain Delta, Gamma, Theta, Vega" },
+  { label: "Straddle?", query: "What is a straddle?" },
   { label: "Iron Condor?", query: "Explain Iron Condor strategy" },
-  { label: "Stop Loss?", query: "How to set stop loss for options?" },
+  { label: "Stop Loss?", query: "How to set stop loss?" },
   { label: "Position Size?", query: "How to calculate position size?" },
-  { label: "Best Strategy?", query: "Which strategy should I use in this market?" },
-  { label: "Is this gambling?", query: "Is options trading gambling?" },
+  { label: "Best Strategy?", query: "Which strategy for this market?" },
+  { label: "Gambling?", query: "Is options trading gambling?" },
 ];
 
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+    .replace(/>/g, "&gt;");
 }
 
 function renderMarkdown(text: string): string {
@@ -80,7 +74,6 @@ function renderMarkdown(text: string): string {
     .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded text-[11px] font-mono">$1</code>')
     .replace(/^• (.*$)/gm, '<span class="flex gap-1"><span class="text-primary">•</span><span>$1</span></span>')
     .replace(/^─{3,}$/gm, '<hr class="border-border my-2" />')
-    .replace(/^(#{1,3}) (.*$)/gm, (_, hashes, title) => `<div class="font-bold text-sm mt-2 mb-1">${title}</div>`)
     .replace(/\n{2,}/g, '<div class="h-2" />')
     .replace(/\n/g, '<br />');
 }
@@ -123,19 +116,16 @@ I know EVERYTHING about options trading. Ask me anything:
 **📊 Live Market Analysis**
 • "ORCA Signal" — Full institutional trade signal
 • "Best Trade" — Top recommendation right now
-• "Market Structure" — Trend, support/resistance
-• "Greeks" — Delta, Gamma, Theta, Vega analysis
+• "Greeks" — Delta, Gamma, Theta, Vega
 
-**📚 Learn Trading (Ask Like You're 5)**
+**📚 Learn Trading**
 • "What is a Call option?"
 • "Explain Delta simply"
 • "Which strategy for this market?"
-• "How to set stop loss?"
 
 **🎯 Strategy & Risk**
 • "Position sizing for ₹1L capital"
 • "Iron Condor explained"
-• "Is this a good trade?"
 
 I never force trades. Capital preservation first. Ask me anything! 💡`,
           timestamp: new Date(),
@@ -204,8 +194,10 @@ I never force trades. Capital preservation first. Ask me anything! 💡`,
     }
   };
 
+  const actions = showLearn ? LEARN_ACTIONS : QUICK_ACTIONS;
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0">
         <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-md">
@@ -214,7 +206,7 @@ I never force trades. Capital preservation first. Ask me anything! 💡`,
         <div className="flex-1 min-w-0">
           <p className="text-xs font-bold">Angel <span className="text-[8px] text-violet-400 font-normal">AI</span></p>
           <p className="text-[9px] text-muted-foreground">
-            {symbol} ₹{spotPrice.toLocaleString("en-IN")} • Ask me anything about trading
+            {symbol} ₹{spotPrice.toLocaleString("en-IN")} • Ask me anything
           </p>
         </div>
         <Badge variant="outline" className="text-[8px] bg-violet-500/10 text-violet-500 border-violet-500/20">
@@ -222,64 +214,62 @@ I never force trades. Capital preservation first. Ask me anything! 💡`,
         </Badge>
       </div>
 
-      {/* Messages */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div ref={scrollRef} className="p-3 space-y-3">
-          {messages.map((msg) => (
+      {/* Messages Area - Fixed height, scrollable */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+          >
             <div
-              key={msg.id}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              className={`max-w-[90%] rounded-xl px-3 py-2 ${
+                msg.role === "user"
+                  ? "bg-violet-600 text-white"
+                  : "bg-card border border-border/50"
+              }`}
             >
-              <div
-                className={`max-w-[92%] rounded-xl px-3 py-2 ${
-                  msg.role === "user"
-                    ? "bg-violet-600 text-white"
-                    : "bg-card border border-border/50"
-                }`}
-              >
-                {msg.loading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <div className="flex gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
-                    </div>
-                    Thinking...
+              {msg.loading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: "300ms" }} />
                   </div>
-                ) : (
-                  <>
-                    {msg.toolCallsMade && msg.toolCallsMade.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-1.5">
-                        {msg.toolCallsMade.map((tc) => (
-                          <span key={tc} className="inline-flex items-center gap-0.5 text-[8px] bg-violet-500/10 text-violet-400 px-1 py-0.5 rounded">
-                            <Zap className="h-2 w-2" />
-                            {tc}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <div
-                      className="text-[11px] leading-relaxed"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                    />
-                  </>
-                )}
-                <p className="text-[8px] text-muted-foreground mt-1 opacity-60">
-                  {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-                </p>
-              </div>
+                  Thinking...
+                </div>
+              ) : (
+                <>
+                  {msg.toolCallsMade && msg.toolCallsMade.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {msg.toolCallsMade.map((tc) => (
+                        <span key={tc} className="inline-flex items-center gap-0.5 text-[8px] bg-violet-500/10 text-violet-400 px-1 py-0.5 rounded">
+                          <Zap className="h-2 w-2" />
+                          {tc}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div
+                    className="text-[11px] leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                  />
+                </>
+              )}
+              <p className="text-[8px] text-muted-foreground mt-1 opacity-60">
+                {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+              </p>
             </div>
-          ))}
-        </div>
-      </ScrollArea>
+          </div>
+        ))}
+      </div>
 
-      {/* Quick Actions */}
-      <div className="px-2 py-1.5 border-t border-border/50 shrink-0">
-        <div className="flex items-center gap-1 mb-1">
+      {/* Quick Actions - Fixed at bottom */}
+      <div className="shrink-0 border-t border-border/50 bg-card">
+        <div className="flex items-center gap-1 px-2 pt-1.5">
           <Button
             variant="ghost"
             size="sm"
-            className={`h-6 text-[9px] px-1.5 gap-0.5 ${!showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
+            className={`h-5 text-[9px] px-1.5 gap-0.5 ${!showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
             onClick={() => setShowLearn(false)}
           >
             <Zap className="h-2.5 w-2.5" /> Trade
@@ -287,19 +277,19 @@ I never force trades. Capital preservation first. Ask me anything! 💡`,
           <Button
             variant="ghost"
             size="sm"
-            className={`h-6 text-[9px] px-1.5 gap-0.5 ${showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
+            className={`h-5 text-[9px] px-1.5 gap-0.5 ${showLearn ? 'text-violet-500' : 'text-muted-foreground'}`}
             onClick={() => setShowLearn(true)}
           >
             <BookOpen className="h-2.5 w-2.5" /> Learn
           </Button>
         </div>
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {(showLearn ? LEARN_ACTIONS : QUICK_ACTIONS).map((qa) => (
+        <div className="flex items-center gap-1 px-2 pb-1.5 overflow-x-auto">
+          {actions.map((qa) => (
             <Button
               key={qa.label}
               variant="ghost"
               size="sm"
-              className="h-6 text-[9px] px-1.5 shrink-0 gap-0.5 text-muted-foreground hover:text-foreground"
+              className="h-5 text-[9px] px-1.5 shrink-0 text-muted-foreground hover:text-foreground"
               onClick={() => sendMessage(qa.query)}
               disabled={loading}
             >
@@ -309,8 +299,8 @@ I never force trades. Capital preservation first. Ask me anything! 💡`,
         </div>
       </div>
 
-      {/* Input */}
-      <div className="px-3 py-2 border-t border-border/50 shrink-0">
+      {/* Input - Fixed at very bottom */}
+      <div className="shrink-0 px-3 py-2 border-t border-border/50 bg-card">
         <form
           onSubmit={(e) => {
             e.preventDefault();
