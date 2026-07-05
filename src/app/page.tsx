@@ -44,6 +44,7 @@ import { OrcaSignalPanel } from '@/components/dashboard/OrcaSignal';
 import { OrcaBacktestPanel } from '@/components/dashboard/OrcaBacktest';
 import { AdminPanel } from '@/components/dashboard/AdminPanel';
 import IVSurface from '@/components/dashboard/IVSurface';
+import CorrelationPanel from '@/components/dashboard/CorrelationPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { runMLAnalysis } from '@/lib/ml-engine';
 import { ResizablePanel } from '@/components/ui/resizable-panel';
@@ -132,7 +133,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals' | 'correlation'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -439,6 +440,11 @@ export default function TradingDashboard() {
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'mlSignals' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('mlSignals'); setDisplayMode('pro'); }}>
               <Zap className="h-2.5 w-2.5 mr-0.5" /> ML AI
+            </Button>
+            <Button variant={viewMode === 'correlation' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'correlation' ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/25' : 'text-muted-foreground hover:text-teal-500'}`}
+              onClick={() => { setViewMode('correlation'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Corr
             </Button>
           </div>
 
@@ -764,6 +770,11 @@ export default function TradingDashboard() {
               <div className="text-xs text-muted-foreground">Loading ML analysis...</div>
             )}
           </div>
+        </div>
+        ) : viewMode === 'correlation' ? (
+        /* ═══════ CORRELATION ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <CorrelationPanel />
         </div>
         ) : (
         /* ═══════ GAP ANALYSIS VIEW ═══════ */
