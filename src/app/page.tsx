@@ -833,9 +833,8 @@ export default function TradingDashboard() {
       {/* ─── Order Panel (Modal) ─── */}
       <OrderPanel />
       
-      {/* ─── SDM Bot (Fixed Overlay) — hidden on agent/chat views ─── */}
-      {viewMode !== 'agent' && (
-      <div className="fixed top-24 right-4 z-50 w-80 hidden lg:block">
+      {/* ─── SDM Bot (Fixed Overlay) ─── */}
+      <div className="fixed top-24 right-4 z-50 w-80 hidden lg:block" style={{ display: viewMode === 'agent' ? 'none' : undefined }}>
         <SDMBot
           optionChainData={data}
           spotPrice={data?.spotPrice || summary?.spotPrice || 0}
@@ -844,7 +843,6 @@ export default function TradingDashboard() {
           onRecommendation={setRecommendation}
         />
       </div>
-      )}
 
       {/* ─── Mobile Navigation ─── */}
       <MobileNav viewMode={viewMode} onViewChange={setViewMode} />
