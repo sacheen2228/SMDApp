@@ -833,7 +833,8 @@ export default function TradingDashboard() {
       {/* ─── Order Panel (Modal) ─── */}
       <OrderPanel />
       
-      {/* ─── SDM Bot (Fixed Overlay) ─── */}
+      {/* ─── SDM Bot (Fixed Overlay) — hidden on agent/chat views ─── */}
+      {viewMode !== 'agent' && (
       <div className="fixed top-24 right-4 z-50 w-80 hidden lg:block">
         <SDMBot
           optionChainData={data}
@@ -843,6 +844,7 @@ export default function TradingDashboard() {
           onRecommendation={setRecommendation}
         />
       </div>
+      )}
 
       {/* ─── Mobile Navigation ─── */}
       <MobileNav viewMode={viewMode} onViewChange={setViewMode} />
