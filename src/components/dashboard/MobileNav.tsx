@@ -2,10 +2,10 @@
 
 "use client";
 
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen, Crosshair } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-type ViewMode = 'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'correlation' | 'cheatSheet';
+type ViewMode = 'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'correlation' | 'cheatSheet' | 'masterBot';
 
 interface MobileNavProps {
   viewMode: ViewMode;
@@ -26,8 +26,9 @@ const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
   { mode: "backtest", label: "Test", icon: CalendarClock, color: "text-blue-500" },
   { mode: "admin", label: "Admin", icon: Settings2, color: "text-gray-500" },
   { mode: "correlation", label: "Corr", icon: BarChart3, color: "text-teal-500" },
+  { mode: "masterBot", label: "Bot", icon: Crosshair, color: "text-purple-500" },
   { mode: "cheatSheet", label: "Cheat", icon: BookOpen, color: "text-yellow-500" },
-  { mode: "agent", label: "Bot", icon: Bot, color: "text-purple-500" },
+  { mode: "agent", label: "Chat", icon: Bot, color: "text-purple-600" },
 ];
 
 export function MobileNav({ viewMode, onViewChange }: MobileNavProps) {

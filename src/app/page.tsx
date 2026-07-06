@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen, Crosshair } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -46,6 +46,7 @@ import { AdminPanel } from '@/components/dashboard/AdminPanel';
 import IVSurface from '@/components/dashboard/IVSurface';
 import CorrelationPanel from '@/components/dashboard/CorrelationPanel';
 import CheatSheetPanel from '@/components/dashboard/CheatSheetPanel';
+import MasterBotPanel from '@/components/dashboard/MasterBotPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { runMLAnalysis } from '@/lib/ml-engine';
 import { ResizablePanel } from '@/components/ui/resizable-panel';
@@ -134,7 +135,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals' | 'correlation' | 'cheatSheet'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'strategies' | 'ivSurface' | 'mlSignals' | 'correlation' | 'cheatSheet' | 'masterBot'>('chain');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [recommendation, setRecommendation] = useState<SDMRecommendation | null>(null);
@@ -446,6 +447,11 @@ export default function TradingDashboard() {
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'correlation' ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/25' : 'text-muted-foreground hover:text-teal-500'}`}
               onClick={() => { setViewMode('correlation'); setDisplayMode('pro'); }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Corr
+            </Button>
+            <Button variant={viewMode === 'masterBot' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'masterBot' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
+              onClick={() => { setViewMode('masterBot'); setDisplayMode('pro'); }}>
+              <Crosshair className="h-2.5 w-2.5 mr-0.5" /> Bot
             </Button>
           </div>
 
@@ -777,6 +783,11 @@ export default function TradingDashboard() {
         /* ═══════ CORRELATION ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <CorrelationPanel />
+        </div>
+        ) : viewMode === 'masterBot' ? (
+        /* ═══════ MASTER BOT ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <MasterBotPanel />
         </div>
         ) : viewMode === 'cheatSheet' ? (
         /* ═══════ CHEAT SHEET ═══════ */
