@@ -3,13 +3,18 @@
 
 "use client";
 
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, memo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import {
   Scan,
   TrendingUp,
@@ -29,6 +34,20 @@ import {
   Clock,
   Eye,
   EyeOff,
+  Filter,
+  FilterX,
+  Download,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Star,
+  StarOff,
+  Globe,
+  Wifi,
+  WifiOff,
+  Settings,
+  Table2,
+  ArrowUpDown,
 } from "lucide-react";
 import {
   getGradeColor,
@@ -60,6 +79,34 @@ function getMarketTrendColor(trend: string): string {
   if (trend === "VOLATILE") return "bg-orange-600 text-white";
   return "bg-yellow-600 text-white";
 }
+
+interface Filters {
+  sector: string | null;
+  direction: string | null;
+  minScore: number;
+  maxScore: number;
+  minRsi: number;
+  maxRsi: number;
+  minRvol: number;
+  conviction: string | null;
+  onlyFavorites: boolean;
+  sortBy: string;
+  sortOrder: "asc" | "desc";
+}
+
+const DEFAULT_FILTERS: Filters = {
+  sector: null,
+  direction: null,
+  minScore: 0,
+  maxScore: 100,
+  minRsi: 0,
+  maxRsi: 100,
+  minRvol: 0,
+  conviction: null,
+  onlyFavorites: false,
+  sortBy: "totalScore",
+  sortOrder: "desc",
+};
 
 function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
   const [expanded, setExpanded] = useState(false);

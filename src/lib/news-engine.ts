@@ -224,23 +224,30 @@ function analyzeMarketSentiment(articles: NewsArticle[]): MarketSentiment {
   const stockMap = new Map<string, { sentiments: number[]; count: number; topHeadline: string }>();
   const sectorMap = new Map<string, number[]>();
 
-  for (const article of articles) {
-    for (const stock of article.stockEntities) {
-      const existing = stockMap.get(stock) || { sentiments: [], count: 0, topHeadline: "" };
-      existing.sentiments.push(article.sentiment);
-      existing.count++;
-      if (!existing.topHeadline && article.sentiment !== 0) {
-        existing.topHeadline = article.title;
+for (const article of articles) {
+      // Filter out sector entities from stock entities (they have _SECTOR_ prefix)
+      const stockEntities = article.stockEntities.filter(s => !s.startsWith("_SECTOR_"));
+      for (const stock of stockEntities) {
+        const existing = stockMap.get(stock) || { sentiments: [], count: 0, topHeadline: "" };
+        existing.sentiments.push(article.sentiment);
+        existing.count++;
+        if (!existing.topHeadline && article.sentiment !== 0) {
+          existing.topHeadline = article.title;
+        }
+        stockMap.set(stock, existing);
       }
-      stockMap.set(stock, existing);
-    }
 
-    for (const sector of article.sectorEntities) {
-      const existing = sectorMap.get(sector) || [];
-      existing.push(article.sentiment);
-      sectorMap.set(sector, existing);
+      // Combine explicit sector entities with sector-prefixed stock entities
+      const sectorEntities = [
+        ...article.sectorEntities,
+        ...article.stockEntities.filter(s => s.startsWith("_SECTOR_")).map(s => s.replace("_SECTOR_", ""))
+      ];
+      for (const sector of sectorEntities) {
+        const existing = sectorMap.get(sector) || [];
+        existing.push(article.sentiment);
+        sectorMap.set(sector, existing);
+      }
     }
-  }
 
   // Convert to sorted arrays
   const stockSentiments: StockSentiment[] = Array.from(stockMap.entries()).map(([symbol, data]) => {

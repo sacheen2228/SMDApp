@@ -14,3 +14,20 @@ opencode --continue
 /models  → select MiMo V2.5 Free
 
 # Continue working...
+
+opencode --continue
+Ask	Gets
+"What's the market trend?"	Sentiment, PCR, Max Pain, regime, SDM action
+"Show today's trades"	Strike, type, entry/exit, SL, TP, PnL for each trade
+"What's the best trade?"	Full SDM recommendation — action, strike, entry, SL, T1/T2/T3, confidence, reasons
+"Show key levels"	R1-R3, S1-S3, gamma walls, Max Pain
+"What's my win rate?"	Win rate, avg win/loss, profit factor, total PnL
+"Show OI data"	Top 5 CE/PE OI strikes with OI change
+"What's the PCR?"	PCR value + bullish/bearish interpretation
+"Any gamma blast?"	Gamma squeeze detection, dealer bias, GEX
+"What session is it?"	Current IST session + trading advice
+"Where is max Pain?"	Max Pain vs spot distance + market implication
+"Show trade history"	Last 10 trades with PnL
+"Risk management"	Lot size, risk per lot, position sizing formula
+"What's the VIX?"	VIX level + fear/complacency interpretation
+"Is it expiry?"	DTE + decay advice

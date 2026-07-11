@@ -1,14 +1,15 @@
 // Backtest API Endpoint
 // Single-day: /api/backtest?symbol=NIFTY&date=2026-07-04
 // Multi-day:  /api/backtest?symbol=NIFTY&startDate=2026-06-01&endDate=2026-07-04
+// Validate:   /api/backtest?mode=validate&date=2026-07-07
 
 import { NextRequest, NextResponse } from "next/server";
 import { runMultiDayBacktest } from "@/lib/backtest-engine";
-import { generateDayCandles } from "@/lib/historical-data";
+import { validateYesterdayTrades } from "@/lib/trade-validator";
 
 // ─── Single Day Backtest (reuses multi-day engine) ──────────────
-function runSingleDayBacktest(symbol: string, dateStr: string) {
-  const result = runMultiDayBacktest(symbol, dateStr, dateStr);
+async function runSingleDayBacktest(symbol: string, dateStr: string) {
+  const result = await runMultiDayBacktest(symbol, dateStr, dateStr);
 
   // Reformat to match single-day output format
   const dayResult = result.dailyResults[0];
@@ -42,7 +43,14 @@ function runSingleDayBacktest(symbol: string, dateStr: string) {
     },
     dayOHLC: dayResult?.dayOHLC || { open: 0, high: 0, low: 0, close: 0, change: 0, changePct: 0 },
     srLevels: [],
-    candles: generateDayCandles(symbol, dateStr),
+    candles: await (async () => {
+      try {
+        const { getIntradayCandles } = await import("@/lib/breeze-historical");
+        return await getIntradayCandles(symbol, "5minute", dateStr);
+      } catch {
+        return [];
+      }
+    })(),
     timestamp: new Date().toISOString(),
   };
 }
@@ -51,20 +59,28 @@ function runSingleDayBacktest(symbol: string, dateStr: string) {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const mode = searchParams.get("mode") || "backtest";
     const symbol = searchParams.get("symbol") || "NIFTY";
     const date = searchParams.get("date");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    // Multi-day mode
+    // --- Validation Mode ---
+    if (mode === "validate") {
+      const dateStr = date || new Date().toISOString().split("T")[0];
+      const report = await validateYesterdayTrades(dateStr);
+      return NextResponse.json({ success: true, data: report, mode: "validate" });
+    }
+
+    // Multi-day backtest mode
     if (startDate && endDate) {
-      const result = runMultiDayBacktest(symbol, startDate, endDate);
+      const result = await runMultiDayBacktest(symbol, startDate, endDate);
       return NextResponse.json({ success: true, data: result, mode: "multi-day" });
     }
 
-    // Single-day mode
+    // Single-day backtest mode
     const dateStr = date || new Date().toISOString().split("T")[0];
-    const result = runSingleDayBacktest(symbol, dateStr);
+    const result = await runSingleDayBacktest(symbol, dateStr);
     return NextResponse.json({ success: true, data: result, mode: "single-day" });
   } catch (error: any) {
     console.error("[Backtest API] Error:", error);

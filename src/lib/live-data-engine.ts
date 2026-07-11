@@ -1,7 +1,7 @@
 // Live Data Engine - Central data source with caching, retry, and health tracking
 // Fetches from Breeze API or simulation with automatic fallback
 
-import { generateOptionChain, OptionChainResponse } from "./option-chain-data";
+import type { OptionChainResponse } from "@/types";
 
 // ─── Types ───────────────────────────────────────────────────────
 interface CacheEntry {
@@ -43,22 +43,32 @@ function getBreezeSecretKey(): string | undefined {
   return process.env.BREEZE_SECRET_KEY;
 }
 
-// Attempt to fetch from Breeze API (stub - returns null to trigger fallback)
+// Attempt to fetch from Breeze API via real SDK
 async function fetchFromBreeze(
   symbol: string,
   expiry?: string
 ): Promise<OptionChainResponse | null> {
-  const apiKey = getBreezeApiKey();
-  const secretKey = getBreezeSecretKey();
-
-  if (!apiKey || !secretKey) {
-    return null; // No credentials - fall through to simulation
-  }
-
   try {
-    // Breeze API integration point - when implemented, this will call the API
-    // For now, return null to trigger simulation fallback
-    // The existing Breeze client code in src/lib/icici-breeze/ can be wired here
+    const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
+    const { initSession } = await import("@/lib/icici-breeze/auth");
+    await initSession().catch(() => {});
+
+    const expiries = expiry ? [expiry] : await getOptionChainExpiries(symbol);
+    for (const exp of expiries.slice(0, 3)) {
+      const chain = await getOptionChain(symbol, exp);
+      if (chain) {
+        return {
+          spotPrice: chain.spotPrice,
+          data: chain.strikes.map((strike) => ({
+            strike,
+            ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+            pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+          })),
+          expiries: expiries.map((e) => ({ date: e })),
+          selectedExpiry: exp,
+        };
+      }
+    }
     return null;
   } catch (err) {
     console.error(`[live-data-engine] Breeze API error for ${symbol}:`, err);
@@ -66,12 +76,38 @@ async function fetchFromBreeze(
   }
 }
 
-// Fetch from simulation (always succeeds)
-function fetchFromSimulation(
-  symbol: string,
-  expiry?: string
-): OptionChainResponse {
-  return generateOptionChain(symbol, expiry);
+// Attempt to fetch from NSE API
+async function fetchFromNSE(
+  symbol: string
+): Promise<OptionChainResponse | null> {
+  try {
+    const { getNSEOptionChain } = await import("@/lib/nse-api");
+    const nseData = await getNSEOptionChain(symbol);
+    if (nseData?.records?.data) {
+      return {
+        spotPrice: nseData.records?.underlyingValue || 0,
+        data: nseData.records.data.map((row: any) => ({
+          strike: row.strikePrice,
+          ce: row.CE ? {
+            ltp: row.CE.lastPrice || 0, oi: row.CE.openInterest || 0,
+            oiChg: row.CE.changeinOpenInterest || 0, volume: row.CE.totalTradedVolume || 0,
+            iv: row.CE.impliedVolatility || 0,
+          } : null,
+          pe: row.PE ? {
+            ltp: row.PE.lastPrice || 0, oi: row.PE.openInterest || 0,
+            oiChg: row.PE.changeinOpenInterest || 0, volume: row.PE.totalTradedVolume || 0,
+            iv: row.PE.impliedVolatility || 0,
+          } : null,
+        })),
+        expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d })),
+        selectedExpiry: nseData.records?.expiryDates?.[0] || "",
+      };
+    }
+    return null;
+  } catch (err) {
+    console.error(`[live-data-engine] NSE error for ${symbol}:`, err);
+    return null;
+  }
 }
 
 // ─── Public API ──────────────────────────────────────────────────
@@ -79,7 +115,8 @@ function fetchFromSimulation(
 /**
  * Fetch live data with retry logic and fallback chain:
  * 1. Breeze API (if credentials present)
- * 2. Simulation (guaranteed fallback)
+ * 2. NSE API (public scraper)
+ * 3. Simulation (guaranteed fallback)
  */
 export async function fetchLiveData(
   symbol: string,
@@ -116,27 +153,20 @@ export async function fetchLiveData(
     }
   }
 
-  // Fallback to simulation
-  for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-    try {
-      const simData = fetchFromSimulation(symbol, expiry);
-      cache.set(cacheKey, { data: simData, fetchedAt: Date.now() });
-      return simData;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      console.warn(
-        `[live-data-engine] Simulation attempt ${attempt}/${config.maxRetries} failed:`,
-        lastError.message
-      );
-      if (attempt < config.maxRetries) {
-        await sleep(config.retryDelayMs);
-      }
+  // Try NSE API second
+  try {
+    const nseData = await fetchFromNSE(symbol);
+    if (nseData) {
+      cache.set(cacheKey, { data: nseData, fetchedAt: Date.now() });
+      return nseData;
     }
+  } catch (err) {
+    console.warn(`[live-data-engine] NSE failed:`, err);
   }
 
-  // All retries exhausted - should not happen for simulation, but just in case
+  // All retries exhausted — throw error instead of returning fake data
   throw new Error(
-    `[live-data-engine] Failed to fetch data for ${symbol} after ${config.maxRetries} retries: ${lastError?.message}`
+    `[live-data-engine] No real data available for ${symbol}. Breeze and NSE both failed.`
   );
 }
 

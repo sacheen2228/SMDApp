@@ -3,7 +3,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { CandlestickBreakoutIndia, type BreakoutSignal } from "@/lib/candlestick-breakout";
-import { generateOptionChain } from "@/lib/option-chain-data";
 
 // Cache strategy instance per session
 let strategyInstance: CandlestickBreakoutIndia | null = null;
@@ -29,15 +28,38 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
 
-    // Get market data from option chain
-    const chainData = generateOptionChain(symbol);
-    const spotPrice = chainData.spotPrice || 24000;
-    const summary = chainData.summary || {};
-    const vix = summary.indiaVIX || 15;
+    // Fetch real market data: Breeze → NSE → Yahoo → Simulation fallback
+    let spotPrice = 24000;
+    let vix = 15;
+
+    try {
+      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
+      const { initSession } = await import("@/lib/icici-breeze/auth");
+      await initSession().catch(() => {});
+      const expiries = await getOptionChainExpiries(symbol);
+      for (const exp of expiries.slice(0, 3)) {
+        const chain = await getOptionChain(symbol, exp);
+        if (chain) {
+          spotPrice = chain.spotPrice;
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn("[Breakout] Breeze failed, trying NSE...");
+      try {
+        const { getNSEOptionChain } = await import("@/lib/nse-api");
+        const nseData = await getNSEOptionChain(symbol);
+        if (nseData?.records?.underlyingValue) {
+          spotPrice = nseData.records.underlyingValue;
+        }
+      } catch {
+        // final fallback
+      }
+    }
 
     // Run strategy simulation
     const strategy = getStrategy();
-    const signal = strategy.simulateFromMarketData(spotPrice, vix);
+    const signal = await strategy.simulateFromMarketData(spotPrice, vix, symbol);
 
     // Get current S/R levels
     const levels = strategy.sr.getAllLevels();
@@ -53,9 +75,10 @@ export async function GET(request: NextRequest) {
         min_confidence: 60,
         rr_target: 1.5,
       });
-      const tempSignal = tempStrategy.simulateFromMarketData(
+      const tempSignal = await tempStrategy.simulateFromMarketData(
         spotPrice * (1 + (Math.random() - 0.5) * 0.01),
-        vix
+        vix,
+        symbol
       );
       if (tempSignal) {
         recentSignals.push(tempSignal);

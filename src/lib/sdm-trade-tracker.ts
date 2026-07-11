@@ -206,6 +206,63 @@ export function partialExit(
   return true;
 }
 
+// ─── TP Level helpers ────────────────────────────────────────────
+function getTPLevel(
+  direction: string,
+  exitPrice: number,
+  entry: number,
+  tp1: number,
+  tp2: number,
+  tp3: number,
+  sl: number,
+): "TP1" | "TP2" | "TP3" | "TRAILING_SL" | "SL" | null {
+  const isBuy = direction === "CALL" || direction === "PUT";
+  if (isBuy) {
+    if (tp3 > 0 && exitPrice >= tp3) return "TP3";
+    if (tp2 > 0 && exitPrice >= tp2) return "TP2";
+    if (exitPrice >= tp1) return "TP1";
+    if (exitPrice <= sl) return "SL";
+  } else {
+    if (tp3 > 0 && exitPrice <= tp3) return "TP3";
+    if (tp2 > 0 && exitPrice <= tp2) return "TP2";
+    if (exitPrice <= tp1) return "TP1";
+    if (exitPrice >= sl) return "SL";
+  }
+  return null;
+}
+
+// ─── Current hit level tracking (for trailing SL) ────────────────
+// keyed by trade.id -> best level reached ("TP1" | "TP2" | "TP3" | null)
+const tradeHighestLevel = new Map<string, "TP1" | "TP2" | "TP3" | null>();
+
+function getTrailingSL(
+  direction: string,
+  entry: number,
+  tp1: number,
+  tp2: number,
+  tp3: number,
+  sl: number,
+  highestLevel: "TP1" | "TP2" | "TP3" | null,
+): number | null {
+  if (highestLevel === "TP3" && tp3 > 0) {
+    // Trail SL to TP2 once TP3 is hit
+    const trailTo = direction === "CALL" || direction === "PUT"
+      ? tp2 : tp2;
+    return trailTo;
+  }
+  if (highestLevel === "TP2" && tp2 > 0) {
+    // Trail SL to entry price once TP2 is hit
+    return entry;
+  }
+  if (highestLevel === "TP1" && tp1 > 0) {
+    // Trail SL to midway between entry and TP1
+    const midway = entry + (direction === "CALL" || direction === "PUT" ? 1 : -1) *
+      Math.abs(tp1 - entry) * 0.5;
+    return Math.round(midway * 100) / 100;
+  }
+  return null;
+}
+
 // ─── Update Trades with Current LTP ──────────────────────────────
 export function updateTrades(currentLTP: number, currentSpot: number): void {
   for (const trade of trades) {
@@ -217,30 +274,106 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
       trade.direction === "SELL_CALL" || trade.direction === "SELL_PUT";
 
     let updated = false;
+    let newStatus: string | null = null;
+    let exitPnL = 0;
+    let hitLevel: string | null = null;
+    let exitReason: string | null = null;
 
-    if (isBuy) {
-      if (currentLTP >= trade.tp1) {
-        trade.status = "tp_hit";
-        trade.pnl = (trade.tp1 - trade.entry) * lotSize;
-        updated = true;
-      } else if (currentLTP <= trade.sl) {
-        trade.status = "sl_hit";
-        trade.pnl = (trade.sl - trade.entry) * lotSize;
-        updated = true;
-      }
-    } else if (isSell) {
-      if (currentLTP >= trade.sl) {
-        trade.status = "sl_hit";
-        trade.pnl = (trade.entry - trade.sl) * lotSize;
-        updated = true;
-      } else if (currentLTP <= trade.tp1) {
-        trade.status = "tp_hit";
-        trade.pnl = (trade.entry - trade.tp1) * lotSize;
-        updated = true;
+    // Track highest level reached
+    const highest = tradeHighestLevel.get(trade.id) || null;
+
+    // Check trailing SL first
+    const trailSl = getTrailingSL(trade.direction, trade.entry, trade.tp1, trade.tp2, trade.tp3, trade.sl, highest);
+    if (trailSl !== null && trailSl > 0) {
+      if (isBuy && currentLTP <= trailSl) {
+        newStatus = "tp_hit";
+        exitPnL = (trailSl - trade.entry) * lotSize;
+        hitLevel = "TRAILING_SL";
+        exitReason = `Trailing SL hit at ${trailSl}`;
+      } else if (isSell && currentLTP >= trailSl) {
+        newStatus = "sl_hit";
+        exitPnL = (trade.entry - trailSl) * lotSize;
+        hitLevel = "TRAILING_SL";
+        exitReason = `Trailing SL hit at ${trailSl}`;
       }
     }
 
-    if (updated) {
+    // Check TP levels (from highest to lowest priority)
+    if (!newStatus) {
+      if (isBuy) {
+        if (trade.tp3 > 0 && currentLTP >= trade.tp3) {
+          newStatus = "tp_hit";
+          exitPnL = (trade.tp3 - trade.entry) * lotSize;
+          hitLevel = "TP3";
+          // Trail SL to TP2
+          tradeHighestLevel.set(trade.id, "TP3");
+          if (trade.tp2 > 0) {
+            // Update trail, continue holding — don't exit yet
+            // Actually, this is a partial exit; let's treat TP3 hit as final for now
+            exitReason = `TP3 hit at ${trade.tp3}`;
+          } else {
+            exitReason = `TP3 hit at ${trade.tp3}`;
+          }
+        } else if (trade.tp2 > 0 && currentLTP >= trade.tp2) {
+          if (highest !== "TP3" && highest !== "TP2") {
+            newStatus = "tp_hit";
+            exitPnL = (trade.tp2 - trade.entry) * lotSize;
+            hitLevel = "TP2";
+            tradeHighestLevel.set(trade.id, "TP2");
+            exitReason = `TP2 hit at ${trade.tp2}`;
+          }
+        } else if (currentLTP >= trade.tp1) {
+          if (!highest) {
+            newStatus = "tp_hit";
+            exitPnL = (trade.tp1 - trade.entry) * lotSize;
+            hitLevel = "TP1";
+            tradeHighestLevel.set(trade.id, "TP1");
+            exitReason = `TP1 hit at ${trade.tp1}`;
+          }
+        } else if (currentLTP <= trade.sl) {
+          newStatus = "sl_hit";
+          exitPnL = (trade.sl - trade.entry) * lotSize;
+          hitLevel = "SL";
+          exitReason = `SL hit at ${trade.sl}`;
+        }
+      } else if (isSell) {
+        if (trade.tp3 > 0 && currentLTP <= trade.tp3) {
+          newStatus = "tp_hit";
+          exitPnL = (trade.entry - trade.tp3) * lotSize;
+          hitLevel = "TP3";
+          tradeHighestLevel.set(trade.id, "TP3");
+          exitReason = `TP3 hit at ${trade.tp3}`;
+        } else if (trade.tp2 > 0 && currentLTP <= trade.tp2) {
+          if (highest !== "TP3" && highest !== "TP2") {
+            newStatus = "tp_hit";
+            exitPnL = (trade.entry - trade.tp2) * lotSize;
+            hitLevel = "TP2";
+            tradeHighestLevel.set(trade.id, "TP2");
+            exitReason = `TP2 hit at ${trade.tp2}`;
+          }
+        } else if (currentLTP <= trade.tp1) {
+          if (!highest) {
+            newStatus = "tp_hit";
+            exitPnL = (trade.entry - trade.tp1) * lotSize;
+            hitLevel = "TP1";
+            tradeHighestLevel.set(trade.id, "TP1");
+            exitReason = `TP1 hit at ${trade.tp1}`;
+          }
+        } else if (currentLTP >= trade.sl) {
+          newStatus = "sl_hit";
+          exitPnL = (trade.entry - trade.sl) * lotSize;
+          hitLevel = "SL";
+          exitReason = `SL hit at ${trade.sl}`;
+        }
+      }
+    }
+
+    if (newStatus) {
+      trade.status = newStatus as any;
+      trade.pnl = exitPnL;
+      trade.exitReason = exitReason || undefined;
+      updated = true;
+
       const exitTime = new Date();
       const holdingTimeMin =
         (exitTime.getTime() - trade.entryMs) / (1000 * 60);
@@ -255,6 +388,8 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
             exitTime,
             exitPrice: currentLTP,
             holdingTimeMin,
+            exitReason,
+            tpHitLevel: hitLevel,
           },
         })
         .catch((err) =>
@@ -262,6 +397,11 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
         );
     }
   }
+}
+
+// ─── Reset daily state (call at market start) ────────────────────
+export function resetDailyState(): void {
+  tradeHighestLevel.clear();
 }
 
 // ─── Expire All Active Trades ────────────────────────────────────
@@ -374,6 +514,7 @@ export function canTakeTrade(isExpiryDay: boolean): boolean {
 // ─── Reset (new day or manual) ───────────────────────────────────
 export function reset(): void {
   trades = [];
+  tradeHighestLevel.clear();
 }
 
 // ─── Set Lot Size ────────────────────────────────────────────────

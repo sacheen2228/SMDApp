@@ -242,3 +242,67 @@ export interface BreezeOptionChainResponse {
   status: number;
   error: any;
 }
+
+// ─── Option Chain Response Types (used by live-data-engine) ──────
+export interface OptionData {
+  strike: number;
+  ce: {
+    oi: number;
+    oiChg: number;
+    volume: number;
+    iv: number;
+    ltp: number;
+    chg: number;
+    delta: number;
+    theta: number;
+    gamma: number;
+    vega: number;
+  } | null;
+  pe: {
+    oi: number;
+    oiChg: number;
+    volume: number;
+    iv: number;
+    ltp: number;
+    chg: number;
+    delta: number;
+    theta: number;
+    gamma: number;
+    vega: number;
+  } | null;
+}
+
+export interface ExpiryInfo {
+  date: string;
+  label: string;
+  daysToExpiry: number;
+}
+
+export interface MarketSummary {
+  spotPrice: number;
+  spotChange: number;
+  spotChangePct: number;
+  open: number;
+  high: number;
+  low: number;
+  prevClose: number;
+  indiaVIX: number;
+  vixChange: number;
+  pcr: number;
+  maxPain: number;
+  totalCallOI: number;
+  totalPutOI: number;
+  totalCallVolume: number;
+  totalPutVolume: number;
+  atmStrike: number;
+}
+
+export interface OptionChainResponse {
+  symbol: string;
+  spotPrice: number;
+  expiries: ExpiryInfo[];
+  selectedExpiry: string;
+  data: OptionData[];
+  summary: MarketSummary;
+  timestamp: string;
+}

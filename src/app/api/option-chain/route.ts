@@ -4,12 +4,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOptionChain, getOptionChainExpiries } from '@/lib/icici-breeze/option-chain';
 import { initSession } from '@/lib/icici-breeze/auth';
-import { generateOptionChain } from '@/lib/option-chain-data';
 import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
-import { generateDayCandles } from '@/lib/historical-data';
 import { calculateGreeks } from '@/lib/greeks';
 import { getNSEOptionChain } from '@/lib/nse-api';
+import { sendTradeAlert } from '@/lib/telegram';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -117,14 +116,16 @@ export async function GET(request: NextRequest) {
           console.log('[API] NSE API data fetched successfully');
         }
       } catch (nseError) {
-        console.warn('[API] NSE API also failed, using simulation:', nseError);
+        console.warn('[API] NSE API also failed:', nseError);
       }
     }
     
-    // Final fallback to simulation
+    // If no real data available, return error
     if (!chainData) {
-      chainData = generateOptionChain(symbol, expiry);
-      source = 'simulation';
+      return NextResponse.json({
+        success: false,
+        error: "No real option chain data available. Breeze and NSE both failed.",
+      }, { status: 503 });
     }
     
     // Build SDM analysis strikes from either format
@@ -206,15 +207,12 @@ export async function GET(request: NextRequest) {
     const validation = validateAndSanitize(optionChainStrikes, spotPrice, source);
     if (!validation.valid) {
       console.warn('[API] Data validation failed:', validation.errors);
-      // Fall back to simulation
-      chainData = generateOptionChain(symbol, expiry);
-      source = 'simulation';
-      optionChainStrikes = chainData.data.map((row: any) => ({
-        strike: row.strike,
-        ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0, theta: row.ce.theta || 0, vega: row.ce.vega || 0, bid: 0, ask: 0 } : null,
-        pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, gamma: row.pe.gamma || 0, theta: row.pe.theta || 0, vega: row.pe.vega || 0, bid: 0, ask: 0 } : null,
-      }));
-    } else if (validation.warnings.length > 0) {
+      return NextResponse.json({
+        success: false,
+        error: "Option chain data validation failed. Real data may be incomplete.",
+      }, { status: 503 });
+    }
+    if (validation.warnings.length > 0) {
       console.warn('[API] Data warnings:', validation.warnings);
     }
 
@@ -281,6 +279,27 @@ export async function GET(request: NextRequest) {
     // Run full SDM analysis
     const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
 
+    // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
+    if (analysis?.recommendation && source !== "simulation") {
+      const rec = analysis.recommendation;
+      const isTradeAction = rec.action && !["HOLD", "NEUTRAL", "WAIT"].includes(rec.action);
+      const hasConfidence = (rec.confidence || rec.sdmScore || 0) >= 60;
+      if (isTradeAction && hasConfidence) {
+        sendTradeAlert({
+          symbol,
+          action: rec.action,
+          strike: rec.strike || analysis.atmStrike || spotPrice,
+          type: rec.optionType || rec.direction || "OPTION",
+          confidence: rec.confidence || rec.sdmScore || 0,
+          entry: rec.entryPrice,
+          stopLoss: rec.stopLoss,
+          target1: rec.tp1,
+          target2: rec.tp2,
+          source: `📊 SDM Analysis (${source})`,
+        }).catch(() => {});
+      }
+    }
+
     // Transform expiry strings into objects the frontend expects
     const rawExpiries = chainData.expiries || [];
     const expiries = rawExpiries.map((e: any) => {
@@ -292,9 +311,16 @@ export async function GET(request: NextRequest) {
       return { date: dateStr, label: dateStr, daysToExpiry };
     });
 
-    // Generate intraday candles for chart
+    // Generate intraday candles for chart — try real Breeze data first
     const today = new Date().toISOString().split('T')[0];
-    const candles5m = generateDayCandles(symbol, today);
+    let candles5m: any[] = [];
+    try {
+      const { getIntradayCandles } = await import('@/lib/breeze-historical');
+      candles5m = await getIntradayCandles(symbol, '5minute', selectedExpiry || '');
+    } catch {
+      // Fallback: empty candles — frontend should handle gracefully
+      candles5m = [];
+    }
     
     return NextResponse.json({
       success: true,
