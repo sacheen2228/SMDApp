@@ -290,7 +290,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
 };
 
 // ─── Config Store (localStorage) ────────────────────────────────
-const CONFIG_KEY = "orca_strategy_config";
+const CONFIG_KEY = "sdm_strategy_config";
 
 export function loadStrategyConfig(): StrategyConfig {
   if (typeof window === "undefined") return DEFAULT_STRATEGY_CONFIG;

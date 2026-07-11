@@ -12,11 +12,22 @@ function getNSEClient(): NSEClient {
 export async function getNSEOptionChain(symbol: string) {
   const client = getNSEClient();
   try {
-    const data = await client.optionChainV3({ symbol, type: 'Indices' });
+    // SENSEX is on BSE, try BSE type first
+    const isBSE = symbol.toUpperCase() === 'SENSEX' || symbol.toUpperCase() === 'BANKEX';
+    const data = await client.optionChainV3({
+      symbol,
+      type: isBSE ? 'BSE' : 'Indices',
+    });
     return data;
   } catch (err: any) {
-    console.error('[NSE API] Option chain error:', err.message);
-    return null;
+    // Fallback: try as Indices for all
+    try {
+      const data = await client.optionChainV3({ symbol, type: 'Indices' });
+      return data;
+    } catch (err2: any) {
+      console.error('[NSE API] Option chain error:', err2.message);
+      return null;
+    }
   }
 }
 

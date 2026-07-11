@@ -14,6 +14,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface Recommendation {
   action: "BUY_CALL" | "BUY_PUT" | "WAIT" | "NO_TRADE";
@@ -39,13 +40,16 @@ function formatINR(n: number): string {
 }
 
 export function AIRecommendation() {
+  const { symbol, expiry } = useTerminalStore();
   const [rec, setRec] = useState<Recommendation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/sdm-signal?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/sdm-signal?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success || !json.signal) throw new Error("No signal");
@@ -77,9 +81,10 @@ export function AIRecommendation() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);

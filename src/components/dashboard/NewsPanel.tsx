@@ -183,16 +183,18 @@ function SectorSentimentBar({ sector, score }: { sector: string; score: number }
 }
 
 export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string }) {
-  const { data, isLoading, refetch, isFetching } = useQuery<MarketSentiment>({
+  const { data, isLoading, refetch, isFetching } = useQuery<MarketSentiment | null>({
     queryKey: ["news"],
     queryFn: async () => {
       const res = await fetch("/api/news");
       if (!res.ok) throw new Error("News fetch failed");
       const json = await res.json();
-      return json.data;
+      // Handle different response structures
+      return json.data || json || null;
     },
     refetchInterval: 120000, // Refresh every 2 minutes
     staleTime: 60000,
+    retry: 2,
   });
 
   if (isLoading) {
@@ -209,8 +211,18 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
         <AlertTriangle className="h-12 w-12 mb-4 text-amber-500" />
-        <p className="text-lg font-medium">No news data</p>
-        <p className="text-sm mt-1">Click refresh to fetch news</p>
+        <p className="text-lg font-medium">No news data available</p>
+        <p className="text-sm mt-1">Unable to fetch market news at the moment</p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 mt-4"
+          onClick={() => refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={`h-3 w-3 ${isFetching ? "animate-spin" : ""}`} />
+          Retry
+        </Button>
       </div>
     );
   }
@@ -219,10 +231,10 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
     .sort((a, b) => b[1] - a[1]);
 
   // Filter articles for current symbol
-  const symbolArticles = data.articles.filter(
+  const symbolArticles = (data.articles || []).filter(
     (a) =>
-      a.stockEntities.includes(symbol) ||
-      a.title.toLowerCase().includes(symbol.toLowerCase())
+      a?.stockEntities?.includes(symbol) ||
+      a?.title?.toLowerCase().includes(symbol.toLowerCase())
   );
 
   return (
@@ -237,7 +249,7 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
             <div>
               <h2 className="text-sm font-bold">Market News</h2>
               <p className="text-[10px] text-muted-foreground">
-                {data.articles.length} articles from 6 sources
+                {data.articles.length} articles from RSS sources
               </p>
             </div>
           </div>
@@ -267,8 +279,8 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
               </CardTitle>
             </CardHeader>
             <CardContent className="p-3 pt-0 space-y-1">
-              {data.topBullish.length > 0 ? (
-                data.topBullish.map((s) => (
+              {(data.topBullish || []).length > 0 ? (
+                (data.topBullish || []).map((s) => (
                   <div key={s.symbol} className="flex justify-between text-[10px]">
                     <span className="font-bold">{s.symbol}</span>
                     <span className="text-emerald-500">{s.score}/100</span>
@@ -287,8 +299,8 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
               </CardTitle>
             </CardHeader>
             <CardContent className="p-3 pt-0 space-y-1">
-              {data.topBearish.length > 0 ? (
-                data.topBearish.map((s) => (
+              {(data.topBearish || []).length > 0 ? (
+                (data.topBearish || []).map((s) => (
                   <div key={s.symbol} className="flex justify-between text-[10px]">
                     <span className="font-bold">{s.symbol}</span>
                     <span className="text-red-500">{s.score}/100</span>

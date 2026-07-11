@@ -10,7 +10,7 @@ const OLLAMA_URL = "http://localhost:11434/api/chat";
 const GROQ_MODEL = "llama-3.3-70b-versatile";      // 32K context
 const GROQ_FAST_MODEL = "llama-3.1-8b-instant";    // 8K context, 6000/min
 const NVIDIA_MODEL = "meta/llama-3.1-405b-instruct";  // Nvidia's flagship
-const OLLAMA_MODEL = "qwen2.5-coder:3b";
+const OLLAMA_MODEL = "qwen2.5:0.5b";
 
 type Provider = "groq" | "openrouter" | "nvidia" | "ollama";
 
@@ -210,7 +210,7 @@ export async function callLLM(messages: LLMMessage[], tools?: any[], model?: str
   // 3. Ollama local — native tool calling with /api/chat
   try {
     console.log(`[LLM] Ollama: ${OLLAMA_MODEL}`);
-    const r = await callAPI(OLLAMA_URL, "", msgs, OLLAMA_MODEL, 45000, internalTools, "ollama");
+    const r = await callAPI(OLLAMA_URL, "", msgs, OLLAMA_MODEL, 60000, internalTools, "ollama");
     console.log(`[LLM] ✅ Ollama ${OLLAMA_MODEL} OK`);
     return r;
   } catch (e: any) {

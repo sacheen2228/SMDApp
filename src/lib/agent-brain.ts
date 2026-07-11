@@ -1,4 +1,4 @@
-// ORCA Agent Brain
+// SDM Agent Brain
 // System prompt + tool definitions + tool execution for the institutional trading AI
 // 15 Modules: Market Data, Structure, Greeks, OI, Smart Money, Flow,
 // Strike Selection, Entry, Avoid, Risk, Confidence, Alerts, Output,
@@ -16,12 +16,12 @@ export function buildSystemPrompt(ctx: {
   expiryDate: string;
   session: any;
   trades: any[];
-  orcaSignal?: any;
+  sdmSignal?: any;
   giftNifty?: any;
   correlation?: any;
   scanner?: any;
 }): string {
-  const { symbol, spotPrice, analysis, summary, expiryDate, session, trades, orcaSignal, giftNifty, correlation, scanner } = ctx;
+  const { symbol, spotPrice, analysis, summary, expiryDate, session, trades, sdmSignal, giftNifty, correlation, scanner } = ctx;
 
   const totalTrades = trades.length;
   const wins = trades.filter((t: any) => t.pnl > 0).length;
@@ -32,25 +32,25 @@ export function buildSystemPrompt(ctx: {
 
   const rec = analysis?.recommendation || {};
 
-  // ORCA signal context (if available)
-  const orcaCtx = orcaSignal ? `
-## LIVE ORCA SIGNAL (Real-time Institutional Analysis)
-- Market Bias: ${orcaSignal.marketBias}
-- Trade Action: ${orcaSignal.recommendation?.action}
-- Strike: ${orcaSignal.recommendation?.strike} ${orcaSignal.recommendation?.strikeType}
-- Entry: ₹${orcaSignal.recommendation?.entry}
-- SL: ₹${orcaSignal.recommendation?.stopLoss}
-- TP1: ₹${orcaSignal.recommendation?.target1} | TP2: ₹${orcaSignal.recommendation?.target2} | TP3: ₹${orcaSignal.recommendation?.target3}
-- Confidence: ${orcaSignal.confidence?.total}% (${orcaSignal.confidence?.level})
-- R:R: 1:${orcaSignal.recommendation?.riskReward}
-- Greeks: Delta=${orcaSignal.greeks?.atmDelta} Gamma=${orcaSignal.greeks?.atmGamma} Theta=${orcaSignal.greeks?.atmTheta} Vega=${orcaSignal.greeks?.atmVega}
-- Dealer Regime: ${orcaSignal.greeks?.dealerRegime}
-- PCR: ${orcaSignal.oi?.pcr} | Max Pain: ${orcaSignal.oi?.maxPain}
-- Smart Money: ${orcaSignal.smartMoney?.liquiditySweep?.detected ? `Sweep ${orcaSignal.smartMoney.liquiditySweep.direction}` : "None"}
-- Volume Spike: ${orcaSignal.flow?.volumeSpike ? "YES" : "NO"}
-- Institutional Flow: ${orcaSignal.flow?.institutionalOrders ? "YES" : "NO"}
-- Alerts: ${orcaSignal.alerts?.map((a: any) => a.type).join(", ") || "None"}
-- 0DTE: ${orcaSignal.zeroDte?.active ? `Gamma Squeeze=${orcaSignal.zeroDte.gammaSqueeze} Premium Speed=${orcaSignal.zeroDte.premiumSpeed}` : "N/A"}` : "";
+  // SDM signal context (if available)
+  const sdmCtx = sdmSignal ? `
+## LIVE SDM SIGNAL (Real-time Institutional Analysis)
+- Market Bias: ${sdmSignal.marketBias}
+- Trade Action: ${sdmSignal.recommendation?.action}
+- Strike: ${sdmSignal.recommendation?.strike} ${sdmSignal.recommendation?.strikeType}
+- Entry: ₹${sdmSignal.recommendation?.entry}
+- SL: ₹${sdmSignal.recommendation?.stopLoss}
+- TP1: ₹${sdmSignal.recommendation?.target1} | TP2: ₹${sdmSignal.recommendation?.target2} | TP3: ₹${sdmSignal.recommendation?.target3}
+- Confidence: ${sdmSignal.confidence?.total}% (${sdmSignal.confidence?.level})
+- R:R: 1:${sdmSignal.recommendation?.riskReward}
+- Greeks: Delta=${sdmSignal.greeks?.atmDelta} Gamma=${sdmSignal.greeks?.atmGamma} Theta=${sdmSignal.greeks?.atmTheta} Vega=${sdmSignal.greeks?.atmVega}
+- Dealer Regime: ${sdmSignal.greeks?.dealerRegime}
+- PCR: ${sdmSignal.oi?.pcr} | Max Pain: ${sdmSignal.oi?.maxPain}
+- Smart Money: ${sdmSignal.smartMoney?.liquiditySweep?.detected ? `Sweep ${sdmSignal.smartMoney.liquiditySweep.direction}` : "None"}
+- Volume Spike: ${sdmSignal.flow?.volumeSpike ? "YES" : "NO"}
+- Institutional Flow: ${sdmSignal.flow?.institutionalOrders ? "YES" : "NO"}
+- Alerts: ${sdmSignal.alerts?.map((a: any) => a.type).join(", ") || "None"}
+- 0DTE: ${sdmSignal.zeroDte?.active ? `Gamma Squeeze=${sdmSignal.zeroDte.gammaSqueeze} Premium Speed=${sdmSignal.zeroDte.premiumSpeed}` : "N/A"}` : "";
 
   const giftCtx = giftNifty ? `
 ## GIFT NIFTY (Gap Analysis)
@@ -124,7 +124,7 @@ SDM (Smart Decision Model) analyzes the market using a 14-factor scoring system 
 - Expiry: ${expiryDate || "N/A"}
 - Session: ${session?.label || "Unknown"}
 - SDM Recommendation: ${rec.action || "WAIT"} ${rec.direction || ""} ${rec.optionType || ""} Strike ₹${rec.strike || "N/A"} Entry ₹${rec.entryPrice || "N/A"} SL ₹${rec.stopLoss || "N/A"} Target ₹${rec.tp1 || "N/A"} Confidence ${rec.confidence || 0}%
-${orcaCtx}
+${sdmCtx}
 ${giftCtx}
 ${corrCtx}
 ${scannerCtx}
@@ -270,8 +270,8 @@ export const AGENT_TOOLS = [
   {
     type: "function",
     function: {
-      name: "get_orca_signal",
-      description: "Get LIVE institutional ORCA signal — market bias, trade recommendation, Greeks, OI, smart money, flow, confidence, risk, alerts, 0DTE analysis. This is the primary tool for trade recommendations.",
+      name: "get_sdm_signal",
+      description: "Get LIVE institutional SDM signal — market bias, trade recommendation, Greeks, OI, smart money, flow, confidence, risk, alerts, 0DTE analysis. This is the primary tool for trade recommendations.",
       parameters: {
         type: "object",
         properties: {
@@ -327,7 +327,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "get_trade_recommendation",
-      description: "Get a COMPLETE structured trade recommendation synthesized from ORCA signal + option chain Greeks + OI + market structure. Returns exact strike, premium, entry price, stop loss, target prices, R:R ratio, confidence %, reasoning, hold time, and exit conditions.",
+      description: "Get a COMPLETE structured trade recommendation synthesized from SDM signal + option chain Greeks + OI + market structure. Returns exact strike, premium, entry price, stop loss, target prices, R:R ratio, confidence %, reasoning, hold time, and exit conditions.",
       parameters: {
         type: "object",
         properties: {
@@ -373,9 +373,9 @@ export async function executeTool(
   args: any,
   ctx: { symbol: string; spotPrice: number; analysis: any; summary: any }
 ): Promise<string> {
-  const symbol = args.symbol || ctx.symbol;
-
-  console.log(`[AgentBrain] executeTool: ${name} args=${JSON.stringify(args)}`);
+  console.log(`[AgentBrain] executeTool: ${name} args=${JSON.stringify(args)} ctx=${ctx ? 'OK' : 'NULL'}`);
+  args = args || {};
+  const symbol = args.symbol || ctx?.symbol || "NIFTY";
   switch (name) {
     case "get_option_chain": {
       try {
@@ -466,14 +466,14 @@ export async function executeTool(
       return `Position Sizing:\nCapital: ₹${capital.toLocaleString("en-IN")} | Risk: ${riskPct}% = ₹${riskAmount.toLocaleString("en-IN")}\nEntry: ₹${entry} | SL: ₹${sl} | Risk/Lot: ₹${riskPerLot.toLocaleString("en-IN")}\n→ ${lots} lots × ${lotSize} = ${totalQty} qty\n→ Max Loss: ₹${maxLoss.toLocaleString("en-IN")} | Capital Required: ₹${capitalRequired.toLocaleString("en-IN")}`;
     }
 
-    case "get_orca_signal": {
+    case "get_sdm_signal": {
       try {
         const isExpiryDay = args.expiryDay ? "true" : "false";
         const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch ORCA signal";
+        if (!data.success) return "Failed to fetch SDM signal";
         const s = data.signal;
-        if (!s) return "No ORCA signal available";
+        if (!s) return "No SDM signal available";
         const rec = s.recommendation || {};
         const conf = s.confidence || {};
         const greeks = s.greeks || {};
@@ -481,7 +481,7 @@ export async function executeTool(
         const sm = s.smartMoney || {};
         const flow = s.flow || {};
         const alerts = s.alerts || [];
-        return `ORCA LIVE SIGNAL — ${s.symbol} @ ₹${s.spot}
+        return `SDM LIVE SIGNAL — ${s.symbol} @ ₹${s.spot}
 ═══════════════════════════════════
 MARKET BIAS: ${s.marketBias}
 TREND: ${s.marketStructure?.trend} | Structure: ${s.marketStructure?.structure}
@@ -509,7 +509,7 @@ ALERTS: ${alerts.map((a: any) => `${a.type}(${a.severity})`).join(", ") || "None
 REASONS: ${s.reasons?.join(" | ") || "N/A"}
 TIME: ${s.timeToExpiry}
 ${s.zeroDte?.active ? `0DTE: Gamma Squeeze=${s.zeroDte.gammaSqueeze} | Dealer Hedge=${s.zeroDte.dealerHedging} | Premium Speed=${s.zeroDte.premiumSpeed}` : ""}`;
-      } catch { return "Error fetching ORCA signal"; }
+      } catch { return "Error fetching SDM signal"; }
     }
 
     case "get_market_structure": {
@@ -553,13 +553,13 @@ Tip: ${data.tip}`;
     case "get_trade_recommendation": {
       try {
         const isExpiryDay = args.expiryDay ? "true" : "false";
-        // Fetch both ORCA and option chain in parallel for a complete picture
-        const [orcaRes, chainRes] = await Promise.allSettled([
+        // Fetch both SDM and option chain in parallel for a complete picture
+        const [sdmRes, chainRes] = await Promise.allSettled([
           fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
           fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
         ]);
-        if (!orcaRes || orcaRes.status !== "fulfilled" || !orcaRes.value?.success) return "Failed to fetch ORCA signal for trade recommendation";
-        const s = orcaRes.value.signal;
+        if (!sdmRes || sdmRes.status !== "fulfilled" || !sdmRes.value?.success) return "Failed to fetch SDM signal for trade recommendation";
+        const s = sdmRes.value.signal;
         if (!s) return "No trade recommendation available right now — market may be closed or data unavailable";
         const rec = s.recommendation || {};
         const conf = s.confidence || {};
@@ -726,7 +726,7 @@ export async function agentRespondLLM(
     session: any;
     trades: any[];
     conversationHistory: LLMMessage[];
-    orcaSignal?: any;
+    sdmSignal?: any;
     giftNifty?: any;
     correlation?: any;
     scanner?: any;

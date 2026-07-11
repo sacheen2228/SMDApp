@@ -1,4 +1,6 @@
-// Agent Chat — ChatGPT-style voice conversation + text input
+// Agent Chat — SDM trading assistant (focused trade hub)
+// Deterministic, live-data trade bot. Talks in EN + Hindi, supports
+// voice. Renders structured TradeAlert cards and graceful fallbacks.
 
 "use client";
 
@@ -11,24 +13,44 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Bot,
   Send,
-  TrendingUp,
-  BarChart3,
-  Target,
-  Shield,
-  Clock,
-  Zap,
-  Activity,
-  Brain,
-  AlertTriangle,
   Mic,
   MicOff,
   Volume2,
   Square,
   ArrowUp,
   ArrowDown,
-  GripHorizontal,
-  GripVertical,
+  AlertTriangle,
+  Sparkles,
+  TrendingUp,
+  Newspaper,
+  Link2,
 } from "lucide-react";
+
+// ─── Types ────────────────────────────────────────────────────────
+interface TradeAlert {
+  id: string;
+  kind: "option" | "equity";
+  symbol: string;
+  side: "BUY" | "SELL";
+  instrument: string;
+  strike?: number;
+  optionType?: "CE" | "PE";
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  rr: 1 | 2 | 3 | 4;
+  confidence: number;
+  rationale: string;
+  expiry?: string;
+  generatedAt: string;
+}
+
+interface SDMResponse {
+  text: string;
+  language: "en" | "hi";
+  alert: TradeAlert | null;
+}
 
 interface Message {
   id: string;
@@ -36,177 +58,32 @@ interface Message {
   content: string;
   timestamp: Date;
   loading?: boolean;
-  toolCallsMade?: string[];
+  alert?: TradeAlert | null;
+  language?: "en" | "hi";
 }
 
 interface AgentChatProps {
   symbol: string;
   spotPrice: number;
-  analysis: any;
-  summary: any;
-  gammaBlast: any;
-  expiryDate: string;
-  // Dashboard data
-  dashboardTrades?: any[];
-  dashboardChain?: any[];
-  dashboardSignal?: any;
-  dashboardSpot?: number;
-  dashboardAtm?: number;
-  dashboardExpiry?: string;
-  dashboardVix?: number;
-  dashboardPcr?: number;
-  dashboardFii?: number;
-  dashboardDii?: number;
-  dashboardSupport?: number;
-  dashboardResistance?: number;
-  dashboardMaxPain?: number;
-  dashboardChainData?: any[];
+  pcr?: number;
+  vix?: number;
+  sentiment?: string;
 }
 
+// Quick prompts — the bot now answers trades (all indices), news,
+// gap (Gift Nifty) and correlation (Nifty–Sensex).
 const QUICK_ACTIONS = [
-  { label: "Best Trade", icon: Target, query: "Give me a complete structured trade recommendation with exact entry, SL, targets and reasoning" },
-  { label: "ORCA Signal", icon: Brain, query: "Give me the ORCA live signal right now" },
-  { label: "Market Structure", icon: TrendingUp, query: "Analyze market structure — trend, S/R, VWAP" },
-  { label: "Greeks", icon: Activity, query: "What's the Greeks analysis? Delta, Gamma, Theta, Vega" },
-  { label: "OI Analysis", icon: BarChart3, query: "OI buildup patterns — long/short, fresh writing, PCR" },
-  { label: "Smart Money", icon: Zap, query: "Any smart money signals? Liquidity sweeps, fakeouts" },
-  { label: "Gap Analysis", icon: GripVertical, query: "What's the Gift Nifty gap showing for today's open?" },
-  { label: "Correlation", icon: GripHorizontal, query: "Nifty vs Sensex correlation analysis — any drift?" },
-  { label: "Scanner", icon: BarChart3, query: "Show me top scanner picks right now" },
+  { label: "NIFTY", icon: Bot, query: "NIFTY option trade now" },
+  { label: "BANKNIFTY", icon: Bot, query: "BANKNIFTY option trade now" },
+  { label: "FINNIFTY", icon: Bot, query: "FINNIFTY option trade now" },
+  { label: "SENSEX", icon: Bot, query: "SENSEX option trade now" },
+  { label: "News", icon: Newspaper, query: "What's the market news and sentiment right now?" },
+  { label: "Gap", icon: TrendingUp, query: "What's the Gift Nifty gap for tomorrow's open?" },
+  { label: "Correlation", icon: Link2, query: "Nifty vs Sensex correlation signal?" },
+  { label: "बताओ", icon: Bot, query: "mujhe ek trade do" },
 ];
 
-// ─── Structured Trade Recommendation Card ─────────────────────────
-function parseTradeCard(text: string): {
-  action: string;
-  strike: string;
-  entry: string;
-  sl: string;
-  tp1: string;
-  tp2: string;
-  confidence: number;
-  rr: string;
-  bias: string;
-  reasons: string[];
-} | null {
-  const lines = text.split("\n");
-  const card: any = { reasons: [] };
-  for (const l of lines) {
-    const t = l.trim();
-    if (t.startsWith("- Action:")) card.action = t.split(":")[1]?.trim().split(" ")[0] || "";
-    if (t.startsWith("- Entry Price:")) card.entry = t.split("₹")[1]?.trim() || "";
-    if (t.startsWith("- Stop Loss:")) card.sl = t.split("₹")[1]?.trim().split(" ")[0] || "";
-    if (t.startsWith("- Target 1:")) card.tp1 = t.split("₹")[1]?.trim().split(" ")[0] || "";
-    if (t.startsWith("- Target 2:")) card.tp2 = t.split("₹")[1]?.trim().split(" ")[0] || "";
-    if (t.startsWith("MARKET BIAS:")) card.bias = t.split(":")[1]?.trim() || "";
-    if (t.startsWith("CONFIDENCE SCORE:")) {
-      const m = t.match(/(\d+)%/);
-      if (m) card.confidence = parseInt(m[1]);
-    }
-    if (t.startsWith("R:R:")) {
-      const m = t.match(/([\d.]+)$/);
-      if (m) card.rr = m[1];
-    }
-    if (t.startsWith("→")) card.reasons.push(t.replace("→", "").trim());
-    if (!card.strike && t.includes("BUY") || t.includes("SELL")) {
-      const m = t.match(/(BUY|SELL)\s+(\d+)/);
-      if (m) { card.action = m[1]; card.strike = m[2]; }
-    }
-  }
-  if (card.action || card.confidence) return card as any;
-  return null;
-}
-
-function TradeCard({ card }: { card: NonNullable<ReturnType<typeof parseTradeCard>> }) {
-  const isBuy = card.action?.toUpperCase().includes("BUY");
-  const confColor = card.confidence >= 85 ? "bg-emerald-500" : card.confidence >= 70 ? "bg-amber-500" : "bg-red-500";
-  const entryVal = parseFloat(card.entry.replace(/,/g, ""));
-  const slVal = parseFloat(card.sl.replace(/,/g, ""));
-  const tp1Val = parseFloat(card.tp1.replace(/,/g, ""));
-  const riskPct = entryVal && slVal ? Math.abs((entryVal - slVal) / entryVal * 100).toFixed(1) : "—";
-  const rewardPct = entryVal && tp1Val ? Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(1) : "—";
-
-  return (
-    <div className="bg-card border border-border/60 rounded-xl p-3 space-y-2.5">
-      {/* Header row */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className={`h-6 px-2 rounded-md flex items-center gap-1 text-xs font-bold text-white ${isBuy ? "bg-emerald-600" : "bg-red-600"}`}>
-            {isBuy ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
-            {card.action}
-          </div>
-          {card.strike && <span className="text-xs font-mono font-bold">{card.strike}</span>}
-        </div>
-        {card.bias && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
-            card.bias.includes("BULLISH") ? "bg-emerald-500/10 text-emerald-400" :
-            card.bias.includes("BEARISH") ? "bg-red-500/10 text-red-400" :
-            "bg-yellow-500/10 text-yellow-400"
-          }`}>
-            {card.bias}
-          </span>
-        )}
-      </div>
-
-      {/* Price row */}
-      <div className="grid grid-cols-4 gap-1 text-center">
-        <div className="bg-muted/30 rounded-lg p-1.5">
-          <p className="text-[8px] text-muted-foreground">ENTRY</p>
-          <p className="text-xs font-bold font-mono text-foreground">₹{card.entry}</p>
-        </div>
-        <div className="bg-red-500/5 rounded-lg p-1.5 border border-red-500/10">
-          <p className="text-[8px] text-red-400">SL</p>
-          <p className="text-xs font-bold font-mono text-red-400">₹{card.sl}</p>
-          <p className="text-[7px] text-red-400/60">-{riskPct}%</p>
-        </div>
-        <div className="bg-emerald-500/5 rounded-lg p-1.5 border border-emerald-500/10">
-          <p className="text-[8px] text-emerald-400">TP1</p>
-          <p className="text-xs font-bold font-mono text-emerald-400">₹{card.tp1}</p>
-          <p className="text-[7px] text-emerald-400/60">+{rewardPct}%</p>
-        </div>
-        {card.tp2 ? (
-          <div className="bg-emerald-500/5 rounded-lg p-1.5 border border-emerald-500/10">
-            <p className="text-[8px] text-emerald-400">TP2</p>
-            <p className="text-xs font-bold font-mono text-emerald-400">₹{card.tp2}</p>
-          </div>
-        ) : (
-          <div className="bg-muted/30 rounded-lg p-1.5">
-            <p className="text-[8px] text-muted-foreground">R:R</p>
-            <p className="text-xs font-bold font-mono text-foreground">1:{card.rr || "—"}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Confidence bar */}
-      <div className="flex items-center gap-2">
-        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-          <div className={`h-full rounded-full transition-all ${confColor}`} style={{ width: `${card.confidence || 0}%` }} />
-        </div>
-        <span className={`text-[10px] font-bold font-mono ${confColor.replace("bg-", "text-")}`}>
-          {card.confidence || 0}%
-        </span>
-      </div>
-
-      {/* Reasons */}
-      {card.reasons.length > 0 && (
-        <div className="space-y-0.5">
-          {card.reasons.slice(0, 3).map((r: string, i: number) => (
-            <p key={i} className="text-[10px] text-muted-foreground">→ {r}</p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Detect Structured Trade Card in response ─────────────────
-function renderContent(text: string): { html: string; tradeCard: boolean } {
-  const tradeCard = text.includes("STRUCTURED TRADE RECOMMENDATION") || text.includes("## TRADE SETUP");
-  return {
-    html: tradeCard ? "" : renderMarkdown(text),
-    tradeCard,
-  };
-}
-
+// ─── Markdown (lightweight, escaped) ─────────────────────────────
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -226,16 +103,83 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br />');
 }
 
+// ─── Trade Alert Card ─────────────────────────────────────────────
+function TradeCard({ alert }: { alert: TradeAlert }) {
+  const isBuy = alert.side.toUpperCase().includes("BUY");
+  const confColor = alert.confidence >= 85 ? "bg-emerald-500" : alert.confidence >= 70 ? "bg-amber-500" : "bg-red-500";
+  const entryVal = alert.entry;
+  const slVal = alert.sl;
+  const tp1Val = alert.tp1;
+  const riskPct = entryVal && slVal ? Math.abs((entryVal - slVal) / entryVal * 100).toFixed(1) : "—";
+  const rewardPct = entryVal && tp1Val ? Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(1) : "—";
+  const reasons = alert.rationale.split("·").map((r) => r.trim()).filter(Boolean);
+
+  return (
+    <div className="bg-card border border-border/60 rounded-xl p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className={`h-6 px-2 rounded-md flex items-center gap-1 text-xs font-bold text-white ${isBuy ? "bg-emerald-600" : "bg-red-600"}`}>
+            {isBuy ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+            {alert.side}
+          </div>
+          <span className="text-xs font-mono font-bold">{alert.instrument}</span>
+        </div>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+          isBuy ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+        }`}>
+          {alert.kind === "option" ? "OPTION" : "EQUITY"}
+        </span>
+      </div>
+
+      {alert.expiry && (
+        <p className="text-[9px] text-muted-foreground">Expiry: {alert.expiry}</p>
+      )}
+
+      <div className="grid grid-cols-4 gap-1 text-center">
+        <div className="bg-muted/30 rounded-lg p-1.5">
+          <p className="text-[8px] text-muted-foreground">ENTRY</p>
+          <p className="text-xs font-bold font-mono text-foreground">₹{alert.entry.toFixed(2)}</p>
+        </div>
+        <div className="bg-red-500/5 rounded-lg p-1.5 border border-red-500/10">
+          <p className="text-[8px] text-red-400">SL</p>
+          <p className="text-xs font-bold font-mono text-red-400">₹{alert.sl.toFixed(2)}</p>
+          <p className="text-[7px] text-red-400/60">-{riskPct}%</p>
+        </div>
+        <div className="bg-emerald-500/5 rounded-lg p-1.5 border border-emerald-500/10">
+          <p className="text-[8px] text-emerald-400">TP1</p>
+          <p className="text-xs font-bold font-mono text-emerald-400">₹{alert.tp1.toFixed(2)}</p>
+          <p className="text-[7px] text-emerald-400/60">+{rewardPct}%</p>
+        </div>
+        <div className="bg-muted/30 rounded-lg p-1.5">
+          <p className="text-[8px] text-muted-foreground">TP2 / R:R</p>
+          <p className="text-xs font-bold font-mono text-foreground">₹{alert.tp2.toFixed(2)}</p>
+          <p className="text-[7px] text-muted-foreground">1:{alert.rr}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${confColor}`} style={{ width: `${alert.confidence || 0}%` }} />
+        </div>
+        <span className={`text-[10px] font-bold font-mono ${confColor.replace("bg-", "text-")}`}>
+          {alert.confidence || 0}%
+        </span>
+      </div>
+
+      {reasons.length > 0 && (
+        <div className="space-y-0.5">
+          {reasons.slice(0, 3).map((r, i) => (
+            <p key={i} className="text-[10px] text-muted-foreground">→ {r}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type VoiceMode = "off" | "listening" | "thinking" | "speaking";
 
-export function AgentChat({
-  symbol,
-  spotPrice,
-  analysis,
-  summary,
-  gammaBlast,
-  expiryDate,
-}: AgentChatProps) {
+export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -248,16 +192,14 @@ export function AgentChat({
   const recognitionRef = useRef<any>(null);
   const pendingSpeechRef = useRef("");
   const voiceModeRef = useRef<VoiceMode>("off");
-  const autoListenRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const userStoppedRef = useRef(false);
+  const voiceSentRef = useRef(false);
+  const typingRef = useRef(false);
 
-  // Keep ref in sync
-  useEffect(() => {
-    voiceModeRef.current = voiceMode;
-  }, [voiceMode]);
+  useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
 
-  // Init speech recognition + TTS
+  // Speech recognition + TTS
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRecognition) {
@@ -266,54 +208,57 @@ export function AgentChat({
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = "en-IN";
-      recognition.maxAlternatives = 3;
+      recognition.maxAlternatives = 1;
 
+      // Send as soon as a final utterance is captured — don't wait for
+      // onend (in continuous mode Chrome often never fires it).
       recognition.onresult = (event: any) => {
-        let bestTranscript = "";
-        for (let i = 0; i < event.results.length; i++) {
-          // Pick the alternative with highest confidence
-          const alternatives = event.results[i];
-          let best = alternatives[0];
-          for (let j = 1; j < alternatives.length; j++) {
-            if (alternatives[j].confidence > best.confidence) {
-              best = alternatives[j];
-            }
-          }
-          bestTranscript += best.transcript;
+        if (typingRef.current) return; // don't clobber what the user is typing
+        let interim = "";
+        let finalText = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const res = event.results[i];
+          if (res.isFinal) finalText += res[0].transcript;
+          else interim += res[0].transcript;
         }
-        setInput(bestTranscript);
-        pendingSpeechRef.current = bestTranscript;
+        const full = (finalText || interim).trim();
+        pendingSpeechRef.current = full;
+        setInput(full);
+        if (finalText.trim() && !voiceSentRef.current) {
+          voiceSentRef.current = true;
+          pendingSpeechRef.current = "";
+          try { recognition.stop(); } catch {}
+          setVoiceMode("thinking");
+          sendVoiceMessage(finalText.trim());
+        }
       };
 
       recognition.onend = () => {
-        // Only process if we were actually listening (not stopped manually)
+        voiceSentRef.current = false;
         if (voiceModeRef.current === "listening") {
           const text = pendingSpeechRef.current.trim();
           pendingSpeechRef.current = "";
-          if (text) {
+          if (text && !voiceSentRef.current) {
             setVoiceMode("thinking");
             sendVoiceMessage(text);
-          } else {
-            // No speech detected — restart listening
-            try {
-              recognition.start();
-            } catch {}
+          } else if (voiceModeRef.current === "listening") {
+            try { recognition.start(); } catch {}
           }
         }
       };
 
       recognition.onerror = (event: any) => {
-        if (event.error === "no-speech") {
-          // Restart listening silently
-          if (voiceModeRef.current === "listening") {
-            try { recognition.start(); } catch {}
-          }
+        const err = event?.error;
+        if (err === "no-speech" || err === "aborted") {
+          if (voiceModeRef.current === "listening") { try { recognition.start(); } catch {} }
           return;
         }
-        if (event.error === "not-allowed") {
-          setMicError("Mic blocked — allow microphone in browser");
-        } else if (event.error !== "aborted") {
-          setMicError(`Mic error: ${event.error}`);
+        if (err === "not-allowed" || err === "service-not-allowed") {
+          setMicError("Mic blocked — allow microphone access in the browser");
+        } else if (err === "audio-capture") {
+          setMicError("No microphone found");
+        } else {
+          setMicError("Mic issue — tap the mic to retry");
         }
         setVoiceMode("off");
         setTimeout(() => setMicError(""), 4000);
@@ -321,49 +266,37 @@ export function AgentChat({
 
       recognitionRef.current = recognition;
     }
-
-    if (window.speechSynthesis) {
-      setTtsSupported(true);
-    }
+    if (window.speechSynthesis) setTtsSupported(true);
   }, []);
 
-  // Auto-scroll on new messages
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  // Welcome message on mount
+  // Welcome
   useEffect(() => {
     if (messages.length === 0) {
-      const sentiment = analysis?.sentiment || "neutral";
       const sEmoji = sentiment === "bullish" ? "🟢" : sentiment === "bearish" ? "🔴" : "🟡";
       setMessages([
         {
           id: "welcome",
           role: "agent",
-          content: `hey sachin! 👋 i'm SDM, your trading buddy.\n\n${sEmoji} **${symbol}** is at ₹${spotPrice.toLocaleString("en-IN")} right now — PCR ${analysis?.pcr?.toFixed(2) || "—"}\n\ni'm watching the markets for you. wanna know about signals, best trades, greeks, or anything else?\n\noh and you can talk to me in hindi too — i got you! 🇮🇳`,
+          content: `hey sachin! 👋 i'm SDM, your trading buddy.\n\n${sEmoji} **${symbol}** is at ₹${spotPrice.toLocaleString("en-IN")}${pcr ? ` — PCR ${pcr.toFixed(2)}` : ""}\n\nask me for a **trade** (Nifty/BankNifty/FinNifty/Sensex), **news**, **gap** (Gift Nifty) or **correlation**. बोलो "mujhe ek trade do" — i got hindi too! 🇮🇳`,
           timestamp: new Date(),
         },
       ]);
     }
-  }, [analysis, symbol, spotPrice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
 
-  // Speak text in chunks (fixes Chrome 15-second cutoff bug)
   const speakChunks = (text: string, voice: SpeechSynthesisVoice | null, onDone: () => void) => {
-    // Split into sentences, max ~200 chars each
     const raw = text.replace(/[*#`]/g, "").replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
     const sentences = raw.match(/[^.!?]+[.!?]+\s*/g) || [raw];
     const chunks: string[] = [];
     let buf = "";
     for (const s of sentences) {
-      if (buf.length + s.length > 200) {
-        if (buf) chunks.push(buf);
-        buf = s;
-      } else {
-        buf += s;
-      }
+      if (buf.length + s.length > 200) { if (buf) chunks.push(buf); buf = s; }
+      else buf += s;
     }
     if (buf) chunks.push(buf);
     if (chunks.length === 0) { onDone(); return; }
@@ -372,10 +305,7 @@ export function AgentChat({
     const speakNext = () => {
       if (idx >= chunks.length) { onDone(); return; }
       const utt = new SpeechSynthesisUtterance(chunks[idx]);
-      utt.lang = "en-IN";
-      utt.rate = 0.95;
-      utt.pitch = 1.0;
-      utt.volume = 1.0;
+      utt.lang = "en-IN"; utt.rate = 0.95; utt.pitch = 1.0; utt.volume = 1.0;
       if (voice) utt.voice = voice;
       utt.onend = () => { idx++; speakNext(); };
       utt.onerror = () => { idx++; speakNext(); };
@@ -392,292 +322,117 @@ export function AgentChat({
       }
       return;
     }
-
     window.speechSynthesis.cancel();
-
     const voices = window.speechSynthesis.getVoices();
     const natural = voices.find(v => v.name.includes("Google IN") && v.name.includes("Female"))
       || voices.find(v => v.name.includes("Google IN"))
       || voices.find(v => v.name.includes("Google") && v.lang === "en-IN")
-      || voices.find(v => v.name.includes("Microsoft Zira"))
-      || voices.find(v => v.name.includes("Microsoft Heera"))
-      || voices.find(v => v.name.includes("Google UK English Female"))
-      || voices.find(v => v.name.includes("Samantha") && v.lang === "en-US")
       || voices.find(v => v.lang === "en-IN")
-      || voices.find(v => v.lang === "en-US")
       || voices.find(v => v.lang.startsWith("en"));
-
     setVoiceMode("speaking");
-
     const cleanup = () => {
+      voiceSentRef.current = false;
       if (voiceModeRef.current !== "off") {
         setVoiceMode("listening");
         pendingSpeechRef.current = "";
         try { recognitionRef.current?.start(); } catch {}
       }
     };
-
-    // Safety: max 30 seconds total
-    const safetyTimeout = setTimeout(() => {
-      window.speechSynthesis.cancel();
-      cleanup();
-    }, 30000);
-
-    speakChunks(text, natural || null, () => {
-      clearTimeout(safetyTimeout);
-      cleanup();
-    });
+    const safetyTimeout = setTimeout(() => { window.speechSynthesis.cancel(); cleanup(); }, 30000);
+    speakChunks(text, natural || null, () => { clearTimeout(safetyTimeout); cleanup(); });
   };
 
-  const sendVoiceMessage = async (query: string) => {
+  const callSDM = async (query: string): Promise<SDMResponse> => {
+    const res = await fetch("/api/sdm-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: query, symbol }),
+    });
+    if (!res.ok) throw new Error("request_failed");
+    const data = await res.json();
+    return {
+      text: data.text || "Sorry, I couldn't process that.",
+      language: data.language || "en",
+      alert: data.alert ?? null,
+    };
+  };
+
+  const runQuery = async (query: string) => {
     if (!query.trim() || loading) return;
+    // A text send must never leave voice mode stuck on.
+    if (voiceModeRef.current !== "off") {
+      try { recognitionRef.current?.stop(); } catch {}
+      window.speechSynthesis?.cancel();
+      setVoiceMode("off");
+    }
     userStoppedRef.current = false;
-
-    const userMsg: Message = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      content: query.trim(),
-      timestamp: new Date(),
-    };
-
-    const loadingMsg: Message = {
-      id: `a-${Date.now()}`,
-      role: "agent",
-      content: "",
-      timestamp: new Date(),
-      loading: true,
-    };
-
+    const userMsg: Message = { id: `u-${Date.now()}`, role: "user", content: query.trim(), timestamp: new Date() };
+    const loadingMsg: Message = { id: `a-${Date.now()}`, role: "agent", content: "", timestamp: new Date(), loading: true };
     setMessages((prev) => [...prev, userMsg, loadingMsg]);
     setInput("");
     setLoading(true);
 
-    // Abort controller for timeout
     const controller = new AbortController();
     abortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 90000);
 
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: query,
-          symbol,
-          spotPrice,
-          analysis,
-          summary,
-          gammaBlast,
-          expiryDate,
-          // Dashboard data
-          dashboardTrades: formattedTrades,
-          dashboardChain: chainData,
-          dashboardSignal: signal,
-          dashboardSpot: spotPrice,
-          dashboardAtm: atm,
-          dashboardExpiry: expiryDate,
-          dashboardVix: vix,
-          dashboardPcr: pcr,
-          dashboardFii: fii,
-          dashboardDii: dii,
-          dashboardSupport: support,
-          dashboardResistance: resistance,
-          dashboardMaxPain: maxPain,
-          dashboardChainData: chainData,
-        }),
-        signal: controller.signal,
-      });
-
+      const reply = await callSDM(query);
       clearTimeout(timeout);
-
-      const data = await res.json();
-      const responseText = data.response || "Sorry, I couldn't process that.";
-
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === loadingMsg.id
-            ? { ...m, loading: false, content: responseText, toolCallsMade: data.toolCallsMade || [] }
-            : m
+          m.id === loadingMsg.id ? { ...m, loading: false, content: reply.text, alert: reply.alert, language: reply.language } : m
         )
       );
-
       setLoading(false);
       abortRef.current = null;
-
-      // Speak the response and start listening again
-      speakAndListen(responseText);
+      speakAndListen(reply.text);
     } catch (err: any) {
       clearTimeout(timeout);
       abortRef.current = null;
-      if (userStoppedRef.current) {
-        userStoppedRef.current = false;
-        setLoading(false);
-        return;
-      }
+      if (userStoppedRef.current) { userStoppedRef.current = false; setLoading(false); return; }
       const errorText = err.name === "AbortError"
-        ? "⚠️ Request timed out. Please try again."
+        ? "⚠️ Request timed out. Market data API may be slow — try again."
         : "⚠️ Network error. Please try again.";
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === loadingMsg.id
-            ? { ...m, loading: false, content: errorText }
-            : m
-        )
-      );
+      setMessages((prev) => prev.map((m) => m.id === loadingMsg.id ? { ...m, loading: false, content: errorText } : m));
       setLoading(false);
       speakAndListen(errorText);
     }
   };
 
-  const sendTextMessage = async (query: string) => {
-    if (!query.trim() || loading) return;
-    userStoppedRef.current = false;
-
-    const userMsg: Message = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      content: query.trim(),
-      timestamp: new Date(),
-    };
-
-    const loadingMsg: Message = {
-      id: `a-${Date.now()}`,
-      role: "agent",
-      content: "",
-      timestamp: new Date(),
-      loading: true,
-    };
-
-    setMessages((prev) => [...prev, userMsg, loadingMsg]);
-    setInput("");
-    setLoading(true);
-
-    // Abort controller for timeout
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 90000);
-
-    try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: query,
-          symbol,
-          spotPrice,
-          analysis,
-          summary,
-          gammaBlast,
-          expiryDate,
-          // Dashboard data
-          dashboardTrades: formattedTrades,
-          dashboardChain: chainData,
-          dashboardSignal: signal,
-          dashboardSpot: spotPrice,
-          dashboardAtm: atm,
-          dashboardExpiry: expiryDate,
-          dashboardVix: vix,
-          dashboardPcr: pcr,
-          dashboardFii: fii,
-          dashboardDii: dii,
-          dashboardSupport: support,
-          dashboardResistance: resistance,
-          dashboardMaxPain: maxPain,
-          dashboardChainData: chainData,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-      const data = await res.json();
-      const responseText = data.response || "Sorry, I couldn't process that.";
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === loadingMsg.id
-            ? { ...m, loading: false, content: responseText, toolCallsMade: data.toolCallsMade || [] }
-            : m
-        )
-      );
-
-      // Auto-speak response (chunked, no cutoff)
-      if (ttsSupported) {
-        window.speechSynthesis.cancel();
-        const voices = window.speechSynthesis.getVoices();
-        const natural = voices.find(v => v.name.includes("Google IN") && v.name.includes("Female"))
-          || voices.find(v => v.name.includes("Google IN"))
-          || voices.find(v => v.name.includes("Google") && v.lang === "en-IN")
-          || voices.find(v => v.name.includes("Microsoft Zira"))
-          || voices.find(v => v.name.includes("Microsoft Heera"))
-          || voices.find(v => v.name.includes("Google UK English Female"))
-          || voices.find(v => v.name.includes("Samantha") && v.lang === "en-US")
-          || voices.find(v => v.lang === "en-IN")
-          || voices.find(v => v.lang === "en-US")
-          || voices.find(v => v.lang.startsWith("en"));
-        speakChunks(responseText, natural || null, () => {});
-      }
-    } catch (err: any) {
-      clearTimeout(timeout);
-      if (userStoppedRef.current) {
-        userStoppedRef.current = false;
-        setLoading(false);
-        return;
-      }
-      const errorText = err.name === "AbortError"
-        ? "⚠️ Request timed out. The market data API may be slow. Please try again."
-        : "⚠️ Network error. Please try again.";
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === loadingMsg.id
-            ? { ...m, loading: false, content: errorText }
-            : m
-        )
-      );
-    } finally {
-      setLoading(false);
-      abortRef.current = null;
-      inputRef.current?.focus();
-    }
-  };
+  const sendVoiceMessage = (q: string) => runQuery(q);
+  const sendTextMessage = (q: string) => runQuery(q);
 
   const stopAgent = () => {
     userStoppedRef.current = true;
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
+    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
     window.speechSynthesis?.cancel();
     setLoading(false);
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.loading
-          ? { ...m, loading: false, content: "Stopped." }
-          : m
-      )
-    );
+    setMessages((prev) => prev.map((m) => (m.loading ? { ...m, loading: false, content: "Stopped." } : m)));
   };
 
   const toggleVoice = () => {
     if (voiceMode === "off") {
-      // Start voice mode
+      if (!speechSupported) {
+        setMicError("Voice not supported here — open in Chrome/Edge over localhost");
+        setTimeout(() => setMicError(""), 4000);
+        return;
+      }
       setVoiceMode("listening");
       pendingSpeechRef.current = "";
-      try {
-        recognitionRef.current?.start();
-      } catch (e) {
-        setMicError("Could not start mic");
-        setVoiceMode("off");
+      voiceSentRef.current = false;
+      try { recognitionRef.current?.start(); } catch {
+        setMicError("Could not start mic"); setVoiceMode("off");
         setTimeout(() => setMicError(""), 3000);
       }
     } else {
-      // Stop voice mode
       setVoiceMode("off");
       window.speechSynthesis?.cancel();
-      try {
-        recognitionRef.current?.stop();
-      } catch {}
+      try { recognitionRef.current?.stop(); } catch {}
     }
   };
+
+  const moodLabel = pcr == null ? "—" : pcr > 1.1 ? "Bullish PCR" : pcr < 0.9 ? "Bearish PCR" : "Neutral PCR";
 
   return (
     <div className="flex flex-col h-full">
@@ -687,47 +442,43 @@ export function AgentChat({
           <Bot className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-bold">SDM <span className="text-[8px] text-emerald-400 font-normal">SDM Trading AI</span></p>
-          <p className="text-[9px] text-muted-foreground">
-            {symbol} • {analysis?.sentiment?.toUpperCase() || "NEUTRAL"} • Spot ₹{spotPrice.toLocaleString("en-IN")}
+          <p className="text-xs font-bold">SDM <span className="text-[8px] text-emerald-400 font-normal">Trading AI</span></p>
+          <p className="text-[9px] text-muted-foreground truncate">
+            {symbol} • ₹{spotPrice.toLocaleString("en-IN")}
+            {pcr != null && <> • PCR {pcr.toFixed(2)}</>}
+            {vix != null && <> • VIX {vix.toFixed(1)}</>}
           </p>
         </div>
-        {voiceMode !== "off" && (
-          <Badge
-            variant="outline"
-            className={`text-[8px] border-0 text-white animate-pulse ${
-              voiceMode === "listening" ? "bg-red-500" :
-              voiceMode === "thinking" ? "bg-amber-500" :
-              "bg-emerald-500"
-            }`}
-          >
+        {voiceMode !== "off" ? (
+          <Badge variant="outline" className={`text-[8px] border-0 text-white animate-pulse ${
+            voiceMode === "listening" ? "bg-red-500" : voiceMode === "thinking" ? "bg-amber-500" : "bg-emerald-500"
+          }`}>
             {voiceMode === "listening" && "🎤 Listening"}
             {voiceMode === "thinking" && "🧠 Thinking"}
             {voiceMode === "speaking" && "🔊 Speaking"}
           </Badge>
-        )}
-        {voiceMode === "off" && (
+        ) : (
           <Badge variant="outline" className="text-[8px] bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
             LIVE
           </Badge>
         )}
       </div>
 
+      {/* Mood strip */}
+      <div className="px-3 py-1 border-b border-border/40 shrink-0 flex items-center gap-2 text-[9px] text-muted-foreground">
+        <TrendingUp className="h-3 w-3 text-emerald-400" />
+        <span>{moodLabel}</span>
+        {sentiment && <span className="ml-auto capitalize">{sentiment}</span>}
+      </div>
+
       {/* Messages */}
       <ScrollArea className="flex-1 min-h-0">
         <div ref={scrollRef} className="p-3 space-y-3">
           {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[92%] rounded-xl px-3 py-2 ${
-                  msg.role === "user"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card border border-border/50"
-                }`}
-              >
+            <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[92%] rounded-xl px-3 py-2 ${
+                msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-card border border-border/50"
+              }`}>
                 {msg.loading ? (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <div className="flex gap-1">
@@ -739,44 +490,20 @@ export function AgentChat({
                   </div>
                 ) : (
                   <>
-                    {msg.toolCallsMade && msg.toolCallsMade.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-1.5">
-                        {msg.toolCallsMade.map((tc) => (
-                          <span key={tc} className="inline-flex items-center gap-0.5 text-[8px] bg-violet-500/10 text-violet-400 px-1 py-0.5 rounded">
-                            <Zap className="h-2 w-2" />
-                            {tc}
-                          </span>
-                        ))}
-                      </div>
+                    {msg.alert ? (
+                      <TradeCard alert={msg.alert} />
+                    ) : (
+                      <div
+                        className="text-[11px] leading-relaxed"
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                      />
                     )}
-                    {(() => {
-                      const rendered = renderContent(msg.content);
-                      if (rendered.tradeCard) {
-                        const card = parseTradeCard(msg.content);
-                        return card ? (
-                          <div className="space-y-2">
-                            <TradeCard card={card} />
-                            <div
-                              className="text-[10px] leading-relaxed text-muted-foreground/70"
-                              dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content.replace(/STRUCTURED TRADE RECOMMENDATION[\s\S]*?(?=ALERTS|$)/, "").replace(/^═+$/gm, "").replace(/^## .+/gm, "")) }}
-                            />
-                          </div>
-                        ) : null;
-                      }
-                      return (
-                        <div
-                          className="text-[11px] leading-relaxed"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                        />
-                      );
-                    })()}
-                    {msg.role === "agent" && ttsSupported && voiceMode === "off" && (
+                    {msg.role === "agent" && ttsSupported && voiceMode === "off" && !msg.alert && (
                       <button
                         onClick={() => {
                           const clean = msg.content.replace(/[*#`]/g, "").replace(/\n+/g, ". ");
                           const utter = new SpeechSynthesisUtterance(clean);
-                          utter.lang = "en-IN";
-                          utter.rate = 0.9;
+                          utter.lang = "en-IN"; utter.rate = 0.9;
                           window.speechSynthesis.speak(utter);
                         }}
                         className="mt-1 text-[8px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
@@ -795,7 +522,7 @@ export function AgentChat({
         </div>
       </ScrollArea>
 
-      {/* Quick Actions */}
+      {/* Quick actions */}
       {voiceMode === "off" && (
         <div className="px-2 py-1.5 border-t border-border/50 shrink-0 overflow-x-auto">
           <div className="flex items-center gap-1">
@@ -816,7 +543,7 @@ export function AgentChat({
         </div>
       )}
 
-      {/* Voice Mode Indicator */}
+      {/* Voice indicator */}
       {voiceMode !== "off" && (
         <div className="px-3 py-2 border-t border-border/50 shrink-0 text-center">
           <div className="flex items-center justify-center gap-2">
@@ -842,22 +569,23 @@ export function AgentChat({
           </div>
         )}
         {!speechSupported && (
-          <div className="text-[9px] text-yellow-500 mb-1">
-            Voice not supported — use Chrome or Edge
-          </div>
+          <div className="text-[9px] text-yellow-500 mb-1">Voice not supported — use Chrome or Edge</div>
         )}
         <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            sendTextMessage(input);
-          }}
+          onSubmit={(e) => { e.preventDefault(); sendTextMessage(input); }}
           className={`flex items-center gap-2 ${loading ? "agent-loading" : ""}`}
         >
           <Input
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={loading ? "SDM is thinking..." : voiceMode === "listening" ? "🎤 Listening..." : "Ask about market, trades, levels..."}
+            onChange={(e) => {
+              typingRef.current = true;
+              if (voiceMode !== "off") toggleVoice();
+              setInput(e.target.value);
+            }}
+            onFocus={() => { typingRef.current = true; if (voiceMode !== "off") toggleVoice(); }}
+            onBlur={() => { typingRef.current = false; }}
+            placeholder={loading ? "SDM is thinking..." : voiceMode === "listening" ? "🎤 Listening..." : "Ask for a trade, news, gap or correlation..."}
             className="h-8 text-xs"
             disabled={loading}
           />

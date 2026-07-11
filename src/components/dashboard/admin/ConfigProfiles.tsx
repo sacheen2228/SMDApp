@@ -12,7 +12,7 @@ interface ConfigProfile {
   json: string;
 }
 
-const PROFILES_KEY = "orca_config_profiles";
+const PROFILES_KEY = "sdm_config_profiles";
 
 function loadProfiles(): ConfigProfile[] {
   try {

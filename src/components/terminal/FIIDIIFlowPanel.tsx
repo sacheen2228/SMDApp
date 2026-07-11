@@ -13,6 +13,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface FlowData {
   totalCallOI: number;
@@ -132,13 +133,16 @@ function StrengthMeter({
 }
 
 export function FIIDIIFlowPanel() {
+  const { symbol, expiry } = useTerminalStore();
   const [flow, setFlow] = useState<FlowData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/option-chain?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/option-chain?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -278,9 +282,10 @@ export function FIIDIIFlowPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);

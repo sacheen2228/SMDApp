@@ -328,7 +328,7 @@ export const ScannerPanel = memo(function ScannerPanel({
   symbol,
   spotPrice,
 }: ScannerPanelProps) {
-  const [useLive, setUseLive] = useState(false);
+  const [useLive, setUseLive] = useState(true);
   const [sectorFilter, setSectorFilter] = useState<string | null>(null);
 
   const [dataSource, setDataSource] = useState<string | null>(null);
@@ -362,10 +362,6 @@ export const ScannerPanel = memo(function ScannerPanel({
 
   const result: ScanResult | null = data;
 
-  const filteredCandidates = sectorFilter
-    ? result.candidates.filter(c => c.sector === sectorFilter)
-    : result.candidates;
-
   if (!result) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
@@ -375,6 +371,10 @@ export const ScannerPanel = memo(function ScannerPanel({
       </div>
     );
   }
+
+  const filteredCandidates = sectorFilter
+    ? (result.candidates || []).filter(c => c.sector === sectorFilter)
+    : (result.candidates || []);
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -388,7 +388,7 @@ export const ScannerPanel = memo(function ScannerPanel({
             <div>
               <h2 className="text-sm font-bold">Intraday Scanner</h2>
               <p className="text-[10px] text-muted-foreground">
-                {result.candidates.length} high-probability setups found
+                {(result.candidates || []).length} high-probability setups found
                 {result.dataQuality === "LIVE" && (
                   <Badge className="ml-1 bg-emerald-600 text-[8px]">LIVE</Badge>
                 )}

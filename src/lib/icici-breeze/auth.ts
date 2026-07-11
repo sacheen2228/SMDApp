@@ -90,8 +90,9 @@ export async function generateSession(apiSession?: string): Promise<any> {
 
   const result = await breeze.generateSession(config.secretKey, session);
 
-  // Check if session generation actually succeeded
-  if (!result || (result as any)?.Status === 401 || (result as any)?.Error) {
+  // Breeze SDK returns undefined on success (no error object = success)
+  // Only treat as error if result explicitly has an error
+  if (result && (result as any)?.Status === 401) {
     const errMsg = (result as any)?.Error || 'Authentication failed — token may be expired';
     console.error('[Breeze SDK] Session generation failed:', errMsg);
     throw new Error(`Breeze auth failed: ${errMsg}. Please generate a new session token at https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(config.appKey)}`);

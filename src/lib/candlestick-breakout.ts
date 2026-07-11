@@ -618,7 +618,7 @@ export class CandlestickBreakoutIndia {
       const pdl = Math.min(...candles.slice(-50).map(c => c.low));
       const pdc = recentCloses[recentCloses.length - 1] || spotPrice;
       this.sr.setPreviousDay(pdh, pdl, pdc);
-      this.sr.setGiftNiftyBias(spotPrice * (1 + (Math.random() - 0.48) * 0.005), pdc);
+      this.sr.setGiftNiftyBias(spotPrice, pdc);
 
       // Feed real candles
       for (const candle of candles.slice(-20)) {
@@ -630,48 +630,7 @@ export class CandlestickBreakoutIndia {
       return this.onTick(lastCandle);
     }
 
-    // Fallback: simulated candles (no real data available)
-    // Generate simulated previous day levels
-    const pdh = spotPrice * (1 + volatility * 0.5);
-    const pdl = spotPrice * (1 - volatility * 0.5);
-    const pdc = spotPrice * (1 + (Math.random() - 0.5) * volatility * 0.3);
-    this.sr.setPreviousDay(pdh, pdl, pdc);
-
-    // Set GIFT Nifty bias
-    this.sr.setGiftNiftyBias(spotPrice * (1 + (Math.random() - 0.48) * 0.005), pdc);
-
-    // Generate 20 simulated candles
-    for (let i = 0; i < 20; i++) {
-      const ts = new Date(now.getTime() - (20 - i) * 5 * 60000);
-      ts.setHours(9, 30 + i * 5, 0, 0);
-
-      const basePrice = spotPrice * (1 + (Math.random() - 0.5) * volatility * 0.02);
-      const open = basePrice;
-      const close = basePrice * (1 + (Math.random() - 0.48) * volatility * 0.01);
-      const high = Math.max(open, close) * (1 + Math.random() * volatility * 0.005);
-      const low = Math.min(open, close) * (1 - Math.random() * volatility * 0.005);
-      const volume = 500000 + Math.random() * 2000000;
-
-      this.onTick({
-        open, high, low, close, volume,
-        timestamp: ts.toISOString(),
-      });
-    }
-
-    // Now simulate a breakout candle
-    const breakoutCandle = {
-      open: spotPrice * 0.999,
-      high: spotPrice * 1.008,
-      low: spotPrice * 0.997,
-      close: spotPrice * 1.005,
-      volume: 3000000,
-      timestamp: (() => {
-        const ts = new Date(now);
-        ts.setHours(10, 30, 0, 0);
-        return ts.toISOString();
-      })(),
-    };
-
-    return this.onTick(breakoutCandle);
+    // No real candle data available — cannot run breakout analysis
+    return null;
   }
 }

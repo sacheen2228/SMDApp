@@ -58,13 +58,16 @@ export async function GET(request: NextRequest) {
         const expiries = await getOptionChainExpiries(symbol);
         // Try each expiry and pick the nearest one with valid data
         for (const exp of expiries) {
-          const chain = await getOptionChain(symbol, exp);
-          if (chain) {
-            chainData = { ...chain, expiries };
-            source = 'icici-breeze';
-            // Don't break — keep trying to find the nearest valid expiry
-            // (some generated dates may not have data, so continue to find nearest)
-            break;
+          try {
+            const chain = await getOptionChain(symbol, exp);
+            if (chain) {
+              chainData = { ...chain, expiries };
+              source = 'icici-breeze';
+              break;
+            }
+          } catch (expErr) {
+            const errMsg = typeof expErr === 'string' ? expErr : (expErr as any)?.message || String(expErr);
+            console.warn(`[API] Breeze option chain failed for ${symbol} ${exp}:`, errMsg.substring(0, 120));
           }
         }
       }
@@ -120,12 +123,62 @@ export async function GET(request: NextRequest) {
       }
     }
     
-    // If no real data available, return error
+    // If no real data available, try Yahoo Finance for spot price
     if (!chainData) {
-      return NextResponse.json({
-        success: false,
-        error: "No real option chain data available. Breeze and NSE both failed.",
-      }, { status: 503 });
+      try {
+        const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
+        const yahooData = await fetchYahooIndexData(symbol);
+        if (yahooData?.regularMarketPrice) {
+          chainData = {
+            data: [],
+            spotPrice: yahooData.regularMarketPrice,
+            summary: {
+              spotPrice: yahooData.regularMarketPrice,
+              indiaVIX: 15,
+              maxPain: 0,
+            },
+            expiries: [],
+            selectedExpiry: '',
+          };
+          console.log(`[API] Using Yahoo Finance spot price for ${symbol}: ${yahooData.regularMarketPrice}`);
+        }
+      } catch {}
+    }
+
+    if (!chainData || !chainData.data?.length) {
+      const spotPrice = chainData?.spotPrice || chainData?.summary?.spotPrice || 0;
+      if (spotPrice > 0) {
+        // Return spot price with empty chain — frontend can show spot + "no data" message
+        chainData = chainData || {};
+        chainData.data = [];
+        chainData.spotPrice = spotPrice;
+        chainData.summary = chainData.summary || { spotPrice, indiaVIX: 15 };
+        chainData.summary.spotPrice = spotPrice;
+      } else {
+        // Known symbols with no data source — return 200 with not_available flag for better UX
+        const noDataSymbols = ['BANKEX']; // Add other symbols here if needed
+        if (noDataSymbols.includes(symbol)) {
+          return NextResponse.json({
+            success: true,
+            source: 'unavailable',
+            lastUpdate: new Date().toISOString(),
+            data: {
+              data: [],
+              spotPrice: 0,
+              summary: { spotPrice: 0, indiaVIX: 15, maxPain: 0 },
+              expiries: [],
+              selectedExpiry: '',
+              dataSource: 'unavailable',
+              notAvailable: true,
+            },
+            analysis: { recommendation: { action: 'WAIT', reason: 'No data source available' } },
+          });
+        }
+        return NextResponse.json({
+          success: false,
+          error: "No option chain data available for this symbol. Breeze, NSE, and Yahoo Finance all failed.",
+        }, { status: 503 });
+      }
     }
     
     // Build SDM analysis strikes from either format
@@ -203,17 +256,19 @@ export async function GET(request: NextRequest) {
     
     const spotPrice = chainData.spotPrice || chainData.summary?.spotPrice || 0;
     
-    // Validate and sanitize the data
-    const validation = validateAndSanitize(optionChainStrikes, spotPrice, source);
-    if (!validation.valid) {
-      console.warn('[API] Data validation failed:', validation.errors);
-      return NextResponse.json({
-        success: false,
-        error: "Option chain data validation failed. Real data may be incomplete.",
-      }, { status: 503 });
-    }
-    if (validation.warnings.length > 0) {
-      console.warn('[API] Data warnings:', validation.warnings);
+    // Validate and sanitize the data (skip for Yahoo-only spot price with empty chain)
+    if (optionChainStrikes.length > 0) {
+      const validation = validateAndSanitize(optionChainStrikes, spotPrice, source);
+      if (!validation.valid) {
+        console.warn('[API] Data validation failed:', validation.errors);
+        return NextResponse.json({
+          success: false,
+          error: "Option chain data validation failed. Real data may be incomplete.",
+        }, { status: 503 });
+      }
+      if (validation.warnings.length > 0) {
+        console.warn('[API] Data warnings:', validation.warnings);
+      }
     }
 
     // Calculate Greeks if missing (Breeze doesn't return them)

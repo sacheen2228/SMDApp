@@ -3,41 +3,51 @@
 import { useState, useEffect, useCallback } from "react";
 import { Grid3X3, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import ReactECharts from "echarts-for-react";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface StrikeData {
   strike: number;
-  delta: number;
-  gamma: number;
-  theta: number;
-  vega: number;
-  iv: number;
+  ceDelta: number;
+  ceGamma: number;
+  ceTheta: number;
+  ceVega: number;
+  ceIV: number;
+  peDelta: number;
+  peGamma: number;
+  peTheta: number;
+  peVega: number;
+  peIV: number;
 }
 
 const GREEK_LABELS = ["Delta", "Gamma", "Theta", "Vega", "IV"];
 
 function normalizeGreek(greek: string, value: number): number {
-  switch (greeks.indexOf(greek)) {
-    case 0: return Math.max(-1, Math.min(1, value)); // Delta: -1..1
-    case 1: return Math.max(-1, Math.min(1, value * 200)); // Gamma: scale
-    case 2: return Math.max(-1, Math.min(1, value * 5)); // Theta: scale
-    case 3: return Math.max(-1, Math.min(1, value * 10)); // Vega: scale
-    case 4: return Math.max(-1, Math.min(1, (value - 20) / 30)); // IV: center at 20%
+  const idx = GREEK_LABELS.indexOf(greek);
+  switch (idx) {
+    case 0: return Math.max(-1, Math.min(1, value));
+    case 1: return Math.max(-1, Math.min(1, value * 200));
+    case 2: return Math.max(-1, Math.min(1, value * 5));
+    case 3: return Math.max(-1, Math.min(1, value * 10));
+    case 4: return Math.max(-1, Math.min(1, (value - 20) / 30));
     default: return value;
   }
 }
 
-const greeks = ["Delta", "Gamma", "Theta", "Vega", "IV"];
-
 export function GreekHeatmapECharts() {
+  const { symbol, expiry } = useTerminalStore();
   const [strikes, setStrikes] = useState<StrikeData[]>([]);
   const [atmStrike, setAtmStrike] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [side, setSide] = useState<"CE" | "PE">("CE");
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/option-chain?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/option-chain?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -64,11 +74,16 @@ export function GreekHeatmapECharts() {
 
       const strikeData: StrikeData[] = nearby.map((s: any) => ({
         strike: s.strike,
-        delta: s.ce?.delta || 0,
-        gamma: s.ce?.gamma || 0,
-        theta: s.ce?.theta || 0,
-        vega: s.ce?.vega || 0,
-        iv: s.ce?.iv || 0,
+        ceDelta: s.ce?.delta || 0,
+        ceGamma: s.ce?.gamma || 0,
+        ceTheta: s.ce?.theta || 0,
+        ceVega: s.ce?.vega || 0,
+        ceIV: s.ce?.iv || 0,
+        peDelta: s.pe?.delta || 0,
+        peGamma: s.pe?.gamma || 0,
+        peTheta: s.pe?.theta || 0,
+        peVega: s.pe?.vega || 0,
+        peIV: s.pe?.iv || 0,
       }));
 
       setStrikes(strikeData);
@@ -79,9 +94,10 @@ export function GreekHeatmapECharts() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
@@ -91,12 +107,13 @@ export function GreekHeatmapECharts() {
     s.strike >= 1000 ? Math.round(s.strike / 100).toString() : s.strike.toString()
   );
 
-  // Build heatmap data: [greekIndex, strikeIndex, normalizedValue]
+  const prefix = side === "CE" ? "ce" : "pe";
+
   const heatmapData: [number, number, number, string][] = [];
   for (let gIdx = 0; gIdx < GREEK_LABELS.length; gIdx++) {
     for (let sIdx = 0; sIdx < strikes.length; sIdx++) {
       const s = strikes[sIdx];
-      const rawVal = [s.delta, s.gamma, s.theta, s.vega, s.iv][gIdx];
+      const rawVal = [s[`${prefix}Delta` as keyof StrikeData], s[`${prefix}Gamma` as keyof StrikeData], s[`${prefix}Theta` as keyof StrikeData], s[`${prefix}Vega` as keyof StrikeData], s[`${prefix}IV` as keyof StrikeData]][gIdx];
       const normVal = normalizeGreek(GREEK_LABELS[gIdx], rawVal);
       const displayVal = GREEK_LABELS[gIdx] === "IV"
         ? rawVal.toFixed(1) + "%"
@@ -105,7 +122,6 @@ export function GreekHeatmapECharts() {
     }
   }
 
-  // ATM marker index
   const atmStrikeIdx = strikes.findIndex((s) => s.strike === atmStrike);
 
   const option = {
@@ -118,7 +134,7 @@ export function GreekHeatmapECharts() {
         const [greekIdx, strikeIdx, , displayVal] = params.data;
         const greekName = GREEK_LABELS[greekIdx] || "";
         const strikeVal = strikes[strikeIdx]?.strike || 0;
-        return `<div style="font-size:10px"><b style="color:#58a6ff">${greekName}</b> @ <b>${strikeVal.toLocaleString("en-IN")}</b><br/><span style="color:#f0f6fc;font-size:12px">${displayVal}</span></div>`;
+        return `<div style="font-size:10px"><b style="color:#58a6ff">${side} ${greekName}</b> @ <b>${strikeVal.toLocaleString("en-IN")}</b><br/><span style="color:#f0f6fc;font-size:12px">${displayVal}</span></div>`;
       },
     },
     grid: {
@@ -204,7 +220,6 @@ export function GreekHeatmapECharts() {
           borderWidth: 1,
           borderRadius: 2,
         },
-        // ATM markLine
         ...(atmStrikeIdx >= 0
           ? {
               markLine: {
@@ -243,15 +258,39 @@ export function GreekHeatmapECharts() {
             <Grid3X3 className="size-3.5 text-violet-400" />
             Greek Heatmap
           </CardTitle>
-          <button
-            onClick={() => {
-              setLoading(true);
-              fetchData();
-            }}
-            className="text-zinc-500 hover:text-zinc-300 transition-colors"
-          >
-            <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-white/5 rounded overflow-hidden border border-white/10">
+              <button
+                onClick={() => setSide("CE")}
+                className={`px-2 py-0.5 text-[10px] font-mono font-semibold transition-colors ${
+                  side === "CE"
+                    ? "bg-emerald-500/20 text-emerald-400"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                CE
+              </button>
+              <button
+                onClick={() => setSide("PE")}
+                className={`px-2 py-0.5 text-[10px] font-mono font-semibold transition-colors ${
+                  side === "PE"
+                    ? "bg-red-500/20 text-red-400"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                PE
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                setLoading(true);
+                fetchData();
+              }}
+              className="text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="p-1 flex-1 overflow-hidden">
