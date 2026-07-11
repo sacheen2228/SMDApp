@@ -10,6 +10,7 @@ export interface AgentContext {
   summary: any;
   gammaBlast: any;
   expiryDate: string;
+  correlation?: any;
 }
 
 interface Intent {
@@ -453,6 +454,12 @@ const intents: Intent[] = [
   {
     patterns: [/correlat/i, /nifty.*sensex/i, /sensex.*nifty/i],
     handler: (ctx) => {
+      const corr = ctx.correlation;
+      if (corr && corr.success) {
+        const sig = corr.signal;
+        const icon = sig === "TRADE" ? "⚡" : sig === "WATCH" ? "👀" : "💤";
+        return `📊 **Nifty-Sensex Correlation**\n\n${icon} **Signal: ${sig}**\n\n**Prices:**\n• Nifty: ₹${corr.niftyPrice?.toLocaleString("en-IN")}\n• Sensex: ₹${corr.sensexPrice?.toLocaleString("en-IN")}\n\n**Correlation:**\n• Overall: ${corr.overallCorrelation?.toFixed(4)}\n• 5-day: ${corr.last5dCorrelation?.toFixed(4)} (${corr.last5dCorrelation >= 0.97 ? "🔒 Locked" : corr.last5dCorrelation >= 0.94 ? "📊 Normal" : corr.last5dCorrelation >= 0.90 ? "⚠️ Drifting" : "🔴 Fighting"})\n• 20-day: ${corr.last20dCorrelation?.toFixed(4)}\n\n**Beta:** ${corr.beta?.toFixed(3)} (Sensex +1% → Nifty +${corr.beta?.toFixed(3)}%)\n\n**Today's Gap:** ${corr.todayReturnDiff > 0 ? "+" : ""}${corr.todayReturnDiff?.toFixed(3)}% (normal: ±${corr.diffStd?.toFixed(3)}%)\n\n**Action:** ${corr.action}\n**Reason:** ${corr.reason}\n\n${corr.tip ? `💡 ${corr.tip}` : ""}`;
+      }
       return `📊 **Nifty-Sensex Correlation**\n\nUse the **Corr** tab for live correlation analysis.\n\n**What it tells you:**\n• When Nifty & Sensex move together (correlation > 0.97)\n• When they drift apart (correlation < 0.94) — trade the comeback\n• Beta: If Sensex +1%, how much does Nifty move\n\n**Signal:**\n• Correlation < 0.94 + gap > 0.15% = TRADE\n• Buy the one BEHIND, sell the one AHEAD\n• Hold 1-3 days until correlation returns to 0.97+`;
     },
   },

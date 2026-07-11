@@ -161,7 +161,8 @@ export async function GET(request: NextRequest) {
     try {
       const { getIntradayCandles } = await import("@/lib/breeze-historical");
       const expDate = selectedExpiry || chainData.selectedExpiry || "";
-      candles = await getIntradayCandles(symbol, "5minute", expDate);
+      const candleResult = await getIntradayCandles(symbol, expDate, "5minute");
+      candles = candleResult.candles || [];
     } catch {
       // simulation fallback removed — candles will be empty
     }

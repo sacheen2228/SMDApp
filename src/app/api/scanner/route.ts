@@ -179,30 +179,11 @@ export async function GET(request: NextRequest) {
     const maxPain = summary.maxPain || spotPrice;
     const vix = summary.indiaVIX || 15;
 
-    // Fetch real stock data from Yahoo Finance if requested
-    let liveQuotes = new Map<string, any>();
-    let dataQuality: "LIVE" | "SIMULATED" | "PARTIAL" = "SIMULATED";
+    // Live stock data is fetched inside runIntradayScan (generateCandidates)
+    // via Yahoo Finance for the full NIFTY50 universe. There is no simulated
+    // fallback — if Yahoo returns nothing we surface a 503 below.
     let dataSource: string | null = null;
     let liveError: string | null = null;
-
-    if (useLive) {
-      try {
-        // Fetch top 15 stocks only (rate limited: 2s per stock)
-        liveQuotes = await Promise.race([
-          fetchYahooQuotes(NIFTY50_SYMBOLS.slice(0, 15)),
-          new Promise<Map<string, any>>((_, reject) => setTimeout(() => reject(new Error("timeout")), 35000)),
-        ]);
-        if (liveQuotes.size > 0) {
-          dataQuality = liveQuotes.size >= 10 ? "LIVE" : "PARTIAL";
-          dataSource = "Yahoo Finance";
-        } else {
-          liveError = "Yahoo Finance temporarily unavailable — showing simulated data";
-        }
-      } catch (error: any) {
-        liveError = "Yahoo Finance temporarily unavailable — showing simulated data";
-        console.warn("[Scanner] Live fetch failed:", error.message);
-      }
-    }
 
     // Fetch news sentiment
     let marketNews = null;
@@ -225,7 +206,7 @@ export async function GET(request: NextRequest) {
     };
 
     // Run the scan
-    const result = runIntradayScan(config);
+    const result = await runIntradayScan(config);
 
     // Apply real news scores to candidates
     if (marketNews && marketNews.articles.length > 0) {
@@ -276,43 +257,21 @@ export async function GET(request: NextRequest) {
       topBearish: marketNews.topBearish.slice(0, 3),
     } : null;
 
-    // Override candidates with real data if available
-    if (liveQuotes.size > 0) {
-      result.candidates = result.candidates.map((candidate) => {
-        const quote = liveQuotes.get(candidate.symbol);
-        if (quote) {
-          const ltp = parseFloat(quote.last_price || "0");
-          const change = parseFloat(quote.change || "0");
-          const changePct = parseFloat(quote.change_percent || "0");
-          const volume = parseInt(quote.volume || "0");
-
-          // Update with real data
-          return {
-            ...candidate,
-            currentPrice: ltp || candidate.currentPrice,
-            change: change || candidate.change,
-            changePct: changePct || candidate.changePct,
-            volume: volume || candidate.volume,
-            // Recalculate entry/SL/targets based on real price
-            entry: ltp ? Math.round(ltp * 1.005 * 100) / 100 : candidate.entry,
-            stopLoss: ltp ? Math.round(ltp * 0.985 * 100) / 100 : candidate.stopLoss,
-            target1: ltp ? Math.round(ltp * 1.02 * 100) / 100 : candidate.target1,
-            target2: ltp ? Math.round(ltp * 1.035 * 100) / 100 : candidate.target2,
-          };
-        }
-        return candidate;
-      });
-
-      // Sort by score again after updating with real data
-      result.candidates.sort((a, b) => b.totalScore - a.totalScore);
+    // No simulated fallback: if we got zero live quotes, fail loudly.
+    if (!result.candidates || result.candidates.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: "Live market data unavailable — Yahoo Finance returned no real quotes.",
+      }, { status: 503 });
     }
 
-    result.dataQuality = dataQuality;
+    dataSource = result.dataQuality === "LIVE" || result.dataQuality === "PARTIAL" ? "Yahoo Finance" : null;
+    liveError = result.dataQuality === "LIVE" ? null : "Partial real-time quotes — some symbols unavailable from Yahoo Finance.";
 
     return NextResponse.json({
       success: true,
       data: result,
-      liveQuotesCount: liveQuotes.size,
+      liveQuotesCount: (result.candidates || []).length,
       dataSource,
       liveError,
       timestamp: new Date().toISOString(),

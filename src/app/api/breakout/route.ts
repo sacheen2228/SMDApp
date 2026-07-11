@@ -64,33 +64,11 @@ export async function GET(request: NextRequest) {
     // Get current S/R levels
     const levels = strategy.sr.getAllLevels();
 
-    // Get recent signals history (last 10)
     const recentSignals: BreakoutSignal[] = [];
-
-    // Generate a few more simulated signals for the UI
-    for (let i = 0; i < 5; i++) {
-      const tempStrategy = new CandlestickBreakoutIndia({
-        min_break_pct: 0.003,
-        volume_mult: 1.5,
-        min_confidence: 60,
-        rr_target: 1.5,
-      });
-      const tempSignal = await tempStrategy.simulateFromMarketData(
-        spotPrice * (1 + (Math.random() - 0.5) * 0.01),
-        vix,
-        symbol
-      );
-      if (tempSignal) {
-        recentSignals.push(tempSignal);
-      }
-    }
-
-    // Add the main signal if valid
     if (signal) {
-      recentSignals.unshift(signal);
+      recentSignals.push(signal);
     }
 
-    // Strategy stats
     const validSignals = recentSignals.filter((s) => s.type === "BREAKOUT_SIGNAL");
     const fakeouts = recentSignals.filter((s) => s.type === "FAKEOUT_ALERT");
     const noPatterns = recentSignals.filter((s) => s.type === "NO_PATTERN");

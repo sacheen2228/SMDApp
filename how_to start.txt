@@ -28,6 +28,4 @@ Ask	Gets
 "What session is it?"	Current IST session + trading advice
 "Where is max Pain?"	Max Pain vs spot distance + market implication
 "Show trade history"	Last 10 trades with PnL
-"Risk management"	Lot size, risk per lot, position sizing formula
-"What's the VIX?"	VIX level + fear/complacency interpretation
-"Is it expiry?"	DTE + decay advice
+"Risk management"	Lot size, risk per lot, position sizing formula/

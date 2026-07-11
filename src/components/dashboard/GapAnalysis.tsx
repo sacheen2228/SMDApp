@@ -38,7 +38,8 @@ function fmt(n: number): string {
 }
 
 function fmtFull(n: number): string {
-  return n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  if (!n || isNaN(n)) return "0";
+  return Math.round(n).toLocaleString("en-IN");
 }
 
 // ─── Pivot Points ─────────────────────────────────────────────────

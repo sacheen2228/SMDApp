@@ -34,7 +34,7 @@ export default function StrategyConfigPanel() {
   const handleExport = () => {
     const blob = new Blob([exportStrategyConfig(config)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `orca-strategy-${new Date().toISOString().split("T")[0]}.json`; a.click();
+    const a = document.createElement("a"); a.href = url; a.download = `sdm-strategy-${new Date().toISOString().split("T")[0]}.json`; a.click();
     URL.revokeObjectURL(url);
   };
   const handleImport = () => { try { setConfig(importStrategyConfig(importJson)); setImportJson(""); setSaved(false); } catch { alert("Invalid JSON."); } };

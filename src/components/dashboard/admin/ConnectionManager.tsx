@@ -52,7 +52,7 @@ export default function ConnectionManager() {
 
   const clearCache = () => {
     setClearing(true);
-    const keys = Object.keys(localStorage).filter(k => k.includes("orca_") || k.includes("cache") || k.includes("sim_"));
+    const keys = Object.keys(localStorage).filter(k => k.includes("sdm_") || k.includes("cache") || k.includes("sim_"));
     keys.forEach(k => localStorage.removeItem(k));
     setTimeout(() => setClearing(false), 500);
   };

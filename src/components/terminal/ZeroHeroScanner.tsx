@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface ZeroHeroCandidate {
   rank: number;
@@ -53,13 +54,16 @@ function StarRating({ count }: { count: number }) {
 }
 
 export function ZeroHeroScanner() {
+  const { symbol, expiry } = useTerminalStore();
   const [candidates, setCandidates] = useState<ZeroHeroCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/option-chain?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/option-chain?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -169,9 +173,10 @@ export function ZeroHeroScanner() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);

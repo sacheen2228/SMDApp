@@ -254,7 +254,7 @@ export function SDMAIDashboard() {
       sweep: 80, bos: 75, choch: 60, fiidii: 70
     };
 
-    const score = Math.min(98, 70 + Math.random() * 20);
+    const score = Math.min(98, 70 + (Math.abs(strike - spotPrice) / spotPrice) * 500);
     const reasons = REASON_BANK[bias === 'BULLISH' ? 'BULLISH' : 'BEARISH'].slice(0, 8);
 
     return [{
@@ -696,7 +696,7 @@ function SPanel({ components }: { components: any }) {
 }
 
 function GPanel({ d }: { d: any }) {
-  const ivR = Math.round(25 + (Math.random() * 45));
+  const ivR = Math.round(Math.min(95, Math.max(10, d.vix * 3.5)));
   const ivP = Math.round(15 + (d.vix * 2.3));
   return (
     <div className="glass glow-none rounded-2xl p-5 rise">

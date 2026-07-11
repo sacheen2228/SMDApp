@@ -361,12 +361,12 @@ export async function runSdmBacktest(input: {
   capital?: number;
   riskPerTrade?: number;
   confidenceThreshold?: number;
-}): Promise<OrcaBacktestResult> {
+}): Promise<SdmBacktestResult> {
   const { symbol, days, capital = 1000000, riskPerTrade = 1, confidenceThreshold = 70 } = input;
   const config = getSymbolConfig(symbol);
 
-  const trades: OrcaBacktestTrade[] = [];
-  const dailyResults: OrcaDayResult[] = [];
+  const trades: SdmBacktestTrade[] = [];
+  const dailyResults: SdmDayResult[] = [];
   const equityCurve: { date: string; equity: number; drawdown: number }[] = [];
 
   let tradeId = 1;
@@ -455,7 +455,7 @@ export async function runSdmBacktest(input: {
     }
 
     // Create trade if signal is BUY_CALL or BUY_PUT
-    let trade: OrcaBacktestTrade | null = null;
+    let trade: SdmBacktestTrade | null = null;
     if (tradeAction === "BUY_CALL" || tradeAction === "BUY_PUT") {
       const type = tradeAction === "BUY_CALL" ? "CALL" : "PUT";
       const entry = rec.entry;

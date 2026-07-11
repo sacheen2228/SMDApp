@@ -1,8 +1,8 @@
-// API Route — ORCA Backtest
-// Run ORCA engine on historical data and return performance results
+// API Route — SDM Backtest
+// Run SDM engine on historical data and return performance results
 
 import { NextRequest, NextResponse } from "next/server";
-import { runOrcaBacktest } from "@/lib/orca-backtest";
+import { runSdmBacktest } from "@/lib/sdm-backtest";
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,10 +13,9 @@ export async function GET(request: NextRequest) {
     const riskPerTrade = parseFloat(searchParams.get("risk") || "1");
     const confidenceThreshold = parseInt(searchParams.get("confidence") || "70", 10);
 
-    // Limit days to prevent timeout
     const maxDays = Math.min(days, 60);
 
-    const result = await runOrcaBacktest({
+    const result = await runSdmBacktest({
       symbol,
       days: maxDays,
       capital,
@@ -30,9 +29,9 @@ export async function GET(request: NextRequest) {
       lastUpdate: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("[API] ORCA backtest error:", error);
+    console.error("[API] SDM backtest error:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "ORCA backtest failed" },
+      { success: false, error: error.message || "SDM backtest failed" },
       { status: 500 }
     );
   }

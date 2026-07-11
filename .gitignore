@@ -66,3 +66,10 @@ __pycache__/
 os
 sys
 *.pid
+
+# secrets / sessions / local db
+.breeze-session.json
+*.db
+db/
+*.sqlite
+*.sqlite3

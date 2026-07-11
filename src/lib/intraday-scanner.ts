@@ -3,6 +3,7 @@
 // Based on 8-step methodology: Market, Sector, Fundamentals, Technicals, Options, News, Flow, Score
 
 import type { SDMOptionStrike } from "@/types/sdm";
+import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -288,67 +289,153 @@ export function analyzeSectors(marketDirection: MarketDirection): SectorStrength
   return sectorData.sort((a, b) => b.strength - a.strength);
 }
 
-// ─── Yahoo Finance Price Fetcher ──────────────────────────────────
-async function fetchYahooQuotes(symbols: string[]): Promise<Map<string, any>> {
+// ─── Yahoo Finance Price + Candle Fetcher ─────────────────────────
+interface YahooData {
+  quotes: Map<string, any>;
+  candles: Map<string, Candle[]>;
+}
+
+// One chart call returns BOTH the live quote (meta) and 3 months of daily
+// OHLC candles (indicators.quote) — so we fetch quote + candles together.
+// Fetched in bounded-concurrency batches to keep latency reasonable.
+async function fetchYahooData(symbols: string[]): Promise<YahooData> {
   const quotes = new Map<string, any>();
-  try {
-    for (const sym of symbols) {
-      const yahooSym = `${sym}.NS`;
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) continue;
+  const candles = new Map<string, Candle[]>();
+  const CONCURRENCY = 6;
+
+  const fetchOne = async (sym: string) => {
+    const yahooSym = `${sym}.NS`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) return;
       const data = await res.json();
-      const meta = data?.chart?.result?.[0]?.meta;
-      if (!meta?.regularMarketPrice) continue;
-      const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
-      quotes.set(sym, {
-        last_price: String(meta.regularMarketPrice),
-        change: String((meta.regularMarketPrice - prevClose).toFixed(2)),
-        change_percent: String(((meta.regularMarketPrice - prevClose) / prevClose * 100).toFixed(2)),
-        volume: String(meta.regularMarketVolume || 0),
-      });
+      const result = data?.chart?.result?.[0];
+      if (!result) return;
+      const meta = result.meta;
+      const ts = result.timestamp;
+      const q = result.indicators?.quote?.[0];
+
+      if (meta?.regularMarketPrice) {
+        const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
+        quotes.set(sym, {
+          last_price: String(meta.regularMarketPrice),
+          change: String((meta.regularMarketPrice - prevClose).toFixed(2)),
+          change_percent: String(((meta.regularMarketPrice - prevClose) / prevClose * 100).toFixed(2)),
+          volume: String(meta.regularMarketVolume || 0),
+        });
+      }
+
+      if (ts && q?.close) {
+        const cs: Candle[] = [];
+        for (let i = 0; i < ts.length; i++) {
+          const close = q.close[i];
+          if (close == null) continue;
+          cs.push({
+            time: ts[i],
+            open: q.open?.[i] ?? close,
+            high: q.high?.[i] ?? close,
+            low: q.low?.[i] ?? close,
+            close,
+            volume: q.volume?.[i] || 0,
+          });
+        }
+        if (cs.length >= 2) candles.set(sym, cs);
+      }
+    } catch (e) {
+      // skip unavailable symbol rather than fabricate data
     }
-  } catch (e) {
-    console.warn("[IntradayScanner] Yahoo Finance fetch failed:", e);
+  };
+
+  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
+    const batch = symbols.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(fetchOne));
   }
-  return quotes;
+  return { quotes, candles };
+}
+
+// Average True Range from real OHLC candles.
+function calcATR(candles: Candle[], period = 14): number {
+  if (candles.length < 2) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const prevClose = candles[i - 1].close;
+    const h = candles[i].high;
+    const l = candles[i].low;
+    const tr = Math.max(h - l, Math.abs(h - prevClose), Math.abs(l - prevClose));
+    trs.push(tr);
+  }
+  const n = Math.min(period, trs.length);
+  return trs.slice(-n).reduce((s, v) => s + v, 0) / n;
 }
 
 // ─── Stock Candidate Generation ───────────────────────────────────
+export interface GeneratedCandidates {
+  candidates: StockCandidate[];
+  liveCount: number;
+  total: number;
+}
+
 export async function generateCandidates(
   config: ScannerConfig,
   marketDirection: MarketDirection,
   sectors: SectorStrength[]
-): Promise<StockCandidate[]> {
+): Promise<GeneratedCandidates> {
   const candidates: StockCandidate[] = [];
+  let liveCount = 0;
   const isBullish = marketDirection.trend.includes("BULLISH");
   const isBearish = marketDirection.trend.includes("BEARISH");
 
-  // Fetch real prices from Yahoo Finance
-  const realQuotes = await fetchYahooQuotes(NIFTY50_STOCKS.map(s => s.symbol));
+  // Fetch real prices + 3mo daily OHLC candles from Yahoo Finance
+  const { quotes: realQuotes, candles: realCandles } = await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol));
 
   // Scan ALL stocks (sector filter applied in UI)
   const universe = NIFTY50_STOCKS;
 
   for (const stock of universe) {
-    // Use real Yahoo Finance data if available, fallback to simulation
+    // Use real Yahoo Finance data only — never fabricate a price.
     const quote = realQuotes.get(stock.symbol);
-    const basePrice = quote ? parseFloat(quote.last_price) : 500;
-    const change = quote ? parseFloat(quote.change) : 0;
-    const changePct = quote ? parseFloat(quote.change_percent) : 0;
-    const volume = quote ? parseInt(quote.volume || "0") : 500000;
+    if (!quote) continue;
+    liveCount++;
+    const basePrice = parseFloat(quote.last_price);
+    const change = parseFloat(quote.change);
+    const changePct = parseFloat(quote.change_percent);
+    const volume = parseInt(quote.volume || "0");
     const avgVolume = volume * 0.8;
     const rvol = volume / avgVolume;
 
-    // Technicals — derived from real price when available, neutral defaults otherwise
-    const ema9 = basePrice * 1.001;
-    const ema21 = basePrice * 0.999;
-    const ema50 = basePrice * 0.997;
-    const rsi = 50;
-    const macd = 0;
-    const macdSignal = 0;
-    const adx = 20;
-    const atr = basePrice * 0.015;
+    // Technicals — computed from REAL 3mo daily OHLC candles via Yahoo Finance.
+    // Neutral defaults only apply if candle history is unavailable for a symbol.
+    let ema9 = basePrice * 1.001;
+    let ema21 = basePrice * 0.999;
+    let ema50 = basePrice * 0.997;
+    let rsi = 50;
+    let macd = 0;
+    let macdSignal = 0;
+    let adx = 20;
+    let atr = basePrice * 0.015;
+
+    const stockCandles = realCandles.get(stock.symbol);
+    if (stockCandles && stockCandles.length >= 35) {
+      const closes = stockCandles.map((c) => c.close);
+      const e9 = calculateEMA(closes, 9);
+      const e21 = calculateEMA(closes, 21);
+      ema9 = e9[e9.length - 1];
+      ema21 = e21[e21.length - 1];
+      if (stockCandles.length >= 50) {
+        const e50 = calculateEMA(closes, 50);
+        ema50 = e50[e50.length - 1];
+      }
+      rsi = calculateRSI(stockCandles, 14);
+      adx = calculateADX(stockCandles, 14);
+      atr = calcATR(stockCandles, 14);
+      const e12 = calculateEMA(closes, 12);
+      const e26 = calculateEMA(closes, 26);
+      const macdLine = e12[e12.length - 1] - e26[e26.length - 1];
+      const macdSeries = closes.map((_, i) => (e12[i] ?? 0) - (e26[i] ?? 0));
+      macd = macdLine;
+      macdSignal = calculateEMA(macdSeries, 9).at(-1) ?? 0;
+    }
 
     // Score calculation
     let technicalScore = 0;
@@ -518,19 +605,23 @@ export async function generateCandidates(
   }
 
   // Sort by total score descending
-  return candidates.sort((a, b) => b.totalScore - a.totalScore);
+  return {
+    candidates: candidates.sort((a, b) => b.totalScore - a.totalScore),
+    liveCount,
+    total: universe.length,
+  };
 }
 
 // ─── Main Scan Function ───────────────────────────────────────────
-export function runIntradayScan(config: ScannerConfig): ScanResult {
+export async function runIntradayScan(config: ScannerConfig): Promise<ScanResult> {
   // Step 1: Market Direction
   const marketDirection = analyzeMarketDirection(config);
 
   // Step 2: Sector Strength
   const sectors = analyzeSectors(marketDirection);
 
-  // Step 3-8: Generate and score candidates
-  const candidates = generateCandidates(config, marketDirection, sectors);
+  // Step 3-8: Generate and score candidates (live Yahoo data only)
+  const { candidates, liveCount, total } = await generateCandidates(config, marketDirection, sectors);
 
   // Filter — show all candidates, sector filter applied in UI
   const highProbCandidates = candidates.filter(c => c.totalScore >= 20);
@@ -570,7 +661,12 @@ export function runIntradayScan(config: ScannerConfig): ScanResult {
     stocksToAvoid,
     overallBias,
     keyRisks,
-    dataQuality: yahooQuotes.size > 0 ? "LIVE" : "PARTIAL",
+    dataQuality:
+      total > 0 && liveCount >= total * 0.8
+        ? "LIVE"
+        : liveCount > 0
+        ? "PARTIAL"
+        : "SIMULATED",
   };
 }
 

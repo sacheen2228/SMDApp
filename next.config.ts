@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  turbopack: {
+    resolveExtensions: [".tsx", ".ts", ".jsx", ".js", ".json"],
+  },
 };
 
 export default nextConfig;

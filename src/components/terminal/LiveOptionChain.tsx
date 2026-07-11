@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Table2, RefreshCw, Clock } from "lucide-react";
+import { Table2, RefreshCw, Clock, Wifi, WifiOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTerminalStore } from "@/stores/useTerminalStore";
+import { useOptionChainWS } from "@/hooks/useWebSocket";
 
 interface ChainStrike {
   strike: number;
@@ -45,6 +47,8 @@ function formatIST(date: Date): string {
 }
 
 export function LiveOptionChain() {
+  const { symbol, expiry } = useTerminalStore();
+  const { data: wsData, isConnected: wsConnected } = useOptionChainWS(symbol);
   const [strikes, setStrikes] = useState<ChainStrike[]>([]);
   const [atmStrike, setAtmStrike] = useState(0);
   const [spot, setSpot] = useState(0);
@@ -54,7 +58,9 @@ export function LiveOptionChain() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/option-chain?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/option-chain?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -91,9 +97,51 @@ export function LiveOptionChain() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
+
+  // Merge WebSocket tick data into strikes (real-time updates)
+  useEffect(() => {
+    if (!wsData || !wsConnected) return;
+    setSpot(wsData.spot);
+    setAtmStrike(wsData.atmStrike);
+    setLastUpdate(formatIST(new Date()));
+
+    setStrikes((prev) => {
+      if (prev.length === 0) return prev;
+      return prev.map((s) => {
+        const ceTick = wsData.calls.find((c) => c.strike === s.strike);
+        const peTick = wsData.puts.find((p) => p.strike === s.strike);
+        return {
+          ...s,
+          ce: ceTick
+            ? {
+                ...s.ce,
+                ltp: ceTick.ltp || s.ce?.ltp || 0,
+                oi: ceTick.oi || s.ce?.oi || 0,
+                oiChg: ceTick.oiChg || s.ce?.oiChg || 0,
+                volume: ceTick.volume || s.ce?.volume || 0,
+                iv: ceTick.iv || s.ce?.iv || 0,
+                delta: ceTick.delta || s.ce?.delta || 0,
+              }
+            : s.ce,
+          pe: peTick
+            ? {
+                ...s.pe,
+                ltp: peTick.ltp || s.pe?.ltp || 0,
+                oi: peTick.oi || s.pe?.oi || 0,
+                oiChg: peTick.oiChg || s.pe?.oiChg || 0,
+                volume: peTick.volume || s.pe?.volume || 0,
+                iv: peTick.iv || s.pe?.iv || 0,
+                delta: peTick.delta || s.pe?.delta || 0,
+              }
+            : s.pe,
+        };
+      });
+    });
+  }, [wsData, wsConnected]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
@@ -108,11 +156,19 @@ export function LiveOptionChain() {
             Live Option Chain
             {spot > 0 && (
               <span className="text-[10px] font-mono tabular-nums text-zinc-500 ml-1">
-                NIFTY {spot.toLocaleString("en-IN")}
+                {symbol} {spot.toLocaleString("en-IN")}
               </span>
             )}
           </CardTitle>
           <div className="flex items-center gap-2">
+            <span className="text-[9px] text-zinc-600 font-mono flex items-center gap-1">
+              {wsConnected ? (
+                <Wifi className="size-2.5 text-emerald-400" />
+              ) : (
+                <WifiOff className="size-2.5 text-zinc-600" />
+              )}
+              {wsConnected ? "LIVE" : "POLL"}
+            </span>
             <span className="text-[9px] text-zinc-600 font-mono flex items-center gap-1">
               <Clock className="size-2.5" />
               {lastUpdate}

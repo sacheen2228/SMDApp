@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface Trade {
   tradeId: string;
@@ -81,6 +82,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TradeHistory() {
+  const { symbol, expiry } = useTerminalStore();
   const [trades, setTrades] = useState<Trade[]>([]);
   const [stats, setStats] = useState<TradeStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -88,7 +90,9 @@ export function TradeHistory() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/trade-journal");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/trade-journal?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -101,9 +105,10 @@ export function TradeHistory() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);

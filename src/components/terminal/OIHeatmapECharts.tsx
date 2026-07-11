@@ -5,6 +5,7 @@ import { BarChart3, RefreshCw, Maximize2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import ReactECharts from "echarts-for-react";
+import { useTerminalStore } from "@/stores/useTerminalStore";
 
 interface OIStrike {
   strike: number;
@@ -22,6 +23,7 @@ function formatOI(n: number): string {
 }
 
 export function OIHeatmapECharts() {
+  const { symbol, expiry } = useTerminalStore();
   const [strikes, setStrikes] = useState<OIStrike[]>([]);
   const [maxPain, setMaxPain] = useState(0);
   const [atmStrike, setAtmStrike] = useState(0);
@@ -30,7 +32,9 @@ export function OIHeatmapECharts() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/option-chain?symbol=NIFTY");
+      const params = new URLSearchParams({ symbol });
+      if (expiry) params.set('expiry', expiry);
+      const res = await fetch(`/api/option-chain?${params.toString()}`);
       if (!res.ok) throw new Error("Failed");
       const json = await res.json();
       if (!json.success) throw new Error("No data");
@@ -76,9 +80,10 @@ export function OIHeatmapECharts() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol, expiry]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);

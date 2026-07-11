@@ -1,6 +1,6 @@
 export {
   runOrcaEngine as runSdmSignalEngine,
-} from "./orca-engine";
+} from "./signal-engine";
 
 export type {
   OrcaSignal as SdmSignal,
@@ -8,4 +8,4 @@ export type {
   OrcaStrategyConfig as SdmEngineConfig,
   OrcaAlert as SdmAlert,
   OrcaStrikeAnalysis as SdmStrikeAnalysis,
-} from "./orca-engine";
+} from "./signal-engine";

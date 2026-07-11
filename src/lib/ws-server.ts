@@ -9,6 +9,26 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL_MS = 5000;
 let sessionInitialized = false;
 
+// Track which symbols have active clients
+const symbolClients = new Map<string, Set<string>>(); // symbol → Set<socketId>
+
+function getActiveSymbols(): string[] {
+  return [...symbolClients.keys()].filter(s => symbolClients.get(s)!.size > 0);
+}
+
+function addClientToSymbol(socketId: string, symbol: string) {
+  if (!symbolClients.has(symbol)) symbolClients.set(symbol, new Set());
+  symbolClients.get(symbol)!.add(socketId);
+}
+
+function removeClientFromSymbol(socketId: string, symbol: string) {
+  const clients = symbolClients.get(symbol);
+  if (clients) {
+    clients.delete(socketId);
+    if (clients.size === 0) symbolClients.delete(symbol);
+  }
+}
+
 // ─── Polling: Fetch option chain & broadcast ticks ────────────────
 async function fetchAndBroadcast() {
   if (!io) return;
@@ -18,21 +38,24 @@ async function fetchAndBroadcast() {
     return;
   }
 
-  const symbols = ['NIFTY', 'BANKNIFTY'];
+  const symbols = getActiveSymbols();
+  if (symbols.length === 0) {
+    stopPolling();
+    return;
+  }
+
   for (const symbol of symbols) {
     try {
       let chainData: any = null;
 
-      // Init Breeze session once
       if (!sessionInitialized) {
         sessionInitialized = true;
         await initSession().catch(() => {});
       }
 
-      // Try Breeze API
       try {
         const expiries = await getOptionChainExpiries(symbol);
-        for (const exp of expiries) {
+        for (const exp of expiries.slice(0, 3)) {
           const chain = await getOptionChain(symbol, exp);
           if (chain) {
             chainData = chain;
@@ -43,7 +66,6 @@ async function fetchAndBroadcast() {
         // Breeze failed, try NSE
       }
 
-      // Fallback to NSE
       if (!chainData) {
         try {
           const nseData = await getNSEOptionChain(symbol);
@@ -109,12 +131,6 @@ async function fetchAndBroadcast() {
 
       const { spotPrice, calls, puts, atmStrike } = chainData;
 
-      // Compute market status data
-      const totalCallOI = calls.reduce((sum: number, c: any) => sum + (c.openInterest || 0), 0);
-      const totalPutOI = puts.reduce((sum: number, p: any) => sum + (p.openInterest || 0), 0);
-      const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
-
-      // Broadcast tick
       io.to(symbol).emit('tick', {
         symbol,
         spot: spotPrice,
@@ -154,11 +170,15 @@ async function fetchAndBroadcast() {
         const dayOfWeek = now.getDay();
         const timeVal = hours * 60 + mins;
         const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
-        const isOpen = isWeekday && timeVal >= 555 && timeVal <= 930; // 9:15-15:30
+        const isOpen = isWeekday && timeVal >= 555 && timeVal <= 930;
+
+        const totalCallOI = calls.reduce((sum: number, c: any) => sum + (c.openInterest || 0), 0);
+        const totalPutOI = puts.reduce((sum: number, p: any) => sum + (p.openInterest || 0), 0);
+        const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
 
         io.emit('market-status', {
           isOpen,
-          vix: 15, // VIX from NSE would require separate API; use reasonable default
+          vix: 15,
           pcr,
         });
       }
@@ -172,7 +192,6 @@ function startPolling() {
   if (pollTimer) return;
   console.log('[WS] Starting option chain poller');
   pollTimer = setInterval(fetchAndBroadcast, POLL_INTERVAL_MS);
-  // Initial fetch
   fetchAndBroadcast();
 }
 
@@ -196,24 +215,35 @@ export function initWebSocket(server: HttpServer): Server {
   io.on('connection', (socket: Socket) => {
     const symbol = (socket.handshake.query.symbol as string) || 'NIFTY';
     socket.join(symbol);
+    addClientToSymbol(socket.id, symbol);
     console.log(`[WS] Client connected: ${socket.id} → room: ${symbol}`);
 
-    // Start polling on first client
     startPolling();
 
     socket.on('join-room', (newSymbol: string) => {
+      // Leave all current rooms
       for (const room of socket.rooms) {
-        if (room !== socket.id) socket.leave(room);
+        if (room !== socket.id) {
+          socket.leave(room);
+          removeClientFromSymbol(socket.id, room);
+        }
       }
       socket.join(newSymbol);
+      addClientToSymbol(socket.id, newSymbol);
       console.log(`[WS] ${socket.id} joined room: ${newSymbol}`);
     });
 
     socket.on('disconnect', (reason) => {
       console.log(`[WS] Client disconnected: ${socket.id} — ${reason}`);
-      // Stop polling if no clients remain
+      // Remove from all tracked symbols
+      for (const [sym, clients] of symbolClients) {
+        if (clients.has(socket.id)) {
+          clients.delete(socket.id);
+          if (clients.size === 0) symbolClients.delete(sym);
+        }
+      }
       const remaining = io.engine.clientsCount ?? 0;
-      if (remaining <= 1) { // <= 1 because disconnect hasn't fully processed yet
+      if (remaining <= 1) {
         setTimeout(() => {
           const count = io.engine.clientsCount ?? 0;
           if (count === 0) stopPolling();

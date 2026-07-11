@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
     let toolCallsMade: string[] = [];
 
     // Fetch all data sources in parallel
-    let orcaSignal: any = null;
+    let sdmSignal: any = null;
     let giftNifty: any = null;
     let correlation: any = null;
     let scanner: any = null;
@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
     let freshSummary = summary || null;
     let freshSpotPrice = spotPrice || 0;
 
-    const [orcaResult, chainResult, giftResult, corrResult, scanResult] = await Promise.allSettled([
+    const [sdmResult, chainResult, giftResult, corrResult, scanResult] = await Promise.allSettled([
       fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => d.success ? d.signal : null)
@@ -153,7 +153,7 @@ export async function POST(req: NextRequest) {
         .catch(() => null),
     ]);
 
-    if (orcaResult.status === "fulfilled" && orcaResult.value) orcaSignal = orcaResult.value;
+    if (sdmResult.status === "fulfilled" && sdmResult.value) sdmSignal = sdmResult.value;
     if (chainResult.status === "fulfilled" && chainResult.value) {
       freshAnalysis = chainResult.value.analysis;
       freshSummary = chainResult.value.summary || freshSummary;
@@ -207,7 +207,7 @@ ${dashSignal ? `Bias: ${dashSignal.marketBias} | Action: ${dashSignal.recommenda
         session,
         trades,
         conversationHistory,
-        orcaSignal,
+        sdmSignal,
         giftNifty,
         correlation,
         scanner,
@@ -242,13 +242,14 @@ ${dashSignal ? `Bias: ${dashSignal.marketBias} | Action: ${dashSignal.recommenda
         summary: summary || null,
         gammaBlast: gammaBlast || null,
         expiryDate: expiryDate || "",
+        correlation,
       };
       response = agentRespond(ctx, message);
     }
 
     // Send Telegram alert if agent generated a trade recommendation
-    if (toolCallsMade.includes("get_trade_recommendation") && orcaSignal) {
-      const signal = orcaSignal;
+    if (toolCallsMade.includes("get_trade_recommendation") && sdmSignal) {
+      const signal = sdmSignal;
       const alertConf = typeof signal.confidence === "object" ? signal.confidence?.total ?? 0 : signal.confidence || 0;
       sendTradeAlert({
         symbol: signal.symbol || detectedSymbol,
