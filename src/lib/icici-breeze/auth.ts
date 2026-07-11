@@ -126,3 +126,30 @@ export function getBreezeClient(): BreezeConnect {
 
 // ─── Export BreezeConnect class ────────────────────────────────────
 export { BreezeConnect };
+
+// ─── Auto-Retry Wrapper ────────────────────────────────────────────
+// Wraps any Breeze SDK call and retries once on auth errors (401/403/token expired).
+// Re-initializes session before retry. User must update .env token if it's truly expired.
+const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED'];
+
+export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>): Promise<T> {
+  if (!currentApiSession) {
+    await initSession();
+  }
+  const client = getBreezeClient();
+  try {
+    return await fn(client);
+  } catch (err: any) {
+    const msg = String(err?.message || err?.status || err || '');
+    const isAuthErr = AUTH_ERROR_PATTERNS.some(p => msg.toUpperCase().includes(String(p).toUpperCase()));
+    if (isAuthErr) {
+      console.warn('[Breeze Auth] Auth error detected, re-initializing session...');
+      currentApiSession = null;
+      breezeClient = null;
+      const ok = await initSession();
+      if (!ok) throw new Error('Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN.');
+      return await fn(getBreezeClient());
+    }
+    throw err;
+  }
+}

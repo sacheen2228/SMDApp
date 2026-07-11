@@ -4,7 +4,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { runIntradayScan, type ScannerConfig } from "@/lib/intraday-scanner";
-import { generateOptionChain } from "@/lib/option-chain-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 
 // NIFTY 50 stock symbols for scanning
@@ -107,8 +106,60 @@ export async function GET(request: NextRequest) {
     const symbol = searchParams.get("symbol") || "NIFTY";
     const useLive = searchParams.get("live") === "true";
 
-    // Get option chain data for market context
-    const chainData = generateOptionChain(symbol);
+    // Fetch real option chain data: Breeze → NSE → Simulation fallback
+    let chainData: any = null;
+    try {
+      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
+      const { initSession } = await import("@/lib/icici-breeze/auth");
+      await initSession().catch(() => {});
+      const expiries = await getOptionChainExpiries(symbol);
+      for (const exp of expiries.slice(0, 3)) {
+        const chain = await getOptionChain(symbol, exp);
+        if (chain) {
+          chainData = {
+            spotPrice: chain.spotPrice,
+            data: chain.strikes.map((strike) => ({
+              strike,
+              ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+              pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+            })),
+            summary: { indiaVIX: 15 }, // VIX from separate endpoint
+          };
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn("[Scanner] Breeze option chain failed:", e);
+    }
+
+    // Fallback to NSE
+    if (!chainData) {
+      try {
+        const { getNSEOptionChain } = await import("@/lib/nse-api");
+        const nseData = await getNSEOptionChain(symbol);
+        if (nseData?.records?.data) {
+          chainData = {
+            spotPrice: nseData.records?.underlyingValue || 0,
+            data: nseData.records.data.map((row: any) => ({
+              strike: row.strikePrice,
+              ce: row.CE ? { oi: row.CE.openInterest || 0, ltp: row.CE.lastPrice || 0 } : null,
+              pe: row.PE ? { oi: row.PE.openInterest || 0, ltp: row.PE.lastPrice || 0 } : null,
+            })),
+            summary: { indiaVIX: 15 },
+          };
+        }
+      } catch (e) {
+        console.warn("[Scanner] NSE failed:", e);
+      }
+    }
+
+    // If no real data available, return error
+    if (!chainData) {
+      return NextResponse.json({
+        success: false,
+        error: "No real option chain data available for market context.",
+      }, { status: 503 });
+    }
 
     // Extract market metrics
     const spotPrice = chainData.spotPrice || 24000;

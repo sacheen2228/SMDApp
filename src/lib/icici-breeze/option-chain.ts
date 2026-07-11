@@ -1,7 +1,7 @@
 // ICICI Breeze API - Option Chain using official SDK
 // Note: SDK's getOptionChainQuotes has broken validation — patched in auth.ts
 
-import { getBreezeClient, getConfig } from './auth';
+import { getBreezeClient, getConfig, withAuthRetry } from './auth';
 import type { OptionChainData, OptionQuote } from '@/types';
 import { calculateGreeks } from '@/lib/greeks';
 
@@ -10,8 +10,7 @@ export async function getOptionChain(
   stockCode: string,
   expiryDate: string
 ): Promise<OptionChainData | null> {
-  try {
-    const breeze = getBreezeClient();
+  return withAuthRetry(async (breeze) => {
     const expiryFormatted = formatExpiryForSDK(expiryDate);
 
     console.log('[Breeze SDK] Fetching option chain:', stockCode, expiryFormatted);
@@ -118,10 +117,7 @@ export async function getOptionChain(
       atmStrike,
       timestamp: new Date().toISOString(),
     };
-  } catch (error) {
-    console.error('[Breeze SDK] Option chain error:', error);
-    return null;
-  }
+  });
 }
 
 // ─── Get Option Chain Expiries ────────────────────────────────────
@@ -148,13 +144,13 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
       }
     }
 
-    // Add weekly expiry dates (NIFTY weekly options expire on Tuesdays)
+    // Add weekly expiry dates (NIFTY weekly options expire on Thursdays)
     const now = new Date();
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     for (let i = 0; i < 10; i++) {
       const d = new Date(now);
       d.setDate(d.getDate() + i);
-      while (d.getDay() !== 2) d.setDate(d.getDate() + 1); // Tuesday = 2
+      while (d.getDay() !== 3) d.setDate(d.getDate() + 1); // Thursday = 3
       const dd = d.getDate().toString().padStart(2, '0');
       expiries.add(`${dd}-${months[d.getMonth()]}-${d.getFullYear()}`);
     }

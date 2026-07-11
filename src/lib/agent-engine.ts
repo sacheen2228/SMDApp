@@ -461,17 +461,34 @@ const intents: Intent[] = [
   {
     patterns: [/^(hi|hello|hey|help|what can you do)/i, /^$/],
     handler: (ctx) => {
-      return `👋 **Hi! I'm Angel — Your ORCA Trading AI.**\n\nI know EVERYTHING about options trading. Ask me:\n\n**📊 Market:** "What's the trend?", "PCR?", "Max pain?", "VIX?"\n**🎯 Trade:** "Best trade?", "Entry check?", "ORCA signal?"\n**📈 Greeks:** "Explain Delta", "What is Theta?", "IV?"\n**📋 Strategy:** "Which strategy?", "Iron Condor?", "Straddle?"\n**🛡️ Risk:** "Position sizing?", "Stop loss formula?"\n**📊 OI:** "OI buildup?", "PCR meaning?"\n**🔗 Correlation:** "Nifty vs Sensex?"\n\nI can explain like you're 5 years old or give professional analysis. Just ask! 💡`;
+      return `👋 **Hi! I'm SDM — Your SDM Trading AI.**\n\nI know EVERYTHING about options trading. Ask me:\n\n**📊 Market:** "What's the trend?", "PCR?", "Max pain?", "VIX?"\n**🎯 Trade:** "Best trade?", "Entry check?", "SDM signal?"\n**📈 Greeks:** "Explain Delta", "What is Theta?", "IV?"\n**📋 Strategy:** "Which strategy?", "Iron Condor?", "Straddle?"\n**🛡️ Risk:** "Position sizing?", "Stop loss formula?"\n**📊 OI:** "OI buildup?", "PCR meaning?"\n**🔗 Correlation:** "Nifty vs Sensex?"\n\nI can explain like you're 5 years old or give professional analysis. Just ask! 💡`;
     },
   },
 
-  // ── Fallback ──
+  // ── Fallback — always use live data ──
   {
     patterns: [/.+/],
     handler: (ctx) => {
-      const s = ctx.analysis?.sentiment || "neutral";
+      const a = ctx.analysis;
+      const s = a?.sentiment || "neutral";
       const emoji = sentimentEmoji(s);
-      return `${emoji} I'm not sure what you're asking, but here's what I know about **${ctx.symbol}** right now:\n\n**Sentiment:** ${s.toUpperCase()}\n**PCR:** ${ctx.analysis?.pcr?.toFixed(2) || "—"}\n**Spot:** ₹${fmt(ctx.spotPrice)}\n**Max Pain:** ₹${fmt(ctx.analysis?.maxPain)}\n\n**Try asking about:**\n• "What is Delta/Gamma/Theta?"\n• "Which strategy for this market?"\n• "Position sizing for ₹1L capital"\n• "Best trade right now?"\n• "Explain Iron Condor"\n• "How to set stop loss?"\n• "Nifty vs Sensex correlation?"`;
+      const r = a?.recommendation || {};
+      const pcr = a?.pcr?.toFixed(3) || "—";
+      const mp = fmt(a?.maxPain);
+      const spot = fmt(ctx.spotPrice);
+      const atm = fmt(a?.atmStrike);
+
+      let action = "WAIT";
+      let strikeInfo = "";
+      if (r.action && r.action !== "WAIT") {
+        action = r.action;
+        strikeInfo = `**Action:** ${r.action} ${r.direction || ""} ${r.optionType || ""}\n**Strike:** ₹${fmt(r.strike)}\n**Entry:** ₹${fmt(r.entryPrice)}\n**SL:** ₹${fmt(r.stopLoss)} | **T1:** ₹${fmt(r.tp1)} | **T2:** ₹${fmt(r.tp2)}\n**Confidence:** ${fmt(r.confidence)}%`;
+      }
+
+      const ceOI = fmt(a?.totalCallOI);
+      const peOI = fmt(a?.totalPutOI);
+
+      return `${emoji} **${ctx.symbol} Live Market Data**\n\n**Sentiment:** ${s.toUpperCase()}\n**Spot:** ₹${spot} | **ATM:** ₹${atm}\n**PCR:** ${pcr} | **Max Pain:** ₹${mp}\n**Call OI:** ${ceOI} | **Put OI:** ${peOI}\n\n${strikeInfo ? `🎯 **SDM Recommendation:**\n${strikeInfo}\n\n` : ""}**Ask me about:**\n• "Best trade right now?" — full recommendation\n• "Market trend?" — trend analysis\n• "OI buildup?" — open interest details\n• "Greeks?" — delta/gamma/theta/vega\n• "Stop loss?" — exit strategy\n• "Strategy?" — which setup to use\n• "Position sizing?" — risk management`;
     },
   },
 ];

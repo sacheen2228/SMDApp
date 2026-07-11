@@ -52,3 +52,17 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# local files
+/downloads/
+/os/
+/sys/
+start.sh
+ict_bot_v5.py
+server.pid
+how_to start.txtMiniCPM-V/
+__pycache__/
+*.pyc
+os
+sys
+*.pid

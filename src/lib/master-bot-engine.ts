@@ -138,15 +138,15 @@ function calculatePositionSize(
 }
 
 // ═══════ EXPIRY LOGIC ═══════
-// Nifty expiry = TUESDAY (weekday 1)
+// Nifty expiry = THURSDAY (weekday 3) — current SEBI rule
 // Sensex expiry = THURSDAY (weekday 3)
+// BANKNIFTY = Thursday, FINNIFTY = Thursday, MIDCPNIFTY = Thursday
 
 export function getExpiryStatus(indexName: string): ExpiryStatus {
   const now = new Date();
   const weekday = now.getDay();
 
-  const isNifty = indexName.toUpperCase() === "NIFTY";
-  const expiryDay = isNifty ? 1 : 3; // Tue or Thu
+  const expiryDay = 3; // Thursday — all indices now expire on Thursday
   const daysToExp = ((expiryDay - weekday + 7) % 7) || 7;
   const isExpiry = weekday === expiryDay;
 

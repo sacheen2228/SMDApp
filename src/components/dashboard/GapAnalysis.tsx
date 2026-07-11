@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useMemo, memo } from "react";
+import { useMemo, memo, useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -18,6 +18,8 @@ import {
   AlertTriangle,
   Clock,
   Layers,
+  TrendingUp,
+  TrendingDown,
 } from "lucide-react";
 
 interface GapAnalysisProps {
@@ -167,6 +169,22 @@ export const GapAnalysis = memo(function GapAnalysis({
   const ceOI = analysis?.totalCallOI ?? summary?.totalCallOI ?? 0;
   const peOI = analysis?.totalPutOI ?? summary?.totalPutOI ?? 0;
 
+  const prevClose = summary?.prevClose ?? (analysis?.spot?.change != null ? spotPrice - analysis.spot.change : spotPrice);
+
+  const [giftNifty, setGiftNifty] = useState<{ price: number; change: number; changePct: number; previousClose: number; source?: string } | null>(null);
+  useEffect(() => {
+    fetch(`/api/gift-nifty?spot=${spotPrice}`).then(r => r.json()).then(d => { if (d.success) setGiftNifty(d); }).catch(() => {});
+  }, [spotPrice]);
+
+  const giftSignal = giftNifty ? (() => {
+    const diff = giftNifty.price - prevClose;
+    const isLive = giftNifty.source === "live";
+    if (isLive && diff > 50) return { icon: TrendingUp, label: "Bullish Gap Likely", text: `Gift Nifty +${diff.toFixed(0)} pts above prev close`, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30" };
+    if (isLive && diff < -50) return { icon: TrendingDown, label: "Bearish Gap Likely", text: `Gift Nifty ${diff.toFixed(0)} pts below prev close`, color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30" };
+    if (isLive) return { icon: Minus, label: "Flat Open Expected", text: `Gift Nifty ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-muted-foreground", bg: "bg-muted/20", border: "border-border" };
+    return { icon: Activity, label: "Tracking Spot", text: `Day change ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30" };
+  })() : null;
+
   const pivots = useMemo(() => computePivots(spotPrice), [spotPrice]);
   const gap = useMemo(() => predictGap(analysis, spotPrice, pcr, vix), [analysis, spotPrice, pcr, vix]);
   const setups = useMemo(() => computeSetups(spotPrice, maxPain, vix), [spotPrice, maxPain, vix]);
@@ -191,14 +209,31 @@ export const GapAnalysis = memo(function GapAnalysis({
         </div>
 
         {/* ═══════ TOP METRICS BAR ═══════ */}
-        <div className="grid grid-cols-6 gap-2">
+        <div className="grid grid-cols-7 gap-2">
           <MetricPill label="Spot" value={fmtFull(spotPrice)} />
+          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"} color={giftNifty ? ((giftNifty.price - prevClose) > 0 ? "text-emerald-500" : (giftNifty.price - prevClose) < 0 ? "text-red-500" : "") : "text-muted-foreground"} sub={giftNifty ? `${(giftNifty.price - prevClose) > 0 ? "+" : ""}${(giftNifty.price - prevClose).toFixed(0)} pts` : ""} />
           <MetricPill label="PCR" value={pcr.toFixed(2)} color={pcr > 1.2 ? "text-emerald-500" : pcr < 0.8 ? "text-red-500" : ""} />
           <MetricPill label="VIX" value={vix.toFixed(1)} />
           <MetricPill label="Max Pain" value={fmtFull(maxPain)} color="text-amber-500" />
           <MetricPill label="CE OI" value={`${(ceOI / 100000).toFixed(1)}L`} color="text-red-500" />
           <MetricPill label="PE OI" value={`${(peOI / 100000).toFixed(1)}L`} color="text-emerald-500" />
         </div>
+
+        {/* ═══════ GIFT NIFTY SIGNAL ═══════ */}
+        {giftSignal && (
+          <div className={`flex items-center justify-between rounded-lg border ${giftSignal.bg} ${giftSignal.border} px-4 py-2.5`}>
+            <div className="flex items-center gap-3">
+              <giftSignal.icon className={`w-5 h-5 ${giftSignal.color}`} />
+              <span className={`font-bold ${giftSignal.color}`}>{giftSignal.label}</span>
+              <span className="text-xs text-muted-foreground">{giftSignal.text}</span>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {giftNifty?.source === "estimated" && <span className="text-[10px] text-amber-500 font-medium">estimated</span>}
+              <span>Gap: <span className={(giftNifty.price - prevClose) > 0 ? "text-emerald-500 font-bold" : (giftNifty.price - prevClose) < 0 ? "text-red-500 font-bold" : ""}>{(giftNifty.price - prevClose) > 0 ? "+" : ""}{(giftNifty.price - prevClose).toFixed(0)} pts</span></span>
+              <span>Prev Close: {fmtFull(prevClose)}</span>
+            </div>
+          </div>
+        )}
 
         {/* ═══════ 3-COLUMN LAYOUT ═══════ */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -497,11 +532,12 @@ function CardTitle({ icon, text }: { icon: React.ReactNode; text: string }) {
   );
 }
 
-function MetricPill({ label, value, color }: { label: string; value: string; color?: string }) {
+function MetricPill({ label, value, color, sub }: { label: string; value: string; color?: string; sub?: string }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card p-2 text-center">
       <p className="text-[9px] text-muted-foreground uppercase tracking-wider">{label}</p>
       <p className={`text-sm font-bold tabular-nums ${color ?? ""}`}>{value}</p>
+      {sub && <p className={`text-[9px] ${color ?? "text-muted-foreground"}`}>{sub}</p>}
     </div>
   );
 }

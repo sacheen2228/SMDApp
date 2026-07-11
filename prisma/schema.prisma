@@ -55,5 +55,6 @@ model Trade {
   target1          Float?
   target2          Float?
   target3          Float?
+  tpHitLevel       String?          // "TP1" | "TP2" | "TP3" | "TRAILING_SL" | null
   createdAt        DateTime @default(now())
 }

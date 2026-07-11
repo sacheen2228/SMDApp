@@ -2,10 +2,10 @@
 
 "use client";
 
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, BookOpen, Crosshair } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-type ViewMode = 'chain' | 'sdm' | 'gap' | 'backtest' | 'agent' | 'scanner' | 'news' | 'breakout' | 'strategy' | 'greeks' | 'chart' | 'orca' | 'orcaBacktest' | 'admin' | 'correlation' | 'cheatSheet' | 'masterBot';
+type ViewMode = 'chain' | 'sdm' | 'gap' | 'agent' | 'scanner' | 'news' | 'strategy' | 'strategies' | 'greeks' | 'admin' | 'correlation' | 'ivSurface' | 'backtest';
 
 interface MobileNavProps {
   viewMode: ViewMode;
@@ -13,21 +13,16 @@ interface MobileNavProps {
 }
 
 const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
-  { mode: "orca", label: "ORCA", icon: Target, color: "text-emerald-500" },
-  { mode: "orcaBacktest", label: "ORCA Test", icon: CalendarClock, color: "text-cyan-500" },
   { mode: "chain", label: "Chain", icon: Activity, color: "text-cyan-500" },
   { mode: "sdm", label: "SDM", icon: Brain, color: "text-violet-500" },
   { mode: "strategy", label: "Strategy", icon: TrendingUp, color: "text-indigo-500" },
   { mode: "greeks", label: "Greeks", icon: Flame, color: "text-orange-500" },
-  { mode: "chart", label: "Chart", icon: LineChart, color: "text-amber-500" },
   { mode: "scanner", label: "Scan", icon: Scan, color: "text-teal-500" },
   { mode: "news", label: "News", icon: Newspaper, color: "text-orange-500" },
-  { mode: "breakout", label: "Break", icon: Target, color: "text-rose-500" },
-  { mode: "backtest", label: "Test", icon: CalendarClock, color: "text-blue-500" },
   { mode: "admin", label: "Admin", icon: Settings2, color: "text-gray-500" },
   { mode: "correlation", label: "Corr", icon: BarChart3, color: "text-teal-500" },
-  { mode: "masterBot", label: "Bot", icon: Crosshair, color: "text-purple-500" },
-  { mode: "cheatSheet", label: "Cheat", icon: BookOpen, color: "text-yellow-500" },
+  { mode: "backtest", label: "BT", icon: LineChart, color: "text-amber-500" },
+  { mode: "gap", label: "Gap", icon: CalendarClock, color: "text-amber-500" },
   { mode: "agent", label: "Chat", icon: Bot, color: "text-purple-600" },
 ];
 

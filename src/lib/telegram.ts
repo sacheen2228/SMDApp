@@ -47,10 +47,12 @@ export async function sendTradeAlert(params: {
   stopLoss?: number;
   target1?: number;
   target2?: number;
+  source?: string;
 }): Promise<boolean> {
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
+  const sourceLabel = params.source || "SDM Engine";
   const msg = `
-${emoji} <b>ORCA Trade Signal</b>
+${emoji} <b>${sourceLabel}</b>
 
 📊 <b>${params.symbol}</b> — ${params.type}
 ⚡ Action: <b>${params.action}</b>

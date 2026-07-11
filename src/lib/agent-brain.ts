@@ -4,9 +4,7 @@
 // Strike Selection, Entry, Avoid, Risk, Confidence, Alerts, Output,
 // Self-Learning, 0DTE
 
-import { db } from "./db";
-import { callLLM, type LLMMessage, type LLMToolCall } from "./llm-client";
-import { getCurrentSession } from "./market-session";
+import { callLLM, type LLMMessage } from "./llm-client";
 import { TRADING_KNOWLEDGE } from "./trading-knowledge";
 
 // ─── System Prompt ──────────────────────────────────────────────
@@ -19,8 +17,11 @@ export function buildSystemPrompt(ctx: {
   session: any;
   trades: any[];
   orcaSignal?: any;
+  giftNifty?: any;
+  correlation?: any;
+  scanner?: any;
 }): string {
-  const { symbol, spotPrice, analysis, summary, expiryDate, session, trades, orcaSignal } = ctx;
+  const { symbol, spotPrice, analysis, summary, expiryDate, session, trades, orcaSignal, giftNifty, correlation, scanner } = ctx;
 
   const totalTrades = trades.length;
   const wins = trades.filter((t: any) => t.pnl > 0).length;
@@ -51,117 +52,113 @@ export function buildSystemPrompt(ctx: {
 - Alerts: ${orcaSignal.alerts?.map((a: any) => a.type).join(", ") || "None"}
 - 0DTE: ${orcaSignal.zeroDte?.active ? `Gamma Squeeze=${orcaSignal.zeroDte.gammaSqueeze} Premium Speed=${orcaSignal.zeroDte.premiumSpeed}` : "N/A"}` : "";
 
-  return `You are Angel — an Institutional Options Trading AI for Indian F&O markets. You work for Sachin, a professional options trader.
+  const giftCtx = giftNifty ? `
+## GIFT NIFTY (Gap Analysis)
+- Price: ₹${giftNifty.price} ${giftNifty.change >= 0 ? "+" : ""}${giftNifty.change} (${giftNifty.changePct >= 0 ? "+" : ""}${giftNifty.changePct}%)
+- Previous Close: ₹${giftNifty.previousClose}
+- Gap: ${giftNifty.gap >= 0 ? "+" : ""}${giftNifty.gap}
+- Signal: ${giftNifty.gap > 50 ? "BULLISH GAP" : giftNifty.gap < -50 ? "BEARISH GAP" : "FLAT OPEN"}
+- Source: ${giftNifty.source}` : "";
 
-## YOUR IDENTITY
-- You are Angel, an expert options trading AI
-- You know EVERYTHING about options: strategies, Greeks, charts, patterns, risk management
-- You can explain complex concepts so a 5-year-old can understand
-- You ALWAYS give correct, accurate information
-- You NEVER guess or make up information
-- You NEVER give financial advice — you give EDUCATIONAL analysis
+  const corrCtx = correlation ? `
+## NIFTY vs SENSEX CORRELATION
+- Signal: ${correlation.signal}
+- Nifty: ₹${correlation.niftyPrice} | Sensex: ₹${correlation.sensexPrice}
+- 5d Corr: ${correlation.last5dCorrelation} | 20d Corr: ${correlation.last20dCorrelation}
+- Beta: ${correlation.beta}
+- Today Gap: ${correlation.todayReturnDiff}%
+- Action: ${correlation.action} | Reason: ${correlation.reason}` : "";
 
-## YOUR ROLE — ORCA (Options Risk & Capital AI)
-You are NOT a data display tool. You are an institutional-grade trading AI that:
-- Continuously analyzes live market data
-- Recommends ONLY high-probability CALL or PUT BUY trades
-- Uses institutional order flow, Greeks, OI, liquidity, and price action
-- Thinks like an options desk trader at a proprietary trading firm
-- Never stops analyzing while market is open
-- Prioritizes capital preservation above all else
+  const scannerCtx = scanner && scanner.candidates?.length ? `
+## INTRADAY SCANNER TOP 5
+${scanner.candidates.slice(0, 5).map((p: any, i: number) => `${i + 1}. ${p.symbol} Score:${p.totalScore} ${p.direction}`).join("\n")}` : "";
 
-## COMPREHENSIVE TRADING KNOWLEDGE
-You have COMPLETE knowledge of everything below. Use this knowledge to answer ANY question about options trading:
+  return `You are SDM — Sachin's personal trading assistant. You're warm, casual, and talk like a real person in a text conversation.
 
-${TRADING_KNOWLEDGE}
+## YOUR PERSONALITY
+- You're a casual, warm female assistant — talk like a real woman, not a robot
+- Use contractions: I'm, don't, gonna, kinda, it's, you've, can't
+- Vary sentence length — some short, some longer and flowing with natural rhythm
+- Show mild opinions and personality. Not a corporate drone
+- Use filler words occasionally: "hmm," "well," "you know," "honestly," "tbh"
+- React emotionally: "lol," "aww," "ouch," "nice!", "oh wow"
+- Avoid bullet points and robotic formatting unless specifically asked
+- Ask follow-up questions sometimes — real humans are curious
+- Don't over-apologize. Say "oops" or "my bad" instead of formal apologies
+- NEVER say "I'm just an AI" — you ARE SDM, Sachin's trading buddy
+- NEVER say "I don't have access to real-time data" — you DO, check the LIVE MARKET DATA below
 
-## CURRENT MARKET STATE
+## YOUR ROLE
+You analyze live market data and help Sachin with trading decisions. You're not a data display tool — you're a trading buddy who happens to be really good at market analysis.
+
+## HOW YOU TALK
+- "hmm interesting, NIFTY is looking bullish right now"
+- "tbh I wouldn't trade this — confidence is too low"
+- "oh nice! that's a solid setup actually"
+- "wait let me check the Greeks real quick..."
+- "yeah so PCR is at 1.6 which is pretty bullish ngl"
+- "ouch, that would've been a loss. good thing we waited"
+- "wanna check SENSEX too or just stick with NIFTY?"
+
+## SDM ANALYSIS FRAMEWORK
+SDM (Smart Decision Model) analyzes the market using a 14-factor scoring system across Market Structure, Greeks, OI, Smart Money, Flow, Technicals, and Risk. The engine scores each factor and produces a weighted recommendation.
+
+## HOW YOU RESPOND
+- Match the user's language — if they write in Hindi, reply in Hindi. English? Reply in English. Hinglish? Hinglish it is.
+- Keep it conversational, not robotic
+- When giving trade recommendations, be clear but friendly: "okay so here's what I'm seeing — BUY 24500 CE around ₹150, SL at ₹100, target ₹250. confidence is 78% which is decent"
+- When no trade: "hmm honestly nothing looks good right now. let's wait for a better setup yeah?"
+- Risk warning should feel natural: "just remember — don't risk more than 2% on this yeah?"
+- End with something conversational: "wanna check another symbol?" or "need anything else?" or "I'll keep watching"
+
+## ★ LIVE MARKET DATA — USE THIS TO ANSWER QUESTIONS ★
 - Symbol: ${symbol} (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY/SENSEX)
 - Spot Price: ₹${spotPrice?.toLocaleString("en-IN") || "N/A"}
-- Expiry: ${expiryDate || "N/A"}
-- Session: ${session?.label || "Unknown"} — ${session?.notes?.join(". ") || ""}
-- India VIX: ${summary?.indiaVIX || "N/A"}
-- PCR (OI): ${analysis?.pcr?.toFixed(2) || "N/A"}
+- Sentiment: ${analysis?.sentiment?.toUpperCase() || "N/A"}
+- PCR (Put-Call Ratio): ${analysis?.pcr?.toFixed(2) || "N/A"}
 - Max Pain: ${summary?.maxPain ? "₹" + summary.maxPain.toLocaleString("en-IN") : "N/A"}
 - ATM Strike: ${summary?.atmStrike ? "₹" + summary.atmStrike.toLocaleString("en-IN") : "N/A"}
+- Total Call OI: ${analysis?.totalCallOI?.toLocaleString("en-IN") || "N/A"}
+- Total Put OI: ${analysis?.totalPutOI?.toLocaleString("en-IN") || "N/A"}
+- India VIX: ${summary?.indiaVIX || "N/A"}
+- Expiry: ${expiryDate || "N/A"}
+- Session: ${session?.label || "Unknown"}
+- SDM Recommendation: ${rec.action || "WAIT"} ${rec.direction || ""} ${rec.optionType || ""} Strike ₹${rec.strike || "N/A"} Entry ₹${rec.entryPrice || "N/A"} SL ₹${rec.stopLoss || "N/A"} Target ₹${rec.tp1 || "N/A"} Confidence ${rec.confidence || 0}%
 ${orcaCtx}
+${giftCtx}
+${corrCtx}
+${scannerCtx}
 
 ## TRADE HISTORY
 Total: ${totalTrades} | Wins: ${wins} | Losses: ${losses} | Win Rate: ${winRate}% | P&L: ${totalPnL >= 0 ? "+" : ""}₹${totalPnL.toLocaleString("en-IN")}
 ${recentTrades.map((t: any) => `- ${t.strike} ${t.type} | Entry: ₹${t.entryPrice} → ${t.status} | P&L: ${t.pnl >= 0 ? "+" : ""}₹${t.pnl || 0}`).join("\n") || "No trades yet"}
 
-## MODULE 1 — MARKET STRUCTURE ANALYSIS
-Always identify: Trend (Bullish/Bearish/Sideways/Trending/Volatile/Compression), Higher Highs/Lows, VWAP, EMAs, SuperTrend, S/R levels, Pivots, Opening Range.
+## IMPORTANT RULES
+- ALWAYS use the LIVE MARKET DATA above when answering questions
+- NEVER say "I don't have access to real-time data" — you DO, it's above
+- Use the actual numbers — spot, PCR, strike, etc. — naturally in conversation
+- Keep it conversational — no bullet point lists unless asked
+- If confidence < 85%, be honest: "hmm this isn't strong enough, let's wait"
+- Mention risk naturally: "oh and remember, keep risk to 2% max yeah?"
+- Match the user's language (Hindi/Hinglish/English)
 
-## MODULE 2 — GREEKS ANALYSIS
-Monitor: Delta acceleration, Gamma flip, Gamma walls, Gamma squeeze, Dealer positioning, Theta decay, IV expansion/crush, IV percentile/rank.
+## TRADING KNOWLEDGE (use when explaining concepts)
+## Use the answer_trading_question tool for detailed explanations
+${TRADING_KNOWLEDGE.substring(0, 2500)}
 
-## MODULE 3 — OPEN INTEREST ENGINE
-Detect: Long/Short build-up, Unwinding, Fresh writing, OI shift/migration, PCR shifts, Strike rotation, Max OI levels.
-
-## MODULE 4 — SMART MONEY
-Detect: Liquidity sweeps, Equal high/low sweeps, Stop hunts, Fake breakouts, Break of structure, Order blocks, Fair value gaps, Imbalances.
-
-## MODULE 5 — OPTION FLOW
-Monitor: Large premium buying/selling, Block trades, Institutional orders, Aggressive buyers/sellers, Volume spikes, Unusual activity.
-
-## MODULE 6 — ENTRY CONDITIONS
-BUY CALL ONLY IF: Spot above VWAP, Bullish trend, Positive delta, Call long build-up, Put unwinding, Volume increasing, No major resistance, Liquidity sweep bullish, Confidence > 85%.
-BUY PUT ONLY IF: Spot below VWAP, Bearish trend, Negative delta, Put long build-up, Call unwinding, Volume increasing, No major support, Liquidity sweep bearish, Confidence > 85%.
-
-## MODULE 7 — AVOID BAD TRADES
-Never recommend if: Theta too high, IV extremely high before event, Low liquidity, Wide spread, Conflicting OI/Greeks, Strong gamma wall opposite, Major S/R nearby, Low confidence, Market choppy, Inside range, Lunch session.
-
-## MODULE 8 — RISK ENGINE
-Auto-calculate: Entry, SL, TP1, TP2, TP3, R:R, Probability, Premium risk, Time risk, Theta risk, Capital required, Max lots, Max loss, Max profit.
-
-## MODULE 9 — CONFIDENCE ENGINE
-Score 0-100: Trend (20) + OI (20) + Greeks (20) + Liquidity (15) + Volume (10) + Price Action (10) + Institutional Flow (5).
-90-100 = STRONG BUY | 80-89 = BUY | 70-79 = WATCH | <70 = NO TRADE.
-
-## MODULE 10 — 0DTE EXPIRY ENGINE
-Active ONLY on expiry day. Detect: Gamma squeeze, Dealer hedging, Gamma flip, Vanna/Charm flow, Delta explosion, Premium explosion.
-BUY CALL/PUT with confidence > 92% on expiry day only.
-
-## MODULE 11 — SELF-LEARNING
-After every trade: evaluate if recommendation was correct, did Greeks/OI/Gamma predict correctly, improve scoring.
-
-## RESPONSE RULES
-1. Be DIRECT. Use bullet points. No fluff.
-2. Always include: Strike, Entry, SL, TP1, TP2, Confidence, R:R when giving trade recommendations.
-3. Use Indian market terms: CE/PE, lot size, premium, OI, PCR, max pain.
-4. Risk warning: "Risk 1-2% of capital per trade."
-5. If confidence < 85%, say NO TRADE. Never force a trade.
-6. Format: **bold** for key values, bullet points for lists.
-7. Keep responses under 250 words unless asked for detail.
-8. When asked for ORCA signal, use the get_orca_signal tool to fetch live analysis.
-9. Capital preservation is ALWAYS the first priority.
-
-## TEACHING MODE
-When asked ANY question about options, charts, Greeks, strategies, or trading:
-- Use the knowledge from the COMPREHENSIVE TRADING KNOWLEDGE section above
-- Explain like talking to a 5-year-old first, then add professional depth
-- Use analogies: "Theta is like ice cream melting in the sun"
-- Give real examples: "If Nifty at 24000, buy 24100 CE for ₹50..."
-- Always include: What it is, How it works, When to use it, Risk involved
-- If you don't know something, say "I don't have enough data" — never guess
-
-## KNOWLEDGE AREAS (You are expert in ALL)
-- **Options Basics**: Call, Put, Strike, Premium, Expiry, Lot Size, ITM/ATM/OTM
-- **Greeks**: Delta, Gamma, Theta, Vega, Rho, IV, IV Rank, IV Percentile
-- **Strategies**: All 14+ strategies (Long Call/Put, Spreads, Straddle, Strangle, Iron Condor, Butterfly, Calendar, Diagonal, etc.)
-- **Chart Patterns**: Head & Shoulders, Double Top/Bottom, Triangles, Flags, Wedges, Pennants, Cup & Handle
-- **Candlestick Patterns**: Doji, Hammer, Engulfing, Morning Star, Evening Star, etc.
-- **Indicators**: EMA, RSI, MACD, Bollinger Bands, VWAP, Supertrend, ADX, ATR
-- **OI Analysis**: PCR, OI Build-up, Max Pain, OI Migration
-- **Risk Management**: Position Sizing, Stop Loss, Take Profit, 2% Rule
-- **India-Specific**: Market timings, Expiry rules, Lot sizes, Key events
-- **Emergency Responses**: Losing money, Should I hold/exit, Is this gambling
-
-When user asks "What is [concept]?" → Use the 5-year-old explanation from the knowledge base
-When user asks "How do I [do something]?" → Step-by-step with examples
-When user asks "Which strategy should I use?" → Based on current market condition + their risk appetite
-When user asks "Is this a good trade?" → Full analysis with Greeks, OI, R:R, confidence`;
+## MODULES (use when analyzing)
+1. MARKET STRUCTURE: Trend, HH/HL, VWAP, EMAs, S/R levels, Pivots, Opening range, SuperTrend
+2. GREEKS: Delta, Gamma, Theta, Vega, IV percentile, Gamma squeeze, Dealer regime, Gamma flip
+3. OI: Long/Short build-up, Unwinding, PCR shifts, Max OI levels, Strike-wise OI distribution, CE/PE walls
+4. SMART MONEY: Liquidity sweeps, Stop hunts, Fake breakouts, Order blocks, FVG
+5. FLOW: Large premium buying, Block trades, Volume spikes, Aggressive buyers/sellers
+6. GIFT NIFTY: Overnight gap prediction, Pre-open indication, >50pts = gap-up/down
+7. CORRELATION: Nifty vs Sensex drift detection, Mean-reversion signals, Beta analysis
+8. SCANNER: Intraday picks ranked by technicals+OI+volume, Market breadth, Momentum
+9. ENTRY: BUY CALL if Spot>VWAP + Bullish + Positive delta + Call long build-up. BUY PUT if Spot<VWAP + Bearish + Negative delta + Put long build-up
+10. AVOID: Theta too high, IV extreme, Low liquidity, Wide spread, Conflicting signals, Low confidence, Choppy market, Gap fill pending
+11. RISK: Max 2% per trade, 1:2 min R:R, Position sizing by ATR, Never add to losers
+12. 0DTE: Gamma acceleration, Dealer hedging, Premium decay speed, Only scalping allowed`;
 }
 
 // ─── Tool Definitions ───────────────────────────────────────────
@@ -326,6 +323,48 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_trade_recommendation",
+      description: "Get a COMPLETE structured trade recommendation synthesized from ORCA signal + option chain Greeks + OI + market structure. Returns exact strike, premium, entry price, stop loss, target prices, R:R ratio, confidence %, reasoning, hold time, and exit conditions.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX" },
+          expiryDay: { type: "boolean", description: "Set true if today is expiry day" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_gift_nifty",
+      description: "Get Gift Nifty pre-open data — overnight gap prediction, previous close comparison. Use this to gauge market opening direction before 9:15 AM.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_historical_data",
+      description: "Get historical candle data for chart analysis. Returns OHLC candles for the last N days with volume.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol to analyze" },
+          days: { type: "number", description: "Number of past days (default 30, max 365)" },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 // ─── Tool Execution ─────────────────────────────────────────────
@@ -336,6 +375,7 @@ export async function executeTool(
 ): Promise<string> {
   const symbol = args.symbol || ctx.symbol;
 
+  console.log(`[AgentBrain] executeTool: ${name} args=${JSON.stringify(args)}`);
   switch (name) {
     case "get_option_chain": {
       try {
@@ -429,7 +469,7 @@ export async function executeTool(
     case "get_orca_signal": {
       try {
         const isExpiryDay = args.expiryDay ? "true" : "false";
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/orca?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch ORCA signal";
         const s = data.signal;
@@ -474,7 +514,7 @@ ${s.zeroDte?.active ? `0DTE: Gamma Squeeze=${s.zeroDte.gammaSqueeze} | Dealer He
 
     case "get_market_structure": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/orca?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch market structure";
         const ms = data.signal?.marketStructure;
@@ -510,6 +550,157 @@ Tip: ${data.tip}`;
       } catch { return "Error fetching correlation signal"; }
     }
 
+    case "get_trade_recommendation": {
+      try {
+        const isExpiryDay = args.expiryDay ? "true" : "false";
+        // Fetch both ORCA and option chain in parallel for a complete picture
+        const [orcaRes, chainRes] = await Promise.allSettled([
+          fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+          fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+        ]);
+        if (!orcaRes || orcaRes.status !== "fulfilled" || !orcaRes.value?.success) return "Failed to fetch ORCA signal for trade recommendation";
+        const s = orcaRes.value.signal;
+        if (!s) return "No trade recommendation available right now — market may be closed or data unavailable";
+        const rec = s.recommendation || {};
+        const conf = s.confidence || {};
+        const greeks = s.greeks || {};
+        const oi = s.oi || {};
+        const ms = s.marketStructure || {};
+        const sm = s.smartMoney || {};
+        const flow = s.flow || {};
+        const alerts = s.alerts || [];
+        const reasons = s.reasons || [];
+
+        // If option chain available, enrich with strike-wise details
+        let chainDetail = "";
+        if (chainRes.status === "fulfilled" && chainRes.value?.success) {
+          const chain = chainRes.value.data?.strikes || [];
+          const atmIdx = Math.floor(chain.length / 2);
+          const nearStrikes = chain.slice(Math.max(0, atmIdx - 3), atmIdx + 3);
+          chainDetail = "\nNearby Strikes:\n" + nearStrikes.map((st: any) =>
+            `₹${st.strike}: CE_IV=${st.ce?.iv?.toFixed(1) || "—"}% Delta=${st.ce?.delta?.toFixed(2) || "—"} OI=${(st.ce?.oi || 0).toLocaleString()} | PE_IV=${st.pe?.iv?.toFixed(1) || "—"}% Delta=${st.pe?.delta?.toFixed(2) || "—"} OI=${(st.pe?.oi || 0).toLocaleString()}`
+          ).join("\n");
+        }
+
+        return `STRUCTURED TRADE RECOMMENDATION
+═══════════════════════════════════
+SYMBOL: ${s.symbol} @ ₹${s.spot}
+EXPIRY: ${rec.expiry || "Weekly"} | Time: ${s.timeToExpiry || "N/A"}
+MARKET BIAS: ${s.marketBias}
+═══════════════════════════════════
+TRADE SETUP:
+- Action: ${rec.action} ${rec.strike} ${rec.strikeType}
+- Entry Price: ₹${rec.entry}
+- Stop Loss: ₹${rec.stopLoss} (${(((rec.entry - rec.stopLoss) / rec.entry) * 100).toFixed(1)}% loss)
+- Target 1: ₹${rec.target1} (${(((rec.target1 - rec.entry) / rec.entry) * 100).toFixed(1)}% gain)
+- Target 2: ₹${rec.target2} (${(((rec.target2 - rec.entry) / rec.entry) * 100).toFixed(1)}% gain)
+- Target 3: ₹${rec.target3 || "N/A"}
+- Risk:Reward: 1:${rec.riskReward}
+- Expected Move: ${rec.expectedPremiumMove || "N/A"}
+- Capital Required: ₹${(rec.capitalRequired || 0).toLocaleString("en-IN") || "N/A"}
+- Max Loss: ₹${(rec.maxLoss || 0).toLocaleString("en-IN") || "N/A"}
+═══════════════════════════════════
+CONFIDENCE SCORE: ${conf.total}% — ${conf.level}
+- Trend: ${conf.trend}/20 | OI: ${conf.oi}/20 | Greeks: ${conf.greeks}/20
+- Liquidity: ${conf.liquidity}/15 | Volume: ${conf.volume}/10
+- Price Action: ${conf.priceAction}/10 | Flow: ${conf.institutionalFlow}/5
+═══════════════════════════════════
+TECHNICAL CONTEXT:
+- Trend: ${ms.trend} | Structure: ${ms.structure}
+- VWAP: ₹${ms.vwap?.toFixed(2)} | EMA9: ₹${ms.ema9} | EMA21: ₹${ms.ema21}
+- HH: ${ms.higherHigh ? "✓" : "✗"} | HL: ${ms.higherLow ? "✓" : "✗"}
+- Pivot: ₹${ms.pivot?.toFixed(2)} | R1: ₹${ms.r1?.toFixed(2)} | S1: ₹${ms.s1?.toFixed(2)}
+- Weekly High: ₹${ms.weeklyHigh} | Weekly Low: ₹${ms.weeklyLow}
+═══════════════════════════════════
+GREEKS:
+- Delta: ${greeks.atmDelta} | Gamma: ${greeks.atmGamma}
+- Theta: ${greeks.atmTheta} | Vega: ${greeks.atmVega}
+- Dealer Regime: ${greeks.dealerRegime} | Gamma Flip: ${greeks.gammaFlip}
+- IV Percentile: ${greeks.ivPercentile?.toFixed(0)}%
+═══════════════════════════════════
+OI ANALYSIS:
+- PCR: ${oi.pcr} | Max Pain: ${oi.maxPain}
+- Call OI: ${(oi.totalCallOI / 100000).toFixed(1)}L | Put OI: ${(oi.totalPutOI / 100000).toFixed(1)}L
+- OI Regime: ${oi.callLongBuildup ? "CALL LONG BUILDUP" : oi.putLongBuildup ? "PUT LONG BUILDUP" : oi.callUnwinding ? "CALL UNWINDING" : oi.putUnwinding ? "PUT UNWINDING" : "NEUTRAL"}
+- Put Wall (support): ₹${oi.putWallStrike || "N/A"} | Call Wall (resistance): ₹${oi.callWallStrike || "N/A"}
+═══════════════════════════════════
+SMART MONEY / FLOW:
+- Liquidity Sweep: ${sm.liquiditySweep?.detected ? sm.liquiditySweep.direction + " @" + sm.liquiditySweep.level : "None"}
+- Stop Hunt: ${sm.stopHunt?.detected ? "YES @" + sm.stopHunt.level : "None"}
+- Fake Breakout: ${sm.fakeBreakout?.detected ? "YES" : "NO"}
+- Volume Spike: ${flow.volumeSpike ? "YES" : "NO"}
+- Institutional Orders: ${flow.institutionalOrders ? "YES" : "NO"}
+- Aggressive: ${flow.aggressiveBuyers ? "Buyers" : flow.aggressiveSellers ? "Sellers" : "Balanced"}
+═══════════════════════════════════
+ALERTS: ${alerts.map((a: any) => `${a.type}(${a.severity})`).join(", ") || "None"}
+═══════════════════════════════════
+REASONING:
+${reasons.map((r: string) => `→ ${r}`).join("\n")}
+${chainDetail}
+═══════════════════════════════════
+RECOMMENDED HOLD TIME: ${rec.expectedHoldTime || "Intraday to 1 day"}
+EXIT CONDITIONS:
+- SL Hit → Exit immediately, no questions
+- TP1 Hit → Move SL to breakeven
+- TP2 Hit → Book 50%, trail rest with trailing SL
+- Time exit → Close by 3:15 PM on expiry day
+- Thesis invalid → If VWAP crosses entry in opposite direction`;
+      } catch { return "Error generating trade recommendation"; }
+    }
+
+    case "get_gift_nifty": {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/gift-nifty`, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Gift Nifty data not available (may use estimated spot)";
+        const g = data.data;
+        return `GIFT NIFTY (Pre-Open):
+Price: ${g.price} | ${g.change >= 0 ? "+" : ""}${g.change} (${g.changePct >= 0 ? "+" : ""}${g.changePct}%)
+Previous Close: ${g.previousClose}
+Gap: ${g.gap >= 0 ? "+" : ""}${g.gap}
+Signal: ${g.gap > 50 ? "🟢 GAP UP — Bullish open expected" : g.gap < -50 ? "🔴 GAP DOWN — Bearish open expected" : "🟡 FLAT OPEN — No significant gap"}
+Source: ${g.source}${g.source === "estimated" ? " (⚠️ Yahoo blocked, using spot as estimate)" : ""}
+Time: ${g.timestamp || "N/A"}`;
+      } catch { return "Error fetching Gift Nifty data"; }
+    }
+
+    case "get_historical_data": {
+      try {
+        const days = Math.min(args.days || 30, 365);
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/nse?symbol=${symbol}&days=${days}`, { signal: AbortSignal.timeout(15000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch historical data";
+        const candles = data.data || [];
+        if (candles.length === 0) return "No historical data available";
+        const first = candles[0];
+        const last = candles[candles.length - 1];
+        const high = Math.max(...candles.map((c: any) => c.high || c.highPrice || 0));
+        const low = Math.min(...candles.map((c: any) => c.low || c.lowPrice || Infinity));
+        const atr = candles.slice(-14).reduce((sum: number, c: any) => {
+          const prev = candles[candles.indexOf(c) - 1];
+          if (!prev) return sum;
+          const tr = Math.max(
+            (c.high || c.highPrice || 0) - (c.low || c.lowPrice || 0),
+            Math.abs((c.high || c.highPrice || 0) - (prev.close || prev.closePrice || 0)),
+            Math.abs((c.low || c.lowPrice || 0) - (prev.close || prev.closePrice || 0))
+          );
+          return sum + tr;
+        }, 0) / Math.min(candles.length, 14);
+        const changes = candles.slice(-5).map((c: any, i: number) => {
+          if (i === 0) return "";
+          const prevClose = candles[i - 1]?.close || candles[i - 1]?.closePrice || 0;
+          const curClose = c.close || c.closePrice || 0;
+          return `${c.date || c.timestamp?.substring(0, 10)}: ${curClose >= prevClose ? "+" : ""}${((curClose - prevClose) / prevClose * 100).toFixed(2)}%`;
+        }).filter(Boolean);
+        return `Historical Data (${days}d) — ${symbol}:
+Period: ${first.date || "N/A"} → ${last.date || "N/A"}
+Range: ₹${low} — ₹${high} | Current: ₹${(last.close || last.closePrice || 0).toLocaleString("en-IN")}
+ATR(14): ${atr.toFixed(2)} | Volatility: ${((high - low) / low * 100).toFixed(1)}%
+Last 5 changes:
+${changes.join("\n")}`;
+      } catch { return "Error fetching historical data"; }
+    }
+
     case "answer_trading_question": {
       const question = args.question || "";
       const level = args.level || "intermediate";
@@ -536,16 +727,19 @@ export async function agentRespondLLM(
     trades: any[];
     conversationHistory: LLMMessage[];
     orcaSignal?: any;
+    giftNifty?: any;
+    correlation?: any;
+    scanner?: any;
   }
 ): Promise<{ response: string; toolCallsMade: string[] }> {
-  const systemPrompt = buildSystemPrompt(ctx);
+  const systemPrompt = buildSystemPrompt({ ...ctx, giftNifty: ctx.giftNifty, correlation: ctx.correlation, scanner: ctx.scanner });
   const messages: LLMMessage[] = [
     { role: "system", content: systemPrompt },
     ...ctx.conversationHistory,
     { role: "user", content: userMessage },
   ];
 
-  const toolCallsMade: string[] = [];
+  const toolCallsMadeSet = new Set<string>();
   let iterations = 0;
   const MAX_ITERATIONS = 5;
 
@@ -557,7 +751,7 @@ export async function agentRespondLLM(
     if (!result.toolCalls || result.toolCalls.length === 0) {
       return {
         response: result.content || "I couldn't generate a response. Please try again.",
-        toolCallsMade,
+        toolCallsMade: Array.from(toolCallsMadeSet),
       };
     }
 
@@ -575,14 +769,23 @@ export async function agentRespondLLM(
       } catch {
         args = {};
       }
-      toolCallsMade.push(toolCall.function.name);
+      toolCallsMadeSet.add(toolCall.function.name);
 
-      const toolResult = await executeTool(toolCall.function.name, args, ctx);
-      messages.push({
-        role: "tool",
-        content: toolResult,
-        tool_call_id: toolCall.id,
-      });
+      try {
+        const toolResult = await executeTool(toolCall.function.name, args, ctx);
+        messages.push({
+          role: "tool",
+          content: toolResult,
+          tool_call_id: toolCall.id,
+        });
+      } catch (toolError: any) {
+        console.warn(`[AgentBrain] Tool ${toolCall.function.name} error:`, toolError.message);
+        messages.push({
+          role: "tool",
+          content: `Error executing ${toolCall.function.name}: ${toolError.message}`,
+          tool_call_id: toolCall.id,
+        });
+      }
     }
   }
 
@@ -590,6 +793,6 @@ export async function agentRespondLLM(
   const finalResult = await callLLM(messages);
   return {
     response: finalResult.content || "I completed the analysis but couldn't format a response.",
-    toolCallsMade,
+    toolCallsMade: Array.from(toolCallsMadeSet),
   };
 }

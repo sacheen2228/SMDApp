@@ -25,6 +25,7 @@ const YAHOO_SYMBOL_MAP: Record<string, string> = {
   'MIDCPNIFTY': '^NSEMIDCAP',
   'SENSEX': '^BSESN',
   'INDIAVIX': '^INDIAVIX',
+  'GIFTNIFTY': 'SGXNIFTY.NS',
 };
 
 // Cache for Yahoo data (2 minutes)

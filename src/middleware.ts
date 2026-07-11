@@ -78,10 +78,10 @@ export function middleware(request: NextRequest) {
     }
   }
 
-  // Backtest — CPU-intensive (3/min)
+  // Backtest — CPU-intensive (20/min)
   if (pathname.startsWith("/api/backtest")) {
-    if (!rateLimit(`backtest:${ip}`, 3, 60_000)) {
-      return NextResponse.json({ error: "Rate limit: max 3 backtest calls per minute" }, { status: 429 });
+    if (!rateLimit(`backtest:${ip}`, 20, 60_000)) {
+      return NextResponse.json({ error: "Rate limit: max 20 backtest calls per minute" }, { status: 429 });
     }
   }
 

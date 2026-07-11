@@ -7,14 +7,16 @@ import {
   type BreakoutSignal,
   type Candle,
 } from "@/lib/candlestick-breakout";
-import {
-  generateDayCandles,
-  generatePreviousDayOHLC,
-  generateGiftNiftyEstimate,
-  type HistoricalCandle,
-} from "@/lib/historical-data";
 
 // ─── Types ──────────────────────────────────────────────────────
+export interface HistoricalCandle {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 export interface BacktestTrade {
   id: number;
   date: string;
@@ -530,7 +532,7 @@ function detectPriceActionBreakouts(
   return breakouts;
 }
 
-export function runMultiDayBacktest(
+export async function runMultiDayBacktest(
   symbol: string,
   startDate: string,
   endDate: string
@@ -555,9 +557,27 @@ export function runMultiDayBacktest(
     if (dow === 0 || dow === 6) continue;
 
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const candles = generateDayCandles(symbol, dateStr);
-    const prevDay = generatePreviousDayOHLC(symbol, dateStr);
-    const giftNifty = generateGiftNiftyEstimate(symbol, dateStr);
+
+    // Fetch real candles from Breeze historical API
+    let candles: any[] = [];
+    try {
+      const { getIntradayCandles } = await import("@/lib/breeze-historical");
+      candles = await getIntradayCandles(symbol, "5minute", dateStr);
+    } catch {
+      candles = [];
+    }
+
+    // If no real candles (market closed or Breeze failed), skip this day
+    if (candles.length === 0) {
+      continue;
+    }
+
+    const prevDay = {
+      high: Math.max(...candles.map((c) => c.high)),
+      low: Math.min(...candles.map((c) => c.low)),
+      close: candles[candles.length - 1]?.close || candles[0]?.close || 0,
+    };
+    const giftNifty = candles[0]?.close || 0;
 
     // Day OHLC
     const dayOpen = candles[0].open;

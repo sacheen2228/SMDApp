@@ -592,10 +592,45 @@ export class CandlestickBreakoutIndia {
   }
 
   // Simulate candles from option chain data for demo
-  simulateFromMarketData(spotPrice: number, vix: number): BreakoutSignal | null {
+  async simulateFromMarketData(spotPrice: number, vix: number, symbol?: string): Promise<BreakoutSignal | null> {
     const now = new Date();
     const volatility = vix / 100;
 
+    // Try to fetch real intraday candles from Breeze
+    let candles: Array<{open: number; high: number; low: number; close: number; volume: number; timestamp: string}> = [];
+    if (symbol) {
+      try {
+        const { getIntradayCandles } = await import("@/lib/breeze-historical");
+        const rawCandles = await getIntradayCandles(symbol, "5minute", "");
+        candles = rawCandles.map(c => ({
+          open: c.open, high: c.high, low: c.low, close: c.close,
+          volume: c.volume, timestamp: c.time,
+        }));
+      } catch {
+        // Fall through to simulation
+      }
+    }
+
+    if (candles.length > 0) {
+      // Use real candles — derive previous day levels from real data
+      const recentCloses = candles.slice(-20).map(c => c.close);
+      const pdh = Math.max(...candles.slice(-50).map(c => c.high));
+      const pdl = Math.min(...candles.slice(-50).map(c => c.low));
+      const pdc = recentCloses[recentCloses.length - 1] || spotPrice;
+      this.sr.setPreviousDay(pdh, pdl, pdc);
+      this.sr.setGiftNiftyBias(spotPrice * (1 + (Math.random() - 0.48) * 0.005), pdc);
+
+      // Feed real candles
+      for (const candle of candles.slice(-20)) {
+        this.onTick(candle);
+      }
+
+      // Feed the latest candle as a potential breakout
+      const lastCandle = candles[candles.length - 1];
+      return this.onTick(lastCandle);
+    }
+
+    // Fallback: simulated candles (no real data available)
     // Generate simulated previous day levels
     const pdh = spotPrice * (1 + volatility * 0.5);
     const pdl = spotPrice * (1 - volatility * 0.5);
@@ -608,7 +643,6 @@ export class CandlestickBreakoutIndia {
     // Generate 20 simulated candles
     for (let i = 0; i < 20; i++) {
       const ts = new Date(now.getTime() - (20 - i) * 5 * 60000);
-      // Set time to market hours
       ts.setHours(9, 30 + i * 5, 0, 0);
 
       const basePrice = spotPrice * (1 + (Math.random() - 0.5) * volatility * 0.02);

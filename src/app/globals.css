@@ -175,3 +175,9 @@ td, th {
   animation: oi-grow 0.5s ease-out;
   transform-origin: left;
 }
+
+/* Agent stop/send button toggle */
+.agent-stop { display: none !important; }
+.agent-send { display: inline-flex !important; }
+.agent-loading .agent-stop { display: inline-flex !important; }
+.agent-loading .agent-send { display: none !important; }
