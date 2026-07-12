@@ -249,21 +249,20 @@ export function ZeroHeroTerminal() {
       if (!json.success || !json.signal) return;
       if (gen !== fetchGenRef.current) return;
       const s = json.signal;
-      const r = s.recommendation || {};
-      const type = r.action === "BUY_CALL" ? "CE" : r.action === "BUY_PUT" ? "PE" : null;
-      if (!type) return;
+      const type = s.direction === "CALL" ? "CE" : s.direction === "PUT" ? "PE" : null;
+      if (!type || !s.strike) return;
       setRec({
-        action: r.action,
-        strike: r.strike || 0,
+        action: s.direction === "CALL" ? "BUY_CALL" : "BUY_PUT",
+        strike: s.strike,
         type,
-        entry: r.entry || r.currentPremium || 0,
-        sl: r.stopLoss || 0,
-        tp1: r.target1 || 0,
-        tp2: r.target2 || 0,
-        bias: s.marketBias || "NEUTRAL",
-        rr: r.riskReward || 2,
-        reason: r.reason || "",
-        confidence: typeof s.confidence === "object" ? s.confidence.total || 0 : s.confidence || 0,
+        entry: s.entry || 0,
+        sl: s.sl || 0,
+        tp1: s.tp1 || 0,
+        tp2: s.tp2 || 0,
+        bias: s.marketContext?.trend || "NEUTRAL",
+        rr: s.riskReward || 2,
+        reason: s.reason || "",
+        confidence: typeof s.confidence === "number" ? s.confidence : 0,
       });
     } catch {}
   }, [symbol, expiry]);
@@ -510,7 +509,7 @@ export function ZeroHeroTerminal() {
           </span>
 
           <div className="font-mono text-xs text-[#7d8ba0] flex gap-1.5 items-center">
-            VIX <b className="text-[#dfe6ee]">{vix.toFixed(1)}</b>
+            VIX <b className="text-[#dfe6ee]">{vix > 0 ? vix.toFixed(1) : "—"}</b>
           </div>
           <div className="font-mono text-xs text-[#7d8ba0] flex gap-1.5 items-center">
             PCR <b className="text-[#dfe6ee]">{pcr.toFixed(2)}</b>
