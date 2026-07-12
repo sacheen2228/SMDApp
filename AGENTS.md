@@ -61,6 +61,10 @@ bun run dev        # starts on :3000
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
 | `auto-bot/` | Breakout/Desk automated trading bot (sidecar service, port 8000) |
+| `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |
+| `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
+| `src/lib/trade-audit-client.ts` | Client lib for the audit engine (record/price/close/stats/trades) |
+| `src/lib/audit-recorders.ts` | Records Terminal-tab Zero Hero + Smart Money candidates into the audit engine |
 | `src/components/auto-bot/BotDashboard.tsx` | Auto Bot tab UI — WebSocket + REST polling |
 
 ## Data Reality Check
@@ -110,6 +114,26 @@ The bot runs in paper mode — no IB Gateway, no Telegram required. Dashboard av
 - **SQLite** via `auto-bot/data/trades.db` (alerts, trades, alerted_tickers)
 - **WebSocket** at `ws://localhost:8000/ws` pushes dashboard snapshots every 5s
 - Dashboard tab in Next.js falls back to REST polling every 5s when WS disconnects
+
+## Trade Audit — Backtest Verification Sidecar
+
+Standalone Express + better-sqlite3 service on **port 4001** that records strategy signals,
+tracks them live (MFE/MAE, TP/SL detection), and computes backtest verification metrics
+(win rate, avg R, profit factor, expectancy, max drawdown) broken down by strategy/symbol/session.
+The **Backtest** tab in the app polls `localhost:4001` every 5s.
+
+### Startup
+```bash
+cd trade-audit && ./start.sh        # starts Node + ts-node-dev engine on port 4001
+./stop.sh                           # stops the engine
+```
+> Runs under **Node** (not bun) — it uses the native `better-sqlite3` module, which bun cannot load.
+
+### Recorded strategies
+- `BTST` — from the daily BTST scan (`src/lib/btst-scanner.ts`); cron squares off next-day.
+- `ZERO_HERO_AI` / `SMC` — from the Terminal tab's **Zero Hero** / **Smart Money** scanners
+  (`src/components/terminal/ZeroHeroTerminal.tsx`); live premium fed as tracking ticks.
+- Any strategy can record via `recordSignal()` (`src/lib/trade-audit-client.ts`).
 
 ## Known Issues
 

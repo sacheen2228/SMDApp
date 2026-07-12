@@ -1,7 +1,13 @@
 // Expiry Date Calculator
 // Computes weekly and monthly expiry dates per SEBI rules:
-//   NIFTY:  Weekly = every Tuesday,    Monthly = last Tuesday
-//   SENSEX: Weekly = every Thursday,   Monthly = last Thursday
+//   NIFTY:      Weekly = every Tuesday,    Monthly = last Tuesday
+//   BANKNIFTY:  Weekly = every Thursday,   Monthly = last Thursday
+//   FINNIFTY:   Weekly = every Tuesday,    Monthly = last Tuesday
+//   MIDCPNIFTY: Weekly = every Wednesday,  Monthly = last Wednesday
+//   NIFTYNXT50: Weekly = every Tuesday,    Monthly = last Tuesday
+//   SENSEX:     Weekly = every Thursday,   Monthly = last Thursday
+//   BANKEX:     Weekly = every Thursday,   Monthly = last Thursday
+//   F&O Equity: Weekly = per-stock weekday, Monthly = last weekday of month
 //   NSE Equity: Monthly = last Tuesday
 //   BSE Equity: Monthly = last Thursday
 // Holiday shift → previous trading day
@@ -14,6 +20,48 @@ export interface ExpiryInfo {
   type: ExpiryType;
   daysToExpiry: number;
   label: string;
+}
+
+// Per-symbol weekly expiry weekday (0=Sun ... 6=Sat)
+// Index F&O weekly expiries after the Jul-2025 SEBI revision
+const FNO_WEEKLY_WEEKDAY: Record<string, 0 | 1 | 2 | 3 | 4 | 5 | 6> = {
+  NIFTY: 2,
+  FINNIFTY: 2,
+  NIFTYNXT50: 2,
+  BANKNIFTY: 4,
+  SENSEX: 4,
+  BANKEX: 4,
+  MIDCPNIFTY: 3,
+};
+
+// F&O equity stocks — weekly expiry weekday (subset; extend as needed)
+const FNO_EQUITY_WEEKDAY: Record<string, 0 | 1 | 2 | 3 | 4 | 5 | 6> = {
+  RELIANCE: 4,
+  TCS: 4,
+  INFY: 4,
+  HDFCBANK: 4,
+  ICICIBANK: 4,
+  SBIN: 4,
+  BHARTIARTL: 4,
+  ITC: 4,
+  KOTAKBANK: 4,
+  LT: 4,
+};
+
+// All symbols that have F&O (options) contracts
+const FNO_SYMBOLS = new Set([
+  ...Object.keys(FNO_WEEKLY_WEEKDAY),
+  ...Object.keys(FNO_EQUITY_WEEKDAY),
+]);
+
+// ─── Is a symbol F&O (has weekly/monthly options)? ────────────────
+export function isFNO(symbol: string): boolean {
+  return FNO_SYMBOLS.has(symbol.toUpperCase());
+}
+
+// ─── Is a symbol an index? ────────────────────────────────────────
+export function isIndex(symbol: string): boolean {
+  return Object.keys(FNO_WEEKLY_WEEKDAY).includes(symbol.toUpperCase());
 }
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -70,11 +118,11 @@ function shiftToPrevTradingDay(d: Date): Date {
 
 // ─── Get expiry weekday for a symbol ──────────────────────────────
 function getExpiryWeekday(symbol: string): 1 | 2 | 3 | 4 | 5 {
-  // Tuesday = 2 for NIFTY and NSE equity
-  // Thursday = 4 for SENSEX and BSE equity
   const sym = symbol.toUpperCase();
-  if (sym === 'SENSEX' || sym === 'BANKEX') return 4;
-  return 2;
+  const wd = FNO_WEEKLY_WEEKDAY[sym] ?? FNO_EQUITY_WEEKDAY[sym];
+  if (wd != null && wd >= 1 && wd <= 5) return wd as 1 | 2 | 3 | 4 | 5;
+  // Default: Tuesday for other NSE equities, Thursday for BSE
+  return sym === 'SENSEX' || sym === 'BANKEX' ? 4 : 2;
 }
 
 // ─── Find the Nth occurrence of a weekday in a month ──────────────
@@ -222,4 +270,29 @@ export function getNextWeeklyExpiry(symbol: string): ExpiryInfo | null {
 // ─── Format list for Breeze SDK ───────────────────────────────────
 export function getExpiryDatesForSDK(symbol: string): string[] {
   return getAllExpiries(symbol).map(e => e.date);
+}
+
+// ─── Is today (or a given date) an expiry day for this symbol? ─────
+export function isExpiryDay(symbol: string, date: Date = new Date()): boolean {
+  if (!isFNO(symbol)) return false;
+  const all = getAllExpiries(symbol);
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return all.some(e =>
+    e.dateObj.getFullYear() === target.getFullYear() &&
+    e.dateObj.getMonth() === target.getMonth() &&
+    e.dateObj.getDate() === target.getDate()
+  );
+}
+
+// ─── Get the expiry type for a given date (null if not expiry) ─────
+export function getExpiryTypeForDate(symbol: string, date: Date = new Date()): ExpiryType | null {
+  if (!isFNO(symbol)) return null;
+  const all = getAllExpiries(symbol);
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const hit = all.find(e =>
+    e.dateObj.getFullYear() === target.getFullYear() &&
+    e.dateObj.getMonth() === target.getMonth() &&
+    e.dateObj.getDate() === target.getDate()
+  );
+  return hit ? hit.type : null;
 }

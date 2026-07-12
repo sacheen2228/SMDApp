@@ -57,7 +57,7 @@ function computePivots(spot: number) {
 }
 
 // ─── Gap Prediction Engine ────────────────────────────────────────
-function predictGap(analysis: any, spot: number, pcr: number, vix: number) {
+function predictGap(analysis: any, spot: number, pcr: number, vix: number | undefined) {
   let upScore = 50;
   const factors: { factor: string; impact: "bullish" | "bearish" | "neutral"; pts: number }[] = [];
 
@@ -65,8 +65,13 @@ function predictGap(analysis: any, spot: number, pcr: number, vix: number) {
   else if (pcr < 0.8) { upScore -= 12; factors.push({ factor: `PCR ${pcr.toFixed(2)} — bearish`, impact: "bearish", pts: -12 }); }
   else { factors.push({ factor: `PCR ${pcr.toFixed(2)} — neutral`, impact: "neutral", pts: 0 }); }
 
-  if (vix > 18) { upScore += 3; factors.push({ factor: `VIX ${vix.toFixed(1)} — elevated vol`, impact: "neutral", pts: 3 }); }
-  else if (vix < 12) { upScore -= 2; factors.push({ factor: `VIX ${vix.toFixed(1)} — low vol`, impact: "neutral", pts: -2 }); }
+  if (typeof vix === 'number') {
+    if (vix > 18) { upScore += 3; factors.push({ factor: `VIX ${vix.toFixed(1)} — elevated vol`, impact: "neutral", pts: 3 }); }
+    else if (vix < 12) { upScore -= 2; factors.push({ factor: `VIX ${vix.toFixed(1)} — low vol`, impact: "neutral", pts: -2 }); }
+    else { factors.push({ factor: `VIX ${vix.toFixed(1)} — normal vol`, impact: "neutral", pts: 0 }); }
+  } else {
+    factors.push({ factor: "VIX data unavailable — excluded from model", impact: "neutral", pts: 0 });
+  }
 
   const rec = analysis?.recommendation;
   if (rec?.oibuildup === "long-buildup") { upScore += 10; factors.push({ factor: "OI buildup bullish", impact: "bullish", pts: 10 }); }
@@ -83,14 +88,14 @@ function predictGap(analysis: any, spot: number, pcr: number, vix: number) {
   const downScore = Math.max(5, Math.min(80, 100 - upScore - 10));
   const flatScore = Math.max(5, 100 - upScore - downScore);
 
-  const avgGapUp = Math.round(20 + vix * 2.5);
-  const avgGapDown = Math.round(15 + vix * 2);
+  const avgGapUp = Math.round(20 + (vix ?? 0) * 2.5);
+  const avgGapDown = Math.round(15 + (vix ?? 0) * 2);
 
   return { upScore, downScore, flatScore, factors, avgGapUp, avgGapDown };
 }
 
 // ─── Gap Trading Setups ───────────────────────────────────────────
-function computeSetups(spot: number, maxPain: number, vix: number) {
+function computeSetups(spot: number, maxPain: number, vix: number | undefined) {
   const atm = Math.round(spot / 50) * 50;
 
   return [
@@ -98,7 +103,7 @@ function computeSetups(spot: number, maxPain: number, vix: number) {
       name: "Gap Up > 50 pts",
       color: "emerald" as const,
       action: `Buy ${atm} PE`,
-      entry: `~₹${Math.round(vix * 0.5 + 40)}`,
+      entry: `~₹${Math.round((vix ?? 0) * 0.5 + 40)}`,
       sl: `${atm + 50}`,
       target: `${atm - 50}`,
       rr: "1:2",
@@ -118,7 +123,7 @@ function computeSetups(spot: number, maxPain: number, vix: number) {
       name: "Gap Down > 50 pts",
       color: "red" as const,
       action: `Buy ${atm} CE`,
-      entry: `~₹${Math.round(vix * 0.5 + 35)}`,
+      entry: `~₹${Math.round((vix ?? 0) * 0.5 + 35)}`,
       sl: `${atm - 50}`,
       target: `${atm + 50}`,
       rr: "1:2",
@@ -138,7 +143,7 @@ function computeSetups(spot: number, maxPain: number, vix: number) {
 }
 
 // ─── OI Heatmap Data ──────────────────────────────────────────────
-function buildHeatmapData(chainData: any[], spot: number) {
+function buildHeatmapData(chainData: any[] | undefined, spot: number) {
   if (!chainData?.length) return [];
   const atm = Math.round(spot / 50) * 50;
   return chainData
@@ -163,14 +168,17 @@ export const GapAnalysis = memo(function GapAnalysis({
   expiryDate,
   chainData,
 }: GapAnalysisProps) {
-  // Use summary as primary source (available immediately), analysis as enrichment
+  // Use summary as primary source (available immediately), analysis as enrichment.
+  // VIX / prevClose are taken ONLY from the live feed — we never fabricate them,
+  // so when the upstream feed is unavailable they stay undefined and render as "—".
   const pcr = analysis?.pcr ?? summary?.pcr ?? 0;
-  const vix = analysis?.greeks?.vix ?? summary?.indiaVIX ?? 15;
-  const maxPain = analysis?.maxPain ?? summary?.maxPain ?? spotPrice;
+  const vix = (typeof summary?.indiaVIX === 'number' ? summary.indiaVIX : undefined);
+  const maxPain = analysis?.maxPain ?? (typeof summary?.maxPain === 'number' ? summary.maxPain : undefined);
   const ceOI = analysis?.totalCallOI ?? summary?.totalCallOI ?? 0;
   const peOI = analysis?.totalPutOI ?? summary?.totalPutOI ?? 0;
-
-  const prevClose = summary?.prevClose ?? (analysis?.spot?.change != null ? spotPrice - analysis.spot.change : spotPrice);
+  const prevClose = (typeof summary?.prevClose === 'number' ? summary.prevClose : undefined);
+  const vixLive = summary?.vixLive ?? false;
+  const prevCloseLive = summary?.prevCloseLive ?? false;
 
   const [giftNifty, setGiftNifty] = useState<{ price: number; change: number; changePct: number; previousClose: number; source?: string } | null>(null);
   useEffect(() => {
@@ -178,13 +186,24 @@ export const GapAnalysis = memo(function GapAnalysis({
   }, [spotPrice]);
 
   const giftSignal = giftNifty ? (() => {
-    const diff = giftNifty.price - prevClose;
+    const diff = prevClose != null ? giftNifty.price - prevClose : NaN;
     const isLive = giftNifty.source === "live";
+    if (prevClose == null) return { icon: Activity, label: "Prev Close Unavailable", text: `Live prev close not fetched — gap vs prev close hidden`, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30" };
     if (isLive && diff > 50) return { icon: TrendingUp, label: "Bullish Gap Likely", text: `Gift Nifty +${diff.toFixed(0)} pts above prev close`, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30" };
     if (isLive && diff < -50) return { icon: TrendingDown, label: "Bearish Gap Likely", text: `Gift Nifty ${diff.toFixed(0)} pts below prev close`, color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30" };
     if (isLive) return { icon: Minus, label: "Flat Open Expected", text: `Gift Nifty ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-muted-foreground", bg: "bg-muted/20", border: "border-border" };
     return { icon: Activity, label: "Tracking Spot", text: `Day change ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30" };
   })() : null;
+
+  const giftHasGap = giftNifty != null && prevClose != null;
+  const giftNiftyColor = giftHasGap
+    ? ((giftNifty!.price - prevClose!) > 0 ? "text-emerald-500" : (giftNifty!.price - prevClose!) < 0 ? "text-red-500" : "")
+    : "text-muted-foreground";
+  const giftNiftySub = giftHasGap
+    ? `${(giftNifty!.price - prevClose!) > 0 ? "+" : ""}${(giftNifty!.price - prevClose!).toFixed(0)} pts`
+    : (giftNifty ? "no prev close" : "");
+  const giftGapPts = giftHasGap ? giftNifty!.price - prevClose! : null;
+  const giftPrevCloseStr = prevClose != null ? fmtFull(prevClose) : "—";
 
   const pivots = useMemo(() => computePivots(spotPrice), [spotPrice]);
   const gap = useMemo(() => predictGap(analysis, spotPrice, pcr, vix), [analysis, spotPrice, pcr, vix]);
@@ -212,13 +231,22 @@ export const GapAnalysis = memo(function GapAnalysis({
         {/* ═══════ TOP METRICS BAR ═══════ */}
         <div className="grid grid-cols-7 gap-2">
           <MetricPill label="Spot" value={fmtFull(spotPrice)} />
-          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"} color={giftNifty ? ((giftNifty.price - prevClose) > 0 ? "text-emerald-500" : (giftNifty.price - prevClose) < 0 ? "text-red-500" : "") : "text-muted-foreground"} sub={giftNifty ? `${(giftNifty.price - prevClose) > 0 ? "+" : ""}${(giftNifty.price - prevClose).toFixed(0)} pts` : ""} />
+          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"} color={giftNiftyColor} sub={giftNiftySub} />
           <MetricPill label="PCR" value={pcr.toFixed(2)} color={pcr > 1.2 ? "text-emerald-500" : pcr < 0.8 ? "text-red-500" : ""} />
-          <MetricPill label="VIX" value={vix.toFixed(1)} />
-          <MetricPill label="Max Pain" value={fmtFull(maxPain)} color="text-amber-500" />
+          <MetricPill label="VIX" value={vix != null ? vix.toFixed(1) : "—"} sub={vixLive ? "live" : "no feed"} color={vixLive ? "text-violet-400" : "text-muted-foreground"} />
+          <MetricPill label="Max Pain" value={maxPain != null ? fmtFull(maxPain) : "—"} color="text-amber-500" />
           <MetricPill label="CE OI" value={`${(ceOI / 100000).toFixed(1)}L`} color="text-red-500" />
           <MetricPill label="PE OI" value={`${(peOI / 100000).toFixed(1)}L`} color="text-emerald-500" />
         </div>
+        {(vix == null || prevClose == null || maxPain == null) && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-400/90">
+            Live feed note: {[
+              !vixLive && "VIX not fetched from live source",
+              !prevCloseLive && "Previous close not fetched from live source",
+              maxPain == null && "Max Pain unavailable (no option chain)",
+            ].filter(Boolean).join(" · ")}. These fields show “—” rather than fabricated values.
+          </div>
+        )}
 
         {/* ═══════ GIFT NIFTY SIGNAL ═══════ */}
         {giftSignal && (
@@ -230,8 +258,8 @@ export const GapAnalysis = memo(function GapAnalysis({
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
               {giftNifty?.source === "estimated" && <span className="text-[10px] text-amber-500 font-medium">estimated</span>}
-              <span>Gap: <span className={(giftNifty.price - prevClose) > 0 ? "text-emerald-500 font-bold" : (giftNifty.price - prevClose) < 0 ? "text-red-500 font-bold" : ""}>{(giftNifty.price - prevClose) > 0 ? "+" : ""}{(giftNifty.price - prevClose).toFixed(0)} pts</span></span>
-              <span>Prev Close: {fmtFull(prevClose)}</span>
+              <span>Gap: <span className={giftGapPts != null ? (giftGapPts > 0 ? "text-emerald-500 font-bold" : giftGapPts < 0 ? "text-red-500 font-bold" : "") : ""}>{giftGapPts != null ? `${giftGapPts > 0 ? "+" : ""}${giftGapPts.toFixed(0)} pts` : "—"}</span></span>
+              <span>Prev Close: {giftPrevCloseStr}</span>
             </div>
           </div>
         )}
@@ -255,11 +283,11 @@ export const GapAnalysis = memo(function GapAnalysis({
                   </div>
                   <div>
                     <p className="text-muted-foreground">IV Level</p>
-                    <p className="font-bold">{vix.toFixed(1)}%</p>
+                    <p className="font-bold">{vix != null ? `${vix.toFixed(1)}%` : "—"}</p>
                   </div>
                 </div>
                 <p className="text-[10px] text-muted-foreground">
-                  {vix > 20 ? "IV elevated — premium selling favorable" : vix < 12 ? "IV low — options cheap, buying favorable" : "IV in normal range"}
+                  {vix == null ? "Live VIX unavailable — IV level not shown" : vix > 20 ? "IV elevated — premium selling favorable" : vix < 12 ? "IV low — options cheap, buying favorable" : "IV in normal range"}
                 </p>
               </CardContent>
             </Card>
@@ -269,9 +297,9 @@ export const GapAnalysis = memo(function GapAnalysis({
               <CardContent className="p-3 space-y-2">
                 <CardTitle icon={<Target className="w-3.5 h-3.5 text-amber-500" />} text="Max Pain" />
                 <div className="flex items-baseline gap-3">
-                  <span className="text-2xl font-black tabular-nums text-amber-500">{fmtFull(maxPain)}</span>
-                  <span className={`text-xs font-medium ${spotPrice > maxPain ? "text-emerald-500" : "text-red-500"}`}>
-                    {spotPrice > maxPain ? "+" : ""}{((spotPrice - maxPain) / maxPain * 100).toFixed(2)}% from spot
+                  <span className="text-2xl font-black tabular-nums text-amber-500">{maxPain != null ? fmtFull(maxPain) : "—"}</span>
+                  <span className={`text-xs font-medium ${maxPain != null && spotPrice > maxPain ? "text-emerald-500" : "text-red-500"}`}>
+                    {maxPain != null ? `${spotPrice > maxPain ? "+" : ""}${((spotPrice - maxPain) / maxPain * 100).toFixed(2)}% from spot` : "no chain"}
                   </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground">Market gravitates toward Max Pain near expiry</p>
@@ -479,11 +507,11 @@ export const GapAnalysis = memo(function GapAnalysis({
                   </div>
                   <div>
                     <p className="text-muted-foreground">Theta/Day</p>
-                    <p className="font-bold">~₹{(vix * 0.16).toFixed(1)}</p>
+                    <p className="font-bold">{vix != null ? `~₹${(vix * 0.16).toFixed(1)}` : "—"}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Expected Move</p>
-                    <p className="font-bold">±{Math.round(spotPrice * vix / 100 * Math.sqrt(4 / 365))} pts</p>
+                    <p className="font-bold">{vix != null ? `±${Math.round(spotPrice * vix / 100 * Math.sqrt(4 / 365))} pts` : "—"}</p>
                   </div>
                 </div>
               </CardContent>
@@ -559,12 +587,14 @@ function GapBar({ label, pct, color, icon }: { label: string; pct: number; color
   );
 }
 
-function MoodGauge({ pcr, vix }: { pcr: number; vix: number }) {
+function MoodGauge({ pcr, vix }: { pcr: number; vix: number | undefined }) {
   let score = 3;
   if (pcr > 1.3) score += 1;
   else if (pcr < 0.7) score -= 1;
-  if (vix > 20) score -= 1;
-  else if (vix < 12) score += 1;
+  if (typeof vix === 'number') {
+    if (vix > 20) score -= 1;
+    else if (vix < 12) score += 1;
+  }
   score = Math.max(1, Math.min(5, score));
 
   const moods = [

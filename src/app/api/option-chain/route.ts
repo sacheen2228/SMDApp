@@ -42,7 +42,23 @@ export async function GET(request: NextRequest) {
       sessionInitialized = true;
       await initSession().catch(() => {});
     }
-    
+
+    // Fetch live India VIX + previous close (real market data from Yahoo).
+    // Independent of the option-chain source — may succeed even when
+    // Breeze/NSE are down. We NEVER fabricate VIX or prevClose; when the
+    // live feed is unavailable we leave them null so the UI can show "—".
+    let liveVix: number | null = null;
+    let livePrevClose: number | null = null;
+    try {
+      const { fetchIndiaVIX, fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
+      const [vixRes, yahooIdx] = await Promise.all([
+        fetchIndiaVIX().catch(() => null),
+        fetchYahooIndexData(symbol).catch(() => null),
+      ]);
+      liveVix = vixRes?.value ?? null;
+      livePrevClose = yahooIdx?.previousClose ?? null;
+    } catch {}
+
     let chainData: any = null;
     let source = 'simulation';
     
@@ -133,7 +149,7 @@ export async function GET(request: NextRequest) {
         data: {
           data: [],
           spotPrice: 0,
-          summary: { spotPrice: 0, indiaVIX: 15, maxPain: 0 },
+          summary: { spotPrice: 0, indiaVIX: liveVix, maxPain: 0, prevClose: livePrevClose, vixLive: liveVix != null, prevCloseLive: livePrevClose != null },
           expiries: [],
           selectedExpiry: '',
           dataSource: 'unavailable',
@@ -154,8 +170,11 @@ export async function GET(request: NextRequest) {
             spotPrice: yahooData.regularMarketPrice,
             summary: {
               spotPrice: yahooData.regularMarketPrice,
-              indiaVIX: 15,
+              indiaVIX: liveVix,
               maxPain: 0,
+              prevClose: yahooData.previousClose ?? livePrevClose,
+              vixLive: liveVix != null,
+              prevCloseLive: (yahooData.previousClose ?? livePrevClose) != null,
             },
             expiries: [],
             selectedExpiry: '',
@@ -172,7 +191,7 @@ export async function GET(request: NextRequest) {
         chainData = chainData || {};
         chainData.data = [];
         chainData.spotPrice = spotPrice;
-        chainData.summary = chainData.summary || { spotPrice, indiaVIX: 15 };
+        chainData.summary = chainData.summary || { spotPrice, indiaVIX: liveVix, prevClose: livePrevClose, vixLive: liveVix != null, prevCloseLive: livePrevClose != null };
         chainData.summary.spotPrice = spotPrice;
       } else {
         return NextResponse.json({
@@ -322,7 +341,10 @@ export async function GET(request: NextRequest) {
         spotPrice,
         spotChange: 0,
         spotChangePct: 0,
-        indiaVIX: 15,
+        indiaVIX: liveVix,
+        prevClose: livePrevClose,
+        vixLive: liveVix != null,
+        prevCloseLive: livePrevClose != null,
         pcr,
         maxPain,
         totalCallOI,
@@ -376,6 +398,18 @@ export async function GET(request: NextRequest) {
     } catch {
       // Fallback: empty candles — frontend should handle gracefully
       candles5m = [];
+    }
+
+    // Attach live India VIX + previous close to the response summary (and the
+    // SDM analysis) for every source path. We never fabricate these — when the
+    // live feed was unavailable they stay null and the UI shows "—".
+    chainData.summary = chainData.summary || {};
+    chainData.summary.indiaVIX = liveVix;
+    chainData.summary.prevClose = livePrevClose;
+    chainData.summary.vixLive = liveVix != null;
+    chainData.summary.prevCloseLive = livePrevClose != null;
+    if (analysis?.greeks && typeof analysis.greeks === 'object') {
+      analysis.greeks.vix = liveVix != null ? liveVix : analysis.greeks.vix;
     }
     
     return NextResponse.json({

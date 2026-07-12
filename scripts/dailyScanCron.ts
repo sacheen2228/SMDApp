@@ -34,15 +34,20 @@ loadEnv();
 import cron from "node-cron";
 import { sendDailyDigest } from "../src/lib/sendDailyDigest";
 import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
+import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 
 const TIMEZONE = "Asia/Kolkata";
 const DAILY_SCHEDULE = "20 9 * * 1-5";        // 9:20am, Mon-Fri — the morning digest
 const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm window
                                                  // (sendIntradayAlerts() itself checks the
                                                  //  precise 9:15-15:30 market-hours boundary)
+const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
+const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
 
 console.log(`[dailyScanCron] daily digest scheduled for "${DAILY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
   DAILY_SCHEDULE,
@@ -68,6 +73,40 @@ cron.schedule(
       }
     } catch (err) {
       console.error("[dailyScanCron] intraday scan failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  BTST_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] running BTST scan...");
+    try {
+      const base = process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 3000}`;
+      const res = await fetch(`${base}/api/btst?alert=1`, { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        console.log(`[dailyScanCron] BTST scan done — candidates=${json.data.count} alerted=${json.alerted}`);
+      } else {
+        console.error("[dailyScanCron] BTST scan returned error:", json.error);
+      }
+    } catch (err) {
+      console.error("[dailyScanCron] BTST scan failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  BTST_CLOSE_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] squaring off prior-day BTST signals...");
+    try {
+      const result = await closeYesterdayBTST();
+      console.log(`[dailyScanCron] BTST close done — closed=${result.closed}`);
+    } catch (err) {
+      console.error("[dailyScanCron] BTST close failed", err);
     }
   },
   { timezone: TIMEZONE }

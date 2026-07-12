@@ -48,7 +48,7 @@ interface MarketSummary {
   spotPrice: number;
   spotChange: number;
   spotChangePct: number;
-  indiaVIX: number;
+  indiaVIX: number | null;
   pcr: number;
   atmStrike: number;
   totalCallOI: number;
@@ -269,7 +269,7 @@ export const SimpleMode = memo(function SimpleMode({
           <span className="text-muted-foreground font-semibold uppercase tracking-wider text-[10px]">LIVE</span>
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">VIX</span>
-            <span className="font-bold tabular-nums">{fmt(summary.indiaVIX)}%</span>
+            <span className="font-bold tabular-nums">{summary.indiaVIX != null ? `${fmt(summary.indiaVIX)}%` : "—"}</span>
           </div>
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
