@@ -122,12 +122,10 @@ interface SDMSignal {
   tp2: number;
   tp3: number;
   riskLevel: string;
-  optionType: string;
   sdmScore: number;
   oibuildup: string;
   gammaWallSupport: number;
   gammaWallResistance: number;
-  entryPrice: number;
   idealBuyRange: { low: number; high: number };
   lateEntryWarning: boolean;
   stopLossReason: string;
@@ -200,7 +198,8 @@ export function SDMAIDashboard() {
       if (json.success && json.data) {
         const d = json.data;
         setSpot(d.spotPrice || 0);
-        setAtm(d.summary?.atmStrike || 0);
+        const apiAtm = d.summary?.atmStrike || 0;
+        setAtm(apiAtm);
         setExpiry(d.selectedExpiry || '');
         setVix(d.summary?.indiaVIX || 15);
         setPcr(d.summary?.pcr || 1);
@@ -223,7 +222,7 @@ export function SDMAIDashboard() {
         }));
         setChainData(chainRows);
 
-        const atmStrike = atm;
+        const atmStrike = apiAtm;
         const spotPrice = d.spotPrice || 0;
         const lotSize = getLotSize(symbol) || 65;
 
@@ -417,7 +416,7 @@ export function SDMAIDashboard() {
 
           {/* Option Chain */}
           <section>
-            <OCPanel chain={chainData} atm={atm} />
+            <OCPanel chain={chainData} atm={atm} symbol={symbol} />
           </section>
 
           {/* 3-Column Bottom */}
@@ -631,11 +630,11 @@ function bLabel(chg: number, oi: number) {
   return { text: 'Long Unwinding', c: 'text-rose-400' };
 }
 
-function OCPanel({ chain, atm }: { chain: ChainRow[]; atm: number }) {
+function OCPanel({ chain, atm, symbol }: { chain: ChainRow[]; atm: number; symbol: string }) {
   return (
     <div className="glass glow-none rounded-2xl overflow-hidden rise">
       <div className="px-5 py-3 flex items-center justify-between border-b border-white/[.03]">
-        <span className="text-xs font-semibold text-slate-300">NIFTY Option Chain</span>
+        <span className="text-xs font-semibold text-slate-300">{symbol} Option Chain</span>
         <span className="text-[10px] text-slate-600 mono">{chain.length} strikes</span>
       </div>
       <div className="overflow-x-auto">

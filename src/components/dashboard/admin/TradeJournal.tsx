@@ -12,21 +12,25 @@ interface Trade {
 export default function TradeJournal() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [filter, setFilter] = useState({ symbol: "", status: "", sort: "entryTime", dir: "desc" as "asc" | "desc" });
   const [stats, setStats] = useState({ total: 0, open: 0, closed: 0, winRate: 0, totalPnL: 0 });
 
   const fetchTrades = async () => {
     setLoading(true);
+    setError("");
     try {
       const params = new URLSearchParams();
       if (filter.symbol) params.set("symbol", filter.symbol);
       const res = await fetch(`/api/trade-journal?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      if (json.success) {
-        setTrades(json.trades || []);
-        setStats(json.stats || { total: 0, open: 0, closed: 0, winRate: 0, totalPnL: 0 });
-      }
-    } catch (e) {}
+      if (!json.success) throw new Error(json.error || "API error");
+      setTrades(json.trades || []);
+      setStats(json.stats || { total: 0, open: 0, closed: 0, winRate: 0, totalPnL: 0 });
+    } catch (e: any) {
+      setError(e?.message || "Failed to load");
+    }
     setLoading(false);
   };
 
@@ -80,10 +84,12 @@ export default function TradeJournal() {
         <div className="bg-[#1a1d28] border border-[#2a2e39] rounded-lg p-2">
           <div className="text-[9px] text-muted-foreground">Total P&L</div>
           <div className="font-mono font-bold text-xs" style={{ color: stats.totalPnL >= 0 ? "#22c55e" : "#ef4444" }}>
-            {stats.totalPnL >= 0 ? "+" : ""}{stats.totalPnL}
+            {stats.totalPnL > 0 ? "+" : ""}{stats.totalPnL}
           </div>
         </div>
       </div>
+
+      {error && <div className="text-[10px] text-red-400 bg-red-500/10 rounded px-2 py-1">{error}</div>}
 
       {/* Filters */}
       <div className="flex gap-2 items-center">

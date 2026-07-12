@@ -60,6 +60,8 @@ bun run dev        # starts on :3000
 | `src/app/api/agent/route.ts` | AI Agent (Angel) API with LLM |
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
+| `auto-bot/` | Breakout/Desk automated trading bot (sidecar service, port 8000) |
+| `src/components/auto-bot/BotDashboard.tsx` | Auto Bot tab UI — WebSocket + REST polling |
 
 ## Data Reality Check
 
@@ -80,15 +82,34 @@ bun run dev        # starts on :3000
 | Breeze auth | `icici-breeze/auth.ts` | Auto-retry on auth errors, re-inits session |
 | Live data engine | `live-data-engine.ts` | Breeze → NSE fallback chain (no simulation) |
 
-### What was removed
+### What was changed/removed
 - `historical-data.ts` — deleted (was 100% fake candle generator, no longer used)
 - `option-chain-data.ts` — deleted (was 100% fake option chain generator, no longer used)
 - `generateHistoricalChain()` — deleted from orca-backtest.ts and sdm-backtest.ts (was Math.random() fake option chains)
 - All Math.random() for stock technicals — replaced with deterministic defaults when Yahoo Finance data unavailable
 - **No simulation fallback exists anywhere** — APIs return 503 errors when real data unavailable
+- `auto-bot/` — added Breakout/Desk Python bot as sidecar service on port 8000
 
 ### Expiry day
 All indices expire on **Thursday** (weekday 3) per current SEBI rules. Fixed in master-bot-engine.ts and icici-breeze/option-chain.ts.
+
+## Auto Bot — Breakout/Desk Sidecar
+
+Long-only breakout screener for S&P 500 + Nifty 100 — paper mode (no broker). All signals auto-accepted and tracked as paper trades in the bot's SQLite DB. Dashboard shows stats, alerts, open positions, closed trades, win/loss chart.
+
+### Startup
+```bash
+cd auto-bot && ./start.sh            # starts Python engine on port 8000
+./stop.sh                            # stops the engine
+```
+
+The bot runs in paper mode — no IB Gateway, no Telegram required. Dashboard available at **Bot** tab in the app (polls `localhost:8000`).
+
+### Architecture
+- **Python 3.10+** with `yfinance`, `fastapi`, `websockets`
+- **SQLite** via `auto-bot/data/trades.db` (alerts, trades, alerted_tickers)
+- **WebSocket** at `ws://localhost:8000/ws` pushes dashboard snapshots every 5s
+- Dashboard tab in Next.js falls back to REST polling every 5s when WS disconnects
 
 ## Known Issues
 

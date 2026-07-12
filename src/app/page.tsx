@@ -37,6 +37,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
+import BotDashboard from '@/components/auto-bot/BotDashboard';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -232,7 +233,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'auto-bot'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -617,6 +618,11 @@ return (
               onClick={() => { setViewMode('terminal'); setDisplayMode('pro'); }}>
               <Monitor className="h-2.5 w-2.5 mr-0.5" /> Terminal
             </Button>
+            <Button variant={viewMode === 'auto-bot' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'auto-bot' ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/25' : 'text-muted-foreground hover:text-violet-500'}`}
+              onClick={() => { setViewMode('auto-bot'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Bot
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -632,6 +638,7 @@ return (
                 { mode: 'scanner', label: 'Scanner', icon: Scan, color: 'teal' },
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
+                { mode: 'auto-bot', label: 'Auto Bot', icon: Activity, color: 'violet' },
                 { mode: 'admin', label: 'Admin Panel', icon: Settings2, color: 'gray' },
               ].map((item) => (
                 <button
@@ -794,6 +801,11 @@ return (
         /* ═══════ ADMIN PANEL ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <AdminPanel />
+        </div>
+        ) : viewMode === 'auto-bot' ? (
+        /* ═══════ AUTO BOT ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <BotDashboard />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */

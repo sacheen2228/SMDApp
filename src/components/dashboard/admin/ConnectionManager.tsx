@@ -92,7 +92,7 @@ export default function ConnectionManager() {
         </div>
         {testResult?.status === "success" && (
           <div className="mt-2 text-[9px] text-muted-foreground">
-            Session valid. Data source will use Breeze API before falling back to NSE/Simulation.
+            Session valid. Data source will use Breeze API before falling back to NSE.
           </div>
         )}
       </div>
@@ -164,7 +164,7 @@ export default function ConnectionManager() {
           </button>
         </div>
         <div className="text-[9px] text-muted-foreground mt-2">
-          Clear cached simulation data to force fresh generation. Factory reset removes all preferences.
+          Clear manually fetched API cache. Factory reset removes all preferences.
         </div>
       </div>
 
@@ -208,7 +208,7 @@ export default function ConnectionManager() {
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-orange-500" />
-            <span>3. Simulation Engine (synthetic data, 5-min seed rotation)</span>
+            <span>3. (No simulation fallback — 503 when APIs unavailable)</span>
           </div>
         </div>
       </div>

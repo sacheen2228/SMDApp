@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #111118;
+    --bg-card: #16161f;
+    --bg-hover: #1c1c28;
+    --border-color: #2a2a3a;
+    --text-primary: #e8e8f0;
+    --text-secondary: #a0a0b8;
+    --text-muted: #6b6b80;
+    --accent-green: #00d084;
+    --accent-red: #ff4757;
+    --accent-blue: #3b82f6;
+    --accent-orange: #f59e0b;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl p-5;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+  }
+
+  .stat-value {
+    @apply text-3xl font-semibold tracking-tight;
+  }
+
+  .label {
+    @apply text-xs uppercase tracking-wider;
+    color: var(--text-muted);
+  }
+
+  .progress-rail {
+    @apply h-1.5 rounded-full overflow-hidden;
+    background-color: var(--bg-hover);
+  }
+
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-500;
+  }
+}
