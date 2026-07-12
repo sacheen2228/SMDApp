@@ -7,6 +7,7 @@ import {
   type BreakoutSignal,
   type Candle,
 } from "@/lib/candlestick-breakout";
+import { getLotSize } from "@/lib/symbol-config";
 
 // ─── Types ──────────────────────────────────────────────────────
 export interface HistoricalCandle {
@@ -180,10 +181,7 @@ function simulateTrade(
   oiScore: number,
   greekScore: number
 ): BacktestTrade {
-  const lotSizes: Record<string, number> = {
-    NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20,
-  };
-  const lotSize = lotSizes[symbol] || 65;
+  const lotSize = getLotSize(symbol) || 65;
 
   const entry = signal.entryPrice || signal.level;
   const sl = signal.slPrice || (signal.direction === "bullish" ? entry * 0.995 : entry * 1.005);

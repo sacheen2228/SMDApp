@@ -1,4 +1,12 @@
 // Symbol Configuration — lot sizes, tick sizes, and market-specific settings
+//
+// SINGLE SOURCE OF TRUTH for lot sizes. Do not redefine LOT_SIZES /
+// lotSizes / a hardcoded lot-size map anywhere else in the codebase —
+// import getLotSize()/SYMBOL_CONFIGS from here instead. (This file
+// replaced 4+ independently-drifting copies found across
+// trades/today, backtest-audit, BacktestPanel, agent-engine,
+// backtest-engine, SDMAIDashboard, and useTerminalStore — see
+// AGENTS.md changelog.)
 
 export interface SymbolConfig {
   symbol: string;
@@ -49,6 +57,22 @@ export const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
     tickSize: 0.05,
     maxLots: 25,
     typicalPremium: 150,
+  },
+  BANKEX: {
+    symbol: "BANKEX",
+    label: "BANKEX (BSE)",
+    lotSize: 30,
+    tickSize: 0.05,
+    maxLots: 25,
+    typicalPremium: 150,
+  },
+  NIFTYNXT50: {
+    symbol: "NIFTYNXT50",
+    label: "NIFTY NEXT 50",
+    lotSize: 25,
+    tickSize: 0.05,
+    maxLots: 25,
+    typicalPremium: 100,
   },
 };
 

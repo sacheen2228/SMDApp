@@ -503,21 +503,35 @@ export async function generateCandidates(
       (newsScore * 0.10)
     );
 
-    // Direction
-    const direction = totalScore >= 70 ? (isBullish ? "BULLISH" : isBearish ? "BEARISH" : "NEUTRAL") :
-                      totalScore <= 40 ? (isBullish ? "BEARISH" : isBearish ? "BULLISH" : "NEUTRAL") :
-                      "NEUTRAL";
+    // Direction from technical indicators (not totalScore threshold)
+    const bullSignals = (ema9 > ema21 ? 1 : 0) + (rsi > 50 ? 1 : 0) + (macd > macdSignal ? 1 : 0);
+    const bearSignals = (ema9 < ema21 ? 1 : 0) + (rsi < 50 ? 1 : 0) + (macd < macdSignal ? 1 : 0);
+    const direction = bullSignals >= 2 ? "BULLISH" : bearSignals >= 2 ? "BEARISH" : "NEUTRAL";
 
-    // Trade setup
-    const entry = direction === "BULLISH" ? basePrice * 1.005 :
-                  direction === "BEARISH" ? basePrice * 0.995 : basePrice;
-    const stopLoss = direction === "BULLISH" ? entry * 0.985 :
-                     direction === "BEARISH" ? entry * 1.015 : entry;
-    const target1 = direction === "BULLISH" ? entry * 1.02 :
-                    direction === "BEARISH" ? entry * 0.98 : entry;
-    const target2 = direction === "BULLISH" ? entry * 1.035 :
-                    direction === "BEARISH" ? entry * 0.965 : entry;
-    const riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
+    // Trade setup using ATR (stock-specific volatility, minimum 1% of price floor)
+    const atrFloor = Math.max(atr, basePrice * 0.01);
+    let entry: number, stopLoss: number, target1: number, target2: number, riskReward: number;
+    if (direction === "BULLISH") {
+      entry = basePrice;
+      stopLoss = basePrice - atrFloor * 1.5;
+      target1 = basePrice + atrFloor * 2;
+      target2 = basePrice + atrFloor * 3;
+    } else if (direction === "BEARISH") {
+      entry = basePrice;
+      stopLoss = basePrice + atrFloor * 1.5;
+      target1 = basePrice - atrFloor * 2;
+      target2 = basePrice - atrFloor * 3;
+    } else {
+      // NEUTRAL: ATR-based bands with mild RSI bias so levels never collapse
+      entry = basePrice;
+      const slDist = atrFloor * (rsi > 55 ? 1.2 : rsi < 45 ? 1.2 : 0.8);
+      const t1Dist = atrFloor * (rsi < 45 ? 1.2 : 1.5);
+      const t2Dist = atrFloor * (rsi < 45 ? 2.0 : 2.5);
+      stopLoss = basePrice - slDist;
+      target1 = basePrice + t1Dist;
+      target2 = basePrice + t2Dist;
+    }
+    riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
 
     // Grade
     let grade: StockCandidate["grade"] = "C";

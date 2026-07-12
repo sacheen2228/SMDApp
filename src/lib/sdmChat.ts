@@ -15,9 +15,11 @@ import {
   detectIntent,
   generateOptionAlert,
   generateEquityAlert,
+  generateMultiAlerts,
   formatAlertMessage,
   type TradeAlert,
   type OptionChainRow,
+  type IndexChainData,
   type NewsSentiment,
 } from "./tradeAlertEngine";
 
@@ -67,6 +69,10 @@ export interface SDMContext {
   fiiNetCr?: number;
   diiNetCr?: number;
   newsSentiment: NewsSentiment;
+  // Multi-symbol data: option chains for all 5 indices (NIFTY, BANKNIFTY,
+  // FINNIFTY, MIDCPNIFTY, SENSEX) so the handler can pick the best 2-3
+  // trades instead of always returning the requested symbol.
+  allChains?: IndexChainData[];
   // For equity fallback when the user asks for a stock trade
   equityLookup?: (symbol: string) => Promise<{
     ltp: number;
@@ -153,25 +159,39 @@ async function resolveIntent(
 
 // ─── Info formatters ──────────────────────────────────────────
 function formatNews(n: NewsSummary, lang: "en" | "hi"): string {
+  const moodDesc = n.score >= 75 ? "greed — be cautious, crowded trades reverse fast" :
+                   n.score >= 60 ? "optimism — healthy, but watch for complacency" :
+                   n.score >= 40 ? "neutral — no extreme positioning" :
+                   n.score >= 25 ? "fear — often creates the best entry points" :
+                   "extreme fear — historically, these are buying zones";
+
   if (lang === "hi") {
     const lines = [
-      `📰 बाज़ार का मूड: ${n.mood} (${n.score}/100)`,
-      `टॉप बुलिश: ${n.topBullish.join(", ") || "—"}`,
-      `टॉप बियरिश: ${n.topBearish.join(", ") || "—"}`,
+      `बाज़ार का मूड: ${n.mood} (${n.score}/100) — ${n.score >= 60 ? "सावधानी ज़रूरी है, भीड़ में मत चलो" : "डर में मौके छिपे हैं"}`,
       ``,
-      `ताज़ा ख़बरें:`,
+      `जहाँ पैसा जा रहा है: ${n.topBullish.join(", ") || "—"}`,
+      `जहाँ से पैसा निकल रहा है: ${n.topBearish.join(", ") || "—"}`,
+      ``,
+      `अहम ख़बरें:`,
       ...n.headlines.slice(0, 4).map((h) => `• [${h.sentiment}] ${h.title}`),
+      ``,
+      `तीस साल का अनुभव कहता है: खबरों के पीछे मत भागो — देखो बड़ा पैसा क्या कर रहा है। जब खबरें बहुत बुलिश हों, तो समझो मुनाफ़ा बुक करने का वक़्त आ गया।`,
     ];
     return lines.join("\n");
   }
   const lines = [
-    `📰 Market Mood: ${n.mood} (${n.score}/100)`,
+    `Here's the market picture I'm seeing right now:`,
     ``,
-    `Top Bullish: ${n.topBullish.join(", ") || "—"}`,
-    `Top Bearish: ${n.topBearish.join(", ") || "—"}`,
+    `Mood: ${n.mood} (${n.score}/100) — ${moodDesc}.`,
     ``,
-    `Latest headlines:`,
-    ...n.headlines.slice(0, 4).map((h) => `• [${h.sentiment}] ${h.title}`),
+    `Where the smart money is flowing:`,
+    `  Buying: ${n.topBullish.join(", ") || "—"}`,
+    `  Selling: ${n.topBearish.join(", ") || "—"}`,
+    ``,
+    `Headlines that matter:`,
+    ...n.headlines.slice(0, 4).map((h) => `  • [${h.sentiment}] ${h.title}`),
+    ``,
+    `What I've learned watching this for 29 years: don't trade the news — trade the reaction to the news. By the time a headline hits your screen, the professionals have already positioned. Watch what price DOES after the news, not the news itself. If good news can't push the market higher, that tells you everything you need to know.`,
   ];
   return lines.join("\n");
 }
@@ -179,34 +199,79 @@ function formatNews(n: NewsSummary, lang: "en" | "hi"): string {
 function formatGap(g: GapInfo, lang: "en" | "hi"): string {
   if (!g.available) {
     return lang === "hi"
-      ? "📉 गैप डेटा अभी उपलब्ध नहीं है (मार्केट बंद)। मार्केट के समय फिर ट्राई करें।"
-      : "📉 Gap data isn't available right now (market closed / Gift Nifty offline). Try during market hours.";
+      ? "गैप डेटा अभी नहीं आया — मार्केट बंद है। कल सुबह 8:30 बजे के बाद देखियेगा, तब गिफ़्ट निफ़्टी में लिक्विडिटी आती है।"
+      : "Gap data isn't available yet — the market is closed. Check after 8:30 AM when Gift Nifty liquidity picks up.";
   }
   const dir = (g.changePct ?? 0) > 0 ? (lang === "hi" ? "गैप ऊप" : "GAP UP") : (g.changePct ?? 0) < 0 ? (lang === "hi" ? "गैप डाउन" : "GAP DOWN") : (lang === "hi" ? "फ्लैट" : "FLAT");
   const sign = (g.change ?? 0) >= 0 ? "+" : "";
   const pctSign = (g.changePct ?? 0) >= 0 ? "+" : "";
-  if (lang === "hi") {
-    return `📈 गिफ़्ट निफ़्टी: ${fmt(g.price ?? 0)} (${sign}${fmt(g.change ?? 0)} पॉइंट / ${pctSign}${fmt(g.changePct ?? 0)}%)\nपिछला क्लोज़ ${fmt(g.previousClose ?? 0)} → ${dir} ओपन का संकेत। (स्रोत: ${g.source})`;
-  }
-  return `📈 Gift Nifty: ${fmt(g.price ?? 0)} (${sign}${fmt(g.change ?? 0)} pts / ${pctSign}${fmt(g.changePct ?? 0)}%)\nvs prev close ${fmt(g.previousClose ?? 0)} → suggests a ${dir} open. (source: ${g.source})`;
-}
 
-function formatCorrelation(c: CorrInfo, lang: "en" | "hi"): string {
   if (lang === "hi") {
     return [
-      `🔗 निफ़्टी–सेंसेक्स कोरिलेशन: ${c.overall.toFixed(3)} (पिछले 5 दिन ${c.last5d.toFixed(3)})`,
-      `बीटा: ${c.beta.toFixed(2)}`,
-      `संकेत: ${c.signal} — ${c.reason}`,
-      `टिप: ${c.tip}`,
-      `निफ़्टी ${fmt(c.niftyPrice)} | सेंसेक्स ${fmt(c.sensexPrice)}`,
+      `गिफ़्ट निफ़्टी क्या कह रहा है:`,
+      ``,
+      `${fmt(g.price ?? 0)} (${sign}${fmt(g.change ?? 0)} / ${pctSign}${fmt(g.changePct ?? 0)}%)`,
+      `कल का क्लोज़: ${fmt(g.previousClose ?? 0)}`,
+      ``,
+      `${dir} ओपन का संकेत है।`,
+      ``,
+      `29 साल में ये सीखा है: गैप हमेशा होल्ड नहीं होता। पहले 15-30 मिनट में मार्केट टेस्ट करता है कि गैप वैलिड है या नहीं। जल्दीबाज़ी में मत लीजिये — पहली घंटी के बाद 30 मिनट ज़रूर रुकिये। असली दिशा 10 बजे के बाद पता चलती है।`,
     ].join("\n");
   }
   return [
-    `🔗 Nifty–Sensex Correlation: ${c.overall.toFixed(3)} (last 5d ${c.last5d.toFixed(3)})`,
-    `Beta: ${c.beta.toFixed(2)}`,
-    `Signal: ${c.signal} — ${c.reason}`,
-    `Tip: ${c.tip}`,
-    `Nifty ${fmt(c.niftyPrice)} | Sensex ${fmt(c.sensexPrice)}`,
+    `Here's what Gift Nifty is telling us about tomorrow's open:`,
+    ``,
+    `Gift Nifty: ${fmt(g.price ?? 0)} (${sign}${fmt(g.change ?? 0)} pts / ${pctSign}${fmt(g.changePct ?? 0)}%)`,
+    `Previous close: ${fmt(g.previousClose ?? 0)}`,
+    ``,
+    `This points to a ${dir} open.`,
+    ``,
+    `Here's what 29 years has taught me about gaps: they fill more often than they hold. The first 30 minutes of the session is the market's way of testing whether the gap is real or just noise. Don't chase the open. Let the auction settle — watch what happens at the 10:00 AM mark. If the gap holds with volume confirming, then you can act. If it starts fading, the opening range gives you the real levels for the day.`,
+    ``,
+    `${(g.changePct ?? 0) > 0 ? "In a gap-up, the professionals are usually selling into strength. Be patient and wait for your entry — don't get caught in the opening auction frenzy." : (g.changePct ?? 0) < 0 ? "In a gap-down, the professionals are usually waiting to buy into weakness. Let the initial panic subside before you act." : "With no significant gap, the overnight session didn't give us a clear edge. Focus on the opening range — the real levels for the day get established in the first 30 minutes."}`,
+  ].join("\n");
+}
+function formatCorrelation(c: CorrInfo, lang: "en" | "hi"): string {
+  if (lang === "hi") {
+    return [
+      `निफ़्टी और सेंसेक्स का रिश्ता:`,
+      ``,
+      `कोरिलेशन: ${c.overall.toFixed(3)} (पिछले 5 दिन: ${c.last5d.toFixed(3)})`,
+      `बीटा: ${c.beta.toFixed(2)} — मतलब जब निफ़्टी 1% चलता है, सेंसेक्स ${(c.beta * 100).toFixed(1)}% चलता है`,
+      ``,
+      `संकेत: ${c.signal}`,
+      `क्यों: ${c.reason}`,
+      `क्या करें: ${c.tip}`,
+      ``,
+      `निफ़्टी: ${fmt(c.niftyPrice)} | सेंसेक्स: ${fmt(c.sensexPrice)}`,
+      ``,
+      `तीस साल का तजुर्बा बताता है: जब निफ़्टी और सेंसेक्स में डाइवर्जेंस हो, तो आमतौर पर निफ़्टी सही होता है — सेंसेक्स उसका पीछा करता है। अगर कोरिलेशन टूट रहा है, तो मार्केट में कोई बुनियादी बदलाव हो रहा है, उसे नज़रअंदाज़ मत कीजिये।`,
+    ].join("\n");
+  }
+  const corrDesc = c.overall > 0.95 ? "extremely tight — the two indices are moving almost in lockstep, which is normal for a bull phase" :
+                   c.overall > 0.8 ? "strong — they generally agree on direction" :
+                   c.overall > 0.5 ? "moderate — some divergence worth watching" :
+                   "breaking down — this is unusual and signals a regime shift";
+
+  const divergenceNote = Math.abs(c.last5d - c.overall) > 0.05
+    ? `What catches my eye: the 5-day correlation (${c.last5d.toFixed(3)}) has diverged from the long-term (${c.overall.toFixed(3)}). In my experience, this kind of short-term break often precedes a catch-up move — either Sensex accelerates or Nifty slows down. Watch for which one leads.`
+    : `Both indices are moving in sync, which tells me there's no hidden sector rotation creating arbitrage. Clean, directional market.`;
+
+  return [
+    `Here's what the Nifty-Sensex relationship is telling me:`,
+    ``,
+    `Correlation: ${c.overall.toFixed(3)} (last 5 days: ${c.last5d.toFixed(3)}) — ${corrDesc}.`,
+    `Beta: ${c.beta.toFixed(2)} — when Nifty moves 1%, Sensex moves ${(c.beta * 100).toFixed(1)}% on average.`,
+    ``,
+    `Signal: ${c.signal}`,
+    `Why: ${c.reason}`,
+    `What this means for you: ${c.tip}`,
+    ``,
+    `Nifty: ${fmt(c.niftyPrice)} | Sensex: ${fmt(c.sensexPrice)}`,
+    ``,
+    `${divergenceNote}`,
+    ``,
+    `One thing I've learned in 29 years: correlation is a snapshot, not a prediction. When it breaks, pay attention — a divergence between Nifty and Sensex usually means money is rotating between large-caps and the broader market. That's a signal in itself.`,
   ].join("\n");
 }
 
@@ -221,13 +286,13 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
       return {
         language,
         intentKind: "greeting",
-        text: "नमस्ते सचिन! 👋 मैं SDM हूँ। मैं लाइव ट्रेड (निफ़्टी, बैंकनिफ़्टी, फिननिफ़्टी, मिडकैप, सेंसेक्स), न्यूज़, गैप (गिफ़्ट निफ़्टी) और कोरिलेशन बता सकता हूँ। बताओ क्या चाहिये?",
+        text: "सचिन जी, नमस्ते। मैं 29 सालों से भारतीय बाज़ार देख रहा हूँ — Harshad Mehta के ज़माने से लेकर आज तक। मैं सिर्फ़ नंबर नहीं देता, बताता हूँ कि उनका मतलब क्या है। निफ़्टी, बैंकनिफ़्टी, फिननिफ़्टी, मिडकैप, सेंसेक्स — किसी का ट्रेड चाहिये? या मार्केट का मूड, गैप, कोरिलेशन देखना है? बताइये।",
       };
     }
     return {
       language,
       intentKind: "greeting",
-      text: "Hey sachin! 👋 I'm SDM. I can pull live **trades** (Nifty, BankNifty, FinNifty, Midcap, Sensex), **news**, **gap** (Gift Nifty) and **correlation** (Nifty–Sensex). What do you want?",
+      text: "Good to see you, Sachin. I've been watching these markets since before online trading existed — 29 years of Nifty openings, budget days, bear markets, bull runs, and everything in between. I don't just give you numbers; I read the tape and tell you what the smart money is doing. I can scan for trades across NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and SENSEX, give you the broader picture with news and sentiment, analyze the Gift Nifty gap for tomorrow's open, or break down the Nifty-Sensex correlation. What would you like me to look at?",
     };
   }
 
@@ -300,6 +365,106 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
       };
     }
 
+    // Multi-symbol scan when all-chains data is available.
+    // If user asked for a specific symbol, scope the scan to that one.
+    const scanChains = target && ctx.allChains
+      ? ctx.allChains.filter(c => c.symbol === target)
+      : ctx.allChains;
+    if (scanChains && scanChains.length >= 1) {
+      const alerts = generateMultiAlerts(
+        scanChains,
+        ctx.newsSentiment,
+        ctx.fiiNetCr,
+        ctx.diiNetCr
+      );
+
+      const isScoped = Boolean(target && ctx.allChains && ctx.allChains.length >= 2);
+      const scopeLabel = isScoped ? target : "all indices";
+
+      if (alerts.length === 0) {
+        // Fallback: return the best single trade even if low conviction,
+        // with an honest note that conviction is low.
+        const fallbackAlerts = scanChains
+          .map(idx => generateOptionAlert({
+            symbol: idx.symbol,
+            spot: idx.spot,
+            pcr: idx.pcr,
+            vix: idx.vix,
+            chain: idx.chain,
+            newsSentiment: ctx.newsSentiment,
+            fiiNetCr: ctx.fiiNetCr,
+            diiNetCr: ctx.diiNetCr,
+            expiryLabel: idx.expiryLabel,
+          }))
+          .filter((a): a is TradeAlert => a !== null)
+          .sort((a, b) => b.confidence - a.confidence);
+
+        if (fallbackAlerts.length > 0) {
+          const best = fallbackAlerts[0];
+          const text = language === "hi"
+            ? `${scopeLabel} स्कैन किया, लेकिन आज कोई हाई-कॉन्फिडेंस सेटअप नहीं मिला। बाज़ार की तस्वीर साफ़ नहीं है — OI डेटा कमज़ोर है, और न्यूज़ फ़्लो न्यूट्रल है। फिर भी जो सबसे अच्छा दिख रहा है वो ये है — लेकिन साइज़ छोटा रखिये, क्योंकि कन्विक्शन ज़्यादा नहीं है:\n\n${formatAlertMessage(best)}`
+            : `I scanned ${scopeLabel}, but nothing with high conviction is forming today. The picture isn't clean — OI data is thin and news flow is neutral. That said, here's the closest thing I found to a setup. Keep the size small — conviction is low:\n\n${formatAlertMessage(best)}`;
+          return { language, intentKind: "trade", alert: best, text };
+        }
+
+        return {
+          language,
+          intentKind: "trade",
+          text: language === "hi"
+            ? `${scopeLabel} स्कैन किया, लेकिन आज कोई सेटअप नहीं मिला। OI बिल्डअप और न्यूज़ फ़्लो कन्फर्म नहीं हो रहे — शायद मार्केट रेंज में है। एक बार और चेक करता हूँ।`
+            : `I scanned ${scopeLabel}, but found no actionable setup. OI buildup and news flow aren't aligning cleanly — the market may be in a range. I'll keep watching for a better entry.`,
+        };
+      }
+
+      // Format multi-trade text
+      const lines: string[] = [];
+      const introLine = isScoped
+        ? (language === "hi" ? `${target} के लिये आज का सेटअप:` : `Here's my read on ${target}:`)
+        : (language === "hi"
+          ? `आज सभी इंडेक्स स्कैन करने के बाद ये ट्रेड दिख रहे हैं:`
+          : `I scanned all 5 indices. Here's what's worth your attention today:`
+        );
+      lines.push(introLine);
+      lines.push(``);
+
+      alerts.forEach((a, i) => {
+        const isCall = a.optionType === "CE";
+        const dirEmoji = isCall ? "🟢" : "🔴";
+        const sideLabel = a.side === "BUY" ? (isCall ? "Bull Call" : "Bull Put") : (isCall ? "Bear Call" : "Bear Put");
+        const riskPct = a.entry > 0 ? Math.abs((a.entry - a.sl) / a.entry * 100).toFixed(1) : "—";
+        const rewardPct = a.entry > 0 ? Math.abs((a.tp1 - a.entry) / a.entry * 100).toFixed(1) : "—";
+        lines.push(`${dirEmoji} **${a.side} ${a.instrument}** — ${a.confidence}% confidence, Grade ${a.confidence >= 80 ? "A" : a.confidence >= 70 ? "B+" : "B"}`);
+        lines.push(`   Entry ₹${a.entry.toFixed(2)} • SL ₹${a.sl.toFixed(2)} (${riskPct}% risk)`);
+        if (a.tp2 !== a.tp1) {
+          lines.push(`   TP1 ₹${a.tp1.toFixed(2)} (${rewardPct}% gain) → TP2 ₹${a.tp2.toFixed(2)}`);
+        } else {
+          lines.push(`   Target ₹${a.tp1.toFixed(2)} (${rewardPct}% gain)`);
+        }
+        lines.push(`   R:R 1:${a.rr.toFixed(1)} • ${a.rationale.split("·").map(r => r.trim()).filter(Boolean)[0] || ""}`);
+        lines.push(``);
+      });
+
+      // Veteran closing note
+      lines.push(isScoped
+        ? (language === "hi"
+          ? `साइज़ छोटा रखिये, स्टॉप का सम्मान कीजिये। ${target} में आज यही दिख रहा है।`
+          : `Keep your size in check and respect your stops. That's what I'm seeing in ${target} right now.`
+        )
+        : (language === "hi"
+          ? `ये मेरे टॉप पिक्स हैं। हर ट्रेड में 2% से ज़्यादा रिस्क मत लीजिये। मार्केट आपका इंतज़ार करेगा — धैर्य रखिये।`
+          : `Those are my top picks across the board. Remember: risk per trade stays under 2% of capital. The market will wait for you — patience is what separates the professionals from the rest.`
+        )
+      );
+
+      return {
+        language,
+        intentKind: "trade",
+        alert: alerts[0], // show the top card in the UI
+        text: lines.join("\n"),
+      };
+    }
+
+    // Fallback: single-symbol scan (Telegram / no multi-chain data)
     const alert = generateOptionAlert({
       symbol: target,
       spot: ctx.spot,
@@ -323,11 +488,13 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
       };
     }
 
-    const text = language === "hi"
-      ? `यह रहा आपका ट्रेड:\n\n${formatAlertMessage(alert)}`
-      : `Here's your trade:\n\n${formatAlertMessage(alert)}`;
-
-    return { language, intentKind: "trade", symbol: target, alert, text };
+    return {
+      language,
+      intentKind: "trade",
+      symbol: target,
+      alert,
+      text: formatAlertMessage(alert),
+    };
   }
 
   // ── Unknown ──
@@ -335,7 +502,7 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
     language,
     intentKind: "unknown",
     text: language === "hi"
-      ? "मैं ट्रेड, न्यूज़, गैप और कोरिलेशन बता सकता हूँ। जैसे: \"निफ़्टी का ट्रेड दो\", \"मार्केट न्यूज़ क्या है\", \"गिफ़्ट निफ़्टी गैप\", \"कोरिलेशन सिग्नल\"।"
-      : "I can help with trades, news, gap (Gift Nifty) and correlation. Try: \"Nifty trade\", \"market news\", \"Gift Nifty gap\", \"correlation signal\".",
+      ? "मैं निफ़्टी, बैंकनिफ़्टी, फिननिफ़्टी, मिडकैप और सेंसेक्स में ट्रेड बता सकता हूँ। इसके अलावा मार्केट न्यूज़, गिफ़्ट निफ़्टी गैप, और निफ़्टी-सेंसेक्स कोरिलेशन भी देख सकता हूँ। आप क्या जानना चाहेंगे?"
+      : "I can help with trades across NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and SENSEX — plus market news, Gift Nifty gap analysis for tomorrow's open, and Nifty-Sensex correlation. What interests you?",
   };
 }

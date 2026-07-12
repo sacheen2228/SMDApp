@@ -123,6 +123,26 @@ export async function GET(request: NextRequest) {
       }
     }
     
+    // Known symbols with no data source — return 200 with not_available flag for better UX
+    const noDataSymbols = ['BANKEX', 'SENSEX']; // BSE F&O not available via Breeze/NSE APIs
+    if (!chainData && noDataSymbols.includes(symbol)) {
+      return NextResponse.json({
+        success: true,
+        source: 'unavailable',
+        lastUpdate: new Date().toISOString(),
+        data: {
+          data: [],
+          spotPrice: 0,
+          summary: { spotPrice: 0, indiaVIX: 15, maxPain: 0 },
+          expiries: [],
+          selectedExpiry: '',
+          dataSource: 'unavailable',
+          notAvailable: true,
+        },
+        analysis: { recommendation: { action: 'WAIT', reason: 'No data source available' } },
+      });
+    }
+
     // If no real data available, try Yahoo Finance for spot price
     if (!chainData) {
       try {
@@ -155,25 +175,6 @@ export async function GET(request: NextRequest) {
         chainData.summary = chainData.summary || { spotPrice, indiaVIX: 15 };
         chainData.summary.spotPrice = spotPrice;
       } else {
-        // Known symbols with no data source — return 200 with not_available flag for better UX
-        const noDataSymbols = ['BANKEX']; // Add other symbols here if needed
-        if (noDataSymbols.includes(symbol)) {
-          return NextResponse.json({
-            success: true,
-            source: 'unavailable',
-            lastUpdate: new Date().toISOString(),
-            data: {
-              data: [],
-              spotPrice: 0,
-              summary: { spotPrice: 0, indiaVIX: 15, maxPain: 0 },
-              expiries: [],
-              selectedExpiry: '',
-              dataSource: 'unavailable',
-              notAvailable: true,
-            },
-            analysis: { recommendation: { action: 'WAIT', reason: 'No data source available' } },
-          });
-        }
         return NextResponse.json({
           success: false,
           error: "No option chain data available for this symbol. Breeze, NSE, and Yahoo Finance all failed.",

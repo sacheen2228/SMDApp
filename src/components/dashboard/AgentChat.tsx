@@ -342,11 +342,12 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
     speakChunks(text, natural || null, () => { clearTimeout(safetyTimeout); cleanup(); });
   };
 
-  const callSDM = async (query: string): Promise<SDMResponse> => {
+  const callSDM = async (query: string, signal?: AbortSignal): Promise<SDMResponse> => {
     const res = await fetch("/api/sdm-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: query, symbol }),
+      signal,
     });
     if (!res.ok) throw new Error("request_failed");
     const data = await res.json();
@@ -377,7 +378,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
     const timeout = setTimeout(() => controller.abort(), 90000);
 
     try {
-      const reply = await callSDM(query);
+      const reply = await callSDM(query, controller.signal);
       clearTimeout(timeout);
       setMessages((prev) =>
         prev.map((m) =>

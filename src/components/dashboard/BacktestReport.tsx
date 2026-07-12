@@ -4,6 +4,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { getLotSize } from "@/lib/symbol-config";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,17 +34,6 @@ interface SimResult {
   expectancy: number;
   riskOfRuin: number;
   kellyPct: number;
-}
-
-function getLotSize(symbol: string): number {
-  const map: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    SENSEX: 20,
-  };
-  return map[symbol] || 65;
 }
 
 function simulateLots(

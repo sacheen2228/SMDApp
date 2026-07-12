@@ -7,14 +7,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleSDMMessage, type SDMContext, type NewsSummary, type GapInfo, type CorrInfo } from "@/lib/sdmChat";
 import { fetchNewsSentiment } from "@/lib/newsSentimentAdapter";
-import { detectIntent } from "@/lib/tradeAlertEngine";
+import { detectIntent, type OptionChainRow, type IndexChainData } from "@/lib/tradeAlertEngine";
 import { llmResolveIntent } from "@/lib/llmResolve";
 import { getHistory, appendTurn } from "@/lib/historyStore";
-import type { OptionChainRow } from "@/lib/tradeAlertEngine";
 
 const CHAT_KEY = "web"; // in-app chat shares one conversation context
 
 const BASE = process.env.INTERNAL_API_BASE || "";
+
+const ALL_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
+
+async function fetchIndexChain(symbol: string, base: string): Promise<IndexChainData | null> {
+  try {
+    const res = await fetch(`${base}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+    });
+    const json = await res.json();
+    const d = json?.data;
+    if (!d) return null;
+    return {
+      symbol,
+      spot: d.spotPrice || d.summary?.spotPrice || 0,
+      pcr: d.summary?.pcr ?? 1,
+      vix: d.summary?.indiaVIX ?? 15,
+      expiryLabel: d.expiries?.[0]?.label || d.summary?.selectedExpiry,
+      chain: (d.data || []).map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? {
+          ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0,
+          iv: row.ce.iv || 0, delta: row.ce.delta || 0, vol: row.ce.volume || row.ce.vol || 0,
+        } : { ltp: 0, oi: 0, oiChg: 0, iv: 0, delta: 0, vol: 0 },
+        pe: row.pe ? {
+          ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0,
+          iv: row.pe.iv || 0, delta: row.pe.delta || 0, vol: row.pe.volume || row.pe.vol || 0,
+        } : { ltp: 0, oi: 0, oiChg: 0, iv: 0, delta: 0, vol: 0 },
+      })),
+    };
+  } catch { return null; }
+}
+
+async function fetchAllIndexChains(base: string): Promise<IndexChainData[]> {
+  const results = await Promise.allSettled(ALL_INDICES.map(sym => fetchIndexChain(sym, base)));
+  return results
+    .map((r, i) => r.status === "fulfilled" && r.value ? r.value : null)
+    .filter((v): v is IndexChainData => v !== null && v.chain.length > 0);
+}
 
 function mapNews(json: any): NewsSummary | null {
   const m = json?.data;
@@ -101,7 +139,10 @@ async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
 
   const newsSentiment = await fetchNewsSentiment(symbol, base).catch(() => ({ score: 0 }));
 
-  const ctx: SDMContext = { symbol, spot, pcr, vix, chain, expiryLabel, newsSentiment };
+  // Fetch all 5 index chains in parallel for multi-symbol trade scanning
+  const allChains = await fetchAllIndexChains(base);
+
+  const ctx: SDMContext = { symbol, spot, pcr, vix, chain, expiryLabel, newsSentiment, allChains };
 
   // Live lookups for the info intents (fetched on demand)
   ctx.newsLookup = async () => {
@@ -141,6 +182,19 @@ export async function POST(req: NextRequest) {
     const detected = detectIntent(message);
     const tradeSymbol = detected.symbol ?? symbol;
     const ctx = await buildContext(tradeSymbol, base);
+
+    // If the primary symbol has no chain data, return "not available" immediately
+    // so the trade card never shows wrong data from a different index.
+    if (!ctx.chain.length) {
+      return NextResponse.json({
+        text: `Option chain data for ${tradeSymbol} isn't available right now — try again shortly.`,
+        language: "en",
+        alert: null,
+        intentKind: "trade",
+        symbol: tradeSymbol,
+      });
+    }
+
     const reply = await handleSDMMessage(message, ctx);
 
     // Persist this turn so follow-ups ("same for banknifty") resolve via context

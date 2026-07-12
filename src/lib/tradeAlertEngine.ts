@@ -53,22 +53,33 @@ export interface NewsSentiment {
   source?: string;
 }
 
-// ─── Core scoring: reuse the same bias logic as Gap Analysis so the
-// chatbot's "why" lines up with what the Gap Analysis tab shows. ────
+// ─── Core scoring: multi-factor bias detection using live OI, Greeks,
+// IV skew, volume, FII/DII flow, and news sentiment. ────
 function computeBias(inputs: EngineInputs) {
   let score = 0;
   const reasons: string[] = [];
 
-  if (inputs.pcr > 1.2) { score += 12; reasons.push(`PCR ${inputs.pcr.toFixed(2)} favors upside`); }
-  else if (inputs.pcr < 0.8) { score -= 12; reasons.push(`PCR ${inputs.pcr.toFixed(2)} favors downside`); }
+  // 1. PCR — put-call ratio tells us where option writers are leaning
+  if (inputs.pcr > 1.2) { score += 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — puts building, support forming`); }
+  else if (inputs.pcr < 0.8) { score -= 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — calls building, resistance forming`); }
 
-  if (inputs.newsSentiment.score > 0.2) { score += 15 * inputs.newsSentiment.score; reasons.push(`News flow leaning positive${inputs.newsSentiment.topHeadline ? `: "${inputs.newsSentiment.topHeadline.slice(0, 60)}"` : ""}`); }
-  else if (inputs.newsSentiment.score < -0.2) { score += 15 * inputs.newsSentiment.score; reasons.push(`News flow leaning negative${inputs.newsSentiment.topHeadline ? `: "${inputs.newsSentiment.topHeadline.slice(0, 60)}"` : ""}`); }
+  // 2. VIX regime — volatility tells us the market's fear level
+  if (inputs.vix > 28) { score -= 5; reasons.push(`VIX ${inputs.vix.toFixed(1)} — elevated fear, wide stops needed`); }
+  else if (inputs.vix > 22) { score -= 2; reasons.push(`VIX ${inputs.vix.toFixed(1)} — moderate volatility`); }
+  else if (inputs.vix < 13) { score += 3; reasons.push(`VIX ${inputs.vix.toFixed(1)} — low vol, trending conditions`); }
 
+  // 3. News sentiment — institutional flow via headlines
+  if (Math.abs(inputs.newsSentiment.score) > 0.15) {
+    const factor = 12 * inputs.newsSentiment.score;
+    score += factor;
+    reasons.push(`News flow ${factor > 0 ? "positive" : "negative"}${inputs.newsSentiment.topHeadline ? `: "${inputs.newsSentiment.topHeadline.slice(0, 60)}"` : ""}`);
+  }
+
+  // 4. FII/DII institutional flow
   const net = (inputs.fiiNetCr ?? 0) + (inputs.diiNetCr ?? 0);
-  if (Math.abs(net) > 200) { score += Math.max(-10, Math.min(10, net / 500)); reasons.push(`FII+DII net ₹${net.toFixed(0)} Cr`); }
+  if (Math.abs(net) > 200) { score += Math.max(-8, Math.min(8, net / 500)); reasons.push(`FII+DII net ₹${net.toFixed(0)} Cr — ${net > 0 ? "institutions buying" : "institutions selling"}`); }
 
-  // Chain-wide OI buildup, distance-weighted (same approach as Gap Analysis).
+  // 5. Chain-wide OI buildup, distance-weighted
   let ceScore = 0, peScore = 0;
   for (const row of inputs.chain) {
     const dist = Math.abs(row.strike - inputs.spot);
@@ -78,10 +89,45 @@ function computeBias(inputs: EngineInputs) {
   }
   const oiNet = peScore - ceScore;
   const oiMag = Math.abs(ceScore) + Math.abs(peScore) || 1;
-  if (Math.abs(oiNet) / oiMag > 0.08) {
+  if (oiMag > 0 && Math.abs(oiNet) / oiMag > 0.05) {
     const bullish = oiNet > 0;
-    score += bullish ? 10 : -10;
-    reasons.push(`Chain-wide OI ${bullish ? "put writing (support building)" : "call writing (resistance building)"}`);
+    score += bullish ? 8 : -8;
+    reasons.push(`OI weighted ${bullish ? "put accumulation (support zone)" : "call accumulation (resistance zone)"}`);
+  }
+
+  // 6. IV skew — implied volatility premium between calls and puts at ATM
+  const atmRow = nearestStrike(inputs.chain, inputs.spot);
+  if (atmRow && atmRow.ce.iv > 0 && atmRow.pe.iv > 0) {
+    const skew = atmRow.ce.iv / atmRow.pe.iv;
+    if (skew > 1.12) { score -= 6; reasons.push(`CE IV premium ${(skew - 1) * 100 > 10 ? `${((skew - 1) * 100).toFixed(0)}%` : ""} over PE — call sellers active`); }
+    else if (skew < 0.88) { score += 6; reasons.push(`PE IV premium ${((1 / skew - 1) * 100).toFixed(0)}% over CE — put sellers active`); }
+
+    // Delta balance at ATM
+    const ceDelta = Math.abs(atmRow.ce.delta || 0);
+    const peDelta = Math.abs(atmRow.pe.delta || 0);
+    if (ceDelta > 0 && peDelta > 0) {
+      const deltaRatio = ceDelta / peDelta;
+      if (deltaRatio > 1.5) { score += 4; reasons.push(`Delta skew favors calls (bullish positioning)`); }
+      else if (deltaRatio < 0.67) { score -= 4; reasons.push(`Delta skew favors puts (bearish positioning)`); }
+    }
+  }
+
+  // 7. Volume confirmation at ATM
+  if (atmRow) {
+    const atmVol = (atmRow.ce.vol || 0) + (atmRow.pe.vol || 0);
+    if (atmVol > 50000) { score += 3; reasons.push(`High ATM volume — liquid, reliable contract`); }
+    else if (atmVol > 10000) { score += 1; }
+  }
+
+  // 8. OI concentration — identify where the most OI sits relative to spot
+  if (inputs.chain.length > 2) {
+    const sorted = [...inputs.chain].sort((a, b) => (b.ce.oi + b.pe.oi) - (a.ce.oi + a.pe.oi));
+    const topStrike = sorted[0];
+    if (topStrike) {
+      const diff = topStrike.strike - inputs.spot;
+      if (diff > inputs.spot * 0.01) { score += 3; reasons.push(`Max OI above spot (₹${topStrike.strike}) — call wall`); }
+      else if (diff < -inputs.spot * 0.01) { score -= 3; reasons.push(`Max OI below spot (₹${topStrike.strike}) — put wall`); }
+    }
   }
 
   return { score, bullish: score >= 0, reasons };
@@ -174,14 +220,93 @@ export function generateEquityAlert(params: {
 // ─── Formatting: one function, used by both chat UI and Telegram ────
 export function formatAlertMessage(alert: TradeAlert, opts?: { markdown?: boolean }): string {
   const b = opts?.markdown ? "*" : "";
-  const rrLine = `R:R 1:${alert.rr}`;
-  const lines = [
-    `${b}${alert.side} ${alert.instrument}${b}  (${alert.confidence}% confidence)`,
-    `Entry ₹${alert.entry.toFixed(2)}  •  SL ₹${alert.sl.toFixed(2)}  •  TP1 ₹${alert.tp1.toFixed(2)}  •  TP2 ₹${alert.tp2.toFixed(2)}  •  ${rrLine}`,
-    `Why: ${alert.rationale}`,
-  ];
-  if (alert.expiry) lines.splice(1, 0, `Expiry: ${alert.expiry}`);
+  const isCall = alert.optionType === "CE";
+  const sideLabel = alert.side === "BUY" ? (isCall ? "Bull Call" : "Bull Put") : (isCall ? "Bear Call" : "Bear Put");
+  const entryVal = alert.entry;
+  const slVal = alert.sl;
+  const tp1Val = alert.tp1;
+  const tp2Val = alert.tp2;
+  const riskPct = entryVal > 0 ? Math.abs((entryVal - slVal) / entryVal * 100).toFixed(1) : "—";
+  const rewardPct = entryVal > 0 ? Math.abs((tp1Val - entryVal) / entryVal * 100).toFixed(1) : "—";
+  const rrText = `${(alert.rr).toFixed(1)}`;
+
+  const lines: string[] = [];
+
+  lines.push(`Here's my read on ${alert.symbol}:`);
+  lines.push(``);
+  lines.push(`${b}The setup I like → ${alert.side} ${alert.instrument}${b}`);
+  if (alert.expiry) lines.push(`Expiry: ${alert.expiry}`);
+  lines.push(``);
+  lines.push(`Why this makes sense:`);
+  lines.push(alert.rationale.split("·").map(r => r.trim()).filter(Boolean).join("\n"));
+  lines.push(``);
+  lines.push(`Entry: ₹${entryVal.toFixed(2)}`);
+  lines.push(`Stop: ₹${slVal.toFixed(2)} (${riskPct}% risk)`);
+  if (tp2Val !== tp1Val) {
+    lines.push(`Target 1: ₹${tp1Val.toFixed(2)} (${rewardPct}% gain — book half here, move stop to breakeven)`);
+    lines.push(`Target 2: ₹${tp2Val.toFixed(2)} (let the rest ride)`);
+  } else {
+    lines.push(`Target: ₹${tp1Val.toFixed(2)} (${rewardPct}% gain)`);
+  }
+  lines.push(`Risk:Reward — 1:${rrText}`);
+  lines.push(``);
+
+  // Veteran wisdom varies by confidence
+  if (alert.confidence >= 80) {
+    lines.push(`I've seen this pattern enough times to have conviction. The stars are aligned — PCR supporting, OI building in the right direction, and the flow is with us. Size according to your plan, but this is one where you can lean in a bit more.`);
+  } else if (alert.confidence >= 65) {
+    lines.push(`Decent setup, but I'd keep position size moderate. The probabilities tilt our way, but the market has a way of humbling you when you get overconfident. Take what it gives you and don't get greedy.`);
+  } else {
+    lines.push(`This is more of a feeler — not a conviction trade. If you take it, keep it small. The data is mixed: some things line up, others don't. In my experience, these are the trades where tight stops matter most.`);
+  }
+
+  lines.push(``);
+  lines.push(`One thing I've learned in 29 years: the market loves to run stops before it runs in the real direction. If you see price dip just below your entry right after getting in, don't panic — professionals are triggering the weak hands. Stay with your plan unless the thesis breaks.`);
+  lines.push(``);
+  lines.push(`Size is everything. Never risk more than 2% of your capital on any single idea.`);
+
   return lines.join("\n");
+}
+
+// ─── Multi-symbol scanner (all 5 indices) ─────────────────────────
+export interface IndexChainData {
+  symbol: string;
+  spot: number;
+  pcr: number;
+  vix: number;
+  chain: OptionChainRow[];
+  expiryLabel?: string;
+}
+
+export function generateMultiAlerts(
+  chains: IndexChainData[],
+  newsSentiment: NewsSentiment,
+  fiiNetCr?: number,
+  diiNetCr?: number
+): TradeAlert[] {
+  const candidates: TradeAlert[] = [];
+
+  for (const idx of chains) {
+    if (!idx.chain.length) continue;
+    const alert = generateOptionAlert({
+      symbol: idx.symbol,
+      spot: idx.spot,
+      pcr: idx.pcr,
+      vix: idx.vix,
+      chain: idx.chain,
+      newsSentiment,
+      fiiNetCr,
+      diiNetCr,
+      expiryLabel: idx.expiryLabel,
+    });
+    if (alert) candidates.push(alert);
+  }
+
+  // Filter out low-conviction trades — only show setups with meaningful R:R
+  const filtered = candidates.filter(a => a.confidence >= 65 && a.rr >= 1.5);
+
+  // Sort by confidence descending, top 3
+  return filtered.sort((a, b) => b.confidence - a.confidence).slice(0, 3);
 }
 
 // ─── Intent detection for free-text chat / Telegram messages ────────

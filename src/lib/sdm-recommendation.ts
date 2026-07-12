@@ -53,16 +53,12 @@ import {
   getPositionSizeMultiplier,
   type SessionInfo,
 } from './market-session';
+import { getLotSize } from './symbol-config';
 
 // ─── Constants ────────────────────────────────────────────────────
-
-const LOT_SIZES: Record<string, number> = {
-  NIFTY: 65,
-  BANKNIFTY: 30,
-  FINNIFTY: 60,
-  MIDCPNIFTY: 120,
-  SENSEX: 20,
-};
+// Lot sizes now come from src/lib/symbol-config.ts (single source of
+// truth) — see getLotSize() import above, local LOT_SIZES map
+// removed to prevent drift from the canonical values.
 
 const DEFAULT_RISK_STATE: RiskState = {
   dailyPnL: 0,
@@ -110,9 +106,7 @@ function computeATR(candles: CandleData[], period: number = 14): number {
   return atr;
 }
 
-function getLotSize(symbol: string): number {
-  return LOT_SIZES[symbol] || 65;
-}
+// getLotSize() now imported from '@/lib/symbol-config' (see imports above)
 
 function computeDaysToExpiry(expiryDate: string): number {
   const today = new Date();

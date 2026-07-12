@@ -10,6 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { getLotSize } from '@/lib/symbol-config';
 
 const W = { htf: 20, oi: 20, pcr: 10, greeks: 15, vwap: 10, volume: 10, sweep: 5, bos: 5, choch: 5, fiidii: 10 };
 const MAX_TRADES = 4;
@@ -224,7 +225,7 @@ export function SDMAIDashboard() {
 
         const atmStrike = atm;
         const spotPrice = d.spotPrice || 0;
-        const lotSize = symbol === 'NIFTY' ? 65 : symbol === 'BANKNIFTY' ? 25 : 20;
+        const lotSize = getLotSize(symbol) || 65;
 
         const trades = buildTradesFromSignal(signal, spotPrice, atmStrike, symbol, lotSize);
         setTrades(trades);
@@ -274,7 +275,7 @@ export function SDMAIDashboard() {
       maxPain: maxPain,
       atm: atmStrike,
       spot: spotPrice,
-      lotSize: symbol === 'NIFTY' ? 65 : 25,
+      lotSize: lotSize,
       moneyness: moneyness,
       dist: dist,
       reasons,

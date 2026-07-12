@@ -34,9 +34,10 @@ import { AdminPanel } from '@/components/dashboard/AdminPanel';
 import { ScannerPanel } from '@/components/dashboard/ScannerPanel';
 import { NewsPanel } from '@/components/dashboard/NewsPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { ResizablePanel } from '@/components/ui/resizable-panel';
+
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
+
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
 import type { SDMRecommendation } from '@/types/sdm';
@@ -324,6 +325,11 @@ export default function TradingDashboard() {
       atmStrike,
     };
   })();
+
+  // V2 recommendation, produced by SDMBot.tsx (generateTradeRecommendation /
+  // sdm-recommendation.ts) — kept separate from the legacy `recommendation`
+  // memo below (built from sdm-engine.ts's older shape) so we don't mix the
+  // two engines' output into one variable.
 
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. The API returns analysis.recommendation + analysis.pcr / vix /
@@ -791,7 +797,7 @@ return (
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
-        <div className="flex-1 overflow-hidden">
+        <div className="flex flex-1 overflow-hidden">
           <ZeroHeroTerminal />
         </div>
         ) : (
@@ -812,34 +818,7 @@ return (
 </div>
       )}
       
-      {/* ─── Footer ─── */}
-      <footer className="border-t bg-card/95 px-3 py-1.5">
-        <div className="flex items-center justify-between text-[9px] text-muted-foreground">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-red-500/40 inline-block" /> Call OI</span>
-            <span className="flex items-center gap-1"><span className="w-6 h-1.5 rounded bg-emerald-500/40 inline-block" /> Put OI</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" /> ATM</span>
-            <span className="border-l border-border pl-2">Lot: {getLotSize(symbol)}</span>
-            <span>Lot × 25 = {getLotSize(symbol) * 25} qty</span>
-          </div>
-          <div className="flex items-center gap-3">
-            {marketSession && (
-              <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium ${
-                marketSession.session === 'primary' ? 'bg-emerald-500/20 text-emerald-500' :
-                marketSession.session === 'closed' ? 'bg-red-500/20 text-red-500' :
-                'bg-yellow-500/20 text-yellow-500'
-              }`}>
-                {marketSession.label}
-              </span>
-            )}
-            {data?.timestamp && (
-              <span>Updated: {new Date(data.timestamp).toLocaleTimeString('en-IN')}</span>
-            )}
-          </div>
-        </div>
-</footer>
-       
-       {/* ─── Order Panel (Modal) ─── */}
+      {/* ─── Order Panel (Modal) ─── */}
        <OrderPanel />
        
 {/* ─── Mobile Navigation ─── */}

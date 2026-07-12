@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-
-const LOT_SIZES: Record<string, number> = {
-  NIFTY: 65, BANKNIFTY: 25, FINNIFTY: 20, MIDCPNIFTY: 50,
-  SENSEX: 20, BANKEX: 15,
-};
+import { getLotSize } from "@/lib/symbol-config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -38,7 +34,7 @@ export async function GET(req: NextRequest) {
     });
 
     const rows = trades.map((t) => {
-      const lotSize = LOT_SIZES[t.symbol?.toUpperCase() || ""] || Number(t.positionSize) || 50;
+      const lotSize = getLotSize(t.symbol?.toUpperCase() || "") || Number(t.positionSize) || 65;
       const exitPrice = t.exitPrice ? t.exitPrice :
         t.status === "TP_HIT" ? (Number(t.target1) || 0) :
         t.status === "SL_HIT" ? (Number(t.stopLoss) || 0) : null;

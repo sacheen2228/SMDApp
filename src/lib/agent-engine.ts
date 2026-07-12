@@ -1,6 +1,8 @@
 // SDM Agent Engine
 // Pattern-matching brain that answers questions using live market data + trade history
 
+import { getLotSize } from './symbol-config';
+
 export interface AgentContext {
   symbol: string;
   spotPrice: number;
@@ -374,8 +376,7 @@ const intents: Intent[] = [
   {
     patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i],
     handler: (ctx) => {
-      const lotSizes: Record<string, number> = { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20 };
-      const lot = lotSizes[ctx.symbol] || 65;
+      const lot = getLotSize(ctx.symbol) || 65;
       const price = ctx.analysis?.recommendation?.entryPrice || 0;
       const sl = ctx.analysis?.recommendation?.stopLoss || 0;
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
@@ -437,8 +438,7 @@ const intents: Intent[] = [
   {
     patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i, /stop\s*loss/i, /sl\b/i],
     handler: (ctx) => {
-      const lotSizes: Record<string, number> = { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20 };
-      const lot = lotSizes[ctx.symbol] || 65;
+      const lot = getLotSize(ctx.symbol) || 65;
       const price = ctx.analysis?.recommendation?.entryPrice || 70;
       const sl = ctx.analysis?.recommendation?.stopLoss || 45;
       const riskPerLot = Math.abs(price - sl) * lot;

@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import { getNSEHistoricalData } from "@/lib/nse-api";
 import { initSession } from "@/lib/icici-breeze/auth";
 import { getOptionChain } from "@/lib/icici-breeze/option-chain";
+import { getLotSize } from "@/lib/symbol-config";
 import {
   getIntradayCandles,
   verifyTradeAgainstCandles,
@@ -20,12 +21,6 @@ import {
   TradeVerificationResult,
   computeAIPredictionAccuracy,
 } from "@/lib/breeze-historical";
-
-// ─── Lot sizes (kept in sync with trades/today + BacktestPanel) ──
-const LOT_SIZES: Record<string, number> = {
-  NIFTY: 65, BANKNIFTY: 25, FINNIFTY: 20, MIDCPNIFTY: 50,
-  SENSEX: 20, BANKEX: 15,
-};
 
 // ─── Types (mirror the JSON contract the frontend consumes) ──
 export interface AuditTrade {
@@ -184,8 +179,8 @@ function auditTrade(
   const lot =
     Number(row.positionSize) ||
     Number(row.lotSize) ||
-    LOT_SIZES[symbol] ||
-    50;
+    getLotSize(symbol) ||
+    65;
 
   const statusKey = dbStatus.toUpperCase();
   const isTp = statusKey === "TP_HIT";
@@ -506,7 +501,7 @@ export async function runTradeAudit(opts: {
       entryTime: row.entryTime ? new Date(row.entryTime) : new Date(),
       exitTime: row.exitTime ? new Date(row.exitTime) : undefined,
       positionSize: row.positionSize,
-      lotSize: Number(row.positionSize) || LOT_SIZES[sym] || 50,
+      lotSize: Number(row.positionSize) || getLotSize(sym) || 65,
       direction,
     }, candles);
 
