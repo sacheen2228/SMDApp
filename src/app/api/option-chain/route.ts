@@ -402,12 +402,19 @@ export async function GET(request: NextRequest) {
 
     // Attach live India VIX + previous close to the response summary (and the
     // SDM analysis) for every source path. We never fabricate these — when the
-    // live feed was unavailable they stay null and the UI shows "—".
+    // live feed was unavailable they stay null and the UI shows "—". Also copy
+    // the real computed PCR / OI / ATM / maxPain so any component reading
+    // data.summary directly (instead of analysis) sees complete live values.
     chainData.summary = chainData.summary || {};
     chainData.summary.indiaVIX = liveVix;
     chainData.summary.prevClose = livePrevClose;
     chainData.summary.vixLive = liveVix != null;
     chainData.summary.prevCloseLive = livePrevClose != null;
+    chainData.summary.pcr = analysis?.pcr ?? chainData.summary.pcr ?? 1;
+    chainData.summary.maxPain = analysis?.maxPain ?? chainData.summary.maxPain ?? 0;
+    chainData.summary.totalCallOI = analysis?.totalCallOI ?? chainData.summary.totalCallOI ?? 0;
+    chainData.summary.totalPutOI = analysis?.totalPutOI ?? chainData.summary.totalPutOI ?? 0;
+    chainData.summary.atmStrike = analysis?.atmStrike ?? chainData.summary.atmStrike ?? 0;
     if (analysis?.greeks && typeof analysis.greeks === 'object') {
       analysis.greeks.vix = liveVix != null ? liveVix : analysis.greeks.vix;
     }
