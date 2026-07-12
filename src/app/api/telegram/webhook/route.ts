@@ -13,6 +13,7 @@ import { fetchNewsSentiment } from "@/lib/newsSentimentAdapter";
 import { detectIntent } from "@/lib/tradeAlertEngine";
 import { llmResolveIntent } from "@/lib/llmResolve";
 import { getHistory, appendTurn } from "@/lib/historyStore";
+import { processMessage } from "@/lib/telegram-bot";
 import type { OptionChainRow } from "@/lib/tradeAlertEngine";
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
@@ -114,6 +115,12 @@ export async function POST(req: NextRequest) {
   }
 
   const base = process.env.INTERNAL_API_BASE || new URL(req.url).origin;
+
+  // Route commands (/, /help, /signal, /price, /status) through processMessage
+  if (message.startsWith("/")) {
+    await processMessage(chatId, message);
+    return NextResponse.json({ ok: true });
+  }
 
   try {
     const detected = detectIntent(message);

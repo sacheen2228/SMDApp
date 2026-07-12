@@ -54,14 +54,26 @@ whose candle history Yahoo does not return — that is a data gap, never a fabri
 
 ```
 Browser (React)  ──React Query──▶  /api/option-chain   ──▶ Breeze API → NSE API → 503
-                                     /api/scanner        ──▶ Yahoo Finance (quote + 3mo candles)
-                                     /api/sdm-signal     ──▶ signal-engine (ORCA/SDM/0DTE)
-                                     /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
-                                     /api/intraday-scan  ──▶ Telegram (secret-gated cron)
-                                     /api/daily-digest   ──▶ Telegram morning digest
+                                      /api/scanner        ──▶ Yahoo Finance (quote + 3mo candles)
+                                      /api/sdm-signal     ──▶ signal-engine (ORCA/SDM/0DTE)
+                                      /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
+                                      /api/intraday-scan  ──▶ Telegram (secret-gated cron)
+                                      /api/daily-digest   ──▶ Telegram morning digest
+                                      /api/auto-bot/stock ──▶ Breeze → yfinance (for auto-bot)
 
 Zustand store  ◀── option chain / spot / selection
 SQLite (Prisma) ◀── trade journal written by SDM engine
+
+Telegram Bot  ──poll──▶  /api/telegram/poll  ──▶ processMessage() → commands
+  @Sacheen_SD_Bot                                   ├── /signal, /price, /status → SMDApp APIs
+                                                    └── /alerts, /positions, /botstats, /bottrades
+                                                         └── auto-bot:8000 (sidecar)
+
+Auto-Bot (Python)  ──FastAPI──▶  :8000
+  engine.py ◀── screener.py ◀── yfinance / Breeze
+  dashboard_server.py ──WebSocket──▶ BotDashboard.tsx (Next.js Bot tab)
+  SQLite (trades.db)  ◀── auto-accepted paper trades
+
 pm2 cron       ──▶ dailyScanCron.ts ──▶ fetchSnapshot() ──▶ formatDailyDigest() ──▶ sendTelegramMessage()
 ```
 
@@ -238,5 +250,86 @@ This section records the actual work done so the design decisions are easy to re
 
 ---
 
-_Built with Next.js 16, bun, ICICI Breeze, NSE, Yahoo Finance, Groq/OpenRouter, Prisma, React Query,
-Zustand, Tailwind v4 and shadcn/ui._
+## 9. Automated Trading Bot (Breakout/Desk Sidecar)
+
+A long-only breakout screener for **S&P 500 + Nifty 100** running as a Python sidecar on port 8000.
+All signals are auto-accepted as paper trades — no broker, no IB Gateway, no Telegram dependency.
+
+### Architecture
+
+```
+Python (auto-bot/)          SQLite             Next.js Dashboard
+┌─────────────────┐      ┌──────────────┐     ┌──────────────────────┐
+│  engine.py      │─────▶│  trades.db   │◀────│  BotDashboard.tsx    │
+│  screener.py    │      │  (alerts,    │     │  (WebSocket + REST)  │
+│  strategy.py    │      │   trades)    │     │                      │
+│  levels.py      │      └──────────────┘     │  Tab: Bot (violet)   │
+│  database.py    │                            └──────────────────────┘
+└────────┬────────┘                                     ▲
+         │                                              │
+         │  Indian stocks: Breeze API (via SMDApp)       │ localhost:8000
+         │  US stocks: yfinance                          │
+         ▼                                              │
+   Yahoo Finance ◀───────────────────────────────────────┘
+```
+
+### Startup
+
+```bash
+cd auto-bot && ./start.sh   # Python engine on :8000
+./stop.sh                   # Stops the engine
+```
+
+### Data sources
+- **Indian stocks (Nifty 100)**: Breeze API for live quote → SMDApp endpoint `/api/auto-bot/stock` → yfinance for daily OHLCV
+- **US stocks (S&P 500)**: yfinance directly
+- **All prices are real** — no simulated data
+
+---
+
+## 10. Telegram Bot
+
+The Telegram bot (`@Sacheen_SD_Bot`) provides command-based access to both SDM Trading analysis and the Breakout/Desk auto-bot. Messages are received via **polling** (no webhook) and processed by the admin panel's "Check Messages" button.
+
+### Available Commands
+
+| Command | Description | Source |
+|---|---|---|
+| **📈 SDM Trading** | | |
+| `/signal NIFTY` | Latest SDM trade signal for an index | `/api/option-chain` |
+| `/price NIFTY` | Current spot price | `/api/option-chain` |
+| `/status` | System health & trade stats | `/api/admin/system` + `/api/trade-journal` |
+| **🤖 Auto-Bot** | | |
+| `/alerts` | Pending breakout alerts | `auto-bot:8000/api/alerts` |
+| `/positions` | Open positions with live P&L | `auto-bot:8000/api/positions` |
+| `/botstats` | Auto-bot performance (win rate, P&L) | `auto-bot:8000/api/stats` |
+| `/bottrades` | Recent closed trades | `auto-bot:8000/api/closed` |
+
+**Supported symbols**: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX
+
+### How to use
+
+1. Open Telegram and message **@Sacheen_SD_Bot**
+2. Type a command (e.g., `/help` to see all options)
+3. Go to the **Admin** tab → **Telegram Bot** → click **Check Messages** to process
+4. The bot replies with the requested data
+
+---
+
+## 11. Key source files
+
+| File | Role |
+|---|---|
+| `src/app/page.tsx` | Main UI — all views/tabs |
+| `src/app/api/option-chain/route.ts` | Core API: orchestrates data sources + SDM analysis |
+| `src/app/api/telegram/webhook/route.ts` | Telegram webhook handler (commands → bot, NL → SDM chat) |
+| `src/lib/telegram-bot.ts` | Telegram command processor & auto-bot API integration |
+| `src/lib/icici-breeze/` | ICICI Breeze API: auth, option chain, orders, positions |
+| `src/lib/sdm-engine.ts` | SDM 14-factor scoring engine |
+| `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
+| `src/lib/sdmChat.ts` / `llmResolve.ts` | Hybrid chat intent resolution |
+| `src/lib/intraday-scanner.ts` | Stock scanner — live Yahoo quote + real TA |
+| `src/components/auto-bot/BotDashboard.tsx` | Bot tab UI — WebSocket + REST polling |
+| `auto-bot/bot/engine.py` | Paper-mode trading engine |
+| `auto-bot/bot/screener.py` | Scanner with Breeze + yfinance support |
+| `auto-bot/bot/dashboard_server.py` | FastAPI server (WebSocket + REST endpoints) |

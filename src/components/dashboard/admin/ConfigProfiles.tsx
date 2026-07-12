@@ -124,12 +124,14 @@ export default function ConfigProfiles() {
           </div>
         ) : (
           <div className="space-y-1">
-            {profiles.map(p => (
+            {profiles.map(p => {
+              const parsed = JSON.parse(p.json);
+              return (
               <div key={p.name} className="flex items-center justify-between p-2 bg-muted/30 rounded hover:bg-muted/50">
                 <div>
                   <div className="text-[11px] font-bold">{p.name}</div>
                   <div className="text-[9px] text-muted-foreground">
-                    Saved: {new Date(p.timestamp).toLocaleString("en-IN")} · {JSON.parse(p.json).version ? `v${JSON.parse(p.json).version}` : ""}
+                    Saved: {new Date(p.timestamp).toLocaleString("en-IN")} · {parsed.version ? `v${parsed.version}` : ""}
                   </div>
                 </div>
                 <div className="flex gap-1">
@@ -138,7 +140,8 @@ export default function ConfigProfiles() {
                   <button onClick={() => deleteProfile(p.name)} className="h-6 text-[9px] bg-red-500/20 text-red-400 px-2 rounded">Del</button>
                 </div>
               </div>
-            ))}
+            );
+          })}
           </div>
         )}
       </div>
