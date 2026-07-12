@@ -8,8 +8,19 @@ import { calculateGreeks } from '@/lib/greeks';
 // BSE symbols that need BFO exchange code (BSE F&O segment)
 const BSE_SYMBOLS = new Set(['SENSEX', 'BANKEX']);
 
+// BFO stock codes differ from display names in some cases.
+// Security master ShortName (field #3) is what Breeze expects as stock_code.
+const BFO_STOCK_CODE: Record<string, string> = {
+  SENSEX: 'BSESEN',
+  BANKEX: 'BANKEX',
+};
+
 function getExchangeCode(symbol: string): string {
   return BSE_SYMBOLS.has(symbol.toUpperCase()) ? 'BFO' : 'NFO';
+}
+
+function bfoStockCode(symbol: string): string {
+  return BFO_STOCK_CODE[symbol.toUpperCase()] ?? symbol.toUpperCase();
 }
 
 function isBSE(symbol: string): boolean {
@@ -26,19 +37,20 @@ export async function getOptionChain(
       const expiryFormatted = formatExpiryForSDK(expiryDate);
       const exchangeCode = getExchangeCode(stockCode);
 
-      console.log('[Breeze SDK] Fetching option chain:', stockCode, expiryFormatted, exchangeCode);
+      const breezeStockCode = bfoStockCode(stockCode);
+      console.log('[Breeze SDK] Fetching option chain:', breezeStockCode, expiryFormatted, exchangeCode);
 
       // Fetch calls and puts separately (API requires right param)
       const [callsResult, putsResult] = await Promise.all([
         breeze.getOptionChainQuotes({
-          stockCode,
+          stockCode: breezeStockCode,
           exchangeCode: exchangeCode as any,
           productType: 'options',
           expiryDate: expiryFormatted,
           right: 'call',
         }),
         breeze.getOptionChainQuotes({
-          stockCode,
+          stockCode: breezeStockCode,
           exchangeCode: exchangeCode as any,
           productType: 'options',
           expiryDate: expiryFormatted,
@@ -150,11 +162,12 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
     const breeze = getBreezeClient();
     const exchangeCode = getExchangeCode(stockCode);
 
-    console.log('[Breeze SDK] Fetching expiries for:', stockCode, exchangeCode);
+    const breezeStockCode = bfoStockCode(stockCode);
+    console.log('[Breeze SDK] Fetching expiries for:', breezeStockCode, exchangeCode);
 
     // Fetch monthly expiries from futures
     const futuresResult = await breeze.getOptionChainQuotes({
-      stockCode,
+      stockCode: breezeStockCode,
       exchangeCode: exchangeCode as any,
       productType: 'futures',
     }).catch(() => null);

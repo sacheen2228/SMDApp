@@ -70,6 +70,7 @@ function formatOI(oi: number): string {
 }
 
 function formatCurrency(n: number): string {
+  if (n == null || isNaN(n)) return "₹0";
   return "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }
 
@@ -208,7 +209,7 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
           </div>
           <div className="flex justify-between text-[10px]">
             <span className="text-muted-foreground">Risk:Reward</span>
-            <span className="font-bold">1:{stock.riskReward}</span>
+            <span className="font-bold">1:{stock.riskReward > 0 ? stock.riskReward.toFixed(1) : "-"}</span>
           </div>
           <div className="flex justify-between text-[10px]">
             <span className="text-muted-foreground flex items-center gap-1">

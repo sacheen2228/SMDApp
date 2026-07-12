@@ -155,7 +155,7 @@ export function ZeroHeroTerminal() {
   const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set(["NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK"]));
 
   const inst = getInstrument(symbol);
-  const lotSize = inst?.lotSize || 75;
+  const lotSize = inst?.lotSize || 65;
   const isEligible = ["NIFTY", "SENSEX"].includes(symbol);
 
   // ─── Fetch option chain ──────────────────────────────────────────

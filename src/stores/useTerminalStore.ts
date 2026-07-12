@@ -2,6 +2,7 @@
 // Controls which symbol all terminal panels fetch data for
 
 import { create } from 'zustand';
+import { getLotSize } from '@/lib/symbol-config';
 
 export type InstrumentType = 'INDEX' | 'EQUITY';
 
@@ -13,14 +14,17 @@ export interface Instrument {
   lotSize: number;
 }
 
+// Index lot sizes derived from src/lib/symbol-config.ts (single source
+// of truth) — previously hardcoded here with stale pre-Jan-2026 values
+// (e.g. NIFTY was 75 before the Jan 2026 NSE revision to 65).
 export const INDEX_INSTRUMENTS: Instrument[] = [
-  { symbol: 'NIFTY', label: 'NIFTY 50', type: 'INDEX', exchange: 'NSE', lotSize: 75 },
-  { symbol: 'BANKNIFTY', label: 'BANK NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: 30 },
-  { symbol: 'FINNIFTY', label: 'FIN NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: 40 },
-  { symbol: 'MIDCPNIFTY', label: 'MIDCAP NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: 75 },
-  { symbol: 'NIFTYNXT50', label: 'NIFTY NEXT 50', type: 'INDEX', exchange: 'NSE', lotSize: 75 },
-  { symbol: 'SENSEX', label: 'SENSEX', type: 'INDEX', exchange: 'BSE', lotSize: 20 },
-  { symbol: 'BANKEX', label: 'BANKEX (BSE)', type: 'INDEX', exchange: 'BSE', lotSize: 30 },
+  { symbol: 'NIFTY', label: 'NIFTY 50', type: 'INDEX', exchange: 'NSE', lotSize: getLotSize('NIFTY') },
+  { symbol: 'BANKNIFTY', label: 'BANK NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: getLotSize('BANKNIFTY') },
+  { symbol: 'FINNIFTY', label: 'FIN NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: getLotSize('FINNIFTY') },
+  { symbol: 'MIDCPNIFTY', label: 'MIDCAP NIFTY', type: 'INDEX', exchange: 'NSE', lotSize: getLotSize('MIDCPNIFTY') },
+  { symbol: 'NIFTYNXT50', label: 'NIFTY NEXT 50', type: 'INDEX', exchange: 'NSE', lotSize: getLotSize('NIFTYNXT50') },
+  { symbol: 'SENSEX', label: 'SENSEX', type: 'INDEX', exchange: 'BSE', lotSize: getLotSize('SENSEX') },
+  { symbol: 'BANKEX', label: 'BANKEX (BSE)', type: 'INDEX', exchange: 'BSE', lotSize: getLotSize('BANKEX') },
 ];
 
 export const EQUITY_INSTRUMENTS: Instrument[] = [

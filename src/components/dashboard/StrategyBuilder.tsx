@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import { createChart, ColorType, AreaSeries, LineSeries, LineStyle, createSeriesMarkers } from "lightweight-charts";
+import { getLotSize } from "@/lib/symbol-config";
 import type { IChartApi, LineData, SeriesMarker } from "lightweight-charts";
 
 interface OptionSide {
@@ -55,7 +56,6 @@ const STRATEGIES: StrategyPreset[] = [
   { name: "Long Strangle", view: "volatile", description: "Buy OTM CE + PE", legs: 2, icon: "◈" },
 ];
 
-function getLotSize(s: string): number { return s === "NIFTY" ? 65 : s === "BANKNIFTY" ? 30 : s === "FINNIFTY" ? 60 : s === "MIDCPNIFTY" ? 120 : 20; }
 function getStrikeStep(s: string): number { return s === "NIFTY" ? 50 : s === "BANKNIFTY" ? 100 : s === "FINNIFTY" ? 50 : s === "MIDCPNIFTY" ? 25 : 20; }
 
 function buildLegs(idx: number, chain: OptionData[], atm: number, step: number, spot: number): LegDef[] {

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { getLotSize } from '@/lib/symbol-config';
 
 function formatINR(val: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2 }).format(val);
@@ -20,9 +21,6 @@ type TabView = "report" | "audit";
 
 export function BacktestPanel() {
   const SYMBOLS = ["ALL", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
-  const LOT_SIZES: Record<string, number> = {
-    ALL: 65, NIFTY: 65, BANKNIFTY: 25, FINNIFTY: 20, MIDCPNIFTY: 50, SENSEX: 20,
-  };
 
   const todayStr = new Date().toISOString().split("T")[0];
   const [sl, setSl] = useState("10");
@@ -54,7 +52,7 @@ export function BacktestPanel() {
     queryKey: ["backtest-v4", sl, rr, tf, usingLiveData ? "live" : "demo", date, symbol],
     queryFn: async () => {
       if (usingLiveData) {
-        const defaultLot = LOT_SIZES[symbol] || 65;
+        const defaultLot = symbol === "ALL" ? 65 : getLotSize(symbol) || 65;
         const csv = "time,symbol,type,strike,entry,exit,status,pnl,stopLoss,target1,target2,target3,exitReason,tpHitLevel,lotSize\n" +
           liveTrades.map((t: any) =>
             `${t.time},${t.symbol},${t.type},${t.strike},${t.entry},${t.exit || ""},${t.dbStatus},${t.pnl},${t.stopLoss || ""},${t.target1 || ""},${t.target2 || ""},${t.target3 || ""},${t.exitReason || ""},${t.tpHitLevel || ""},${t.lotSize || t.positionSize || defaultLot}`

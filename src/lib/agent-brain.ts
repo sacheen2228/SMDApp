@@ -474,41 +474,32 @@ export async function executeTool(
         if (!data.success) return "Failed to fetch SDM signal";
         const s = data.signal;
         if (!s) return "No SDM signal available";
-        const rec = s.recommendation || {};
-        const conf = s.confidence || {};
-        const greeks = s.greeks || {};
-        const oi = s.oi || {};
-        const sm = s.smartMoney || {};
-        const flow = s.flow || {};
-        const alerts = s.alerts || [];
-        return `SDM LIVE SIGNAL — ${s.symbol} @ ₹${s.spot}
+        const gt = s.gammaThetaData || {};
+        const sc = s.sdmScores || {};
+        const ms = s.marketStructure || {};
+        return `SDM LIVE SIGNAL — ${symbol} @ ₹${ms.spot ?? "—"}
 ═══════════════════════════════════
-MARKET BIAS: ${s.marketBias}
-TREND: ${s.marketStructure?.trend} | Structure: ${s.marketStructure?.structure}
-VWAP: ₹${s.marketStructure?.vwap?.toFixed(2)} | EMA9: ₹${s.marketStructure?.ema9} | EMA21: ₹${s.marketStructure?.ema21}
+DIRECTION: ${s.direction} | MODE: ${s.mode}
+Trend: ${ms.trend} | Structure event: ${ms.structureEvent ?? "none"}
+Support: ${(ms.supportLevels || []).join(", ") || "—"} | Resistance: ${(ms.resistanceLevels || []).join(", ") || "—"}
 ═══════════════════════════════════
-TRADE: ${rec.action}
-Strike: ${rec.strike} ${rec.strikeType} | Expiry: ${rec.expiry}
-Entry: ₹${rec.entry} | SL: ₹${rec.stopLoss}
-TP1: ₹${rec.target1} | TP2: ₹${rec.target2} | TP3: ₹${rec.target3}
-R:R: 1:${rec.riskReward} | Expected Move: ${rec.expectedPremiumMove}
-Capital: ₹${rec.capitalRequired?.toLocaleString("en-IN")} | Max Loss: ₹${rec.maxLoss?.toLocaleString("en-IN")}
+TRADE: ${s.direction} ${s.strike} (${s.strikeType})
+Entry: ₹${s.entry} | SL: ₹${s.sl}
+TP1: ₹${s.tp1} | TP2: ₹${s.tp2} | TP3: ₹${s.tp3}
+R:R: 1:${s.riskReward} | Expected Move: ₹${s.expectedMove}
 ═══════════════════════════════════
-CONFIDENCE: ${conf.total}% — ${conf.level}
-Trend: ${conf.trend}/20 | OI: ${conf.oi}/20 | Greeks: ${conf.greeks}/20
-Liquidity: ${conf.liquidity}/15 | Volume: ${conf.volume}/10 | PA: ${conf.priceAction}/10 | Flow: ${conf.institutionalFlow}/5
+CONFIDENCE: ${s.confidence}%
+Score breakdown — PCR: ${sc.pcr} | OI concentration: ${sc.oiConcentration} | OI change: ${sc.oiChange}
+Delta: ${sc.delta} | IV: ${sc.iv} | Volume: ${sc.volume} | Max Pain: ${sc.maxPain} | Liquidity: ${sc.liquidity}
 ═══════════════════════════════════
-GREEKS: Delta=${greeks.atmDelta} Gamma=${greeks.atmGamma} Theta=${greeks.atmTheta} Vega=${greeks.atmVega}
-Dealer: ${greeks.dealerRegime} | Gamma Flip: ${greeks.gammaFlip} | IV %ile: ${greeks.ivPercentile?.toFixed(0)}%
-OI: PCR=${oi.pcr} | Max Pain=${oi.maxPain} | ${oi.callLongBuildup ? "CALL LONG BUILDUP" : oi.putLongBuildup ? "PUT LONG BUILDUP" : "NEUTRAL"}
-Call OI: ${(oi.totalCallOI / 100000).toFixed(1)}L | Put OI: ${(oi.totalPutOI / 100000).toFixed(1)}L
-SMART MONEY: Sweep=${sm.liquiditySweep?.detected ? sm.liquiditySweep.direction : "None"} | Stop Hunt=${sm.stopHunt?.detected ? "YES" : "NO"} | Fake Breakout=${sm.fakeBreakout?.detected ? "YES" : "NO"}
-FLOW: Vol Spike=${flow.volumeSpike ? "YES" : "NO"} | Institutional=${flow.institutionalOrders ? "YES" : "NO"} | Aggressive=${flow.aggressiveBuyers ? "Buyers" : flow.aggressiveSellers ? "Sellers" : "Balanced"}
+GAMMA/THETA: Gamma exposure=${gt.gammaExposure} | Theta decay/day=${gt.thetaDecayRate}
+Premium decay: ${gt.premiumDecayPercent}% | IV skew: ${gt.ivSkew} | VIX: ${gt.vixLevel}
+Gamma blast: ${gt.gammaBlastDetected ? "DETECTED" : "no"}
 ═══════════════════════════════════
-ALERTS: ${alerts.map((a: any) => `${a.type}(${a.severity})`).join(", ") || "None"}
-REASONS: ${s.reasons?.join(" | ") || "N/A"}
-TIME: ${s.timeToExpiry}
-${s.zeroDte?.active ? `0DTE: Gamma Squeeze=${s.zeroDte.gammaSqueeze} | Dealer Hedge=${s.zeroDte.dealerHedging} | Premium Speed=${s.zeroDte.premiumSpeed}` : ""}`;
+REASON: ${s.reason}
+${s.timeSensitiveNote || ""}
+Days to expiry: ${s.daysToExpiry} | Window: ${s.currentWindow} (${s.windowTimeRemaining} left)
+Trades today: ${s.tradesTakenToday}/${(s.tradesTakenToday ?? 0) + (s.tradesRemaining ?? 0)}`;
       } catch { return "Error fetching SDM signal"; }
     }
 
@@ -519,15 +510,14 @@ ${s.zeroDte?.active ? `0DTE: Gamma Squeeze=${s.zeroDte.gammaSqueeze} | Dealer He
         if (!data.success) return "Failed to fetch market structure";
         const ms = data.signal?.marketStructure;
         if (!ms) return "No market structure data";
+        // Note: V2 engine's MarketStructure covers trend/swings/S-R levels only —
+        // it doesn't compute VWAP/EMA/pivots the way the old ORCA engine did.
         return `Market Structure for ${symbol}:
-Trend: ${ms.trend} | Structure: ${ms.structure}
-HH: ${ms.higherHigh ? "✓" : "✗"} | HL: ${ms.higherLow ? "✓" : "✗"} | LH: ${ms.lowerHigh ? "✓" : "✗"} | LL: ${ms.lowerLow ? "✓" : "✗"}
-Daily: ₹${ms.dailyHigh} / ₹${ms.dailyLow}
-VWAP: ₹${ms.vwap?.toFixed(2)} | EMA9: ₹${ms.ema9} | EMA21: ₹${ms.ema21}
-Opening Range: ₹${ms.openingRange?.high} / ₹${ms.openingRange?.low}
-Pivot: ₹${ms.pivot?.toFixed(2)} | R1: ₹${ms.r1?.toFixed(2)} | S1: ₹${ms.s1?.toFixed(2)}
-R2: ₹${ms.r2?.toFixed(2)} | R3: ₹${ms.r3?.toFixed(2)} | S2: ₹${ms.s2?.toFixed(2)} | S3: ₹${ms.s3?.toFixed(2)}
-Weekly: ₹${ms.weeklyHigh} / ₹${ms.weeklyLow} | Monthly: ₹${ms.monthlyHigh} / ₹${ms.monthlyLow}`;
+Trend: ${ms.trend} | Status: ${ms.status}
+Last Swing High: ₹${ms.lastSwingHigh} | Last Swing Low: ₹${ms.lastSwingLow}
+Structure Event: ${ms.structureEvent ?? "none"}
+Support Levels: ${(ms.supportLevels || []).join(", ") || "—"}
+Resistance Levels: ${(ms.resistanceLevels || []).join(", ") || "—"}`;
       } catch { return "Error fetching market structure"; }
     }
 
@@ -561,15 +551,11 @@ Tip: ${data.tip}`;
         if (!sdmRes || sdmRes.status !== "fulfilled" || !sdmRes.value?.success) return "Failed to fetch SDM signal for trade recommendation";
         const s = sdmRes.value.signal;
         if (!s) return "No trade recommendation available right now — market may be closed or data unavailable";
-        const rec = s.recommendation || {};
-        const conf = s.confidence || {};
-        const greeks = s.greeks || {};
-        const oi = s.oi || {};
+        const mc = s.marketContext || {};
+        const sc = s.sdmScores || {};
+        const ps = s.positionSizing || {};
         const ms = s.marketStructure || {};
-        const sm = s.smartMoney || {};
-        const flow = s.flow || {};
-        const alerts = s.alerts || [];
-        const reasons = s.reasons || [];
+        const gt = s.gammaThetaData || {};
 
         // If option chain available, enrich with strike-wise details
         let chainDetail = "";
@@ -584,67 +570,54 @@ Tip: ${data.tip}`;
 
         return `STRUCTURED TRADE RECOMMENDATION
 ═══════════════════════════════════
-SYMBOL: ${s.symbol} @ ₹${s.spot}
-EXPIRY: ${rec.expiry || "Weekly"} | Time: ${s.timeToExpiry || "N/A"}
-MARKET BIAS: ${s.marketBias}
+SYMBOL: ${symbol} @ ₹${mc.spot ?? "—"}
+EXPIRY: ${s.isExpiryDay ? "Today (expiry)" : `${s.daysToExpiry} day(s) out`} | Window: ${s.currentWindow ?? "N/A"} (${s.windowTimeRemaining ?? "—"})
+MARKET BIAS: ${mc.trend ?? "—"} | Regime: ${mc.regime ?? "—"}
 ═══════════════════════════════════
 TRADE SETUP:
-- Action: ${rec.action} ${rec.strike} ${rec.strikeType}
-- Entry Price: ₹${rec.entry}
-- Stop Loss: ₹${rec.stopLoss} (${(((rec.entry - rec.stopLoss) / rec.entry) * 100).toFixed(1)}% loss)
-- Target 1: ₹${rec.target1} (${(((rec.target1 - rec.entry) / rec.entry) * 100).toFixed(1)}% gain)
-- Target 2: ₹${rec.target2} (${(((rec.target2 - rec.entry) / rec.entry) * 100).toFixed(1)}% gain)
-- Target 3: ₹${rec.target3 || "N/A"}
-- Risk:Reward: 1:${rec.riskReward}
-- Expected Move: ${rec.expectedPremiumMove || "N/A"}
-- Capital Required: ₹${(rec.capitalRequired || 0).toLocaleString("en-IN") || "N/A"}
-- Max Loss: ₹${(rec.maxLoss || 0).toLocaleString("en-IN") || "N/A"}
+- Direction: ${s.direction} ${s.strike} ${s.strikeType}
+- Entry Price: ₹${s.entry}
+- Stop Loss: ₹${s.sl} (${(((s.entry - s.sl) / s.entry) * 100).toFixed(1)}% loss)
+- Target 1: ₹${s.tp1} (${(((s.tp1 - s.entry) / s.entry) * 100).toFixed(1)}% gain)
+- Target 2: ₹${s.tp2} (${(((s.tp2 - s.entry) / s.entry) * 100).toFixed(1)}% gain)
+- Target 3: ₹${s.tp3 ?? "N/A"}
+- Risk:Reward: 1:${s.riskReward}
+- Expected Move: ${s.expectedMove ?? "N/A"}
+- Position Sizing: ${ps.lots ?? "N/A"} lot(s), qty ${ps.quantity ?? "N/A"}
+- Capital/Max Loss: ₹${(ps.positionValue || 0).toLocaleString("en-IN")} / ₹${(ps.maxLoss || 0).toLocaleString("en-IN")}
 ═══════════════════════════════════
-CONFIDENCE SCORE: ${conf.total}% — ${conf.level}
-- Trend: ${conf.trend}/20 | OI: ${conf.oi}/20 | Greeks: ${conf.greeks}/20
-- Liquidity: ${conf.liquidity}/15 | Volume: ${conf.volume}/10
-- Price Action: ${conf.priceAction}/10 | Flow: ${conf.institutionalFlow}/5
+CONFIDENCE SCORE: ${s.confidence}% (Grade: ${s.tradeGrade ?? "—"})
+- Seller SL: ${sc.sellerStopLoss ?? "—"} | Expiry Gamma/Theta: ${sc.expiryGammaTheta ?? "—"}
+- PCR: ${sc.pcr ?? "—"} | OI Concentration: ${sc.oiConcentration ?? "—"} | OI Change: ${sc.oiChange ?? "—"}
+- Delta: ${sc.delta ?? "—"} | IV: ${sc.iv ?? "—"} | Volume: ${sc.volume ?? "—"} | Liquidity: ${sc.liquidity ?? "—"}
 ═══════════════════════════════════
 TECHNICAL CONTEXT:
-- Trend: ${ms.trend} | Structure: ${ms.structure}
-- VWAP: ₹${ms.vwap?.toFixed(2)} | EMA9: ₹${ms.ema9} | EMA21: ₹${ms.ema21}
-- HH: ${ms.higherHigh ? "✓" : "✗"} | HL: ${ms.higherLow ? "✓" : "✗"}
-- Pivot: ₹${ms.pivot?.toFixed(2)} | R1: ₹${ms.r1?.toFixed(2)} | S1: ₹${ms.s1?.toFixed(2)}
-- Weekly High: ₹${ms.weeklyHigh} | Weekly Low: ₹${ms.weeklyLow}
+- Trend: ${ms.trend ?? "—"} | Structure event: ${ms.structureEvent ?? "none"}
+- Support: ${(ms.supportLevels || []).join(", ") || "—"} | Resistance: ${(ms.resistanceLevels || []).join(", ") || "—"}
+- HH: ${ms.lastSwingHigh ?? "—"} | HL: ${ms.lastSwingLow ?? "—"}
+- Support levels: ${(ms.supportLevels || []).join(", ") || "—"} | Resistance levels: ${(ms.resistanceLevels || []).join(", ") || "—"}
+- Structure health: ${ms.status ?? "—"}
 ═══════════════════════════════════
-GREEKS:
-- Delta: ${greeks.atmDelta} | Gamma: ${greeks.atmGamma}
-- Theta: ${greeks.atmTheta} | Vega: ${greeks.atmVega}
-- Dealer Regime: ${greeks.dealerRegime} | Gamma Flip: ${greeks.gammaFlip}
-- IV Percentile: ${greeks.ivPercentile?.toFixed(0)}%
+GREEKS / GAMMA-THETA:
+- Gamma Exposure: ${gt.gammaExposure ?? "—"} | Theta Decay Rate: ${gt.thetaDecayRate ?? "—"}
+- Premium Decay: ${gt.premiumDecayPercent ?? "—"}% | IV Skew: ${gt.ivSkew ?? "—"}
+- Gamma Blast Detected: ${gt.gammaBlastDetected ? "YES" : "NO"} | VIX: ${gt.vixLevel ?? "—"}
 ═══════════════════════════════════
-OI ANALYSIS:
-- PCR: ${oi.pcr} | Max Pain: ${oi.maxPain}
-- Call OI: ${(oi.totalCallOI / 100000).toFixed(1)}L | Put OI: ${(oi.totalPutOI / 100000).toFixed(1)}L
-- OI Regime: ${oi.callLongBuildup ? "CALL LONG BUILDUP" : oi.putLongBuildup ? "PUT LONG BUILDUP" : oi.callUnwinding ? "CALL UNWINDING" : oi.putUnwinding ? "PUT UNWINDING" : "NEUTRAL"}
-- Put Wall (support): ₹${oi.putWallStrike || "N/A"} | Call Wall (resistance): ₹${oi.callWallStrike || "N/A"}
+OI / MARKET CONTEXT:
+- PCR: ${mc.pcr ?? "—"} | Max Pain: ₹${mc.maxPain ?? "—"} | ATR: ${mc.atr ?? "—"}
+- Change: ${mc.change ?? "—"} (${mc.changePercent ?? "—"}%)
 ═══════════════════════════════════
-SMART MONEY / FLOW:
-- Liquidity Sweep: ${sm.liquiditySweep?.detected ? sm.liquiditySweep.direction + " @" + sm.liquiditySweep.level : "None"}
-- Stop Hunt: ${sm.stopHunt?.detected ? "YES @" + sm.stopHunt.level : "None"}
-- Fake Breakout: ${sm.fakeBreakout?.detected ? "YES" : "NO"}
-- Volume Spike: ${flow.volumeSpike ? "YES" : "NO"}
-- Institutional Orders: ${flow.institutionalOrders ? "YES" : "NO"}
-- Aggressive: ${flow.aggressiveBuyers ? "Buyers" : flow.aggressiveSellers ? "Sellers" : "Balanced"}
-═══════════════════════════════════
-ALERTS: ${alerts.map((a: any) => `${a.type}(${a.severity})`).join(", ") || "None"}
-═══════════════════════════════════
-REASONING:
-${reasons.map((r: string) => `→ ${r}`).join("\n")}
+WHY THIS TRADE:
+${(s.whyThisTrade || []).map((w: any) => `→ [${w.type}] ${w.signal}${w.detail ? ` — ${w.detail}` : ""}`).join("\n") || "No specific rationale returned"}
 ${chainDetail}
 ═══════════════════════════════════
-RECOMMENDED HOLD TIME: ${rec.expectedHoldTime || "Intraday to 1 day"}
+RECOMMENDED HOLD TIME: ${s.holdingTimeEstimate || "Intraday to 1 day"}
 EXIT CONDITIONS:
 - SL Hit → Exit immediately, no questions
 - TP1 Hit → Move SL to breakeven
 - TP2 Hit → Book 50%, trail rest with trailing SL
 - Time exit → Close by 3:15 PM on expiry day
-- Thesis invalid → If VWAP crosses entry in opposite direction`;
+- Thesis invalid → If market structure event flips against direction (see structure event above)`;
       } catch { return "Error generating trade recommendation"; }
     }
 

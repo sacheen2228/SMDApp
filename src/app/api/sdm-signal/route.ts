@@ -1,8 +1,9 @@
-// API Route — ORCA Live Signal Engine
-// Runs all 15 modules of the institutional trading AI
+// API Route — SDM V2 Recommendation Engine (canonical)
+// Runs the V2 engine (sdm-recommendation.ts) that also powers the
+// SDMBot terminal UI, so chat/Telegram and the UI never diverge.
 
 import { NextRequest, NextResponse } from "next/server";
-import { runSdmSignalEngine, type SdmSignal } from "@/lib/sdm-signal-engine";
+import { generateTradeRecommendation } from "@/lib/sdm-recommendation";
 import { calculateGreeks } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
 import { sendTradeAlert } from "@/lib/telegram";
@@ -178,20 +179,26 @@ export async function GET(request: NextRequest) {
     const todayDate = new Date(today);
     const isExpiry = isExpiryDay || expiryDate.toDateString() === todayDate.toDateString();
 
-    // Run ORCA engine
-    const signal = runSdmSignalEngine({
-      spot: spotPrice,
+    // Run SDM V2 engine — same function SDMBot.tsx calls client-side,
+    // so chat/Telegram and the terminal UI always agree.
+    // VIX: no dedicated live-VIX fetch exists yet in this codebase;
+    // defaulting to 15 matches the documented fallback already used
+    // elsewhere (see AGENTS.md — hardcoded VIX=15 fallback).
+    const vix = 15;
+    const signal = await generateTradeRecommendation(
       chain,
-      candles,
+      spotPrice,
       symbol,
-      expiry: selectedExpiry,
-      isExpiryDay: isExpiry,
-      prevDay,
-    });
+      selectedExpiry,
+      { "5m": candles },
+      vix,
+      source,
+      new Date().toISOString()
+    );
 
     // Note: Alerts from this route suppressed — sdm-signal always uses simulation data.
     // Real-data alerts fire from option-chain route instead.
-    const signalConf = typeof signal.confidence === "object" ? signal.confidence?.total ?? 0 : signal.confidence;
+    const signalConf = signal.confidence ?? 0;
 
     return NextResponse.json({
       success: true,
@@ -199,9 +206,9 @@ export async function GET(request: NextRequest) {
       lastUpdate: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("[API] ORCA error:", error);
+    console.error("[API] SDM V2 engine error:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "ORCA engine failed" },
+      { success: false, error: error.message || "SDM V2 engine failed" },
       { status: 500 }
     );
   }
