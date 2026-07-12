@@ -5,7 +5,7 @@
 import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-type ViewMode = 'chain' | 'sdm' | 'gap' | 'agent' | 'scanner' | 'news' | 'strategy' | 'strategies' | 'greeks' | 'admin' | 'correlation' | 'ivSurface' | 'backtest';
+type ViewMode = 'chain' | 'sdm' | 'gap' | 'agent' | 'scanner' | 'news' | 'strategy' | 'strategies' | 'greeks' | 'admin' | 'correlation' | 'ivSurface' | 'backtest' | 'terminal' | 'btst' | 'auto-bot';
 
 interface MobileNavProps {
   viewMode: ViewMode;

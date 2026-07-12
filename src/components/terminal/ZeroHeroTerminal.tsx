@@ -11,6 +11,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { getInstrument } from "@/stores/useTerminalStore";
+import { isFNO, getExpiryTypeForDate } from "@/lib/expiry-calculator";
+import { recordOptionSignals } from "@/lib/audit-recorders";
 
 type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "history" | "watchlist" | "positions";
 
@@ -156,7 +158,7 @@ export function ZeroHeroTerminal() {
 
   const inst = getInstrument(symbol);
   const lotSize = inst?.lotSize || 65;
-  const isEligible = ["NIFTY", "SENSEX"].includes(symbol);
+  const isEligible = isFNO(symbol); // All F&O indices + F&O equity stocks eligible for Zero Hero
 
   // ─── Fetch option chain ──────────────────────────────────────────
   const fetchChain = useCallback(async (gen: number) => {
@@ -362,6 +364,23 @@ export function ZeroHeroTerminal() {
     return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
   }, [chain, spot, isEligible]);
 
+  // ─── Record Zero Hero candidates into the Trade Audit (backtest) engine ─
+  useEffect(() => {
+    if (activeTab !== "zerohero" || !isEligible) return;
+    const toRecord = zhCandidates
+      .filter((z) => z.conf >= 60)
+      .map((z) => ({
+        strike: z.strike,
+        type: z.type as "CE" | "PE",
+        entry: z.entry,
+        rr: z.rr,
+        conf: z.conf,
+        price: z.entry,
+        reason: `Zero Hero conf ${z.conf}, 1:${z.rr}, ${z.type}`,
+      }));
+    if (toRecord.length) recordOptionSignals("ZERO_HERO_AI", symbol, toRecord).catch(() => {});
+  }, [activeTab, isEligible, zhCandidates, symbol]);
+
   // ─── FII/DII flow from OI ───────────────────────────────────────
   const flowData = useMemo(() => {
     let totalCallOIChg = 0, totalPutOIChg = 0, totalCallVol = 0, totalPutVol = 0;
@@ -551,7 +570,7 @@ export function ZeroHeroTerminal() {
             <FullZeroHero candidates={zhCandidates} isEligible={isEligible} symbol={symbol} expiryType={expiryType} openTrade={openTrade} />
           )}
           {activeTab === "smartmoney" && (
-            <SmartMoneyTab flowData={flowData} chain={chain} openTrade={openTrade} />
+            <SmartMoneyTab flowData={flowData} chain={chain} openTrade={openTrade} symbol={symbol} />
           )}
           {activeTab === "greeks" && (
             <GreeksTab chain={chain} />
@@ -646,11 +665,11 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
         <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
           <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
             <span>🔥 Zero Hero Scanner</span>
-            <span className="text-[#7d8ba0] font-mono text-[11px]">{isEligible ? "Top 5" : "NIFTY & SENSEX only"}</span>
+            <span className="text-[#7d8ba0] font-mono text-[11px]">{isEligible ? "Top 5" : "All stocks (BTST)"}</span>
           </div>
           <div className="p-2.5 overflow-y-auto" style={{ maxHeight: 420 }}>
             {!isEligible ? (
-              <div className="text-[#7d8ba0] text-center py-8 text-[12.5px]">Zero Hero scans NIFTY & SENSEX weekly expiries only.</div>
+              <div className="text-[#7d8ba0] text-center py-8 text-[12.5px]">Zero Hero BTST scans all stocks. Switch to an F&O instrument for weekly/monthly expiry trades.</div>
             ) : zhCandidates.slice(0, 5).map((z: ZHCandidate, idx: number) => (
               <div key={idx} className="flex justify-between items-center py-1.5 border-b border-[#1f2733] font-mono text-[11.5px] cursor-pointer hover:bg-[#151b25] px-1"
                 onClick={() => openTrade(z.strike, z.type, z.entry, z.rr)}>
@@ -751,7 +770,7 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
   if (!isEligible) return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🎯 Zero Hero Scanner — Full</div>
-      <div className="p-4 text-[#7d8ba0] text-center py-10">Zero Hero Scanner covers NIFTY & SENSEX only. Switch instrument to view.</div>
+      <div className="p-4 text-[#7d8ba0] text-center py-10">Zero Hero covers all F&O instruments (weekly/monthly expiry) + BTST for all stocks. Switch instrument to view.</div>
     </div>
   );
 
@@ -900,8 +919,31 @@ function GreeksTab({ chain }: { chain: ChainRow[] }) {
 }
 
 // ─── Smart Money Tab ───────────────────────────────────────────────
-function SmartMoneyTab({ flowData, chain, openTrade }: any) {
+function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
   const sorted = [...chain].sort((a, b) => Math.abs(b.ce?.oiChg || 0) + Math.abs(b.pe?.oiChg || 0) - (Math.abs(a.ce?.oiChg || 0) + Math.abs(a.pe?.oiChg || 0))).slice(0, 8);
+
+  // Record unusual-OI Smart Money candidates into the Trade Audit (backtest) engine
+  useEffect(() => {
+    const toRecord = sorted
+      .map((r: ChainRow) => {
+        const isCE = Math.abs(r.ce?.oiChg || 0) > Math.abs(r.pe?.oiChg || 0);
+        const d = isCE ? r.ce : r.pe;
+        const oiChg = Math.abs(d?.oiChg || 0);
+        return { r, isCE, d, oiChg };
+      })
+      .filter((x) => x.oiChg >= 50000)
+      .map((x) => ({
+        strike: x.r.strike,
+        type: (x.isCE ? "CE" : "PE") as "CE" | "PE",
+        entry: x.d?.ltp || 0,
+        rr: 2,
+        conf: Math.min(95, 60 + Math.min(35, x.oiChg / 20000)),
+        reason: `Smart Money: ${(x.d?.oiChg || 0) > 0 ? "OI buildup" : "OI unwinding"} ${x.oiChg >= 1000 ? (x.oiChg / 1000).toFixed(0) + "K" : x.oiChg}`,
+        price: x.d?.ltp || 0,
+      }))
+      .filter((c) => c.entry > 0);
+    if (toRecord.length) recordOptionSignals("SMC", symbol, toRecord).catch(() => {});
+  }, [sorted, symbol, chain]);
   return (
     <div className="space-y-3.5">
       <FIIFlowPanel flowData={flowData} />

@@ -2,8 +2,12 @@
 // Dedicated high-risk strategy for experienced users
 // Only activated when explicitly enabled by the user
 // Requires stricter confirmation than standard trades
+// Supports F&O weekly / monthly expiry + BTST (Buy Today Sell Tomorrow) for all stocks
 
 import type { SDMOptionStrike, SDMRecommendation, TradeDirection } from '@/types/sdm';
+import { isFNO, getExpiryTypeForDate } from '@/lib/expiry-calculator';
+
+export type ZHMode = 'expiry' | 'btst';
 
 export interface ZeroHeroConfig {
   enabled: boolean;
@@ -14,6 +18,7 @@ export interface ZeroHeroConfig {
   requireVolumeConfirm: boolean; // Require volume confirmation
   requireSpreadCheck: boolean;   // Require tight spread check
   maxSpreadPercent: number;      // Max bid-ask spread %
+  mode: ZHMode;                  // 'expiry' = F&O weekly/monthly, 'btst' = buy-today-sell-tomorrow
 }
 
 export const DEFAULT_ZERO_HERO_CONFIG: ZeroHeroConfig = {
@@ -25,11 +30,12 @@ export const DEFAULT_ZERO_HERO_CONFIG: ZeroHeroConfig = {
   requireVolumeConfirm: true,
   requireSpreadCheck: true,
   maxSpreadPercent: 5,
+  mode: 'expiry',
 };
 
 export interface ZeroHeroSignal {
   eligible: boolean;
-  direction: 'CALL' | 'PUT' | null;
+  direction: 'CALL' | 'PUT' | 'LONG' | 'SHORT' | null;
   strike: number;
   entry: number;
   sl: number;
@@ -37,6 +43,8 @@ export interface ZeroHeroSignal {
   tp2: number;
   confidence: number;
   riskReward: number;
+  mode: ZHMode;
+  expiryType: 'weekly' | 'monthly' | 'btst' | null;
   reasons: string[];
   warnings: string[];
   premiumMetrics: {
@@ -48,14 +56,15 @@ export interface ZeroHeroSignal {
   };
 }
 
-// ─── Evaluate Zero Hero Eligibility ──────────────────────────────
+// ─── Evaluate Zero Hero Eligibility (F&O weekly / monthly expiry) ──
 export function evaluateZeroHero(
   optionChain: SDMOptionStrike[],
   spot: number,
   direction: 'CALL' | 'PUT',
   qualityScore: number,
   confidence: number,
-  config: ZeroHeroConfig = DEFAULT_ZERO_HERO_CONFIG
+  config: ZeroHeroConfig = DEFAULT_ZERO_HERO_CONFIG,
+  symbol?: string
 ): ZeroHeroSignal {
   const result: ZeroHeroSignal = {
     eligible: false,
@@ -67,6 +76,8 @@ export function evaluateZeroHero(
     tp2: 0,
     confidence: 0,
     riskReward: 0,
+    mode: 'expiry',
+    expiryType: null,
     reasons: [],
     warnings: [],
     premiumMetrics: { spread: 0, spreadPercent: 0, volume: 0, oi: 0, iv: 0 },
@@ -74,6 +85,21 @@ export function evaluateZeroHero(
 
   if (!config.enabled) {
     result.warnings.push('Zero Hero is disabled. Enable in settings.');
+    return result;
+  }
+
+  // Determine expiry type for the symbol (weekly / monthly)
+  if (symbol && isFNO(symbol)) {
+    const et = getExpiryTypeForDate(symbol);
+    if (et) {
+      result.expiryType = et;
+      result.reasons.push(`F&O ${et} expiry — ${symbol}`);
+    } else if (config.mode === 'expiry') {
+      result.warnings.push(`${symbol} is not expiring today — no expiry trade`);
+      return result;
+    }
+  } else if (config.mode === 'expiry') {
+    result.warnings.push(`${symbol || 'symbol'} is not F&O — switch to BTST mode`);
     return result;
   }
 
@@ -158,6 +184,140 @@ export function evaluateZeroHero(
   return result;
 }
 
+// ─── BTST (Buy Today Sell Tomorrow) — high accuracy equity mode ───
+export interface BTSTInput {
+  symbol: string;
+  spot: number;            // current price
+  rsi: number;             // 14-period RSI
+  macdHistogram: number;   // MACD histogram (momentum)
+  volumeRatio: number;     // current volume / avg volume
+  adx: number;             // trend strength
+  sectorStrength: number;  // -100..100 sector momentum
+  newsScore: number;       // -100..100 news sentiment
+  aboveVWAP: boolean;      // price above VWAP
+  changePct: number;       // day change %
+}
+
+export function evaluateBTST(
+  inp: BTSTInput,
+  config: ZeroHeroConfig = DEFAULT_ZERO_HERO_CONFIG
+): ZeroHeroSignal {
+  const result: ZeroHeroSignal = {
+    eligible: false,
+    direction: null,
+    strike: 0,
+    entry: inp.spot,
+    sl: 0,
+    tp1: 0,
+    tp2: 0,
+    confidence: 0,
+    riskReward: 0,
+    mode: 'btst',
+    expiryType: 'btst',
+    reasons: [],
+    warnings: [],
+    premiumMetrics: { spread: 0, spreadPercent: 0, volume: 0, oi: 0, iv: 0 },
+  };
+
+  if (!config.enabled) {
+    result.warnings.push('Zero Hero is disabled. Enable in settings.');
+    return result;
+  }
+
+  // BTST only applies to non-F&O stocks (equity delivery style) or any stock on non-expiry
+  // Score components (each 0-100), high accuracy gate
+  let score = 0;
+  const parts: string[] = [];
+
+  // 1. Momentum: RSI in healthy uptrend zone (45-70 ideal for BTST)
+  if (inp.rsi >= 45 && inp.rsi <= 72) {
+    const rsiScore = inp.rsi >= 55 ? 100 : 70;
+    score += rsiScore * 0.20;
+    parts.push(`RSI ${inp.rsi.toFixed(0)} ✓`);
+  } else if (inp.rsi > 72) {
+    score += 30 * 0.20; // overbought — penalize
+    parts.push(`RSI ${inp.rsi.toFixed(0)} overbought`);
+  } else {
+    score += 0;
+    parts.push(`RSI ${inp.rsi.toFixed(0)} weak`);
+  }
+
+  // 2. MACD momentum (histogram positive = bullish)
+  const macdScore = inp.macdHistogram > 0 ? Math.min(100, 50 + inp.macdHistogram * 10) : 10;
+  score += macdScore * 0.20;
+  parts.push(`MACD ${inp.macdHistogram >= 0 ? '+' : ''}${inp.macdHistogram.toFixed(2)}`);
+
+  // 3. Volume confirmation (>= 1.5x average)
+  const volScore = Math.min(100, (inp.volumeRatio / 2) * 100);
+  score += volScore * 0.15;
+  parts.push(`Vol ${inp.volumeRatio.toFixed(1)}x`);
+
+  // 4. Trend strength (ADX >= 20)
+  const adxScore = inp.adx >= 20 ? Math.min(100, 40 + inp.adx) : 20;
+  score += adxScore * 0.15;
+  parts.push(`ADX ${inp.adx.toFixed(0)}`);
+
+  // 5. Sector strength
+  const sectorScore = Math.max(0, Math.min(100, 50 + inp.sectorStrength / 2));
+  score += sectorScore * 0.15;
+  parts.push(`Sector ${inp.sectorStrength >= 0 ? '+' : ''}${inp.sectorStrength.toFixed(0)}`);
+
+  // 6. News sentiment
+  const newsScore = Math.max(0, Math.min(100, 50 + inp.newsScore / 2));
+  score += newsScore * 0.15;
+  parts.push(`News ${inp.newsScore >= 0 ? '+' : ''}${inp.newsScore.toFixed(0)}`);
+
+  const confidence = Math.round(score);
+
+  // High-accuracy gate: require multiple confluences
+  const bullish =
+    inp.rsi >= 45 &&
+    inp.macdHistogram > 0 &&
+    inp.volumeRatio >= 1.3 &&
+    inp.adx >= 20 &&
+    inp.aboveVWAP &&
+    inp.sectorStrength > 0 &&
+    inp.newsScore > 0;
+
+  if (!bullish) {
+    result.warnings.push('BTST requires confluence: RSI↑ + MACD↑ + Vol↑ + ADX↑ + VWAP↑ + Sector↑ + News↑');
+    result.confidence = confidence;
+    return result;
+  }
+
+  if (confidence < config.minConfidence) {
+    result.warnings.push(`BTST confidence ${confidence}% below min ${config.minConfidence}%`);
+    result.confidence = confidence;
+    return result;
+  }
+
+  // BTST levels: tight SL below VWAP / day low, TP next session
+  const entry = inp.spot;
+  const sl = entry * 0.985;        // 1.5% stop (overnight gap protection)
+  const tp1 = entry * 1.02;        // ~2% target next morning (R:R ~1.3)
+  const tp2 = entry * 1.04;        // ~4% extended target
+  const riskReward = entry > sl ? (tp1 - entry) / (entry - sl) : 0;
+
+  if (riskReward < 1) {
+    result.warnings.push(`BTST R:R ${riskReward.toFixed(1)} too low`);
+    result.confidence = confidence;
+    return result;
+  }
+
+  result.eligible = true;
+  result.direction = 'LONG';
+  result.entry = entry;
+  result.sl = sl;
+  result.tp1 = tp1;
+  result.tp2 = tp2;
+  result.confidence = Math.min(confidence, 95);
+  result.riskReward = Math.round(riskReward * 10) / 10;
+  result.reasons.push(`BTST eligible: ${parts.join(' | ')}`);
+  result.reasons.push(`Entry ₹${entry.toFixed(2)} → TP1 ₹${tp1.toFixed(2)} / TP2 ₹${tp2.toFixed(2)}, SL ₹${sl.toFixed(2)}`);
+
+  return result;
+}
+
 // ─── Get Zero Hero Position Sizing ───────────────────────────────
 export function getZeroHeroPositionSize(
   entry: number,
@@ -173,4 +333,17 @@ export function getZeroHeroPositionSize(
     quantity: clampedLots * lotSize,
     maxLoss: riskPerLot * clampedLots,
   };
+}
+
+// ─── Determine if a candidate should use expiry or BTST mode ──────
+export function resolveZHMode(
+  symbol: string,
+  preferredMode: ZHMode = 'expiry'
+): ZHMode {
+  if (preferredMode === 'btst') return 'btst';
+  // If symbol is not F&O, force BTST
+  if (!isFNO(symbol)) return 'btst';
+  // If not an expiry day, BTST is the only sensible mode
+  if (!isFNO(symbol) || !getExpiryTypeForDate(symbol)) return 'btst';
+  return 'expiry';
 }

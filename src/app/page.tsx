@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -38,6 +38,8 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BotDashboard from '@/components/auto-bot/BotDashboard';
+import BacktestDashboard from '@/components/backtest/BacktestDashboard';
+import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -74,7 +76,10 @@ type MarketSummary = {
   spotPrice: number;
   spotChange: number;
   spotChangePct: number;
-  indiaVIX: number;
+  indiaVIX: number | null;
+  prevClose: number | null;
+  vixLive?: boolean;
+  prevCloseLive?: boolean;
   pcr: number;
   maxPain: number;
   totalCallOI: number;
@@ -233,7 +238,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'auto-bot'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'auto-bot' | 'btst' | 'backtest'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -305,6 +310,7 @@ export default function TradingDashboard() {
     const raw = data as any;
     const analysis = raw.analysis || {};
     const inner = raw.data || {};
+    const chainSummary = inner.summary || {};
     const chain = inner.data || [];
     const spot = analysis.spotPrice ?? inner.spotPrice ?? 0;
     const atmStrike =
@@ -318,7 +324,10 @@ export default function TradingDashboard() {
       spotPrice: spot,
       spotChange: 0,
       spotChangePct: 0,
-      indiaVIX: analysis.greeks?.vix ?? 0,
+      indiaVIX: (typeof chainSummary.indiaVIX === 'number' ? chainSummary.indiaVIX : null),
+      prevClose: (typeof chainSummary.prevClose === 'number' ? chainSummary.prevClose : null),
+      vixLive: chainSummary.vixLive ?? false,
+      prevCloseLive: chainSummary.prevCloseLive ?? false,
       pcr: analysis.pcr ?? 1,
       maxPain: analysis.maxPain ?? 0,
       totalCallOI: analysis.totalCallOI ?? 0,
@@ -623,6 +632,16 @@ return (
               onClick={() => { setViewMode('auto-bot'); setDisplayMode('pro'); }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> Bot
             </Button>
+            <Button variant={viewMode === 'btst' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'btst' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
+              onClick={() => { setViewMode('btst'); setDisplayMode('pro'); }}>
+              <Flame className="h-2.5 w-2.5 mr-0.5" /> BTST
+            </Button>
+            <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
+              <LineChart className="h-2.5 w-2.5 mr-0.5" /> Backtest
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -639,6 +658,7 @@ return (
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
                 { mode: 'auto-bot', label: 'Auto Bot', icon: Activity, color: 'violet' },
+                { mode: 'backtest', label: 'Backtest Audit', icon: LineChart, color: 'amber' },
                 { mode: 'admin', label: 'Admin Panel', icon: Settings2, color: 'gray' },
               ].map((item) => (
                 <button
@@ -793,7 +813,7 @@ return (
             symbol={symbol}
             spotPrice={spotPrice}
             pcr={summary?.pcr}
-            vix={summary?.indiaVIX}
+            vix={summary?.indiaVIX ?? undefined}
             sentiment={analysis?.sentiment}
           />
         </div>
@@ -806,6 +826,16 @@ return (
         /* ═══════ AUTO BOT ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <BotDashboard />
+        </div>
+        ) : viewMode === 'btst' ? (
+        /* ═══════ BTST AI DASHBOARD ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <BTSTDashboard />
+        </div>
+        ) : viewMode === 'backtest' ? (
+        /* ═══════ BACKTEST AUDIT ENGINE ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <BacktestDashboard />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */

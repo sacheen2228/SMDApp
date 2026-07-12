@@ -316,6 +316,94 @@ The Telegram bot (`@Sacheen_SD_Bot`) provides command-based access to both SDM T
 
 ---
 
+## 10b. BTST AI Dashboard (Buy Today Sell Tomorrow)
+
+A dedicated next-day swing scanner + AI dashboard, **independent of the intraday engine**. It scans
+the NIFTY 50 universe once daily between **3:10–3:20 PM IST** and grades stocks A+/A/B.
+
+### 6-Factor BTST Score (out of 100)
+
+| Factor | Weight | Inputs |
+|---|---|---|
+| Trend | 25 | RSI zone, EMA9>21>50 stack, MACD histogram, ADX |
+| Smart Money | 20 | Delivery %, relative strength vs NIFTY, OI buildup (F&O) |
+| OI | 20 | PCR, OI change, IV (F&O stocks only) |
+| Volume | 15 | Relative volume (RVOL) |
+| Sector | 10 | Sector strength |
+| Breadth | 10 | Sector advance-decline ratio |
+
+**Grade**: `A+` ≥85 · `A` ≥75 · `B` ≥65 · `C` ≥55 · `SKIP` <55
+**Confidence** = `score × 0.92 + volume bonus`. **R:R** target ≈ 2.6 (ATR-based SL, 3 staged TPs).
+
+### Features
+- **Live Dashboard** (`BTST` tab): AI score breakdown, trend/sector/RS/volume/delivery/OI/PCR/
+  smart-money/gap-risk, ATR-based SL + TP1/TP2/TP3, dynamic position sizing.
+- **Risk Engine**: ATR stop-loss, 3 profit targets, expected overnight gap probability.
+- **Backtesting**: independent localStorage trade log + metrics (win rate, avg overnight return,
+  profit factor, expectancy, max drawdown) — separate from intraday trades.
+- **Alerts**: end-of-day Telegram alerts for high-confidence setups (score ≥ 85, gap risk ≠ High).
+- **Independent Operation**: own scanner, API (`/api/btst`), trade log, analytics — does not touch
+  the intraday breakout strategy.
+
+### API
+- `GET /api/btst` — returns cached scan (5-min TTL) or runs a fresh one.
+- `POST /api/btst?alert=1` — runs scan + sends Telegram alerts for score ≥ 85.
+
+### Cron
+`scripts/dailyScanCron.ts` fires the BTST scan at **15:15 IST, Mon–Fri** (window 3:10–3:20).
+At **15:25 IST** it squares off the prior day's BTST signals into the backtest audit engine.
+
+---
+
+## 10c. Trade Audit / Backtest Verification Engine
+
+A standalone sidecar (`trade-audit/`, **port 4001**) that records strategy signals, tracks them
+live (MFE/MAE, TP/SL detection), and computes **backtest verification** metrics: win rate,
+avg R-multiple, profit factor, expectancy, max drawdown — broken down by strategy, symbol, and
+market session. It's the honest ledger that tells you whether a strategy actually worked.
+
+### Architecture
+```
+SMDApp strategies ──POST /api/signals──▶ trade-audit:4001 (Express + better-sqlite3)
+BTST scan (runBTSTScan)  records candidates as signals (idempotent by date)
+dailyScanCron 15:25 IST  squares off prior-day BTST using next-day close
+Browser ──GET /api/stats, /api/trades──▶ Backtest tab dashboard
+```
+
+### Startup
+```bash
+cd trade-audit && ./start.sh     # Node + ts-node-dev engine on :4001
+./stop.sh                        # stops it
+```
+> Runs under **Node** (not bun) — it uses the native `better-sqlite3` module, which bun cannot load.
+
+### Backtest tab
+The **Backtest** tab polls `:4001` every 5s and shows aggregate stats (win rate, avg R, profit
+factor, net P&L, max drawdown), breakdowns by strategy/symbol/session, a filterable trade ledger,
+and CSV/JSON export. If the engine isn't running it shows a "start the engine" hint.
+
+### API
+- `POST /api/signals` — record a signal (returns `tradeId`, 202; written async via durable queue)
+- `POST /api/signals/:id/price` — live price tick (MFE/MAE, TP/SL detection)
+- `POST /api/signals/:id/close` — explicitly close (manual / time / btst_square_off)
+- `GET /api/trades` — paginated, filterable trade search
+- `GET /api/stats` — aggregate verification stats (win rate, R, profit factor, drawdown, breakdowns)
+- `GET /api/export/:format` — CSV or JSON export (filtered)
+
+### Strategy recording
+- **BTST** (`src/lib/btst-scanner.ts`): every daily scan records its A+/A/B candidates as `BTST`
+  signals; the cron closes them next-day (`btst_square_off`) using the realized close, so real
+  backtest stats accumulate automatically.
+- **Zero Hero** + **Smart Money** (Terminal tab, `src/components/terminal/ZeroHeroTerminal.tsx`):
+  when you open the **Zero Hero** or **Smart Money** tab, the displayed option candidates are
+  recorded as `ZERO_HERO_AI` / `SMC` signals (direction-corrected CE/PE levels) on every scan,
+  with the live premium fed as a tracking tick so the engine computes MFE/MAE and auto-closes on
+  SL/TP. Idempotent per day+strike+type, so re-scans don't duplicate.
+- Any strategy can record by calling `recordSignal()` / `recordOptionSignals()` from
+  `src/lib/trade-audit-client.ts` / `src/lib/audit-recorders.ts`.
+
+---
+
 ## 11. Key source files
 
 | File | Role |
@@ -329,6 +417,10 @@ The Telegram bot (`@Sacheen_SD_Bot`) provides command-based access to both SDM T
 | `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
 | `src/lib/sdmChat.ts` / `llmResolve.ts` | Hybrid chat intent resolution |
 | `src/lib/intraday-scanner.ts` | Stock scanner — live Yahoo quote + real TA |
+| `src/lib/btst-engine.ts` | BTST 6-factor scoring engine + risk engine |
+| `src/lib/btst-scanner.ts` | BTST scanner (reuses intraday scanner real data) |
+| `src/app/api/btst/route.ts` | BTST scan API + Telegram alerts |
+| `src/components/btst/BTSTDashboard.tsx` | BTST AI dashboard tab (scanner + performance) |
 | `src/components/auto-bot/BotDashboard.tsx` | Bot tab UI — WebSocket + REST polling |
 | `auto-bot/bot/engine.py` | Paper-mode trading engine |
 | `auto-bot/bot/screener.py` | Scanner with Breeze + yfinance support |

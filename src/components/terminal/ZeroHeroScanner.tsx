@@ -14,11 +14,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTerminalStore } from "@/stores/useTerminalStore";
+import { isFNO, getExpiryTypeForDate } from "@/lib/expiry-calculator";
 
 interface ZeroHeroCandidate {
   rank: number;
   strike: number;
-  type: "CE" | "PE";
+  type: "CE" | "PE" | "EQ";
   premium: number;
   probability: number;
   rr: number;
@@ -28,6 +29,8 @@ interface ZeroHeroCandidate {
   iv: number;
   oiChange: number;
   volume: number;
+  mode: "weekly" | "monthly" | "btst";
+  symbol?: string;
 }
 
 function computeStars(confidence: number): number {
@@ -56,11 +59,64 @@ function StarRating({ count }: { count: number }) {
 export function ZeroHeroScanner() {
   const { symbol, expiry } = useTerminalStore();
   const [candidates, setCandidates] = useState<ZeroHeroCandidate[]>([]);
+  const [btstMode, setBtstMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
+      const fno = isFNO(symbol);
+      const expiryType = fno ? getExpiryTypeForDate(symbol) : null;
+      const isBTST = !expiryType; // not an expiry day → BTST mode
+
+      if (isBTST) {
+        // BTST mode: scan equity stocks for high-accuracy next-day setups
+        setBtstMode(true);
+        const res = await fetch(`/api/scanner?symbol=NIFTY&live=true`);
+        if (!res.ok) throw new Error("Failed");
+        const json = await res.json();
+        const candidatesRaw = json?.data?.candidates || json?.candidates || [];
+        if (!Array.isArray(candidatesRaw) || candidatesRaw.length === 0) throw new Error("No data");
+
+        // Filter for high-accuracy BTST: strong technical + volume + momentum
+        const btstList: ZeroHeroCandidate[] = candidatesRaw
+          .filter((c: any) => {
+            const techScore = c.technicalScore ?? c.score ?? 0;
+            const volScore = c.volumeScore ?? 0;
+            return techScore >= 65 && volScore >= 60 && (c.changePct ?? 0) > 0;
+          })
+          .map((c: any, i: number) => {
+            const techScore = c.technicalScore ?? c.score ?? 0;
+            const confidence = Math.min(95, Math.round(techScore * 0.7 + (c.volumeScore ?? 0) * 0.3));
+            const price = c.price ?? c.last ?? c.ltp ?? 0;
+            return {
+              rank: 0,
+              strike: price,
+              type: "EQ" as const,
+              premium: price,
+              probability: Math.min(95, Math.round(confidence * 0.9)),
+              rr: Math.round((c.riskReward ?? 2) * 10) / 10,
+              confidence,
+              stars: computeStars(confidence),
+              delta: 0,
+              iv: 0,
+              oiChange: 0,
+              volume: c.volume ?? 0,
+              mode: "btst" as const,
+              symbol: c.symbol,
+            } as any;
+          })
+          .sort((a: any, b: any) => b.confidence - a.confidence)
+          .slice(0, 10)
+          .map((c: any, i: number) => ({ ...c, rank: i + 1 }));
+
+        setCandidates(btstList);
+        setError(false);
+        return;
+      }
+
+      // Expiry mode: scan option chain near-ATM strikes
+      setBtstMode(false);
       const params = new URLSearchParams({ symbol });
       if (expiry) params.set('expiry', expiry);
       const res = await fetch(`/api/option-chain?${params.toString()}`);
@@ -72,13 +128,14 @@ export function ZeroHeroScanner() {
       const spot = json.data?.summary?.spotPrice || json.data?.spotPrice || 0;
       if (!spot || strikes.length === 0) throw new Error("Incomplete data");
 
+      const mode: "weekly" | "monthly" = expiryType!;
+
       const threshold = spot * 0.02; // 2% of spot
       const nearStrikes = strikes.filter(
         (s: any) => Math.abs(s.strike - spot) <= threshold
       );
 
       const candidatesList: ZeroHeroCandidate[] = [];
-      let rank = 1;
 
       for (const s of nearStrikes) {
         // Call candidate
@@ -118,6 +175,7 @@ export function ZeroHeroScanner() {
             iv: s.ce.iv || 0,
             oiChange: s.ce.oiChg || 0,
             volume: s.ce.volume || 0,
+            mode,
           });
         }
 
@@ -158,6 +216,7 @@ export function ZeroHeroScanner() {
             iv: s.pe.iv || 0,
             oiChange: s.pe.oiChg || 0,
             volume: s.pe.volume || 0,
+            mode,
           });
         }
       }
@@ -189,6 +248,18 @@ export function ZeroHeroScanner() {
           <CardTitle className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
             <Flame className="size-3.5 text-orange-400" />
             Zero Hero Scanner
+            <Badge
+              variant="outline"
+              className={`text-[8px] px-1 py-0 h-3 font-mono ${
+                btstMode
+                  ? "text-cyan-400 border-cyan-500/30"
+                  : candidates[0]?.mode === "monthly"
+                  ? "text-purple-400 border-purple-500/30"
+                  : "text-amber-400 border-amber-500/30"
+              }`}
+            >
+              {btstMode ? "BTST" : candidates[0]?.mode === "monthly" ? "MONTHLY" : "WEEKLY"}
+            </Badge>
           </CardTitle>
           <button
             onClick={() => {
@@ -238,7 +309,7 @@ export function ZeroHeroScanner() {
                       {c.rank}
                     </TableCell>
                     <TableCell className="px-1.5 py-1 text-[10px] font-mono tabular-nums text-zinc-200 font-semibold">
-                      {c.strike.toLocaleString("en-IN")}
+                      {c.type === "EQ" && c.symbol ? c.symbol : c.strike.toLocaleString("en-IN")}
                     </TableCell>
                     <TableCell className="px-1.5 py-1">
                       <Badge
@@ -246,7 +317,9 @@ export function ZeroHeroScanner() {
                         className={`text-[8px] px-1 py-0 h-3 font-mono ${
                           c.type === "CE"
                             ? "text-emerald-400 border-emerald-500/30"
-                            : "text-red-400 border-red-500/30"
+                            : c.type === "PE"
+                            ? "text-red-400 border-red-500/30"
+                            : "text-cyan-400 border-cyan-500/30"
                         }`}
                       >
                         {c.type}
