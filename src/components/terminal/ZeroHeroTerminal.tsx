@@ -12,7 +12,38 @@ import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate } from "@/lib/expiry-calculator";
-import { recordOptionSignals } from "@/lib/audit-recorders";
+
+/**
+ * Register candidate trades through the unified /api/trade/register endpoint
+ * so SMC / Zero Hero AI flow through the SAME lifecycle as server-side
+ * strategies (active tracker + Prisma journal + Trade Audit engine). Idempotent
+ * per deterministic tradeId, so re-scans are safe.
+ */
+async function registerTrades(
+  strategyId: string,
+  symbol: string,
+  candidates: { strike: number; type: "CE" | "PE"; entry: number; sl?: number; tp1?: number; tp2?: number; price?: number }[]
+): Promise<void> {
+  await Promise.all(
+    candidates.map((c) =>
+      fetch("/api/trade/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategyId,
+          symbol,
+          strike: c.strike,
+          optionType: c.type,
+          entry: c.entry,
+          sl: c.sl,
+          tp1: c.tp1,
+          tp2: c.tp2,
+          price: c.price ?? c.entry,
+        }),
+      }).catch(() => {})
+    )
+  );
+}
 
 type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "history" | "watchlist" | "positions";
 
@@ -373,12 +404,12 @@ export function ZeroHeroTerminal() {
         strike: z.strike,
         type: z.type as "CE" | "PE",
         entry: z.entry,
-        rr: z.rr,
-        conf: z.conf,
+        sl: z.sl,
+        tp1: z.tp1,
+        tp2: z.tp2,
         price: z.entry,
-        reason: `Zero Hero conf ${z.conf}, 1:${z.rr}, ${z.type}`,
       }));
-    if (toRecord.length) recordOptionSignals("ZERO_HERO_AI", symbol, toRecord).catch(() => {});
+    if (toRecord.length) registerTrades("ZERO_HERO_AI", symbol, toRecord).catch(() => {});
   }, [activeTab, isEligible, zhCandidates, symbol]);
 
   // ─── FII/DII flow from OI ───────────────────────────────────────
@@ -932,17 +963,23 @@ function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
         return { r, isCE, d, oiChg };
       })
       .filter((x) => x.oiChg >= 50000)
-      .map((x) => ({
-        strike: x.r.strike,
-        type: (x.isCE ? "CE" : "PE") as "CE" | "PE",
-        entry: x.d?.ltp || 0,
-        rr: 2,
-        conf: Math.min(95, 60 + Math.min(35, x.oiChg / 20000)),
-        reason: `Smart Money: ${(x.d?.oiChg || 0) > 0 ? "OI buildup" : "OI unwinding"} ${x.oiChg >= 1000 ? (x.oiChg / 1000).toFixed(0) + "K" : x.oiChg}`,
-        price: x.d?.ltp || 0,
-      }))
+      .map((x) => {
+        const entry = x.d?.ltp || 0;
+        const rr = 2;
+        const slPct = 0.22;
+        return {
+          strike: x.r.strike,
+          type: (x.isCE ? "CE" : "PE") as "CE" | "PE",
+          entry,
+          sl: Math.round(entry * (1 - slPct) * 100) / 100,
+          tp1: Math.round(entry * (1 + slPct) * 100) / 100,
+          tp2: Math.round(entry * (1 + slPct * rr) * 100) / 100,
+          conf: Math.min(95, 60 + Math.min(35, x.oiChg / 20000)),
+          price: entry,
+        };
+      })
       .filter((c) => c.entry > 0);
-    if (toRecord.length) recordOptionSignals("SMC", symbol, toRecord).catch(() => {});
+    if (toRecord.length) registerTrades("SMC", symbol, toRecord).catch(() => {});
   }, [sorted, symbol, chain]);
   return (
     <div className="space-y-3.5">

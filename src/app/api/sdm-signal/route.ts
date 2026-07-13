@@ -10,6 +10,7 @@ import { sendTradeAlert } from "@/lib/telegram";
 import { getOptionChain, getOptionChainExpiries } from "@/lib/icici-breeze/option-chain";
 import { initSession } from "@/lib/icici-breeze/auth";
 import { getNSEOptionChain } from "@/lib/nse-api";
+import { isBSEIndex } from "@/lib/bse-api";
 import type { SDMOptionStrike } from "@/types/sdm";
 
 export async function GET(request: NextRequest) {
@@ -18,6 +19,8 @@ export async function GET(request: NextRequest) {
     const symbol = searchParams.get("symbol") || "NIFTY";
     const expiry = searchParams.get("expiry") || undefined;
     const isExpiryDay = searchParams.get("expiryDay") === "true";
+    const dirRaw = searchParams.get("dir");
+    const dir: 'CALL' | 'PUT' | null = dirRaw === 'CALL' || dirRaw === 'PUT' ? dirRaw : null;
 
     const config = getSymbolConfig(symbol);
     const today = new Date().toISOString().split("T")[0];
@@ -83,6 +86,43 @@ export async function GET(request: NextRequest) {
         }
       } catch (e) {
         console.warn("[SDM Signal] NSE failed:", e);
+      }
+    }
+
+    // BSE indices (SENSEX, BANKEX) — use BSE public API for option chain
+    if (!chainData && isBSEIndex(symbol)) {
+      try {
+        const { getBSEOptionChain, getBSEExpiryDates: getBSEExpiries } = await import('@/lib/bse-api');
+        const bseExpiries = await getBSEExpiries(symbol);
+        const selectedExpiry = expiry || bseExpiries[0] || "";
+        if (selectedExpiry) {
+          const bseChain = await getBSEOptionChain(symbol, selectedExpiry);
+          if (bseChain?.data?.length) {
+            chainData = {
+              spotPrice: bseChain.spotPrice,
+              data: bseChain.data.map((row) => ({
+                strike: row.strike,
+                ce: row.ce ? {
+                  ltp: row.ce.ltp || 0, oi: row.ce.oi || 0,
+                  oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0,
+                  iv: row.ce.iv || 0, chg: row.ce.chg || 0,
+                  bid: row.ce.bid || 0, ask: row.ce.ask || 0,
+                } : null,
+                pe: row.pe ? {
+                  ltp: row.pe.ltp || 0, oi: row.pe.oi || 0,
+                  oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0,
+                  iv: row.pe.iv || 0, chg: row.pe.chg || 0,
+                  bid: row.pe.bid || 0, ask: row.pe.ask || 0,
+                } : null,
+              })),
+              expiries: bseExpiries.map((e: string) => ({ date: e })),
+              selectedExpiry,
+            };
+            source = "bse-api";
+          }
+        }
+      } catch (bseErr) {
+        console.warn("[SDM Signal] BSE API failed:", bseErr);
       }
     }
 
@@ -175,10 +215,6 @@ export async function GET(request: NextRequest) {
       close: spotPrice,
     };
 
-    // Check if today is expiry day
-    const todayDate = new Date(today);
-    const isExpiry = isExpiryDay || expiryDate.toDateString() === todayDate.toDateString();
-
     // Run SDM V2 engine — same function SDMBot.tsx calls client-side,
     // so chat/Telegram and the terminal UI always agree.
     // VIX: no dedicated live-VIX fetch exists yet in this codebase;
@@ -193,7 +229,8 @@ export async function GET(request: NextRequest) {
       { "5m": candles },
       vix,
       source,
-      new Date().toISOString()
+      new Date().toISOString(),
+      dir || undefined
     );
 
     // Note: Alerts from this route suppressed — sdm-signal always uses simulation data.

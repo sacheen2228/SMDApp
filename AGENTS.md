@@ -60,12 +60,10 @@ bun run dev        # starts on :3000
 | `src/app/api/agent/route.ts` | AI Agent (Angel) API with LLM |
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
-| `auto-bot/` | Breakout/Desk automated trading bot (sidecar service, port 8000) |
 | `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |
 | `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
 | `src/lib/trade-audit-client.ts` | Client lib for the audit engine (record/price/close/stats/trades) |
 | `src/lib/audit-recorders.ts` | Records Terminal-tab Zero Hero + Smart Money candidates into the audit engine |
-| `src/components/auto-bot/BotDashboard.tsx` | Auto Bot tab UI — WebSocket + REST polling |
 
 ## Data Reality Check
 
@@ -92,28 +90,10 @@ bun run dev        # starts on :3000
 - `generateHistoricalChain()` — deleted from orca-backtest.ts and sdm-backtest.ts (was Math.random() fake option chains)
 - All Math.random() for stock technicals — replaced with deterministic defaults when Yahoo Finance data unavailable
 - **No simulation fallback exists anywhere** — APIs return 503 errors when real data unavailable
-- `auto-bot/` — added Breakout/Desk Python bot as sidecar service on port 8000
+- `auto-bot/` — removed (was a Breakout/Desk Python equity screener sidecar on port 8000; not aligned with the Indian F&O focus and unused by the data flow)
 
 ### Expiry day
 All indices expire on **Thursday** (weekday 3) per current SEBI rules. Fixed in master-bot-engine.ts and icici-breeze/option-chain.ts.
-
-## Auto Bot — Breakout/Desk Sidecar
-
-Long-only breakout screener for S&P 500 + Nifty 100 — paper mode (no broker). All signals auto-accepted and tracked as paper trades in the bot's SQLite DB. Dashboard shows stats, alerts, open positions, closed trades, win/loss chart.
-
-### Startup
-```bash
-cd auto-bot && ./start.sh            # starts Python engine on port 8000
-./stop.sh                            # stops the engine
-```
-
-The bot runs in paper mode — no IB Gateway, no Telegram required. Dashboard available at **Bot** tab in the app (polls `localhost:8000`).
-
-### Architecture
-- **Python 3.10+** with `yfinance`, `fastapi`, `websockets`
-- **SQLite** via `auto-bot/data/trades.db` (alerts, trades, alerted_tickers)
-- **WebSocket** at `ws://localhost:8000/ws` pushes dashboard snapshots every 5s
-- Dashboard tab in Next.js falls back to REST polling every 5s when WS disconnects
 
 ## Trade Audit — Backtest Verification Sidecar
 

@@ -147,7 +147,8 @@ function checkEntryValid(
   chain: SDMOptionStrike[],
   strike: number,
   entryPrice: number,
-  spot: number
+  spot: number,
+  direction?: 'CALL' | 'PUT'
 ): ValidationCheck {
   const row = chain.find((s) => s.strike === strike);
   if (!row) {
@@ -158,7 +159,7 @@ function checkEntryValid(
     };
   }
 
-  const isCall = strike >= spot;
+  const isCall = direction ? direction === 'CALL' : strike >= spot;
   const leg = isCall ? row.ce : row.pe;
   if (!leg) {
     return {
@@ -189,7 +190,8 @@ function checkEntryValid(
 
 function checkLiquidity(
   chain: SDMOptionStrike[],
-  spot: number
+  spot: number,
+  direction?: 'CALL' | 'PUT'
 ): ValidationCheck {
   let atmStrike = chain[0]?.strike ?? 0;
   let minDist = Infinity;
@@ -202,29 +204,32 @@ function checkLiquidity(
   }
 
   const row = chain.find((s) => s.strike === atmStrike);
-  if (!row?.ce) {
+  const isCall = direction ? direction === 'CALL' : true;
+  const leg = isCall ? row?.ce : row?.pe;
+  if (!leg) {
     return {
       name: "liquidity_sufficient",
       passed: false,
-      message: `No CE data at ATM strike ${atmStrike}`,
+      message: `No ${isCall ? "CE" : "PE"} data at ATM strike ${atmStrike}`,
     };
   }
 
-  const oiOk = row.ce.oi > MIN_OI;
-  const volOk = row.ce.volume > MIN_VOLUME;
+  const oiOk = leg.oi > MIN_OI;
+  const volOk = leg.volume > MIN_VOLUME;
   const passed = oiOk && volOk;
   return {
     name: "liquidity_sufficient",
     passed,
     message: passed
-      ? `ATM ${atmStrike} — OI ${row.ce.oi}, volume ${row.ce.volume}`
-      : `ATM ${atmStrike} liquidity low — OI ${row.ce.oi} (need >${MIN_OI}), volume ${row.ce.volume} (need >${MIN_VOLUME})`,
+      ? `ATM ${atmStrike} ${isCall ? "CE" : "PE"} — OI ${leg.oi}, volume ${leg.volume}`
+      : `ATM ${atmStrike} ${isCall ? "CE" : "PE"} liquidity low — OI ${leg.oi} (need >${MIN_OI}), volume ${leg.volume} (need >${MIN_VOLUME})`,
   };
 }
 
 function checkSpreadAcceptable(
   chain: SDMOptionStrike[],
-  strike: number
+  strike: number,
+  direction?: 'CALL' | 'PUT'
 ): ValidationCheck {
   const row = chain.find((s) => s.strike === strike);
   if (!row) {
@@ -235,8 +240,8 @@ function checkSpreadAcceptable(
     };
   }
 
-  const isCall = true;
-  const leg = row.ce ?? row.pe;
+  const isCall = direction ? direction === 'CALL' : true;
+  const leg = isCall ? (row.ce ?? row.pe) : (row.pe ?? row.ce);
   if (!leg) {
     return {
       name: "spread_acceptable",
@@ -313,9 +318,9 @@ export function validateTrade(input: ValidationInput): ValidationResult {
     checkNoStaleTicks(input.healthReport),
     checkConfidence(input.qualityGrade, input.qualityScore),
     checkRiskCaps(input.riskState),
-    checkEntryValid(input.optionChain, input.selectedStrike, input.entryPrice, input.spot),
-    checkLiquidity(input.optionChain, input.spot),
-    checkSpreadAcceptable(input.optionChain, input.selectedStrike),
+    checkEntryValid(input.optionChain, input.selectedStrike, input.entryPrice, input.spot, input.direction),
+    checkLiquidity(input.optionChain, input.spot, input.direction),
+    checkSpreadAcceptable(input.optionChain, input.selectedStrike, input.direction),
     checkDataIntegrity(input.healthReport),
   ];
 

@@ -8,6 +8,7 @@ import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
 import { calculateGreeks } from '@/lib/greeks';
 import { getNSEOptionChain } from '@/lib/nse-api';
+import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
@@ -139,24 +140,49 @@ export async function GET(request: NextRequest) {
       }
     }
     
-    // Known symbols with no data source — return 200 with not_available flag for better UX
-    const noDataSymbols = ['BANKEX', 'SENSEX']; // BSE F&O not available via Breeze/NSE APIs
-    if (!chainData && noDataSymbols.includes(symbol)) {
-      return NextResponse.json({
-        success: true,
-        source: 'unavailable',
-        lastUpdate: new Date().toISOString(),
-        data: {
-          data: [],
-          spotPrice: 0,
-          summary: { spotPrice: 0, indiaVIX: liveVix, maxPain: 0, prevClose: livePrevClose, vixLive: liveVix != null, prevCloseLive: livePrevClose != null },
-          expiries: [],
-          selectedExpiry: '',
-          dataSource: 'unavailable',
-          notAvailable: true,
-        },
-        analysis: { recommendation: { action: 'WAIT', reason: 'No data source available' } },
-      });
+    // BSE indices (SENSEX, BANKEX) — use BSE public API
+    if (!chainData && isBSEIndex(symbol)) {
+      try {
+        const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
+        const bseExpiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
+        const selectedExpiry = expiry || bseExpiries[0] || '';
+
+        if (selectedExpiry) {
+          const bseChain = await getBSEOptionChain(symbol, selectedExpiry).catch(() => null);
+          if (bseChain?.data?.length) {
+            chainData = {
+              data: bseChain.data.map((row) => ({
+                strike: row.strike,
+                ce: row.ce ? {
+                  ltp: row.ce.ltp || 0,
+                  oi: row.ce.oi || 0,
+                  oiChg: row.ce.oiChg || 0,
+                  volume: row.ce.volume || 0,
+                  iv: row.ce.iv || 0,
+                  chg: row.ce.chg || 0,
+                  bid: row.ce.bid || 0,
+                  ask: row.ce.ask || 0,
+                } : null,
+                pe: row.pe ? {
+                  ltp: row.pe.ltp || 0,
+                  oi: row.pe.oi || 0,
+                  oiChg: row.pe.oiChg || 0,
+                  volume: row.pe.volume || 0,
+                  iv: row.pe.iv || 0,
+                  chg: row.pe.chg || 0,
+                  bid: row.pe.bid || 0,
+                  ask: row.pe.ask || 0,
+                } : null,
+              })),
+              spotPrice: bseChain.spotPrice,
+              expiries: bseExpiries.map((e: string) => ({ date: e, label: e, daysToExpiry: 0 })),
+              selectedExpiry,
+              summary: { spotPrice: bseChain.spotPrice },
+            };
+            source = 'bse-api';
+          }
+        }
+      } catch {}
     }
 
     // If no real data available, try Yahoo Finance for spot price
@@ -358,23 +384,47 @@ export async function GET(request: NextRequest) {
     const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
 
     // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
+    // Throttled: only sends once per trade signature per day
     if (analysis?.recommendation && source !== "simulation") {
       const rec = analysis.recommendation;
       const isTradeAction = rec.action && !["HOLD", "NEUTRAL", "WAIT"].includes(rec.action);
       const hasConfidence = (rec.confidence || rec.sdmScore || 0) >= 60;
       if (isTradeAction && hasConfidence) {
-        sendTradeAlert({
-          symbol,
-          action: rec.action,
-          strike: rec.strike || analysis.atmStrike || spotPrice,
-          type: rec.optionType || rec.direction || "OPTION",
-          confidence: rec.confidence || rec.sdmScore || 0,
-          entry: rec.entryPrice,
-          stopLoss: rec.stopLoss,
-          target1: rec.tp1,
-          target2: rec.tp2,
-          source: `📊 SDM Analysis (${source})`,
-        }).catch(() => {});
+        const { getActiveTrades, addTrade } = await import('@/lib/activeTradeTracker');
+        const tradeSig = `${symbol}|${rec.strike || analysis.atmStrike || spotPrice}|${rec.optionType || ''}|${rec.action}`;
+        const alreadyActive = getActiveTrades().some(t =>
+          t.symbol === symbol && t.strike === (rec.strike || analysis.atmStrike || spotPrice)
+        );
+        if (!alreadyActive) {
+          sendTradeAlert({
+            symbol,
+            action: rec.action,
+            strike: rec.strike || analysis.atmStrike || spotPrice,
+            type: rec.optionType || rec.direction || "OPTION",
+            confidence: rec.confidence || rec.sdmScore || 0,
+            entry: rec.entryPrice,
+            stopLoss: rec.stopLoss,
+            target1: rec.tp1,
+            target2: rec.tp2,
+            source: `📊 SDM Analysis (${source})`,
+          }).then(() => {
+            addTrade({
+              id: `api-${Date.now()}`,
+              symbol,
+              side: rec.action.includes('BUY') ? 'BUY' : 'SELL',
+              instrument: `${symbol} ${rec.strike || ''} ${rec.optionType || ''}`.trim(),
+              strike: rec.strike || analysis.atmStrike || spotPrice || 0,
+              optionType: rec.optionType || '',
+              entry: rec.entryPrice || 0,
+              sl: rec.stopLoss || 0,
+              tp1: rec.tp1 || 0,
+              tp2: rec.tp2 || 0,
+              status: 'ACTIVE',
+              sentAt: new Date().toISOString(),
+              source: `option-chain-api`,
+            });
+          }).catch(() => {});
+        }
       }
     }
 

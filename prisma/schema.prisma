@@ -37,24 +37,28 @@ model Trade {
   symbol           String
   strike           Float
   type             String
+  side             String   @default("BUY")        // "BUY" | "SELL"
   entryTime        DateTime
   entryPrice       Float
   exitTime         DateTime?
   exitPrice        Float?
   pnl              Float?
+  pnlPercent       Float?                          // P&L as percentage of entry
   holdingTimeMin   Float?
   confidence       Float
   qualityScore     Float
   qualityGrade     String
   aiReasonSnapshot String
-  exitReason       String?
-  status           String   @default("OPEN")
+  exitReason       String?                         // "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "MANUAL" | null
+  status           String   @default("OPEN")       // "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "SL_HIT" | "CLOSED"
   riskPerTrade     Float
   positionSize     Float
   stopLoss         Float
   target1          Float?
   target2          Float?
   target3          Float?
-  tpHitLevel       String?          // "TP1" | "TP2" | "TP3" | "TRAILING_SL" | null
+  tpHitLevel       String?                         // "TP1" | "TP2" | "TP3" | "TRAILING_SL" | null
+  strategy         String   @default("intraday-scan") // source: "intraday-scan" | "option-chain-api" | "manual"
+  tradedAt         DateTime @default(now())         // date used for daily grouping
   createdAt        DateTime @default(now())
 }
