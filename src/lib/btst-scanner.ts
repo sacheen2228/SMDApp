@@ -9,6 +9,7 @@ import { runIntradayScan } from "./intraday-scanner";
 import { analyzeBTST, type BTSTAnalysis } from "./btst-engine";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
+import { createTrade, updateTrade } from "./tradeStore";
 
 export interface BTSTScanResult {
   timestamp: string;
@@ -251,7 +252,24 @@ export async function recordBTSTSignals(candidates: BTSTAnalysis[]): Promise<num
         gapRisk: a.gapRisk,
       },
     });
-    if (ok) recorded++;
+      if (ok) recorded++;
+
+    // Mirror into the Prisma trade journal (the dashboard/Telegram/Agent source
+    // of truth) so BTST exits also show up in the unified lifecycle. Upsert is
+    // idempotent on tradeId.
+    await createTrade({
+      tradeId: `${a.symbol}-BTST-${ymd}`,
+      symbol: a.symbol,
+      strike: 0,
+      type: "EQUITY",
+      side: "BUY",
+      entryPrice: a.entry,
+      stopLoss: a.sl,
+      target1: a.tp1,
+      target2: a.tp2,
+      confidence: a.confidence,
+      strategy: "BTST",
+    }).catch(() => {});
   }
   return recorded;
 }
@@ -282,6 +300,22 @@ export async function closeYesterdayBTST(): Promise<{ closed: number }> {
       }
       if (closePx > 0) {
         await closeTrade(t.id, closePx, "btst_square_off");
+        // Sync the same exit into the Prisma journal (unified lifecycle).
+        const pnl = Math.round((closePx - t.entryPrice) * 100) / 100;
+        const pnlPct = t.entryPrice > 0 ? Math.round((pnl / t.entryPrice) * 1000) / 10 : 0;
+        const createdMs = Date.parse(t.createdAtIst || "");
+        const holdingMin = Number.isFinite(createdMs)
+          ? Math.round((Date.now() - createdMs) / 60000)
+          : 0;
+        await updateTrade(t.id, {
+          status: "CLOSED",
+          exitPrice: closePx,
+          exitReason: "btst_square_off",
+          pnl,
+          pnlPercent: pnlPct,
+          holdingTimeMin: holdingMin,
+          tpHitLevel: "btst_square_off",
+        }).catch(() => {});
         closed++;
       }
     }

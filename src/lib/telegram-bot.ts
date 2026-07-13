@@ -45,75 +45,6 @@ export async function deleteWebhook(): Promise<boolean> {
   return result?.ok === true;
 }
 
-// ─── Auto-bot API helpers ──────────────────────────────────────────
-
-const BOT_API = "http://localhost:8000";
-
-async function fetchBotApi(path: string): Promise<any> {
-  try {
-    const res = await fetch(`${BOT_API}${path}`, { signal: AbortSignal.timeout(5000) });
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function handleBotStats(): Promise<string> {
-  const stats = await fetchBotApi("/api/stats");
-  if (!stats) return "⚠️ Auto-bot not reachable (is it running on port 8000?)";
-  return [
-    "🤖 <b>Breakout/Desk Bot</b>",
-    "",
-    `Today P&L: <b>${stats.today_pnl >= 0 ? "+" : ""}${stats.today_pnl?.toFixed(0) || 0}</b>`,
-    `Win Rate: <b>${stats.win_rate?.toFixed(0) || 0}%</b>`,
-    `Trades Today: <b>${stats.today_trades || 0}</b>`,
-    `Open Positions: <b>${stats.open_positions || 0}</b>`,
-    `All-time P&L: <b>${stats.alltime_pnl >= 0 ? "+" : ""}${stats.alltime_pnl?.toFixed(0) || 0}</b>`,
-    `Wins: ${stats.wins || 0} | Losses: ${stats.losses || 0}`,
-    `🕐 ${formatDateTime(new Date().toISOString())}`,
-  ].filter(Boolean).join("\n");
-}
-
-async function handleAlerts(): Promise<string> {
-  const alerts = await fetchBotApi("/api/alerts");
-  if (!alerts) return "⚠️ Auto-bot not reachable.";
-  if (!Array.isArray(alerts) || alerts.length === 0) return "✅ No pending breakout alerts.";
-  return [
-    "🚨 <b>Pending Breakout Alerts</b>",
-    "",
-    ...alerts.slice(0, 10).map((a: any, i: number) =>
-      `${i + 1}. <b>${a.ticker}</b> (${a.market})\n   Level: ${a.broke} | SL: ${a.stop} | TP: ${a.target}\n   Vol: ${a.volume} | Touches: ${a.touches} | Qty: ${a.qty}`
-    ),
-  ].filter(Boolean).join("\n");
-}
-
-async function handlePositions(): Promise<string> {
-  const positions = await fetchBotApi("/api/positions");
-  if (!positions) return "⚠️ Auto-bot not reachable.";
-  if (!Array.isArray(positions) || positions.length === 0) return "📭 No open positions.";
-  return [
-    "📊 <b>Open Positions</b>",
-    "",
-    ...positions.slice(0, 10).map((p: any) =>
-      `<b>${p.ticker}</b> (${p.market})\n   Qty: ${p.qty} @ ${p.entry} | Last: ${p.last}\n   SL: ${p.stop} | TP: ${p.target}\n   P&L: <b>${p.live_pnl >= 0 ? "+" : ""}${p.live_pnl?.toFixed(0) || 0}</b>`
-    ),
-  ].filter(Boolean).join("\n");
-}
-
-async function handleBotTrades(): Promise<string> {
-  const closed = await fetchBotApi("/api/closed");
-  if (!closed) return "⚠️ Auto-bot not reachable.";
-  if (!Array.isArray(closed) || closed.length === 0) return "📭 No closed trades yet.";
-  return [
-    "📋 <b>Recent Closed Trades</b>",
-    "",
-    ...closed.slice(0, 10).map((t: any) => {
-      const emoji = t.live_pnl >= 0 ? "✅" : "❌";
-      return `${emoji} <b>${t.ticker}</b> | ${t.qty} @ ${t.entry} → ${t.last} | P&L: ${t.live_pnl >= 0 ? "+" : ""}${t.live_pnl?.toFixed(0) || 0}`;
-    }),
-  ].filter(Boolean).join("\n");
-}
-
 async function fetchApi(path: string): Promise<any> {
   try {
     const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
@@ -242,7 +173,7 @@ export async function processMessage(chatId: number, text: string): Promise<void
   // Handle commands
   if (lower === "/start") {
     await sendTelegramMessage(
-      `🤖 <b>SD Trading Bot</b>\n\nWelcome! I'll send you trade alerts from SDM engine and the Breakout/Desk automated bot.\n\n<b>Commands:</b>\n/signal NIFTY — Latest trade signal\n/price NIFTY — Current spot price\n/status — System status\n/alerts — Pending breakout alerts\n/positions — Open positions\n/botstats — Auto-bot stats\n/bottrades — Recent closed trades\n/help — Full help`,
+      `🤖 <b>SD Trading Bot</b>\n\nWelcome! I'll send you trade alerts from the SDM engine.\n\n<b>Commands:</b>\n/signal NIFTY — Latest trade signal\n/price NIFTY — Current spot price\n/status — System status\n/help — Full help`,
       String(chatId)
     );
     return;
@@ -255,11 +186,6 @@ export async function processMessage(chatId: number, text: string): Promise<void
       `/signal [SYMBOL] — Get latest SDM trade signal\n` +
       `/price [SYMBOL] — Get current spot price\n` +
       `/status — System health & trade stats\n\n` +
-      `<b>🤖 Auto-Bot (Breakout/Desk)</b>\n` +
-      `/alerts — Pending breakout alerts\n` +
-      `/positions — Open positions\n` +
-      `/botstats — Auto-bot performance stats\n` +
-      `/bottrades — Recent closed trades\n\n` +
       `<b>Supported symbols:</b>\n` +
       `NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX\n\n` +
       `You'll also receive automatic alerts when trades trigger.`,
@@ -270,31 +196,6 @@ export async function processMessage(chatId: number, text: string): Promise<void
 
   if (lower === "/status") {
     const response = await handleStatus();
-    await sendTelegramMessage(response, String(chatId));
-    return;
-  }
-
-  // Auto-bot commands
-  if (lower === "/alerts") {
-    const response = await handleAlerts();
-    await sendTelegramMessage(response, String(chatId));
-    return;
-  }
-
-  if (lower === "/positions") {
-    const response = await handlePositions();
-    await sendTelegramMessage(response, String(chatId));
-    return;
-  }
-
-  if (lower === "/botstats") {
-    const response = await handleBotStats();
-    await sendTelegramMessage(response, String(chatId));
-    return;
-  }
-
-  if (lower === "/bottrades") {
-    const response = await handleBotTrades();
     await sendTelegramMessage(response, String(chatId));
     return;
   }

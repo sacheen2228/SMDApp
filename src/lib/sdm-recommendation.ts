@@ -740,7 +740,8 @@ export async function generateTradeRecommendation(
   candles: Record<string, CandleData[]>,
   vix: number,
   source: string,
-  lastUpdate: string
+  lastUpdate: string,
+  overrideDirection?: 'CALL' | 'PUT'
 ): Promise<SDMRecommendation> {
   const lotSize = getLotSize(symbol);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
@@ -780,8 +781,11 @@ export async function generateTradeRecommendation(
 
   // ── Step 3: Validation Gate ────────────────────────────────────
   // Run quality score first (needed for validation)
-  const tempDirection: 'CALL' | 'PUT' = 'CALL';
-  const tempEntry = findATMStrike(optionChain, spot)?.ce?.ltp || 0;
+  const tempDirection: 'CALL' | 'PUT' = overrideDirection || 'CALL';
+  const atmStrikeData = findATMStrike(optionChain, spot);
+  const tempEntry = overrideDirection === 'PUT'
+    ? (atmStrikeData?.pe?.ltp || atmStrikeData?.ce?.ltp || 0)
+    : (atmStrikeData?.ce?.ltp || atmStrikeData?.pe?.ltp || 0);
   const tempSL = tempEntry * 0.85;
   const tempTP1 = tempEntry * 1.15;
 
@@ -812,6 +816,7 @@ export async function generateTradeRecommendation(
     entryPrice: tempEntry,
     spot,
     riskState: DEFAULT_RISK_STATE,
+    direction: tempDirection,
   };
   const validation = validateTrade(validationInput);
 
@@ -831,7 +836,7 @@ export async function generateTradeRecommendation(
   // ── Step 4: Quality Score ──────────────────────────────────────
   // Determine preliminary direction for quality scoring
   const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot);
-  const preliminaryDirection: 'CALL' | 'PUT' = dirResult.direction === 'NEUTRAL' ? 'CALL' : dirResult.direction;
+  const preliminaryDirection: 'CALL' | 'PUT' = overrideDirection || (dirResult.direction === 'NEUTRAL' ? 'CALL' : dirResult.direction);
 
   const sellerSLResult = findSellerSLLevels(optionChain, spot, gexResult, marketStructure, volumeAnalysis, oiAnalysis);
   const { strike: selectedStrike, strikeType } = selectStrike(
@@ -875,7 +880,9 @@ export async function generateTradeRecommendation(
 
   // ── Step 5: Determine Direction ────────────────────────────────
   let direction: TradeDirection;
-  if (dirResult.direction === 'NEUTRAL' || dirResult.confidence < 15) {
+  if (overrideDirection) {
+    direction = overrideDirection;
+  } else if (dirResult.direction === 'NEUTRAL' || dirResult.confidence < 15) {
     direction = 'WAIT';
   } else {
     direction = isCallDir ? 'CALL' : 'PUT';
@@ -883,7 +890,7 @@ export async function generateTradeRecommendation(
 
   // OPTION BUYING ONLY: Never recommend selling
   // If theta window suggests selling, convert to WAIT instead
-  if (isExpiryDay && currentWindow === 'theta' && direction !== 'WAIT') {
+  if (!overrideDirection && isExpiryDay && currentWindow === 'theta' && direction !== 'WAIT') {
     direction = 'WAIT';
   }
 

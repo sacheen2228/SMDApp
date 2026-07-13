@@ -4,6 +4,7 @@
 
 import type { SDMOptionStrike } from "@/types/sdm";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
+import { getNextMonthlyExpiry } from "./expiry-calculator";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -15,6 +16,18 @@ export interface ScannerConfig {
   maxPain: number;
   totalCallOI: number;
   totalPutOI: number;
+}
+
+export interface MonthlyOptionTrade {
+  strike: number;
+  optionType: "CE" | "PE";
+  expiry: string;
+  expiryLabel: string;
+  premium: number;
+  stopLoss: number;
+  targets: number[];
+  direction: "BUY" | "SELL";
+  summary: string;
 }
 
 export interface StockCandidate {
@@ -42,6 +55,8 @@ export interface StockCandidate {
   totalOI: number;
   oiChange: number;
   iv: number;
+  // Monthly option trade
+  monthlyOptionTrade?: MonthlyOptionTrade;
   // Scores
   marketScore: number;
   sectorScore: number;
@@ -169,6 +184,58 @@ const SECTOR_ORDER = [
   "Telecom", "Cement", "Healthcare", "Mining", "Retail", "Chemical",
   "Finance", "Conglomerate"
 ];
+
+// ─── Monthly Option Trade Generator ────────────────────────────────
+function getStrikeStep(price: number): number {
+  if (price < 250) return 5;
+  if (price < 1000) return 10;
+  if (price < 5000) return 50;
+  if (price < 10000) return 100;
+  return 500;
+}
+
+function generateMonthlyOptionTrade(
+  symbol: string,
+  price: number,
+  direction: "BULLISH" | "BEARISH" | "NEUTRAL"
+): MonthlyOptionTrade | undefined {
+  if (direction === "NEUTRAL") return undefined;
+
+  const monthly = getNextMonthlyExpiry(symbol);
+  if (!monthly) return undefined;
+
+  const step = getStrikeStep(price);
+  let atmStrike = Math.round(price / step) * step;
+  // Ensure strike is above 0
+  if (atmStrike <= 0) atmStrike = step;
+
+  const optionType: "CE" | "PE" = direction === "BULLISH" ? "CE" : "PE";
+  const iv = 0.25; // 25% estimated IV for stock options
+  const daysToExpiry = monthly.daysToExpiry || 14;
+  const annualFactor = Math.sqrt(daysToExpiry / 365);
+  const premium = Math.round(price * iv * annualFactor * 100) / 100;
+  if (premium <= 0) return undefined;
+
+  const sl = Math.round(premium * 0.85 * 100) / 100;
+  const target1 = Math.round(premium * 1.15 * 100) / 100;
+  const target2 = Math.round(premium * 1.25 * 100) / 100;
+  const target3 = Math.round(premium * 1.35 * 100) / 100;
+
+  const label = monthly.label || monthly.date;
+  const summary = `${direction === "BULLISH" ? "Buy" : "Buy"} ${symbol} ${atmStrike} ${optionType} (${label}) @ ₹${premium} | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
+
+  return {
+    strike: atmStrike,
+    optionType,
+    expiry: monthly.date,
+    expiryLabel: label,
+    premium,
+    stopLoss: sl,
+    targets: [target1, target2, target3],
+    direction: "BUY",
+    summary,
+  };
+}
 
 // ─── Market Direction Analysis ────────────────────────────────────
 export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
@@ -555,6 +622,9 @@ export async function generateCandidates(
     // Options summary
     const optionsSummary = `PCR ${stockPCR.toFixed(2)} | OI ${formatOI(stockOI)} | OI Chg ${stockOIChange >= 0 ? "+" : ""}${formatOI(stockOIChange)} | IV ${stockIV.toFixed(1)}%`;
 
+    // Monthly option trade recommendation
+    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction);
+
     // Volume summary
     const volumeSummary = `Vol ${formatOI(volume)} | Avg ${formatOI(avgVolume)} | RVOL ${rvol.toFixed(1)}x`;
 
@@ -588,6 +658,7 @@ export async function generateCandidates(
       totalOI: stockOI,
       oiChange: stockOIChange,
       iv: Math.round(stockIV * 10) / 10,
+      monthlyOptionTrade,
       marketScore,
       sectorScore,
       technicalScore,

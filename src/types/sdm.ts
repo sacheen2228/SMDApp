@@ -537,6 +537,7 @@ export interface ValidationInput {
   entryPrice: number;
   spot: number;
   riskState: RiskState;
+  direction?: 'CALL' | 'PUT';
 }
 
 export interface RiskState {

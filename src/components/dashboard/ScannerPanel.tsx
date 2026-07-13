@@ -217,6 +217,18 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
             </span>
             <span className="font-medium">{stock.holdingTime}</span>
           </div>
+          {stock.monthlyOptionTrade && (
+            <>
+              <Separator className="my-1" />
+              <div className="text-[10px] text-emerald-500 font-semibold leading-relaxed">
+                {stock.monthlyOptionTrade.summary}
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-muted-foreground">Expiry</span>
+                <span className="font-medium">{stock.monthlyOptionTrade.expiryLabel}</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Expand/Collapse */}
@@ -258,6 +270,11 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
             <div>
               <span className="font-semibold text-muted-foreground">Options:</span>
               <p className="mt-0.5">{stock.optionsSummary}</p>
+              {stock.monthlyOptionTrade && (
+                <p className="mt-1 text-emerald-500 font-medium leading-relaxed">
+                  {stock.monthlyOptionTrade.summary}
+                </p>
+              )}
             </div>
 
             {/* Volume Summary */}

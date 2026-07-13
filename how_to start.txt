@@ -11,8 +11,6 @@ cd ~/Desktop/SMDApp
 opencode --continue
 
 
-If the bot process dies overnight, just cd auto-bot && ./start.sh to restart.
-
 # Check model
 /models  → select MiMo V2.5 Free
 
