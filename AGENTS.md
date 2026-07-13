@@ -172,3 +172,23 @@ First compile takes 15-30s. If it hangs, `rm -rf .next` and restart.
 `.zscripts/build.sh` and `start-dev.sh` contain hardcoded path `/home/z/my-project`. If running locally, either:
 - Symlink: `ln -s /home/sachin/Desktop/SMDApp /home/z/my-project`
 - Or update the scripts to use the actual project path
+
+## Architecture Guardian (MANDATORY pre-coding workflow)
+
+Every coding task MUST follow these phases, in order. Do NOT skip to coding.
+Auditing/duplicating code BEFORE understanding the existing codebase is forbidden.
+
+- **Phase 1 — Repository Audit**: Find every existing implementation related to the task (classes, services, APIs, hooks, stores, utilities, indicators, DB models, UI components).
+- **Phase 2 — Dependency Graph**: For every file you intend to touch, record: imports, exports, callers, side effects, API usage, DB usage.
+- **Phase 3 — Duplicate Detection**: Identify modules/engines/APIs/components that already do the requested job. Flag them.
+- **Phase 4 — Integration Plan**: List files to modify, exact functions to modify, duplicate code to retire later, risk level per file, and a rollback plan. Do NOT write code yet.
+- **Phase 5 — Approval**: Present the plan and wait for explicit confirmation before coding. (If the user says "proceed with consolidation" / "go ahead" that counts as approval.)
+- **Phase 6 — Coding**: Only EXTEND or MERGE existing code. Rules (non-negotiable):
+  - Do NOT create duplicate modules, engines, APIs, components, tabs, or DB models if equivalent functionality already exists.
+  - Refactor before creating. Extend before replacing. Merge before deleting.
+  - Integrate new logic into the existing production path; do not fork a parallel path.
+  - Mark duplicate modules `@deprecated` and keep them until the production change is verified — never delete immediately.
+- **Phase 7 — Testing**: Run the project, verify compilation, imports, dashboard, the affected feature, audit recording, API responses, backtest, and agent chat. Every existing feature must keep working.
+- **Phase 8 — Cleanup**: Only AFTER every test passes, remove the deprecated duplicate files.
+
+Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidates` → `FullZeroHero` → Trade Audit (`registerTrades("ZERO_HERO_AI", …)`). Everything Zero-Hero must integrate into this path.

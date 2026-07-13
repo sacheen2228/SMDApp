@@ -1,210 +1,263 @@
-// Expiry Engine
-// Dedicated module for expiry day trading
-// Handles weekly and monthly expiry with specific adjustments
+// DEPRECATED: superseded by getStandardizedExpiry() in src/lib/expiry-calculator.ts.
+// Kept on disk until production consolidation is verified.
 
-import type { SDMOptionStrike, ExpiryWindow, DayMode } from '@/types/sdm';
+// Expiry Engine - Standardized expiry data for all instruments
+// Provides expiry dates, types, and metadata for NSE/BSE derivatives
 
-export interface ExpiryConfig {
-  // Gamma window settings (09:15 - 10:30)
-  gammaWindowConfidenceBoost: number;
-  gammaWindowMaxLots: number;
+import { getInstrument } from '@/stores/useTerminalStore';
 
-  // Theta window settings (10:30 - 13:30)
-  thetaWindowConfidenceThreshold: number;
-  thetaWindowPreferOTM: boolean;
+export type ExpiryType = 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'FAR_MONTH' | 'NON_EXPIRY';
 
-  // Danger window settings (14:00 - 15:30)
-  dangerWindowBlockNewTrades: boolean;
-  dangerWindowConfidenceThreshold: number;
-
-  // General expiry settings
-  maxTradesPerExpiry: number;
-  reducePositionSize: number;  // Multiplier (0.5 = 50%)
-  requireHigherConfirmation: boolean;
+export interface ExpiryData {
+  instrument: string;
+  exchange: 'NSE' | 'BSE';
+  expiry_date: string;           // YYYY-MM-DD
+  expiry_type: ExpiryType;
+  days_to_expiry: number;
+  is_expiry_today: boolean;
+  is_monthly_expiry: boolean;
+  is_weekly_expiry: boolean;
+  is_quarterly_expiry: boolean;
+  expiry_mode: 'ZERO_HERO' | 'STANDARD';
+  option_liquidity: 'HIGH' | 'MEDIUM' | 'LOW';
+  strategy_profile: 'EXPIRY' | 'NORMAL';
+  session_type: 'EXPIRY' | 'REGULAR';
+  lot_size: number;
+  tick_size: number;
 }
 
-export const WEEKLY_EXPIRY_CONFIG: ExpiryConfig = {
-  gammaWindowConfidenceBoost: 10,
-  gammaWindowMaxLots: 3,
-  thetaWindowConfidenceThreshold: 65,
-  thetaWindowPreferOTM: true,
-  dangerWindowBlockNewTrades: true,
-  dangerWindowConfidenceThreshold: 80,
-  maxTradesPerExpiry: 4,
-  reducePositionSize: 0.6,
-  requireHigherConfirmation: true,
-};
-
-export const MONTHLY_EXPIRY_CONFIG: ExpiryConfig = {
-  gammaWindowConfidenceBoost: 5,
-  gammaWindowMaxLots: 5,
-  thetaWindowConfidenceThreshold: 60,
-  thetaWindowPreferOTM: false,
-  dangerWindowBlockNewTrades: false,
-  dangerWindowConfidenceThreshold: 70,
-  maxTradesPerExpiry: 6,
-  reducePositionSize: 0.75,
-  requireHigherConfirmation: true,
-};
-
-export interface ExpiryAnalysis {
-  isExpiryDay: boolean;
-  isWeeklyExpiry: boolean;
-  isMonthlyExpiry: boolean;
-  daysToExpiry: number;
-  currentWindow: ExpiryWindow;
-  windowLabel: string;
-  windowDescription: string;
-  timeRemaining: string;
-  config: ExpiryConfig;
-  recommendations: string[];
-  warnings: string[];
+export interface ExpiryCalendar {
+  [instrument: string]: ExpiryData[];
 }
 
-// ─── Analyze Expiry Conditions ───────────────────────────────────
-export function analyzeExpiry(
-  expiryDate: string,
-  optionChain: SDMOptionStrike[],
-  spot: number,
-  isWeeklyExpiry: boolean = true
-): ExpiryAnalysis {
-  const now = new Date();
-  const expiry = new Date(expiryDate);
-  const today = new Date(now.toISOString().split('T')[0]);
-  const expiryDay = new Date(expiry.toISOString().split('T')[0]);
+// NSE Weekly expiries: Thursdays (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
+// NSE Monthly expiries: Last Thursday of month
+// BSE SENSEX/BANKEX: Thursdays (weekly), Last Thursday (monthly)
 
-  const isExpiryDay = today.getTime() === expiryDay.getTime();
-  const daysToExpiry = Math.max(0, Math.ceil((expiryDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+const MONTHLY_EXPIRY_DAYS = ['THURSDAY']; // NSE monthly expiry day
+const WEEKLY_EXPIRY_DAYS = ['THURSDAY'];  // NSE/BSE weekly expiry day
 
-  // Determine IST time
-  const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
-  const ist = new Date(istMs);
-  const timeInMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+const HIGH_LIQUIDITY_INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY'];
+const HIGH_LIQUIDITY_STOCKS = ['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'HINDUNILVR', 'MARUTI', 'BAJFINANCE', 'ASIANPAINT'];
 
-  const currentWindow = computeWindow(isExpiryDay, timeInMinutes);
-  const config = isWeeklyExpiry ? WEEKLY_EXPIRY_CONFIG : MONTHLY_EXPIRY_CONFIG;
+function getDayOfWeek(date: Date): string {
+  const days = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+  return days[date.getDay()];
+}
 
-  const analysis: ExpiryAnalysis = {
-    isExpiryDay,
-    isWeeklyExpiry,
-    isMonthlyExpiry: !isWeeklyExpiry,
-    daysToExpiry,
-    currentWindow,
-    windowLabel: getWindowLabel(currentWindow),
-    windowDescription: getWindowDescription(currentWindow, isExpiryDay),
-    timeRemaining: getTimeRemaining(currentWindow, timeInMinutes),
-    config,
-    recommendations: [],
-    warnings: [],
-  };
+function isMonthlyExpiry(date: Date): boolean {
+  const day = getDayOfWeek(date);
+  if (!MONTHLY_EXPIRY_DAYS.includes(day)) return false;
+  
+  // Last Thursday of month
+  const nextWeek = new Date(date);
+  nextWeek.setDate(date.getDate() + 7);
+  return nextWeek.getMonth() !== date.getMonth();
+}
 
-  // Add recommendations based on window
-  if (isExpiryDay) {
-    switch (currentWindow) {
-      case 'gamma':
-        analysis.recommendations.push('Gamma window: High volatility, quick moves');
-        analysis.recommendations.push('Best for momentum entries with tight stops');
-        analysis.recommendations.push('Prefer ATM or near-ATM strikes');
-        break;
-      case 'theta':
-        analysis.recommendations.push('Theta window: Premium decay accelerating');
-        analysis.recommendations.push('Consider OTM strikes for better R:R');
-        analysis.recommendations.push('Avoid deep OTM — time decay is brutal');
-        break;
-      case 'danger':
-        analysis.recommendations.push('Danger window: Last 90 minutes');
-        analysis.recommendations.push('Focus on managing existing positions');
-        if (config.dangerWindowBlockNewTrades) {
-          analysis.warnings.push('New trades blocked during danger window');
-        }
-        break;
-      default:
-        analysis.recommendations.push('Normal session: Standard trading rules apply');
-    }
-  } else if (daysToExpiry <= 2) {
-    analysis.recommendations.push('Near expiry: Monitor position closely');
-    analysis.recommendations.push('Consider early exit if targets met');
+function isWeeklyExpiry(date: Date): boolean {
+  const day = getDayOfWeek(date);
+  return WEEKLY_EXPIRY_DAYS.includes(day);
+}
+
+function isQuarterlyExpiry(date: Date): boolean {
+  const month = date.getMonth() + 1;
+  return [3, 6, 9, 12].includes(month) && isMonthlyExpiry(date);
+}
+
+function getLotSize(instrument: string): number {
+  const inst = getInstrument(instrument);
+  return inst?.lotSize || 75;
+}
+
+function getTickSize(instrument: string): number {
+  // Most index options: 0.05, Stock options: 0.05
+  return 0.05;
+}
+
+function getOptionLiquidity(instrument: string): 'HIGH' | 'MEDIUM' | 'LOW' {
+  if (HIGH_LIQUIDITY_INDICES.includes(instrument)) return 'HIGH';
+  if (HIGH_LIQUIDITY_STOCKS.includes(instrument)) return 'HIGH';
+  // Could add more logic based on OI/Volume
+  return 'MEDIUM';
+}
+
+function getExpiryType(date: Date): ExpiryType {
+  if (isQuarterlyExpiry(date)) return 'QUARTERLY';
+  if (isMonthlyExpiry(date)) return 'MONTHLY';
+  if (isWeeklyExpiry(date)) return 'WEEKLY';
+  return 'NON_EXPIRY';
+}
+
+function getStrategyProfile(expiryType: ExpiryType): 'EXPIRY' | 'NORMAL' {
+  if (expiryType === 'WEEKLY' || expiryType === 'MONTHLY' || expiryType === 'QUARTERLY') {
+    return 'EXPIRY';
   }
+  return 'NORMAL';
+}
 
-  // Check for gamma blast conditions
-  if (isExpiryDay && currentWindow === 'gamma') {
-    const atm = optionChain.reduce((best, s) =>
-      Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
-    );
-    if (atm) {
-      const ceOI = atm.ce?.oi || 0;
-      const peOI = atm.pe?.oi || 0;
-      const totalOI = ceOI + peOI;
-      if (totalOI > 1000000) {
-        analysis.warnings.push('High OI at ATM — potential gamma squeeze');
+function getExpiryMode(expiryType: ExpiryType): 'ZERO_HERO' | 'STANDARD' {
+  if (expiryType === 'WEEKLY' || expiryType === 'MONTHLY') {
+    return 'ZERO_HERO';
+  }
+  return 'STANDARD';
+}
+
+function getSessionType(expiryType: ExpiryType, daysToExpiry: number): 'EXPIRY' | 'REGULAR' {
+  if (expiryType === 'WEEKLY' || expiryType === 'MONTHLY' || expiryType === 'QUARTERLY') {
+    return 'EXPIRY';
+  }
+  return 'REGULAR';
+}
+
+export function getExpiryData(instrument: string, referenceDate: Date = new Date()): ExpiryData | null {
+  const inst = getInstrument(instrument);
+  if (!inst) return null;
+
+  const exchange = inst.exchange;
+  const lotSize = inst.lotSize;
+  const tickSize = getTickSize(instrument);
+
+  // Find next expiry date for this instrument
+  const expiryDate = findNextExpiry(instrument, referenceDate);
+  if (!expiryDate) return null;
+
+  const daysToExpiry = Math.max(0, Math.ceil((expiryDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
+  const expiryType = getExpiryType(expiryDate);
+  const isExpiryToday = daysToExpiry === 0;
+
+  return {
+    instrument,
+    exchange,
+    expiry_date: expiryDate.toISOString().split('T')[0],
+    expiry_type: expiryType,
+    days_to_expiry: daysToExpiry,
+    is_expiry_today: isExpiryToday,
+    is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
+    is_weekly_expiry: expiryType === 'WEEKLY',
+    is_quarterly_expiry: expiryType === 'QUARTERLY',
+    expiry_mode: getExpiryMode(expiryType),
+    option_liquidity: getOptionLiquidity(instrument),
+    strategy_profile: getStrategyProfile(expiryType),
+    session_type: getSessionType(expiryType, daysToExpiry),
+    lot_size: lotSize,
+    tick_size: tickSize,
+  };
+}
+
+function findNextExpiry(instrument: string, fromDate: Date): Date | null {
+  const inst = getInstrument(instrument);
+  if (!inst) return null;
+
+  // For indices: weekly on Thursday, monthly last Thursday
+  // For stocks: monthly last Thursday
+  const isIndex = inst.type === 'INDEX';
+  
+  let checkDate = new Date(fromDate);
+  checkDate.setHours(0, 0, 0, 0);
+
+  // Check up to 60 days ahead
+  for (let i = 0; i < 60; i++) {
+    const day = getDayOfWeek(checkDate);
+    
+    if (isIndex) {
+      // Index has weekly (Thursday) and monthly (last Thursday)
+      if (day === 'THURSDAY') {
+        if (isMonthlyExpiry(checkDate)) {
+          return new Date(checkDate);
+        }
+        // Weekly expiry
+        return new Date(checkDate);
+      }
+    } else {
+      // Stock options: monthly expiry (last Thursday)
+      if (day === 'THURSDAY' && isMonthlyExpiry(checkDate)) {
+        return new Date(checkDate);
       }
     }
+    
+    checkDate.setDate(checkDate.getDate() + 1);
   }
 
-  return analysis;
+  return null;
 }
 
-// ─── Compute Window ──────────────────────────────────────────────
-function computeWindow(isExpiryDay: boolean, timeInMinutes: number): ExpiryWindow {
-  if (!isExpiryDay) return 'normal';
-  if (timeInMinutes >= 555 && timeInMinutes < 630) return 'gamma';
-  if (timeInMinutes >= 630 && timeInMinutes < 810) return 'theta';
-  if (timeInMinutes >= 840 && timeInMinutes <= 930) return 'danger';
-  return 'normal';
-}
-
-function getWindowLabel(window: ExpiryWindow): string {
-  switch (window) {
-    case 'gamma': return 'Gamma Window';
-    case 'theta': return 'Theta Decay';
-    case 'danger': return 'Danger Zone';
-    default: return 'Normal';
+export function getExpiryCalendar(instruments: string[], referenceDate: Date = new Date()): ExpiryCalendar {
+  const calendar: ExpiryCalendar = {};
+  
+  for (const instrument of instruments) {
+    const data = getExpiryData(instrument, referenceDate);
+    if (data) {
+      calendar[instrument] = [data];
+    }
   }
+  
+  return calendar;
 }
 
-function getWindowDescription(window: ExpiryWindow, isExpiryDay: boolean): string {
-  if (!isExpiryDay) return 'Standard trading session';
-  switch (window) {
-    case 'gamma': return 'High volatility. Quick moves. Momentum entries.';
-    case 'theta': return 'Premium decay accelerating. OTM strikes preferred.';
-    case 'danger': return 'Last 90 minutes. Focus on exits. No new entries.';
-    default: return 'Pre-market or post-market';
+export function getAllExpiriesForInstrument(instrument: string, referenceDate: Date = new Date()): ExpiryData[] {
+  const inst = getInstrument(instrument);
+  if (!inst) return [];
+
+  const isIndex = inst.type === 'INDEX';
+  const expiries: ExpiryData[] = [];
+  
+  let checkDate = new Date(referenceDate);
+  checkDate.setHours(0, 0, 0, 0);
+
+  for (let i = 0; i < 90; i++) {
+    const day = getDayOfWeek(checkDate);
+    
+    if (isIndex) {
+      if (day === 'THURSDAY') {
+        const expiryType = getExpiryType(checkDate);
+        const daysToExpiry = Math.max(0, Math.ceil((checkDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
+        
+        expiries.push({
+          instrument,
+          exchange: inst.exchange,
+          expiry_date: checkDate.toISOString().split('T')[0],
+          expiry_type: expiryType,
+          days_to_expiry: daysToExpiry,
+          is_expiry_today: daysToExpiry === 0,
+          is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
+          is_weekly_expiry: expiryType === 'WEEKLY',
+          is_quarterly_expiry: expiryType === 'QUARTERLY',
+          expiry_mode: getExpiryMode(expiryType),
+          option_liquidity: getOptionLiquidity(instrument),
+          strategy_profile: getStrategyProfile(expiryType),
+          session_type: getSessionType(expiryType, daysToExpiry),
+          lot_size: inst.lotSize,
+          tick_size: getTickSize(instrument),
+        });
+      }
+    } else {
+      if (day === 'THURSDAY' && isMonthlyExpiry(checkDate)) {
+        const expiryType = getExpiryType(checkDate);
+        const daysToExpiry = Math.max(0, Math.ceil((checkDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
+        
+        expiries.push({
+          instrument,
+          exchange: inst.exchange,
+          expiry_date: checkDate.toISOString().split('T')[0],
+          expiry_type: expiryType,
+          days_to_expiry: daysToExpiry,
+          is_expiry_today: daysToExpiry === 0,
+          is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
+          is_weekly_expiry: expiryType === 'WEEKLY',
+          is_quarterly_expiry: expiryType === 'QUARTERLY',
+          expiry_mode: getExpiryMode(expiryType),
+          option_liquidity: getOptionLiquidity(instrument),
+          strategy_profile: getStrategyProfile(expiryType),
+          session_type: getSessionType(expiryType, daysToExpiry),
+          lot_size: inst.lotSize,
+          tick_size: getTickSize(instrument),
+        });
+      }
+    }
+    
+    checkDate.setDate(checkDate.getDate() + 1);
   }
-}
 
-function getTimeRemaining(window: ExpiryWindow, timeInMinutes: number): string {
-  if (window === 'gamma') return `${Math.max(0, 630 - timeInMinutes)} min`;
-  if (window === 'theta') return `${Math.max(0, 810 - timeInMinutes)} min`;
-  if (window === 'danger') return `${Math.max(0, 930 - timeInMinutes)} min`;
-  return 'N/A';
-}
-
-// ─── Get Expiry-Adjusted Confidence Threshold ────────────────────
-export function getExpiryConfidenceThreshold(
-  window: ExpiryWindow,
-  isWeeklyExpiry: boolean = true
-): number {
-  const config = isWeeklyExpiry ? WEEKLY_EXPIRY_CONFIG : MONTHLY_EXPIRY_CONFIG;
-
-  switch (window) {
-    case 'gamma': return 55; // Lower threshold during gamma (momentum)
-    case 'theta': return config.thetaWindowConfidenceThreshold;
-    case 'danger': return config.dangerWindowConfidenceThreshold;
-    default: return 55;
-  }
-}
-
-// ─── Get Expiry Position Size Multiplier ─────────────────────────
-export function getExpiryPositionMultiplier(
-  window: ExpiryWindow,
-  isWeeklyExpiry: boolean = true
-): number {
-  const config = isWeeklyExpiry ? WEEKLY_EXPIRY_CONFIG : MONTHLY_EXPIRY_CONFIG;
-
-  switch (window) {
-    case 'gamma': return 0.5; // Half size during gamma
-    case 'theta': return config.reducePositionSize;
-    case 'danger': return 0.25; // Quarter size during danger
-    default: return 1.0;
-  }
+  return expiries;
 }

@@ -5,7 +5,13 @@
 // Supports F&O weekly / monthly expiry + BTST (Buy Today Sell Tomorrow) for all stocks
 
 import type { SDMOptionStrike, SDMRecommendation, TradeDirection } from '@/types/sdm';
-import { isFNO, getExpiryTypeForDate } from '@/lib/expiry-calculator';
+import { isFNO, getExpiryTypeForDate, getStandardizedExpiry, StandardizedExpiry } from '@/lib/expiry-calculator';
+import { analyzeOptionChain } from '@/lib/sdm-oianalysis';
+import { detectGammaBlast, getGammaBlastBoost } from '@/lib/gamma-blast';
+import { calculateGreeks } from '@/lib/greeks';
+import { calculatePositionSize } from '@/lib/risk-management';
+import { analyzeMarketStructure } from '@/lib/market-structure';
+import { analyzeVolume } from '@/lib/volume-analysis';
 
 export type ZHMode = 'expiry' | 'btst';
 
@@ -346,4 +352,183 @@ export function resolveZHMode(
   // If not an expiry day, BTST is the only sensible mode
   if (!isFNO(symbol) || !getExpiryTypeForDate(symbol)) return 'btst';
   return 'expiry';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Consolidated Zero Hero evaluation (production path)
+// Reuses existing engines instead of duplicating them:
+//   greeks.ts · risk-management.ts · sdm-oianalysis.ts · gamma-blast.ts
+//   market-structure.ts · volume-analysis.ts · expiry-calculator.ts
+//
+// This is the SINGLE evaluation path for the Zero Hero scanner
+// (ZeroHeroTerminal.tsx → zhCandidates → FullZeroHero → Trade Audit).
+// The earlier parallel implementation under src/lib/zero-hero-ai/* is
+// DEPRECATED and will be removed after verification.
+// ═══════════════════════════════════════════════════════════════════
+
+export interface EngineResult {
+  score: number;
+  confidence: number;
+  direction: 'CALL' | 'PUT' | 'NONE';
+  reasons: string[];
+}
+
+export interface ZeroHeroChainContext {
+  oiAnalysis: ReturnType<typeof analyzeOptionChain>;
+  gammaBlastBoost: number;
+  expiry: StandardizedExpiry | null;
+  vix: number;
+}
+
+export interface ZeroHeroCandidateInput {
+  strike: number;
+  type: 'CE' | 'PE';
+  ltp: number;
+  delta: number;
+  iv: number;            // percent
+  oiChg: number;
+  volume: number;
+  spot: number;
+  lotSize: number;
+  capital: number;
+  riskPerTradePercent: number;
+  maxPositionSize: number;
+  context: ZeroHeroChainContext;
+  // Optional per-candidate SMC / volume signals (when candles are wired)
+  smcBias?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  pocDistancePct?: number;     // (spot - POC)/spot
+  cumulativeDelta?: number;
+}
+
+export interface ZeroHeroCandidateResult extends EngineResult {
+  conf: number;          // 0-100 (maps to ZHCandidate.conf)
+  prob: number;          // 0-100 probability of profit
+  rr: number;            // risk:reward ratio
+  sl: number;            // stop-loss premium
+  tp1: number;           // target 1 premium
+  tp2: number;           // target 2 premium
+  stars: number;         // 1-5
+  lots: number;
+}
+
+// Map terminal ChainRow[] → SDMOptionStrike[] for reuse of existing engines
+function mapChainToSDM(chain: any[]): SDMOptionStrike[] {
+  return chain.map((s) => ({
+    strike: s.strike,
+    ce: s.ce
+      ? { ltp: s.ce.ltp, oi: s.ce.oi, oiChg: s.ce.oiChg, volume: s.ce.vol, iv: s.ce.iv, delta: s.ce.delta, theta: s.ce.theta, gamma: s.ce.gamma, vega: s.ce.vega }
+      : null,
+    pe: s.pe
+      ? { ltp: s.pe.ltp, oi: s.pe.oi, oiChg: s.pe.oiChg, volume: s.pe.vol, iv: s.pe.iv, delta: s.pe.delta, theta: s.pe.theta, gamma: s.pe.gamma, vega: s.pe.vega }
+      : null,
+  }));
+}
+
+// Compute chain-wide context ONCE per scan (reuses sdm-oianalysis + gamma-blast + expiry-calculator)
+export function analyzeZeroHeroChain(
+  chain: any[],
+  spot: number,
+  vix: number,
+  symbol: string,
+  candles?: any[]
+): ZeroHeroChainContext {
+  const sdm = mapChainToSDM(chain);
+  const oiAnalysis = analyzeOptionChain(sdm, spot);
+  const gammaBlast = detectGammaBlast(sdm, spot, vix, candles);
+  const gammaBlastBoost = getGammaBlastBoost(gammaBlast);
+  const expiry = getStandardizedExpiry(symbol);
+  return { oiAnalysis, gammaBlastBoost, expiry, vix };
+}
+
+// Evaluate a single CE/PE candidate (reuses greeks + risk-management + expiry-calculator)
+export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHeroCandidateResult {
+  const { strike, type, ltp, delta, iv, oiChg, volume, spot, lotSize, capital, riskPerTradePercent, maxPositionSize, context } = input;
+  const reasons: string[] = [];
+
+  // Days to expiry from standardized expiry
+  const daysToExpiry = context.expiry?.days_to_expiry ?? 1;
+  const tte = Math.max(1 / 365, daysToExpiry / 365);
+  const ivDecimal = iv > 0 ? iv / 100 : 0.15;
+
+  // ── Greeks (reuse greeks.ts) ──
+  const g = calculateGreeks(spot, strike, tte, ivDecimal, type === 'CE');
+  reasons.push(`Γ=${g.gamma.toFixed(4)} Θ=${g.theta.toFixed(1)} Δ=${g.delta.toFixed(2)}`);
+
+  // ── Position sizing (reuse risk-management.ts) ──
+  const slPremium = ltp * 0.5;
+  const pos = calculatePositionSize({
+    capital,
+    riskPerTradePercent,
+    entryPremium: ltp,
+    stopLossPremium: slPremium,
+    lotSize,
+    maxPositionSize,
+  });
+  const lots = pos.lots;
+
+  // ── Confidence from existing engines (0-100) ──
+  let conf = 0;
+
+  // Delta near ATM (0.40-0.60) is ideal for Zero Hero
+  const absDelta = Math.abs(g.delta);
+  if (absDelta >= 0.40 && absDelta <= 0.60) conf += 25;
+  else if (absDelta >= 0.30 && absDelta <= 0.70) conf += 15;
+  else conf += 5;
+
+  // OI change momentum
+  const oiScore = Math.min(25, (Math.abs(oiChg) / 50000) * 25);
+  conf += oiScore;
+  if (Math.abs(oiChg) > 20000) reasons.push('Strong OI change');
+
+  // Volume confirmation
+  const volScore = Math.min(15, (volume / 100000) * 15);
+  conf += volScore;
+
+  // IV rank context (lower IV rank favours directionally)
+  if (iv > 0 && iv < 60) conf += 10;
+
+  // Gamma blast boost (reuse gamma-blast.ts)
+  if (context.gammaBlastBoost > 0) {
+    conf += context.gammaBlastBoost;
+    reasons.push(`Gamma Blast +${context.gammaBlastBoost}`);
+  }
+
+  // SMC bias (optional, when candles wired via market-structure.ts)
+  if (input.smcBias === 'BULLISH' && type === 'CE') { conf += 10; reasons.push('SMC bullish'); }
+  if (input.smcBias === 'BEARISH' && type === 'PE') { conf += 10; reasons.push('SMC bearish'); }
+
+  // Volume profile (optional, when candles wired via volume-analysis.ts)
+  if (input.pocDistancePct !== undefined) {
+    if (Math.abs(input.pocDistancePct) < 0.005) { conf += 5; reasons.push('Near POC'); }
+  }
+
+  conf = Math.max(0, Math.min(100, Math.round(conf)));
+
+  // Probability of profit (rough, from delta + gamma blast)
+  const prob = Math.min(95, Math.round(conf * 0.85 + absDelta * 10));
+
+  // Risk:Reward
+  const slPct = 0.5;
+  const sl = ltp * (1 - slPct);
+  const rr = conf > 60 ? 3 : conf > 40 ? 2 : 1;
+  const tp1 = ltp * (1 + slPct);
+  const tp2 = ltp * (1 + slPct * rr);
+
+  const stars = Math.max(1, Math.min(5, Math.round(conf / 20)));
+  const direction: 'CALL' | 'PUT' | 'NONE' = type === 'CE' ? 'CALL' : 'PUT';
+
+  return {
+    score: conf,
+    confidence: conf,
+    direction,
+    reasons,
+    conf,
+    prob,
+    rr,
+    sl,
+    tp1,
+    tp2,
+    stars,
+    lots,
+  };
 }

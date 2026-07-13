@@ -10,6 +10,7 @@ import { analyzeBTST, type BTSTAnalysis } from "./btst-engine";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
 import { createTrade, updateTrade } from "./tradeStore";
+import { recordScannerResult } from "./market/record-scanner";
 
 export interface BTSTScanResult {
   timestamp: string;
@@ -195,6 +196,8 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
 
   // Record candidates into the Trade Audit engine (non-fatal).
   recordBTSTSignals(candidates).catch(() => {});
+  // M5: record the BTST scanner cycle as an AI-training row (every scan).
+  recordBTSTScannerResults(candidates).catch(() => {});
 
   return {
     timestamp: new Date().toISOString(),
@@ -216,6 +219,50 @@ const istYmd = (when = new Date()): string =>
   })
     .format(when)
     .replace(/-/g, ""); // YYYYMMDD in IST
+
+/**
+ * Record the BTST scanner cycle as a permanent AI-training row (M5).
+ * Every daily scan is recorded with strategy "BTST" (BUY for graded
+ * bullish next-day ideas, NO_TRADE when none). Reuses recordScannerResult
+ * (the same build+send helper Zero Hero / SMC use) so the payload shape
+ * is identical. Fire-and-forget: failures never break the scan itself.
+ */
+export async function recordBTSTScannerResults(candidates: BTSTAnalysis[]): Promise<void> {
+  const ymd = istYmd();
+  const inputs = candidates.length
+    ? candidates.map((a) => ({
+        symbol: a.symbol,
+        strategy: "BTST",
+        decision: "BUY" as const,
+        confidence: a.confidence,
+        riskScore: Math.max(0, Math.min(100, 100 - a.confidence)),
+        perEngineConfidence: { BTST: a.confidence },
+        triggeredEngines: ["BTST"],
+        rejectedConditions: [],
+        reasons: [`${a.grade} | ${a.reasons.join("; ")}`],
+        selectedStrike: 0,
+        entry: a.entry,
+        sl: a.sl,
+        tp1: a.tp1,
+        tp2: a.tp2,
+        expectedRR: a.riskReward,
+        snapshotId: null,
+        sessionId: `BTST-${ymd}`,
+      }))
+    : [{
+        symbol: "BTST",
+        strategy: "BTST",
+        decision: "NO_TRADE" as const,
+        confidence: 0,
+        riskScore: 100,
+        perEngineConfidence: {},
+        triggeredEngines: [],
+        rejectedConditions: ["no_candidates"],
+        reasons: ["no eligible BTST candidates"],
+        sessionId: `BTST-${ymd}`,
+      }];
+  await Promise.all(inputs.map((i) => recordScannerResult(i).catch(() => {})));
+}
 
 /**
  * Record each BTST candidate into the Trade Audit (backtest verification)

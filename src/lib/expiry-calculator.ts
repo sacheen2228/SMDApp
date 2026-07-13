@@ -12,7 +12,77 @@
 //   BSE Equity: Monthly = last Thursday
 // Holiday shift → previous trading day
 
+import { getLotSize } from '@/lib/symbol-config';
+
 export type ExpiryType = 'weekly' | 'monthly';
+
+// ─── Standardized Expiry data (Zero Hero AI contract) ────────────
+// Consolidated expiry descriptor consumed by the Zero Hero UI / engine.
+// Reuses getNearestExpiry / getExpiryType / isExpiryDay.
+export interface StandardizedExpiry {
+  instrument: string;
+  exchange: 'NSE' | 'BSE';
+  expiry_date: string;        // YYYY-MM-DD (local)
+  expiry_type: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'FAR_MONTH' | 'NON_EXPIRY';
+  days_to_expiry: number;
+  is_expiry_today: boolean;
+  is_monthly_expiry: boolean;
+  is_weekly_expiry: boolean;
+  is_quarterly_expiry: boolean;
+  expiry_mode: 'ZERO_HERO' | 'STANDARD';
+  option_liquidity: 'HIGH' | 'MEDIUM' | 'LOW';
+  strategy_profile: 'EXPIRY' | 'NORMAL';
+  session_type: 'EXPIRY' | 'REGULAR';
+  lot_size: number;
+  tick_size: number;
+}
+
+const BSE_INSTRUMENTS = new Set(['SENSEX', 'BANKEX']);
+const HIGH_LIQUIDITY = new Set([
+  'NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY',
+  'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS', 'SBIN',
+  'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'HINDUNILVR',
+  'MARUTI', 'BAJFINANCE', 'ASIANPAINT',
+]);
+
+export function getStandardizedExpiry(symbol: string, referenceDate: Date = new Date()): StandardizedExpiry | null {
+  if (!isFNO(symbol)) return null;
+  const nearest = getNearestExpiry(symbol);
+  if (!nearest) return null;
+
+  const exchange: 'NSE' | 'BSE' = BSE_INSTRUMENTS.has(symbol) ? 'BSE' : 'NSE';
+  const lotSize = getLotSize(symbol);
+  const type = nearest.type; // 'weekly' | 'monthly'
+  const daysToExpiry = nearest.daysToExpiry;
+  const isExpiryToday = daysToExpiry === 0;
+
+  const isQuarterly = type === 'monthly' && (nearest.dateObj.getMonth() + 1) % 3 === 0;
+  const expiryType: StandardizedExpiry['expiry_type'] = isQuarterly ? 'QUARTERLY' : type === 'monthly' ? 'MONTHLY' : 'WEEKLY';
+
+  const today = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+  const expLocal = new Date(nearest.dateObj.getFullYear(), nearest.dateObj.getMonth(), nearest.dateObj.getDate());
+  const yyyy = expLocal.getFullYear();
+  const mm = String(expLocal.getMonth() + 1).padStart(2, '0');
+  const dd = String(expLocal.getDate()).padStart(2, '0');
+
+  return {
+    instrument: symbol,
+    exchange,
+    expiry_date: `${yyyy}-${mm}-${dd}`,
+    expiry_type: expiryType,
+    days_to_expiry: daysToExpiry,
+    is_expiry_today: isExpiryToday,
+    is_monthly_expiry: type === 'monthly' || isQuarterly,
+    is_weekly_expiry: type === 'weekly',
+    is_quarterly_expiry: isQuarterly,
+    expiry_mode: (type === 'monthly' || type === 'weekly') ? 'ZERO_HERO' : 'STANDARD',
+    option_liquidity: HIGH_LIQUIDITY.has(symbol) ? 'HIGH' : 'MEDIUM',
+    strategy_profile: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'NORMAL',
+    session_type: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'REGULAR',
+    lot_size: lotSize,
+    tick_size: 0.05,
+  };
+}
 
 export interface ExpiryInfo {
   date: string;          // "DD-MMM-YYYY" (Breeze format)

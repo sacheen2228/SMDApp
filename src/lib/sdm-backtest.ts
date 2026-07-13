@@ -7,6 +7,12 @@ import { runSdmSignalEngine, type SdmSignal, type TradeAction } from "./sdm-sign
 import { calculateGreeks } from "./greeks";
 import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
 import type { SDMOptionStrike } from "@/types/sdm";
+import {
+  getBacktestDataProvider,
+  createBacktestRunMeta,
+  type BacktestProviderMeta,
+  type BacktestDataSource,
+} from "@/lib/market/data-provider";
 
 // ─── Types ──────────────────────────────────────────────────────
 export interface SdmBacktestTrade {
@@ -93,6 +99,7 @@ export interface SdmBacktestResult {
   performance: SdmBacktestPerformance;
   dailyResults: SdmDayResult[];
   equityCurve: { date: string; equity: number; drawdown: number }[];
+  providerMeta: BacktestProviderMeta;
   timestamp: string;
 }
 
@@ -365,6 +372,10 @@ export async function runSdmBacktest(input: {
   const { symbol, days, capital = 1000000, riskPerTrade = 1, confidenceThreshold = 70 } = input;
   const config = getSymbolConfig(symbol);
 
+  const requested = (process.env.BACKTEST_DATA_SOURCE as BacktestDataSource) || "auto";
+  const providerMeta = createBacktestRunMeta(requested);
+  const dataProvider = getBacktestDataProvider(requested, providerMeta);
+
   const trades: SdmBacktestTrade[] = [];
   const dailyResults: SdmDayResult[] = [];
   const equityCurve: { date: string; equity: number; drawdown: number }[] = [];
@@ -392,11 +403,11 @@ export async function runSdmBacktest(input: {
   for (let i = 0; i < dates.length; i++) {
     const dateStr = dates[i];
 
-    // Fetch real candles from Breeze historical API
+    // Fetch candles via the data provider (recorded history → live Breeze)
     let candles: any[] = [];
     try {
-      const { getIntradayCandles } = await import("@/lib/breeze-historical");
-      candles = await getIntradayCandles(symbol, "5minute", dateStr);
+      const res = await dataProvider.getIntradayCandles(symbol, "5minute", dateStr);
+      candles = res.candles as any[];
     } catch {
       candles = [];
     }
@@ -411,13 +422,12 @@ export async function runSdmBacktest(input: {
     const dayChange = spotClose - spotOpen;
     const dayChangePct = (dayChange / spotOpen) * 100;
 
-    // Generate option chain — use real Breeze option chain
+    // Generate option chain via the data provider
     let chain: SDMOptionStrike[] = [];
     try {
-      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
-      const expiries = await getOptionChainExpiries(symbol);
+      const expiries = await dataProvider.getOptionChainExpiries(symbol);
       const nearestExpiry = expiries[0] || dateStr;
-      const realChain = await getOptionChain(symbol, nearestExpiry);
+      const realChain = await dataProvider.getOptionChain(symbol, nearestExpiry);
       if (realChain) {
         chain = realChain.strikes.map((strike) => ({
           strike,
@@ -464,12 +474,12 @@ export async function runSdmBacktest(input: {
       const tp2 = rec.target2;
       const tp3 = rec.target3;
 
-      // Determine outcome using next day's candles — try real Breeze data
+      // Determine outcome using next day's candles via the data provider
       let nextDayCandles: any[] = [];
       if (i < dates.length - 1) {
         try {
-          const { getIntradayCandles } = await import("@/lib/breeze-historical");
-          nextDayCandles = await getIntradayCandles(symbol, "5minute", dates[i + 1]);
+          const res = await dataProvider.getIntradayCandles(symbol, "5minute", dates[i + 1]);
+          nextDayCandles = res.candles as any[];
         } catch {
           nextDayCandles = [];
         }
@@ -574,6 +584,7 @@ export async function runSdmBacktest(input: {
     performance,
     dailyResults,
     equityCurve,
+    providerMeta,
     timestamp: new Date().toISOString(),
   };
 }

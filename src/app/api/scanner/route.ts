@@ -3,7 +3,7 @@
 // Uses Yahoo Finance API for real stock data + News sentiment
 
 import { NextRequest, NextResponse } from "next/server";
-import { runIntradayScan, type ScannerConfig } from "@/lib/intraday-scanner";
+import { runIntradayScan, recordIntradayScannerResults, type ScannerConfig } from "@/lib/intraday-scanner";
 import { getCachedMarketNews } from "@/lib/news-engine";
 
 // NIFTY 50 stock symbols for scanning
@@ -267,6 +267,14 @@ export async function GET(request: NextRequest) {
 
     dataSource = result.dataQuality === "LIVE" || result.dataQuality === "PARTIAL" ? "Yahoo Finance" : null;
     liveError = result.dataQuality === "LIVE" ? null : "Partial real-time quotes — some symbols unavailable from Yahoo Finance.";
+
+    // Migration: persist intraday scanner results to the Scanner Results
+    // store so the Evaluation framework + Replay can grade this strategy.
+    try {
+      await recordIntradayScannerResults(result.candidates, config);
+    } catch (recErr) {
+      console.warn("[Scanner] Scanner Results recording skipped:", recErr);
+    }
 
     return NextResponse.json({
       success: true,

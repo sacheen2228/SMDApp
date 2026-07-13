@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
       side = "BUY",
       confidence = 0,
       price,
+      snapshotId,
     } = body;
 
     if (!strategyId || !symbol || !entry || entry <= 0) {
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
       status: "ACTIVE",
       sentAt: new Date().toISOString(),
       source: strategyId,
+      snapshotId: snapshotId ?? undefined,
     };
 
     await addTrade(trade);

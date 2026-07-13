@@ -6,6 +6,7 @@
 // Telegram alerts match the SMD bot's recommendations exactly.
 
 import { sendTelegramMessage } from "./telegramSend";
+import { recordIntradayTrade } from "./intraday-scanner";
 import { isMarketOpen } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
@@ -209,25 +210,39 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
     );
 
-    if (results.some(Boolean)) {
-      markSentToday(signature);
-      await addTrade({
-        id: c.alert.id,
-        symbol: c.symbol,
-        side: c.alert.side,
-        instrument: c.alert.instrument,
-        strike: c.alert.strike || 0,
-        optionType: c.alert.optionType || "",
-        entry: c.alert.entry,
-        sl: c.alert.sl,
-        tp1: c.alert.tp1,
-        tp2: c.alert.tp2,
-        status: "ACTIVE",
-        sentAt: new Date().toISOString(),
-        source: "sdm-v2-engine",
-      });
-      newAlerts++;
-    }
+      if (results.some(Boolean)) {
+        markSentToday(signature);
+        await addTrade({
+          id: c.alert.id,
+          symbol: c.symbol,
+          side: c.alert.side,
+          instrument: c.alert.instrument,
+          strike: c.alert.strike || 0,
+          optionType: c.alert.optionType || "",
+          entry: c.alert.entry,
+          sl: c.alert.sl,
+          tp1: c.alert.tp1,
+          tp2: c.alert.tp2,
+          status: "ACTIVE",
+          sentAt: new Date().toISOString(),
+          source: "sdm-v2-engine",
+        });
+        // Migration: also record executed intraday trades to Trade Audit sidecar.
+        await recordIntradayTrade({
+          id: c.alert.id,
+          symbol: c.symbol,
+          optionType: (c.alert.optionType as "CE" | "PE") || "CE",
+          strike: c.alert.strike || 0,
+          entry: c.alert.entry,
+          stopLoss: c.alert.sl,
+          tp1: c.alert.tp1,
+          tp2: c.alert.tp2,
+          confidence: c.alert.confidence,
+          reason: c.alert.rationale,
+          source: "sdm-v2-engine",
+        });
+        newAlerts++;
+      }
   }
 
   // 5. Stock scanner alerts — monthly expiry, confidence ≥ 80%
@@ -256,8 +271,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 
           if (results.some(Boolean)) {
             markSentToday(sig);
+            const tradeId = `stk-${stock.symbol}-${Date.now()}`;
             await addTrade({
-              id: `stk-${stock.symbol}-${Date.now()}`,
+              id: tradeId,
               symbol: stock.symbol,
               side: "BUY",
               instrument: `${stock.symbol} ${opt.strike} ${opt.optionType}`,
@@ -269,6 +285,20 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
               status: "ACTIVE",
               sentAt: new Date().toISOString(),
+              source: "stock-scanner",
+            });
+            // Migration: also record executed intraday trades to Trade Audit sidecar.
+            await recordIntradayTrade({
+              id: tradeId,
+              symbol: stock.symbol,
+              optionType: (opt.optionType as "CE" | "PE") || "CE",
+              strike: opt.strike,
+              entry: opt.premium,
+              stopLoss: opt.stopLoss,
+              tp1: opt.targets[0] || opt.premium,
+              tp2: opt.targets[1] || opt.targets[0] || opt.premium,
+              confidence: stock.totalScore,
+              reason: (stock.reasons || []).slice(0, 3).join(" · "),
               source: "stock-scanner",
             });
             newAlerts++;
