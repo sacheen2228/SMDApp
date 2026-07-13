@@ -62,3 +62,22 @@ model Trade {
   tradedAt         DateTime @default(now())         // date used for daily grouping
   createdAt        DateTime @default(now())
 }
+
+model DomAnalysis {
+  id                String   @id @default(cuid())
+  symbol            String
+  date              DateTime
+  spot              Float
+  atmStrike         Float
+  pcr               Float
+  maxPain           Float
+  expiry            String
+  timestamp         DateTime
+  strikes           Json
+  unusualBuildup    Json
+  resistance        Json
+  support           Json
+  createdAt         DateTime @default(now())
+
+  @@unique([symbol, date], name: "symbol_date")
+}

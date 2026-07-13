@@ -87,9 +87,11 @@ export function detectGammaBlast(
   }
 
   // 5. IV spike detection (compare ATM IV to average)
-  const atmStrike = optionChain.reduce((best, s) =>
-    Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
-  );
+  const atmStrike = optionChain.length
+    ? optionChain.reduce((best, s) =>
+        Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
+      )
+    : null;
   if (atmStrike) {
     const avgIV = optionChain.reduce((sum, s) => sum + (s.ce?.iv || 0) + (s.pe?.iv || 0), 0) / 
       (optionChain.length * 2 || 1);

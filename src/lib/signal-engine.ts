@@ -121,7 +121,7 @@ function calculateEMA(data: number[], period: number): number {
   return ema;
 }
 
-function calculateATR(candles: any[], period: number): number {
+export function calculateATR(candles: any[], period: number): number {
   if (candles.length < 2) return 0;
   const trs: number[] = [];
   for (let i = 1; i < candles.length; i++) {

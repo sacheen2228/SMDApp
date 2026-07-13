@@ -8,6 +8,12 @@ import {
   type Candle,
 } from "@/lib/candlestick-breakout";
 import { getLotSize } from "@/lib/symbol-config";
+import {
+  getBacktestDataProvider,
+  createBacktestRunMeta,
+  type BacktestProviderMeta,
+  type BacktestDataSource,
+} from "@/lib/market/data-provider";
 
 // ─── Types ──────────────────────────────────────────────────────
 export interface HistoricalCandle {
@@ -99,6 +105,7 @@ export interface FullBacktestResult {
   performance: BacktestPerformance;
   dailyResults: DayBacktestResult[];
   equityCurve: { date: string; equity: number; drawdown: number }[];
+  providerMeta: BacktestProviderMeta;
   timestamp: string;
 }
 
@@ -539,6 +546,10 @@ export async function runMultiDayBacktest(
   const dailyResults: DayBacktestResult[] = [];
   const equityCurve: { date: string; equity: number; drawdown: number }[] = [];
 
+  const requested = (process.env.BACKTEST_DATA_SOURCE as BacktestDataSource) || "auto";
+  const providerMeta = createBacktestRunMeta(requested);
+  const dataProvider = getBacktestDataProvider(requested, providerMeta);
+
   let cumulativePnL = 0;
   let equity = 1000000;
   let peak = equity;
@@ -556,11 +567,11 @@ export async function runMultiDayBacktest(
 
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-    // Fetch real candles from Breeze historical API
+    // Fetch candles via the data provider (recorded history → live Breeze)
     let candles: any[] = [];
     try {
-      const { getIntradayCandles } = await import("@/lib/breeze-historical");
-      candles = await getIntradayCandles(symbol, "5minute", dateStr);
+      const res = await dataProvider.getIntradayCandles(symbol, "5minute", dateStr);
+      candles = res.candles as any[];
     } catch {
       candles = [];
     }
@@ -691,6 +702,7 @@ export async function runMultiDayBacktest(
     performance,
     dailyResults,
     equityCurve,
+    providerMeta,
     timestamp: new Date().toISOString(),
   };
 }

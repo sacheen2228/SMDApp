@@ -5,6 +5,8 @@
 import type { SDMOptionStrike } from "@/types/sdm";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
+import { recordScannerResult, type ScannerResultInput } from "./market/record-scanner";
+import { recordSignal } from "./trade-audit-client";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -790,5 +792,114 @@ export function getConvictionColor(conviction: string): string {
     case "MEDIUM": return "bg-yellow-600 text-white";
     case "LOW": return "bg-orange-500 text-white";
     default: return "bg-muted";
+  }
+}
+
+// ─── Migration: Scanner Results persistence ───────────────────────
+// Mirrors BTST (recordBTSTScannerResults) so the new Evaluation framework
+// + Replay can grade Intraday the same way as Zero Hero / SMC / BTST.
+export async function recordIntradayScannerResults(
+  candidates: StockCandidate[],
+  _config?: ScannerConfig
+): Promise<number> {
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const sessionId = `INTRADAY-${ymd}`;
+
+  const results: ScannerResultInput[] = candidates.length
+    ? candidates.map((c) => {
+        const decision: "BUY" | "SELL" | "REJECT" =
+          c.direction === "BULLISH" ? "BUY" : c.direction === "BEARISH" ? "SELL" : "REJECT";
+        return {
+          symbol: c.symbol,
+          strategy: "INTRADAY",
+          decision,
+          confidence: c.totalScore,
+          riskScore: Math.max(0, Math.min(100, 100 - c.totalScore)),
+          perEngineConfidence: { INTRADAY: c.totalScore },
+          triggeredEngines: decision === "REJECT" ? [] : ["INTRADAY"],
+          rejectedConditions: decision === "REJECT" ? ["neutral_direction"] : [],
+          reasons: c.reasons?.length ? c.reasons : [c.technicalSummary],
+          selectedStrike: 0,
+          entry: c.entry,
+          sl: c.stopLoss,
+          tp1: c.target1,
+          tp2: c.target2,
+          expectedRR: c.riskReward,
+          snapshotId: null,
+          sessionId,
+        };
+      })
+    : [
+        {
+          symbol: "INTRADAY",
+          strategy: "INTRADAY",
+          decision: "NO_TRADE",
+          confidence: 0,
+          riskScore: 100,
+          perEngineConfidence: {},
+          triggeredEngines: [],
+          rejectedConditions: ["no_candidates"],
+          reasons: ["no eligible intraday stocks"],
+          snapshotId: null,
+          sessionId,
+        },
+      ];
+
+  let recorded = 0;
+  await Promise.all(
+    results.map(async (r) => {
+      try {
+        recorded += await recordScannerResult(r);
+      } catch {
+        /* sidecar down — non-blocking */
+      }
+    })
+  );
+  return recorded;
+}
+
+// Record executed intraday trades into the Trade Audit sidecar so the
+// strategy is evaluable alongside Zero Hero / SMC / BTST.
+export async function recordIntradayTrade(input: {
+  id: string;
+  symbol: string;
+  optionType: "CE" | "PE";
+  strike: number;
+  entry: number;
+  stopLoss: number;
+  tp1: number;
+  tp2: number;
+  confidence: number;
+  reason: string;
+  source: string;
+}): Promise<void> {
+  try {
+    await recordSignal({
+      tradeId: input.id,
+      strategyId: "INTRADAY",
+      strategyVersion: "1.0",
+      symbol: input.symbol,
+      exchange: "NSE",
+      instrumentType: "OPTIONS",
+      spotPrice: input.entry,
+      strikePrice: input.strike,
+      optionType: input.optionType,
+      entryPrice: input.entry,
+      stopLoss: input.stopLoss,
+      tp1: input.tp1,
+      tp2: input.tp2,
+      signalConfidence: input.confidence,
+      trendDirection: input.optionType === "CE" ? "BULLISH" : "BEARISH",
+      signalReason: input.reason,
+      marketSession: "MORNING",
+      marketContext: { source: input.source },
+    });
+  } catch {
+    /* sidecar down — non-blocking */
   }
 }

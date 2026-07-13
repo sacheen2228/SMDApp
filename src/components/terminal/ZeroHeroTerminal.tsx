@@ -11,7 +11,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { getInstrument } from "@/stores/useTerminalStore";
-import { isFNO, getExpiryTypeForDate } from "@/lib/expiry-calculator";
+import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
+import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -45,7 +46,56 @@ async function registerTrades(
   );
 }
 
-type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "history" | "watchlist" | "positions";
+/**
+ * Record EVERY scanner cycle as a permanent AI-training row (M5).
+ * Used by both Zero Hero (strategy="ZERO_HERO") and Smart Money (strategy="SMC").
+ * Includes BUY/SELL (eligible), REJECT (below confidence floor) and a single
+ * NO_TRADE when no candidate is produced. snapshotId is resolved server-side
+ * to the latest recorded market snapshot for the symbol.
+ */
+async function recordScannerCycle(
+  symbol: string,
+  strategy: string,
+  candidates: { strike: number; type: "CE" | "PE"; entry: number; sl?: number; tp1?: number; tp2?: number; conf: number; rr?: number }[]
+): Promise<void> {
+  const results: any[] = candidates.map((c) => ({
+    symbol,
+    strategy,
+    decision: c.conf >= 60 ? (c.type === "CE" ? "BUY" : "SELL") : "REJECT",
+    confidence: c.conf,
+    riskScore: Math.max(0, Math.min(100, 100 - c.conf)),
+    perEngineConfidence: { [strategy]: c.conf },
+    triggeredEngines: c.conf >= 60 ? [strategy] : [],
+    rejectedConditions: c.conf >= 60 ? [] : ["confidence_below_60"],
+    reasons: [`strike ${c.strike} ${c.type} conf=${c.conf}`],
+    selectedStrike: c.strike,
+    entry: c.entry,
+    sl: c.sl,
+    tp1: c.tp1,
+    tp2: c.tp2,
+    expectedRR: c.rr,
+  }));
+  if (results.length === 0) {
+    results.push({
+      symbol,
+      strategy,
+      decision: "NO_TRADE",
+      confidence: 0,
+      riskScore: 100,
+      perEngineConfidence: {},
+      triggeredEngines: [],
+      rejectedConditions: ["no_candidates"],
+      reasons: ["no eligible strikes near spot"],
+    });
+  }
+  await fetch("/api/market-recorder/scanner", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ results }),
+  }).catch(() => {});
+}
+
+type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "dom" | "history" | "watchlist" | "positions";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -53,6 +103,7 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "zerohero", icon: <Target size={19} />, label: "Zero Hero" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "greeks", icon: <Grid3X3 size={19} />, label: "Greeks" },
+  { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "history", icon: <Clock size={19} />, label: "Trade History" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
   { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
@@ -370,30 +421,36 @@ export function ZeroHeroTerminal() {
     if (!isEligible) return [];
     const threshold = spot * 0.02;
     const nearStrikes = chain.filter((s) => Math.abs(s.strike - spot) <= threshold);
+    // Chain-wide context computed ONCE (reuses sdm-oianalysis, gamma-blast, expiry-calculator)
+    const ctx = analyzeZeroHeroChain(chain, spot, vix || 14, symbol);
+    const lotSize = getInstrument(symbol)?.lotSize || 75;
     const list: ZHCandidate[] = [];
     for (const s of nearStrikes) {
       for (const type of ["CE", "PE"] as const) {
         const d = type === "CE" ? s.ce : s.pe;
         if (!d || d.ltp <= 0) continue;
-        const absOIChg = Math.abs(d.oiChg || 0);
-        const absDelta = Math.abs(d.delta || 0);
-        const ivScore = Math.min(100, (d.iv || 15) * 3);
-        const oiScore = Math.min(100, (absOIChg / 50000) * 100);
-        const deltaScore = absDelta * 100;
-        const volScore = Math.min(100, ((d.vol || 0) / 100000) * 100);
-        const conf = Math.round(oiScore * 0.25 + deltaScore * 0.2 + ivScore * 0.2 + volScore * 0.15 + (absOIChg > 20000 ? 10 : 0));
-        const slPct = 0.22;
-        const sl = d.ltp * (1 - slPct);
-        const rr = conf > 60 ? 3 : conf > 40 ? 2 : 1;
-        const tp1 = d.ltp * (1 + slPct);
-        const tp2 = d.ltp * (1 + slPct * rr);
-        const prob = Math.min(95, Math.round(conf * 0.85 + absDelta * 10));
-        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl, tp1, tp2, rr, prob, conf, stars: Math.max(1, Math.min(5, Math.round(conf / 20))) });
+        // Per-candidate evaluation via the consolidated engine
+        const r = evaluateZeroHeroCandidate({
+          strike: s.strike,
+          type,
+          ltp: d.ltp,
+          delta: d.delta || 0,
+          iv: d.iv || 15,
+          oiChg: d.oiChg || 0,
+          volume: d.vol || 0,
+          spot,
+          lotSize,
+          capital: 100000,
+          riskPerTradePercent: 2,
+          maxPositionSize: 10,
+          context: ctx,
+        });
+        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars });
       }
     }
     list.sort((a, b) => b.conf - a.conf);
     return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [chain, spot, isEligible]);
+  }, [chain, spot, isEligible, vix, symbol]);
 
   // ─── Record Zero Hero candidates into the Trade Audit (backtest) engine ─
   useEffect(() => {
@@ -410,6 +467,8 @@ export function ZeroHeroTerminal() {
         price: z.entry,
       }));
     if (toRecord.length) registerTrades("ZERO_HERO_AI", symbol, toRecord).catch(() => {});
+    // M5: record the full scanner cycle as an AI-training row (every cycle).
+    recordScannerCycle(symbol, "ZERO_HERO", zhCandidates).catch(() => {});
   }, [activeTab, isEligible, zhCandidates, symbol]);
 
   // ─── FII/DII flow from OI ───────────────────────────────────────
@@ -605,6 +664,9 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "greeks" && (
             <GreeksTab chain={chain} />
+          )}
+          {activeTab === "dom" && (
+            <DOMTab symbol={symbol} />
           )}
           {activeTab === "history" && (
             <TradeHistoryTab trades={trades} />
@@ -805,11 +867,19 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
     </div>
   );
 
+  const exp = getStandardizedExpiry(symbol);
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
         <span>🎯 Zero Hero Scanner — Full</span>
-        <span className="text-[#7d8ba0] font-mono text-[11px]">{symbol} · {expiryType} · sorted by confidence</span>
+        <span className="text-[#7d8ba0] font-mono text-[11px]">
+          {symbol} · {expiryType} · sorted by confidence
+          {exp && (
+            <span className="ml-2 text-[#e8a33d]">
+              {exp.expiry_mode} · {exp.expiry_date} ({exp.expiry_type}) · L{exp.lot_size}
+            </span>
+          )}
+        </span>
       </div>
       <div className="p-2.5">
         <div className="grid grid-cols-[.5fr_1.2fr_.6fr_1fr_1fr_1fr_.8fr_.6fr] gap-1.5 items-center py-2 border-b border-[#1f2733] text-[10px] text-[#7d8ba0] uppercase font-bold">
@@ -949,12 +1019,204 @@ function GreeksTab({ chain }: { chain: ChainRow[] }) {
   );
 }
 
+interface DOMData {
+  spot: number;
+  atmStrike: number;
+  pcr: number;
+  maxPain: number;
+  resistance: number[];
+  support: number[];
+  unusualBuildup: any[];
+  strikes: any[];
+  timestamp: string;
+}
+
+function DOMTab({ symbol }: { symbol: string }) {
+  const [data, setData] = useState<DOMData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function fetchDOM() {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await fetch(`/api/dom-analysis?symbol=${symbol}`);
+        const json = await res.json();
+        if (mounted && json.success && json.data) {
+          setData(json.data);
+        } else if (mounted) {
+          setError(json.error || 'Failed to fetch DOM data');
+        }
+      } catch (e: any) {
+        if (mounted) setError(e.message);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    fetchDOM();
+    return () => { mounted = false; };
+  }, [symbol]);
+
+  const fmtInt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
+  const fmt = (n: number, d = 2) => (n == null || isNaN(n)) ? '0' : n.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  if (loading) return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">DOM Analysis</div>
+      <div className="p-6 text-center text-[#7d8ba0]">Loading DOM analysis...</div>
+    </div>
+  );
+
+  if (error) return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">DOM Analysis</div>
+      <div className="p-6 text-center text-[#f2495c]">{error}</div>
+    </div>
+  );
+
+  if (!data) return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">DOM Analysis</div>
+      <div className="p-6 text-center text-[#7d8ba0]">No DOM data available</div>
+    </div>
+  );
+
+  const spot = data.spot;
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px] flex items-center justify-between">
+          <span>DOM Analysis — {symbol}</span>
+          <span className="text-[#7d8ba0] font-mono text-[11px]">NSE Equity Derivatives</span>
+        </div>
+        <div className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+          <div className="bg-[#0a1018] rounded p-2"><div className="text-[#7d8ba0]">Spot</div><div className="font-bold text-[#e8a33d]">₹{fmt(spot)}</div></div>
+          <div className="bg-[#0a1018] rounded p-2"><div className="text-[#7d8ba0]">PCR</div><div className="font-bold text-[#1fbf75]">{fmt(data.pcr, 2)}</div></div>
+          <div className="bg-[#0a1018] rounded p-2"><div className="text-[#7d8ba0]">Max Pain</div><div className="font-bold text-[#4f8ff7]">{fmtInt(data.maxPain)}</div></div>
+          <div className="bg-[#0a1018] rounded p-2"><div className="text-[#7d8ba0]">ATM Strike</div><div className="font-bold text-[#e8a33d]">{fmtInt(data.atmStrike)}</div></div>
+        </div>
+      </div>
+
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Unusual OI Buildup <span className="text-[#7d8ba0] font-mono text-[11px]">Threshold: 50K OI change</span></div>
+        <div className="p-2.5 overflow-x-auto">
+          {data.unusualBuildup?.length ? (
+            <table className="w-full border-collapse font-mono text-[12px]">
+              <thead>
+                <tr>
+                  {["Strike", "Type", "OI Chg", "Volume", "LTP", "Interpretation"].map((h) => (
+                    <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Interpretation" ? "text-left" : "text-right"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.unusualBuildup.slice(0, 10).map((u: any, i: number) => (
+                  <tr key={i} className="border-b border-[#1f2733] hover:bg-[#151b25]">
+                    <td className="text-left py-1.5 px-1 font-bold text-[#e8a33d]">{fmtInt(u.strike)}</td>
+                    <td className="text-right py-1.5 px-1"><span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${u.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{u.type}</span></td>
+                    <td className={`text-right py-1.5 px-1 ${u.oiChg < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{u.oiChg > 0 ? "+" : ""}{Math.abs(u.oiChg) >= 1000 ? (u.oiChg / 1000).toFixed(1) + "K" : u.oiChg}</td>
+                    <td className="text-right py-1.5 px-1">{u.volume >= 1000 ? (u.volume / 1000).toFixed(0) + "K" : u.volume}</td>
+                    <td className="text-right py-1.5 px-1 text-[#1fbf75]">₹{fmt(u.ltp)}</td>
+                    <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{u.interpretation}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="text-center py-6 text-[#7d8ba0] text-[12px]">No unusual OI buildup detected (threshold: 50K)</div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+          <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px] flex items-center gap-2">
+            <Shield className="size-4 text-[#f2495c]" /><span>Resistance (Call OI Walls)</span>
+          </div>
+          <div className="p-3">
+            {data.resistance?.length ? (
+              data.resistance.map((r: number, i: number) => (
+                <div key={i} className="flex justify-between py-1 border-b border-[#1f2733] last:border-0 font-mono text-[12px]">
+                  <span className="text-[#e8a33d]">{fmtInt(r)}</span><span className="text-[#f2495c]">CE OI</span>
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-4 text-[#7d8ba0] text-[12px]">No resistance levels</div>
+            )}
+          </div>
+        </div>
+        <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+          <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px] flex items-center gap-2">
+            <Target className="size-4 text-[#1fbf75]" /><span>Support (Put OI Walls)</span>
+          </div>
+          <div className="p-3">
+            {data.support?.length ? (
+              data.support.map((s: number, i: number) => (
+                <div key={i} className="flex justify-between py-1 border-b border-[#1f2733] last:border-0 font-mono text-[12px]">
+                  <span className="text-[#e8a33d]">{fmtInt(s)}</span><span className="text-[#1fbf75]">PE OI</span>
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-4 text-[#7d8ba0] text-[12px]">No support levels</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Full Option Chain (ATM ± 10)</div>
+        <div className="p-2.5 overflow-x-auto">
+          <table className="w-full border-collapse font-mono text-[11px]">
+            <thead>
+              <tr>
+                {["Strike", "CE OI", "CE Chg", "CE Vol", "CE LTP", "PE OI", "PE Chg", "PE Vol", "PE LTP"].map((h) => (
+                  <th key={h} className="text-[#7d8ba0] font-semibold py-1 px-1 text-[10px] uppercase text-right">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.strikes
+                .filter((s: any) => Math.abs(s.strike - spot) <= 1000)
+                .slice(-21)
+                .map((s: any) => {
+                  const ce = s.ce || {};
+                  const pe = s.pe || {};
+                  return (
+                    <tr key={s.strike} className={`border-b border-[#1f2733] ${s.strike === data.atmStrike ? "bg-[rgba(232,163,61,.08)]" : ""}`}>
+                      <td className={`text-right py-1 px-1 font-bold ${s.strike === data.atmStrike ? "text-[#e8a33d]" : "text-[#dfe6ee]"}`}>
+                        {fmtInt(s.strike)}{s.strike === data.atmStrike && <span className="text-[9px] ml-1 bg-amber-500/20 text-amber-400 px-1 rounded">ATM</span>}
+                      </td>
+                      <td className="text-right py-1 px-1 text-[#1fbf75]">{fmtInt(ce.oi)}</td>
+                      <td className={`text-right py-1 px-1 ${(ce.oiChg || 0) < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{ce.oiChg > 0 ? "+" : ""}{fmtInt(ce.oiChg || 0)}</td>
+                      <td className="text-right py-1 px-1 text-[#7d8ba0]">{ce.volume >= 1000 ? (ce.volume / 1000).toFixed(0) + "K" : fmtInt(ce.volume)}</td>
+                      <td className="text-right py-1 px-1 text-[#1fbf75]">₹{fmt(ce.ltp)}</td>
+                      <td className="text-right py-1 px-1 text-[#f2495c]">{fmtInt(pe.oi)}</td>
+                      <td className={`text-right py-1 px-1 ${(pe.oiChg || 0) < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{pe.oiChg > 0 ? "+" : ""}{fmtInt(pe.oiChg || 0)}</td>
+                      <td className="text-right py-1 px-1 text-[#7d8ba0]">{pe.volume >= 1000 ? (pe.volume / 1000).toFixed(0) + "K" : fmtInt(pe.volume)}</td>
+                      <td className="text-right py-1 px-1 text-[#f2495c]">₹{fmt(pe.ltp)}</td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Smart Money Tab ───────────────────────────────────────────────
 function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
+  const hasOiChangeData = chain.some((r: ChainRow) => (Math.abs(r.ce?.oiChg || 0) + Math.abs(r.pe?.oiChg || 0)) > 0);
+  
   const sorted = [...chain].sort((a, b) => Math.abs(b.ce?.oiChg || 0) + Math.abs(b.pe?.oiChg || 0) - (Math.abs(a.ce?.oiChg || 0) + Math.abs(a.pe?.oiChg || 0))).slice(0, 8);
 
   // Record unusual-OI Smart Money candidates into the Trade Audit (backtest) engine
   useEffect(() => {
+    if (!hasOiChangeData) return; // Skip recording if OI change data unavailable (e.g., SENSEX via BSE API)
     const toRecord = sorted
       .map((r: ChainRow) => {
         const isCE = Math.abs(r.ce?.oiChg || 0) > Math.abs(r.pe?.oiChg || 0);
@@ -976,18 +1238,28 @@ function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
           tp2: Math.round(entry * (1 + slPct * rr) * 100) / 100,
           conf: Math.min(95, 60 + Math.min(35, x.oiChg / 20000)),
           price: entry,
+          rr,
         };
       })
       .filter((c) => c.entry > 0);
     if (toRecord.length) registerTrades("SMC", symbol, toRecord).catch(() => {});
-  }, [sorted, symbol, chain]);
+    // M5: record the SMC scanner cycle as an AI-training row (every cycle).
+    recordScannerCycle(symbol, "SMC", toRecord).catch(() => {});
+  }, [sorted, symbol, chain, hasOiChangeData]);
   return (
     <div className="space-y-3.5">
       <FIIFlowPanel flowData={flowData} />
       <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">Unusual OI buildup</span></div>
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">Unusual OI buildup</span>{symbol === "SENSEX" && <span className="text-[#e8a33d] font-mono text-[10px] ml-2">(OI change unavailable from BSE API)</span>}</div>
         <div className="p-2.5 overflow-x-auto">
-          <table className="w-full border-collapse font-mono text-[12px]">
+          {!hasOiChangeData ? (
+            <div className="text-center py-6 text-[#7d8ba0] text-[12px]">
+              <div className="font-bold text-[#e8a33d] mb-1">OI Change Data Unavailable</div>
+              <div>{symbol === "SENSEX" || symbol === "BANKEX" ? "BSE API does not provide OI change (oiChg) for SENSEX/BANKEX." : "Current data source does not provide OI change data."}</div>
+              <div className="text-[11px] mt-1">Smart Money Scanner requires OI change data to detect unusual buildup.</div>
+            </div>
+          ) : (
+            <table className="w-full border-collapse font-mono text-[12px]">
             <thead>
               <tr>
                 {["Strike", "Type", "OI Chg", "Vol", "Interpretation", "Entry", "SL", "TP1/TP2", "R:R"].map((h) => (
@@ -1022,6 +1294,7 @@ function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
               })}
             </tbody>
           </table>
+          )}
         </div>
       </div>
     </div>

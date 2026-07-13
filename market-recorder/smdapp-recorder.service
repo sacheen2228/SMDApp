@@ -1,0 +1,8 @@
+[Unit]
+Description=SMDApp Market Recorder tick
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/sachin/Desktop/SMDApp
+Environment=MARKET_RECORDER_BASE=http://localhost:3000
+ExecStart=/home/sachin/Desktop/SMDApp/market-recorder/tick.sh

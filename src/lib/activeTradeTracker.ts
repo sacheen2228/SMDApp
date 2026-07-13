@@ -26,6 +26,7 @@ export interface ActiveTrade {
   tp2HitAt?: string;
   slHitAt?: string;
   source: string;
+  snapshotId?: string; // exact MarketSnapshot used for the decision (when available)
 }
 
 const activeTrades = new Map<string, ActiveTrade>();
@@ -102,7 +103,7 @@ async function recordAuditSignal(trade: ActiveTrade): Promise<void> {
       trendDirection: auditTrend(trade),
       signalReason: `${trade.source} signal`,
       marketSession: istSession(),
-      marketContext: { source: trade.source },
+      marketContext: { source: trade.source, snapshotId: trade.snapshotId },
     });
   } catch {
     /* audit engine offline — non-fatal */

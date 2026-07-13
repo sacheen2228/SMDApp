@@ -1,0 +1,11 @@
+[Unit]
+Description=SMDApp Market Recorder timer (config-driven interval in app)
+
+[Timer]
+# Finest granularity (30s) — the app enforces the per-mode interval via throttle.
+OnCalendar=Mon-Fri *-*-* 09:15..15:30:00/30
+Persistent=false
+Unit=smdapp-recorder.service
+
+[Install]
+WantedBy=timers.target

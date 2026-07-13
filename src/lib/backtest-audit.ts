@@ -12,15 +12,19 @@
 import { db } from "@/lib/db";
 import { getNSEHistoricalData } from "@/lib/nse-api";
 import { initSession } from "@/lib/icici-breeze/auth";
-import { getOptionChain } from "@/lib/icici-breeze/option-chain";
 import { getLotSize } from "@/lib/symbol-config";
 import {
-  getIntradayCandles,
   verifyTradeAgainstCandles,
   HistoricalCandle,
   TradeVerificationResult,
   computeAIPredictionAccuracy,
 } from "@/lib/breeze-historical";
+import {
+  getBacktestDataProvider,
+  createBacktestRunMeta,
+  type BacktestProviderMeta,
+  type BacktestDataSource,
+} from "@/lib/market/data-provider";
 
 // ─── Types (mirror the JSON contract the frontend consumes) ──
 export interface AuditTrade {
@@ -92,6 +96,7 @@ export interface AuditReport {
   stats: AuditStats;
   trades: AuditTrade[];
   symbols: string[];
+  providerMeta: BacktestProviderMeta;
   auditedAt: string;
 }
 
@@ -108,6 +113,7 @@ async function getRealDayRange(
   dateStr: string
 ): Promise<DayRange | null> {
   const nseSymbol = symbol.toUpperCase();
+  const dataProvider = getBacktestDataProvider();
   const start = new Date(dateStr + "T00:00:00.000Z");
   const end = new Date(dateStr + "T23:59:59.999Z");
 
@@ -131,7 +137,7 @@ async function getRealDayRange(
   // 2) Breeze snapshot for the underlying (REAL data, current values)
   try {
     await initSession();
-    const chain = await getOptionChain(nseSymbol, "");
+    const chain = await dataProvider.getOptionChain(nseSymbol, "");
     const spot = chain?.spotPrice;
     if (spot) {
       // Without historical intraday from Breeze we only have the spot.
@@ -448,6 +454,10 @@ export async function runTradeAudit(opts: {
 }): Promise<AuditReport> {
   const { symbol = "ALL", date, sourceLabel } = opts;
 
+  const requested = (process.env.BACKTEST_DATA_SOURCE as BacktestDataSource) || "auto";
+  const providerMeta = createBacktestRunMeta(requested);
+  const dataProvider = getBacktestDataProvider(requested, providerMeta);
+
   const start = new Date(date + "T00:00:00.000Z");
   const end = new Date(date + "T23:59:59.999Z");
 
@@ -466,7 +476,7 @@ export async function runTradeAudit(opts: {
   const symbolCandles: Record<string, HistoricalCandle[]> = {};
   for (const sym of symbols) {
     try {
-      const result = await getIntradayCandles(sym as any, date, "5minute");
+      const result = await dataProvider.getIntradayCandles(sym as any, "5minute", date);
       symbolCandles[sym] = result.candles || [];
     } catch (e: any) {
       console.warn(`[Audit] Failed to fetch Breeze candles for ${sym}:`, e.message);
@@ -631,6 +641,7 @@ export async function runTradeAudit(opts: {
     stats,
     trades,
     symbols,
+    providerMeta,
     auditedAt: new Date().toISOString(),
   };
 }
