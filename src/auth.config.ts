@@ -1,3 +1,4 @@
+import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
 import Google from "next-auth/providers/google";
 import { NextResponse } from "next/server";
@@ -164,3 +165,8 @@ export const authConfig = {
     },
   },
 } satisfies NextAuthConfig;
+
+// Edge-safe Auth.js instance (NO Prisma adapter). The proxy runs in the
+// Edge runtime and must only validate the JWT session — it cannot reach the
+// database. JWT sessions make `auth.user` readable here without a DB query.
+export const { auth } = NextAuth(authConfig);
