@@ -115,7 +115,7 @@ function toSDMOptionStrike(chain: OptionLeg[]): SDMOptionStrike[] {
 // Reused here as the production implementation per the Architecture Guardian
 // (no import of the deprecated module) and validation requirement #2 — it is
 // the only FVG/Order-Block logic in the repository.
-function detectFVG(candles: Candle[]): SmcEvent[] {
+export function detectFVG(candles: Candle[]): SmcEvent[] {
   const out: SmcEvent[] = [];
   for (let i = 1; i < candles.length - 1; i++) {
     const prev = candles[i - 1];
@@ -130,7 +130,7 @@ function detectFVG(candles: Candle[]): SmcEvent[] {
   return out;
 }
 
-function detectOrderBlocks(candles: Candle[]): SmcEvent[] {
+export function detectOrderBlocks(candles: Candle[]): SmcEvent[] {
   const out: SmcEvent[] = [];
   for (let i = 1; i < candles.length - 1; i++) {
     const prev = candles[i - 1];

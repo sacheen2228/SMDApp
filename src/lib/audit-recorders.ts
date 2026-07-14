@@ -33,6 +33,10 @@ export interface AuditOptionCandidate {
   strike: number;
   type: "CE" | "PE";
   entry: number;
+  sl?: number;
+  tp1?: number;
+  tp2?: number;
+  tp3?: number;
   rr?: number; // risk:reward (default 2)
   conf: number; // 0-100
   reason?: string;
@@ -57,9 +61,10 @@ export async function recordOptionSignals(
     const rr = c.rr ?? 2;
     const isCE = c.type === "CE";
     const entry = c.entry;
-    const sl = isCE ? entry * (1 - slPct) : entry * (1 + slPct);
-    const tp1 = isCE ? entry * (1 + slPct) : entry * (1 - slPct);
-    const tp2 = isCE ? entry * (1 + slPct * rr) : entry * (1 - slPct * rr);
+    const sl = c.sl ?? (isCE ? entry * (1 - slPct) : entry * (1 + slPct));
+    const tp1 = c.tp1 ?? (isCE ? entry * (1 + slPct) : entry * (1 - slPct));
+    const tp2 = c.tp2 ?? (isCE ? entry * (1 + slPct * rr) : entry * (1 - slPct * rr));
+    const tp3 = c.tp3;
 
     const ok = await recordSignal({
       tradeId: `${strategyId}-${symbol}-${c.strike}-${c.type}-${ymd}`,
@@ -68,13 +73,14 @@ export async function recordOptionSignals(
       symbol,
       exchange: "NSE",
       instrumentType: "OPTIONS",
-      spotPrice: entry,
+      spotPrice: c.price ?? entry,
       strikePrice: c.strike,
       optionType: c.type,
       entryPrice: entry,
       stopLoss: Math.round(sl * 100) / 100,
       tp1: Math.round(tp1 * 100) / 100,
       tp2: Math.round(tp2 * 100) / 100,
+      tp3: tp3 != null ? Math.round(tp3 * 100) / 100 : undefined,
       signalConfidence: Math.round(c.conf),
       trendDirection: isCE ? "BULLISH" : "BEARISH",
       signalReason: c.reason ?? `${strategyId} candidate`,

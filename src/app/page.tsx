@@ -447,9 +447,9 @@ export default function TradingDashboard() {
 
   // Max OI for heat map
   const chainData = useMemo(() => {
-    if (Array.isArray(data?.data?.data)) return data.data.data;
+    if (Array.isArray(data?.data)) return data.data;
     return [];
-  }, [data?.data?.data]);
+  }, [data?.data]);
 
   // Market session info
   const marketSession = useMemo(() => getCurrentSession(), []);

@@ -35,9 +35,10 @@ import cron from "node-cron";
 import { sendDailyDigest } from "../src/lib/sendDailyDigest";
 import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
+import { isTelegramSendWindow } from "../src/lib/marketHours";
 
 const TIMEZONE = "Asia/Kolkata";
-const DAILY_SCHEDULE = "20 9 * * 1-5";        // 9:20am, Mon-Fri — the morning digest
+const DAILY_SCHEDULE = "10 9 * * 1-5";        // 9:10am, Mon-Fri — the morning digest (within 09:10-15:20 window)
 const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm window
                                                  // (sendIntradayAlerts() itself checks the
                                                  //  precise 9:15-15:30 market-hours boundary)
@@ -52,6 +53,10 @@ console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (
 cron.schedule(
   DAILY_SCHEDULE,
   async () => {
+    if (!isTelegramSendWindow()) {
+      console.log("[dailyScanCron] skipping digest — outside 09:10-15:20 IST window");
+      return;
+    }
     console.log("[dailyScanCron] running morning digest...");
     try {
       const result = await sendDailyDigest();
