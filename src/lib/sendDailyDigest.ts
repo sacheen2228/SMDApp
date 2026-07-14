@@ -9,6 +9,7 @@ import { formatDailyDigest } from "./dailyDigest";
 import { sendTelegramMessage } from "./telegramSend";
 import { ALL_SYMBOLS } from "./stockUniverse";
 import { fetchNewsSentiment } from "./newsSentimentAdapter";
+import { isTelegramSendWindow } from "./marketHours";
 import type { OptionChainRow } from "./tradeAlertEngine";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
@@ -54,6 +55,12 @@ const DIGEST_CHAT_IDS = (process.env.TELEGRAM_DIGEST_CHAT_IDS ?? "")
   .filter(Boolean);
 
 export async function sendDailyDigest(): Promise<{ sent: boolean; pickCount: number }> {
+  if (!isTelegramSendWindow()) {
+    console.error(
+      "[sendDailyDigest] outside 09:10-15:20 IST (Mon-Fri) — skipping send"
+    );
+    return { sent: false, pickCount: 0 };
+  }
   if (DIGEST_CHAT_IDS.length === 0) {
     console.error("[sendDailyDigest] TELEGRAM_DIGEST_CHAT_IDS not set — nowhere to send");
     return { sent: false, pickCount: 0 };

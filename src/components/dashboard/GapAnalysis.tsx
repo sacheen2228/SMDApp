@@ -1,5 +1,3 @@
-// Gap Analysis Tab - Indian F&O Market Dashboard
-
 "use client";
 
 import { useMemo, memo, useState, useEffect } from "react";
@@ -7,20 +5,13 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import {
-  Target,
-  Shield,
-  BarChart3,
-  Activity,
-  Zap,
-  ArrowUp,
-  ArrowDown,
-  Minus,
-  AlertTriangle,
-  Clock,
-  Layers,
-  TrendingUp,
-  TrendingDown,
+  Target, Shield, BarChart3, Activity, Zap, ArrowUp, ArrowDown,
+  Minus, AlertTriangle, Clock, Layers, TrendingUp, TrendingDown,
+  Info, ChevronDown, ChevronUp,
 } from "lucide-react";
+import { predictGap } from "@/lib/gap-analysis/gap-engine";
+import { DEFAULT_WEIGHTS } from "@/lib/gap-analysis/types";
+import type { GapInput, GapPrediction } from "@/lib/gap-analysis/types";
 
 interface GapAnalysisProps {
   analysis: any;
@@ -31,188 +22,138 @@ interface GapAnalysisProps {
   chainData?: any[];
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────
-function fmt(n: number): string {
-  if (Math.abs(n) >= 100000) return (n / 1000).toFixed(1) + "K";
-  return n.toFixed(0);
-}
-
 function fmtFull(n: number): string {
   if (!n || isNaN(n)) return "0";
   return Math.round(n).toLocaleString("en-IN");
 }
 
-// ─── Pivot Points ─────────────────────────────────────────────────
 function computePivots(spot: number) {
   const range = spot * 0.012;
   return {
-    r3: spot + range * 3,
-    r2: spot + range * 2,
-    r1: spot + range,
+    r3: spot + range * 3, r2: spot + range * 2, r1: spot + range,
     pivot: spot,
-    s1: spot - range,
-    s2: spot - range * 2,
-    s3: spot - range * 3,
+    s1: spot - range, s2: spot - range * 2, s3: spot - range * 3,
   };
 }
 
-// ─── Gap Prediction Engine ────────────────────────────────────────
-function predictGap(analysis: any, spot: number, pcr: number, vix: number | undefined) {
-  let upScore = 50;
-  const factors: { factor: string; impact: "bullish" | "bearish" | "neutral"; pts: number }[] = [];
+const factorColors: Record<string, string> = {
+  "Gift Nifty": "text-blue-400",
+  "Futures Premium": "text-cyan-400",
+  "PCR OI": "text-violet-400",
+  "OI Buildup": "text-fuchsia-400",
+  "Max Pain": "text-amber-400",
+  "VWAP": "text-emerald-400",
+  "ATR": "text-orange-400",
+  "India VIX": "text-red-400",
+  "Breadth": "text-pink-400",
+  "Global Cues": "text-sky-400",
+  "Expected Move": "text-teal-400",
+  "Historical Stats": "text-gray-400",
+};
 
-  if (pcr > 1.2) { upScore += 12; factors.push({ factor: `PCR ${pcr.toFixed(2)} — bullish`, impact: "bullish", pts: 12 }); }
-  else if (pcr < 0.8) { upScore -= 12; factors.push({ factor: `PCR ${pcr.toFixed(2)} — bearish`, impact: "bearish", pts: -12 }); }
-  else { factors.push({ factor: `PCR ${pcr.toFixed(2)} — neutral`, impact: "neutral", pts: 0 }); }
-
-  if (typeof vix === 'number') {
-    if (vix > 18) { upScore += 3; factors.push({ factor: `VIX ${vix.toFixed(1)} — elevated vol`, impact: "neutral", pts: 3 }); }
-    else if (vix < 12) { upScore -= 2; factors.push({ factor: `VIX ${vix.toFixed(1)} — low vol`, impact: "neutral", pts: -2 }); }
-    else { factors.push({ factor: `VIX ${vix.toFixed(1)} — normal vol`, impact: "neutral", pts: 0 }); }
-  } else {
-    factors.push({ factor: "VIX data unavailable — excluded from model", impact: "neutral", pts: 0 });
-  }
-
-  const rec = analysis?.recommendation;
-  if (rec?.oibuildup === "long-buildup") { upScore += 10; factors.push({ factor: "OI buildup bullish", impact: "bullish", pts: 10 }); }
-  else if (rec?.oibuildup === "short-buildup") { upScore -= 10; factors.push({ factor: "OI buildup bearish", impact: "bearish", pts: -10 }); }
-
-  const maxPain = analysis?.maxPain || spot;
-  if (spot < maxPain) { upScore += 5; factors.push({ factor: "Spot below Max Pain — pull up likely", impact: "bullish", pts: 5 }); }
-  else if (spot > maxPain) { upScore -= 5; factors.push({ factor: "Spot above Max Pain — pull down likely", impact: "bearish", pts: -5 }); }
-
-  if (analysis?.sentiment === "bullish") { upScore += 8; factors.push({ factor: "Overall sentiment bullish", impact: "bullish", pts: 8 }); }
-  else if (analysis?.sentiment === "bearish") { upScore -= 8; factors.push({ factor: "Overall sentiment bearish", impact: "bearish", pts: -8 }); }
-
-  upScore = Math.max(10, Math.min(90, upScore));
-  const downScore = Math.max(5, Math.min(80, 100 - upScore - 10));
-  const flatScore = Math.max(5, 100 - upScore - downScore);
-
-  const avgGapUp = Math.round(20 + (vix ?? 0) * 2.5);
-  const avgGapDown = Math.round(15 + (vix ?? 0) * 2);
-
-  return { upScore, downScore, flatScore, factors, avgGapUp, avgGapDown };
+function buildGapInput(
+  analysis: any, summary: any | undefined,
+  spotPrice: number, giftNifty: any,
+): GapInput {
+  const pcr = analysis?.pcr ?? summary?.pcr ?? null;
+  return {
+    prevClose: typeof summary?.prevClose === "number" ? summary.prevClose : null,
+    currentSpot: spotPrice || null,
+    currentFutures: analysis?.futuresPrice ?? summary?.futuresPrice ?? null,
+    giftNiftyPrice: giftNifty?.price ?? null,
+    giftNiftyPrevClose: giftNifty?.previousClose ?? null,
+    indiaVIX: typeof summary?.indiaVIX === "number" ? summary.indiaVIX : null,
+    pcrOI: pcr,
+    pcrVolume: summary?.pcrVolume ?? null,
+    maxPain: analysis?.maxPain ?? summary?.maxPain ?? null,
+    ceOIChange: analysis?.ceOIChg ?? summary?.callOiChange ?? null,
+    peOIChange: analysis?.peOIChg ?? summary?.putOiChange ?? null,
+    optionIV: summary?.iv ?? null,
+    futuresPremium: analysis?.futuresPremium ?? summary?.futuresPremium ?? null,
+    breadth: summary?.breadth ?? null,
+    atr: summary?.atr ?? null,
+    vwapDistance: summary?.vwapDistance ?? null,
+    fiiNet: summary?.fiiNet ?? null,
+    diiNet: summary?.diiNet ?? null,
+    usMarketChange: summary?.usMarketChange ?? null,
+    asianMarketChange: summary?.asianMarketChange ?? null,
+    usdinr: summary?.usdinr ?? null,
+    crudeChange: summary?.crudeChange ?? null,
+    newsRiskScore: summary?.newsRiskScore ?? null,
+    economicCalendarRisk: summary?.economicRisk ?? null,
+    historicalGapUpPct: null,
+    historicalGapDownPct: null,
+    historicalGapStats: null,
+    timestamp: new Date().toISOString(),
+    symbol: "NIFTY",
+  };
 }
 
-// ─── Gap Trading Setups ───────────────────────────────────────────
-function computeSetups(spot: number, maxPain: number, vix: number | undefined) {
-  const atm = Math.round(spot / 50) * 50;
-
-  return [
-    {
-      name: "Gap Up > 50 pts",
-      color: "emerald" as const,
-      action: `Buy ${atm} PE`,
-      entry: `~₹${Math.round((vix ?? 0) * 0.5 + 40)}`,
-      sl: `${atm + 50}`,
-      target: `${atm - 50}`,
-      rr: "1:2",
-      note: "Fade the gap at resistance",
-    },
-    {
-      name: "Gap Up 20-50 pts",
-      color: "yellow" as const,
-      action: `Wait for confirmation`,
-      entry: "—",
-      sl: "—",
-      target: "—",
-      rr: "—",
-      note: "Watch for 15-min candle close",
-    },
-    {
-      name: "Gap Down > 50 pts",
-      color: "red" as const,
-      action: `Buy ${atm} CE`,
-      entry: `~₹${Math.round((vix ?? 0) * 0.5 + 35)}`,
-      sl: `${atm - 50}`,
-      target: `${atm + 50}`,
-      rr: "1:2",
-      note: "Buy the dip at support",
-    },
-    {
-      name: "Gap Down 20-50 pts",
-      color: "orange" as const,
-      action: `Wait for confirmation`,
-      entry: "—",
-      sl: "—",
-      target: "—",
-      rr: "—",
-      note: "Watch for 15-min candle close",
-    },
-  ];
-}
-
-// ─── OI Heatmap Data ──────────────────────────────────────────────
-function buildHeatmapData(chainData: any[] | undefined, spot: number) {
-  if (!chainData?.length) return [];
-  const atm = Math.round(spot / 50) * 50;
-  return chainData
-    .filter((s) => Math.abs(s.strike - atm) <= 250)
-    .map((s) => ({
-      strike: s.strike,
-      ceOiChg: s.ce?.oiChg ?? 0,
-      peOiChg: s.pe?.oiChg ?? 0,
-      net: (s.pe?.oiChg ?? 0) - (s.ce?.oiChg ?? 0),
-      isATM: s.strike === atm,
-    }));
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// MAIN COMPONENT
-// ═══════════════════════════════════════════════════════════════════
 export const GapAnalysis = memo(function GapAnalysis({
-  analysis,
-  summary,
-  spotPrice,
-  symbol,
-  expiryDate,
-  chainData,
+  analysis, summary, spotPrice, symbol, expiryDate, chainData,
 }: GapAnalysisProps) {
-  // Use summary as primary source (available immediately), analysis as enrichment.
-  // VIX / prevClose are taken ONLY from the live feed — we never fabricate them,
-  // so when the upstream feed is unavailable they stay undefined and render as "—".
-  const pcr = analysis?.pcr ?? summary?.pcr ?? 0;
-  const vix = (typeof summary?.indiaVIX === 'number' ? summary.indiaVIX : undefined);
-  const maxPain = analysis?.maxPain ?? (typeof summary?.maxPain === 'number' ? summary.maxPain : undefined);
-  const ceOI = analysis?.totalCallOI ?? summary?.totalCallOI ?? 0;
-  const peOI = analysis?.totalPutOI ?? summary?.totalPutOI ?? 0;
-  const prevClose = (typeof summary?.prevClose === 'number' ? summary.prevClose : undefined);
-  const vixLive = summary?.vixLive ?? false;
-  const prevCloseLive = summary?.prevCloseLive ?? false;
+  const [giftNifty, setGiftNifty] = useState<any>(null);
+  const [showFactors, setShowFactors] = useState(true);
 
-  const [giftNifty, setGiftNifty] = useState<{ price: number; change: number; changePct: number; previousClose: number; source?: string } | null>(null);
   useEffect(() => {
-    fetch(`/api/gift-nifty?spot=${spotPrice}`).then(r => r.json()).then(d => { if (d.success) setGiftNifty(d); }).catch(() => {});
+    fetch(`/api/gift-nifty?spot=${spotPrice}`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setGiftNifty(d); })
+      .catch(() => {});
   }, [spotPrice]);
 
-  const giftSignal = giftNifty ? (() => {
-    const diff = prevClose != null ? giftNifty.price - prevClose : NaN;
-    const isLive = giftNifty.source === "live";
-    if (prevClose == null) return { icon: Activity, label: "Prev Close Unavailable", text: `Live prev close not fetched — gap vs prev close hidden`, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30" };
-    if (isLive && diff > 50) return { icon: TrendingUp, label: "Bullish Gap Likely", text: `Gift Nifty +${diff.toFixed(0)} pts above prev close`, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30" };
-    if (isLive && diff < -50) return { icon: TrendingDown, label: "Bearish Gap Likely", text: `Gift Nifty ${diff.toFixed(0)} pts below prev close`, color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30" };
-    if (isLive) return { icon: Minus, label: "Flat Open Expected", text: `Gift Nifty ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-muted-foreground", bg: "bg-muted/20", border: "border-border" };
-    return { icon: Activity, label: "Tracking Spot", text: `Day change ${diff > 0 ? "+" : ""}${diff.toFixed(0)} pts from prev close`, color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30" };
-  })() : null;
+  const gapInput = useMemo(
+    () => buildGapInput(analysis, summary, spotPrice, giftNifty),
+    [analysis, summary, spotPrice, giftNifty],
+  );
 
-  const giftHasGap = giftNifty != null && prevClose != null;
-  const giftNiftyColor = giftHasGap
-    ? ((giftNifty!.price - prevClose!) > 0 ? "text-emerald-500" : (giftNifty!.price - prevClose!) < 0 ? "text-red-500" : "")
-    : "text-muted-foreground";
-  const giftNiftySub = giftHasGap
-    ? `${(giftNifty!.price - prevClose!) > 0 ? "+" : ""}${(giftNifty!.price - prevClose!).toFixed(0)} pts`
-    : (giftNifty ? "no prev close" : "");
-  const giftGapPts = giftHasGap ? giftNifty!.price - prevClose! : null;
-  const giftPrevCloseStr = prevClose != null ? fmtFull(prevClose) : "—";
+  const gapResult: GapPrediction = useMemo(
+    () => predictGap(gapInput, DEFAULT_WEIGHTS),
+    [gapInput],
+  );
 
+  const pcr = analysis?.pcr ?? summary?.pcr ?? 0;
+  const vixLive = summary?.vixLive ?? false;
+  const prevClose = typeof summary?.prevClose === "number" ? summary.prevClose : null;
+  const maxPain = analysis?.maxPain ?? summary?.maxPain ?? null;
+  const ceOI = analysis?.totalCallOI ?? summary?.totalCallOI ?? 0;
+  const peOI = analysis?.totalPutOI ?? summary?.totalPutOI ?? 0;
   const pivots = useMemo(() => computePivots(spotPrice), [spotPrice]);
-  const gap = useMemo(() => predictGap(analysis, spotPrice, pcr, vix), [analysis, spotPrice, pcr, vix]);
-  const setups = useMemo(() => computeSetups(spotPrice, maxPain, vix), [spotPrice, maxPain, vix]);
-  const heatmap = useMemo(() => buildHeatmapData(chainData, spotPrice), [chainData, spotPrice]);
   const rec = analysis?.recommendation;
-
   const oiTotal = ceOI + peOI || 1;
   const cePct = ceOI / oiTotal;
+  const expectedMovePts = gapInput.indiaVIX != null && spotPrice > 0
+    ? Math.round(spotPrice * gapInput.indiaVIX / 100 * Math.sqrt(4 / 365))
+    : null;
+
+  const predColor = gapResult.prediction === "UP" ? "text-emerald-400" 
+    : gapResult.prediction === "DOWN" ? "text-red-400" 
+    : "text-yellow-400";
+
+  // Direction categories for factor breakdown
+  const bullFactors = gapResult.factors.filter(f => f.score > 0);
+  const bearFactors = gapResult.factors.filter(f => f.score < 0);
+  const neutralFactors = gapResult.factors.filter(f => f.score === 0);
+
+  // Heatmap
+  const heatmap = useMemo(() => {
+    if (!chainData?.length) return [];
+    const atm = Math.round(spotPrice / 50) * 50;
+    return chainData
+      .filter((s: any) => Math.abs(s.strike - atm) <= 250)
+      .map((s: any) => ({
+        strike: s.strike,
+        ceOiChg: s.ce?.oiChg ?? 0,
+        peOiChg: s.pe?.oiChg ?? 0,
+        net: (s.pe?.oiChg ?? 0) - (s.ce?.oiChg ?? 0),
+        isATM: s.strike === atm,
+      }));
+  }, [chainData, spotPrice]);
+
+  function fmt(n: number): string {
+    if (Math.abs(n) >= 100000) return (n / 1000).toFixed(1) + "K";
+    return n.toFixed(0);
+  }
 
   return (
     <div className="h-full overflow-auto">
@@ -223,44 +164,30 @@ export const GapAnalysis = memo(function GapAnalysis({
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center shadow-lg shadow-purple-500/25">
               <Zap className="h-5 w-5 text-white" />
             </div>
-            <h1 className="text-2xl font-black tracking-tight">GAP ANALYSIS</h1>
+            <h1 className="text-2xl font-black tracking-tight">GAP INTELLIGENCE</h1>
           </div>
-          <p className="text-xs text-muted-foreground">Next-Day Gap Prediction & Trading Setups</p>
+          <p className="text-xs text-muted-foreground">Institutional 12-Factor Gap Engine — Factor Breakdown Below</p>
         </div>
 
-        {/* ═══════ TOP METRICS BAR ═══════ */}
-        <div className="grid grid-cols-7 gap-2">
+        {/* ═══════ TOP METRICS BAR (13 columns) ═══════ */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-13 gap-1.5">
           <MetricPill label="Spot" value={fmtFull(spotPrice)} />
-          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"} color={giftNiftyColor} sub={giftNiftySub} />
+          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"}
+            color={giftNifty ? (giftNifty.price > (prevClose || 0) ? "text-emerald-500" : giftNifty.price < (prevClose || 0) ? "text-red-500" : "") : "text-muted-foreground"}
+            sub={giftNifty && prevClose ? `${giftNifty.price - prevClose > 0 ? "+" : ""}${(giftNifty.price - prevClose).toFixed(0)}` : ""} />
           <MetricPill label="PCR" value={pcr.toFixed(2)} color={pcr > 1.2 ? "text-emerald-500" : pcr < 0.8 ? "text-red-500" : ""} />
-          <MetricPill label="VIX" value={vix != null ? vix.toFixed(1) : "—"} sub={vixLive ? "live" : "no feed"} color={vixLive ? "text-violet-400" : "text-muted-foreground"} />
+          <MetricPill label="VIX" value={gapInput.indiaVIX != null ? gapInput.indiaVIX.toFixed(1) : "—"} color={vixLive ? "text-violet-400" : "text-muted-foreground"} sub={vixLive ? "live" : "no feed"} />
           <MetricPill label="Max Pain" value={maxPain != null ? fmtFull(maxPain) : "—"} color="text-amber-500" />
-          <MetricPill label="CE OI" value={`${(ceOI / 100000).toFixed(1)}L`} color="text-red-500" />
-          <MetricPill label="PE OI" value={`${(peOI / 100000).toFixed(1)}L`} color="text-emerald-500" />
+          <MetricPill label="Sentiment" value={analysis?.sentiment ? analysis.sentiment.toUpperCase() : "—"} color={analysis?.sentiment === "bullish" ? "text-emerald-500" : analysis?.sentiment === "bearish" ? "text-red-500" : "text-muted-foreground"} />
+          <MetricPill label="Expected Move" value={expectedMovePts != null ? `±${expectedMovePts} pts` : "—"} color="text-teal-400" />
+          <MetricPill label="OI Bias" value={`${peOI > ceOI ? "BULL" : ceOI > peOI ? "BEAR" : "NEUTRAL"}`}
+            color={peOI > ceOI ? "text-emerald-500" : ceOI > peOI ? "text-red-500" : "text-muted-foreground"} />
         </div>
-        {(vix == null || prevClose == null || maxPain == null) && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-400/90">
-            Live feed note: {[
-              !vixLive && "VIX not fetched from live source",
-              !prevCloseLive && "Previous close not fetched from live source",
-              maxPain == null && "Max Pain unavailable (no option chain)",
-            ].filter(Boolean).join(" · ")}. These fields show “—” rather than fabricated values.
-          </div>
-        )}
 
-        {/* ═══════ GIFT NIFTY SIGNAL ═══════ */}
-        {giftSignal && (
-          <div className={`flex items-center justify-between rounded-lg border ${giftSignal.bg} ${giftSignal.border} px-4 py-2.5`}>
-            <div className="flex items-center gap-3">
-              <giftSignal.icon className={`w-5 h-5 ${giftSignal.color}`} />
-              <span className={`font-bold ${giftSignal.color}`}>{giftSignal.label}</span>
-              <span className="text-xs text-muted-foreground">{giftSignal.text}</span>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {giftNifty?.source === "estimated" && <span className="text-[10px] text-amber-500 font-medium">estimated</span>}
-              <span>Gap: <span className={giftGapPts != null ? (giftGapPts > 0 ? "text-emerald-500 font-bold" : giftGapPts < 0 ? "text-red-500 font-bold" : "") : ""}>{giftGapPts != null ? `${giftGapPts > 0 ? "+" : ""}${giftGapPts.toFixed(0)} pts` : "—"}</span></span>
-              <span>Prev Close: {giftPrevCloseStr}</span>
-            </div>
+        {gapResult.insufficientData && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-400/90">
+            Insufficient data for prediction. Missing: {gapResult.missingFields.join(", ")}.
+            Showing factor diagnostics without a final prediction.
           </div>
         )}
 
@@ -277,17 +204,11 @@ export const GapAnalysis = memo(function GapAnalysis({
                   <span className="text-sm text-muted-foreground">Strike</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <p className="text-muted-foreground">Entry Premium</p>
-                    <p className="font-bold">{rec?.entryPrice ? `₹${rec.entryPrice.toFixed(1)}` : "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">IV Level</p>
-                    <p className="font-bold">{vix != null ? `${vix.toFixed(1)}%` : "—"}</p>
-                  </div>
+                  <div><p className="text-muted-foreground">Entry Premium</p><p className="font-bold">{rec?.entryPrice ? `₹${rec.entryPrice.toFixed(1)}` : "—"}</p></div>
+                  <div><p className="text-muted-foreground">VIX Level</p><p className="font-bold">{gapInput.indiaVIX != null ? `${gapInput.indiaVIX.toFixed(1)}%` : "—"}</p></div>
                 </div>
                 <p className="text-[10px] text-muted-foreground">
-                  {vix == null ? "Live VIX unavailable — IV level not shown" : vix > 20 ? "IV elevated — premium selling favorable" : vix < 12 ? "IV low — options cheap, buying favorable" : "IV in normal range"}
+                  {gapInput.indiaVIX == null ? "Live VIX unavailable" : gapInput.indiaVIX > 20 ? "VIX elevated — premium selling favorable" : gapInput.indiaVIX < 12 ? "VIX low — options cheap" : "VIX in normal range"}
                 </p>
               </CardContent>
             </Card>
@@ -317,9 +238,7 @@ export const GapAnalysis = memo(function GapAnalysis({
                   const dist = ((val - spotPrice) / spotPrice * 100);
                   return (
                     <div key={level} className={`flex items-center justify-between text-xs ${isPivot ? "border-t border-border pt-1 font-bold" : ""}`}>
-                      <span className={`w-12 ${isRes ? "text-emerald-500" : isPivot ? "text-primary" : "text-red-500"}`}>
-                        {level.toUpperCase()}
-                      </span>
+                      <span className={`w-12 ${isRes ? "text-emerald-500" : isPivot ? "text-primary" : "text-red-500"}`}>{level.toUpperCase()}</span>
                       <span className="tabular-nums font-mono">{fmtFull(val)}</span>
                       <span className={`w-16 text-right text-[10px] ${dist > 0 ? "text-emerald-500" : dist < 0 ? "text-red-500" : ""}`}>
                         {dist > 0 ? "+" : ""}{dist.toFixed(2)}%
@@ -334,47 +253,142 @@ export const GapAnalysis = memo(function GapAnalysis({
             <Card className="border-border/50">
               <CardContent className="p-3 space-y-2">
                 <CardTitle icon={<Activity className="w-3.5 h-3.5 text-rose-500" />} text="Market Mood" />
-                <MoodGauge pcr={pcr} vix={vix} />
+                <MoodGauge pcr={pcr} vix={gapInput.indiaVIX} />
               </CardContent>
             </Card>
           </div>
 
           {/* ─── CENTER: Gap Prediction ─── */}
           <div className="space-y-4">
-            {/* Gap Prediction */}
+            {/* Gap Prediction Card */}
             <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-violet-500/5">
               <CardContent className="p-4 space-y-3">
-                <CardTitle icon={<Zap className="w-3.5 h-3.5 text-purple-500" />} text="Tomorrow Gap Prediction" />
+                <div className="flex items-center justify-between">
+                  <CardTitle icon={<Zap className="w-3.5 h-3.5 text-purple-500" />} text="Institutional Gap Prediction" />
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Info className="w-3 h-3" />
+                    {gapResult.confidenceCapped ? "Confidence capped" : "Raw confidence"}
+                  </div>
+                </div>
+
+                {/* Prediction Badge */}
                 <div className="text-center">
-                  <Badge variant="outline" className="text-purple-500 border-purple-500/30 mb-2">AI Engine</Badge>
+                  <Badge variant="outline" className={`${predColor} border-current text-xs px-3 py-1`}>
+                    {gapResult.insufficientData ? "INSUFFICIENT DATA" : gapResult.prediction === "UP" ? "GAP UP ▲" : gapResult.prediction === "DOWN" ? "GAP DOWN ▼" : "FLAT —"}
+                  </Badge>
+                  <div className="mt-2 flex items-center justify-center gap-4 text-xs text-muted-foreground">
+                    <span>Bull Score: <span className="text-emerald-400 font-bold">{gapResult.bullScore}</span></span>
+                    <span>Bear Score: <span className="text-red-400 font-bold">{gapResult.bearScore}</span></span>
+                  </div>
                 </div>
 
                 {/* Probability bars */}
                 <div className="space-y-2">
-                  <GapBar label="Gap Up" pct={gap.upScore} color="bg-emerald-500" icon={<ArrowUp className="w-3 h-3" />} />
-                  <GapBar label="Gap Down" pct={gap.downScore} color="bg-red-500" icon={<ArrowDown className="w-3 h-3" />} />
-                  <GapBar label="Flat" pct={gap.flatScore} color="bg-muted-foreground" icon={<Minus className="w-3 h-3" />} />
+                  <GapBar label="Gap Up" pct={gapResult.probability} color="bg-emerald-500" icon={<ArrowUp className="w-3 h-3" />}
+                    act={gapResult.prediction === "UP"} />
+                  <GapBar label="Gap Down" pct={100 - gapResult.probability > 50 ? 100 - gapResult.probability : 50}
+                    color="bg-red-500" icon={<ArrowDown className="w-3 h-3" />}
+                    act={gapResult.prediction === "DOWN"} />
+                  <GapBar label="Neutral" pct={gapResult.prediction === "FLAT" ? gapResult.probability : Math.max(5, 100 - gapResult.probability - (100 - gapResult.probability > 50 ? 100 - gapResult.probability : 50))}
+                    color="bg-yellow-500" icon={<Minus className="w-3 h-3" />}
+                    act={gapResult.prediction === "FLAT"} />
+                </div>
+
+                {/* Confidence */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Confidence</span>
+                    <span className={`font-bold tabular-nums ${gapResult.confidence >= 70 ? "text-emerald-400" : gapResult.confidence >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                      {gapResult.confidence}%
+                      {gapResult.confidenceCapped && <span className="text-[9px] text-muted-foreground ml-1">(capped at {gapResult.maxConfidence})</span>}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-muted/50 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${
+                      gapResult.confidence >= 70 ? "bg-emerald-500" 
+                      : gapResult.confidence >= 50 ? "bg-yellow-500" 
+                      : "bg-red-500"
+                    }`} style={{ width: `${gapResult.confidence}%` }} />
+                  </div>
                 </div>
 
                 <Separator />
 
-                {/* Key Factors */}
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Key Factors</p>
-                  {gap.factors.slice(0, 5).map((f, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs">
-                      <span className="flex items-center gap-1.5">
-                        <span className={`w-1.5 h-1.5 rounded-full ${f.impact === "bullish" ? "bg-emerald-500" : f.impact === "bearish" ? "bg-red-500" : "bg-yellow-500"}`} />
-                        <span className="text-muted-foreground">{f.factor}</span>
-                      </span>
-                    </div>
-                  ))}
+                {/* Quick Factor Summary */}
+                <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
+                  <div className="rounded bg-emerald-500/10 p-1.5">
+                    <p className="text-emerald-400 font-bold">{bullFactors.length}</p>
+                    <p className="text-muted-foreground">Bullish</p>
+                  </div>
+                  <div className="rounded bg-red-500/10 p-1.5">
+                    <p className="text-red-400 font-bold">{bearFactors.length}</p>
+                    <p className="text-muted-foreground">Bearish</p>
+                  </div>
+                  <div className="rounded bg-muted/20 p-1.5">
+                    <p className="text-muted-foreground font-bold">{neutralFactors.length}</p>
+                    <p className="text-muted-foreground">Neutral</p>
+                  </div>
                 </div>
+              </CardContent>
+            </Card>
 
-                <div className="flex items-center justify-between text-xs text-muted-foreground pt-1 border-t border-border/50">
-                  <span>Avg Gap Up: +{gap.avgGapUp} pts</span>
-                  <span>Avg Gap Down: -{gap.avgGapDown} pts</span>
-                </div>
+            {/* Factor Breakdown Table */}
+            <Card className="border-border/50">
+              <CardContent className="p-3 space-y-2">
+                <button
+                  className="flex items-center justify-between w-full"
+                  onClick={() => setShowFactors(!showFactors)}
+                >
+                  <CardTitle icon={<Info className="w-3.5 h-3.5 text-blue-500" />} text={`Factor Breakdown (${gapResult.factors.length} factors)`} />
+                  {showFactors ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                </button>
+
+                {showFactors && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="text-muted-foreground border-b border-border/50">
+                          <th className="text-left py-1 pr-2">Factor</th>
+                          <th className="text-right py-1 px-1">Weight</th>
+                          <th className="text-right py-1 px-1">Score</th>
+                          <th className="text-right py-1 px-1">Wtd</th>
+                          <th className="text-left py-1 pl-2">Explanation</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gapResult.factors.map((f, i) => {
+                          const colorClass = f.score > 0 ? "text-emerald-500" : f.score < 0 ? "text-red-500" : "text-muted-foreground";
+                          return (
+                            <tr key={i} className="border-b border-border/20 hover:bg-muted/10">
+                              <td className={`py-1.5 pr-2 font-medium ${factorColors[f.name] || "text-foreground"}`}>
+                                <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${
+                                  f.dataStatus === "AVAILABLE" ? "bg-green-500" 
+                                  : f.dataStatus === "ESTIMATED" ? "bg-yellow-500" 
+                                  : "bg-red-500"
+                                }`} />
+                                {f.name}
+                              </td>
+                              <td className={`py-1.5 px-1 text-right tabular-nums ${f.dataStatus === "MISSING" ? "text-muted-foreground" : ""}`}>
+                                {(f.weight * 100).toFixed(0)}%
+                              </td>
+                              <td className={`py-1.5 px-1 text-right tabular-nums font-mono font-bold ${colorClass}`}>
+                                {f.score > 0 ? "+" : ""}{f.score}
+                              </td>
+                              <td className={`py-1.5 px-1 text-right tabular-nums font-mono ${colorClass}`}>
+                                {f.weightedScore > 0 ? "+" : ""}{f.weightedScore.toFixed(1)}
+                              </td>
+                              <td className={`py-1.5 pl-2 text-[9px] leading-tight ${
+                                f.dataStatus === "MISSING" ? "text-muted-foreground italic" : "text-muted-foreground"
+                              }`}>
+                                {f.explanation}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -396,7 +410,7 @@ export const GapAnalysis = memo(function GapAnalysis({
                         </tr>
                       </thead>
                       <tbody>
-                        {heatmap.map((row) => (
+                        {heatmap.map((row: any) => (
                           <tr key={row.strike} className={`border-b border-border/30 ${row.isATM ? "bg-primary/5" : ""}`}>
                             <td className={`py-1 px-1 tabular-nums font-mono ${row.isATM ? "font-bold text-primary" : ""}`}>
                               {fmtFull(row.strike)}
@@ -417,46 +431,18 @@ export const GapAnalysis = memo(function GapAnalysis({
                     </table>
                   </div>
                 )}
-                <p className="text-[9px] text-muted-foreground text-center">
-                  Green = PE writing (support) | Red = CE writing (resistance)
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* OI Stacked Bar */}
-            <Card className="border-border/50">
-              <CardContent className="p-3 space-y-2">
-                <CardTitle icon={<Layers className="w-3.5 h-3.5 text-amber-500" />} text="OI Distribution" />
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-red-500 w-12">CE OI</span>
-                    <div className="flex-1 h-4 bg-muted/50 rounded overflow-hidden">
-                      <div className="h-full bg-red-500/60 rounded-l" style={{ width: `${cePct * 100}%` }} />
-                    </div>
-                    <span className="text-[10px] tabular-nums w-12 text-right text-red-500">{(cePct * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-emerald-500 w-12">PE OI</span>
-                    <div className="flex-1 h-4 bg-muted/50 rounded overflow-hidden">
-                      <div className="h-full bg-emerald-500/60 rounded-r ml-auto" style={{ width: `${(1 - cePct) * 100}%` }} />
-                    </div>
-                    <span className="text-[10px] tabular-nums w-12 text-right text-emerald-500">{((1 - cePct) * 100).toFixed(1)}%</span>
-                  </div>
-                </div>
-                <p className="text-[10px] text-muted-foreground text-center">
-                  {peOI > ceOI ? "PE > CE — Bullish sentiment" : "CE > PE — Bearish sentiment"} | PCR: {pcr.toFixed(2)}
-                </p>
+                <p className="text-[9px] text-muted-foreground text-center">Green = PE writing (support) | Red = CE writing (resistance)</p>
               </CardContent>
             </Card>
           </div>
 
-          {/* ─── RIGHT: Gap Trading Setups ─── */}
+          {/* ─── RIGHT: Setups + Reference ─── */}
           <div className="space-y-4">
             {/* Gap Trading Setups */}
             <Card className="border-border/50">
               <CardContent className="p-3 space-y-3">
                 <CardTitle icon={<Shield className="w-3.5 h-3.5 text-amber-500" />} text="Gap Trading Setups" />
-                {setups.map((setup, i) => (
+                {computeSetups(spotPrice, maxPain, gapInput.indiaVIX).map((setup, i) => (
                   <div key={i} className="rounded-lg border border-border/50 p-2.5 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <Badge variant="outline" className={`text-[9px] ${
@@ -472,18 +458,9 @@ export const GapAnalysis = memo(function GapAnalysis({
                     <p className="text-xs font-bold">{setup.action}</p>
                     {setup.entry !== "—" && (
                       <div className="grid grid-cols-3 gap-1 text-[10px]">
-                        <div>
-                          <p className="text-muted-foreground">Entry</p>
-                          <p className="font-medium">{setup.entry}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Stop Loss</p>
-                          <p className="font-medium text-red-500">{setup.sl}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Target</p>
-                          <p className="font-medium text-emerald-500">{setup.target}</p>
-                        </div>
+                        <div><p className="text-muted-foreground">Entry</p><p className="font-medium">{setup.entry}</p></div>
+                        <div><p className="text-muted-foreground">Stop Loss</p><p className="font-medium text-red-500">{setup.sl}</p></div>
+                        <div><p className="text-muted-foreground">Target</p><p className="font-medium text-emerald-500">{setup.target}</p></div>
                       </div>
                     )}
                     <p className="text-[9px] text-muted-foreground italic">{setup.note}</p>
@@ -492,26 +469,21 @@ export const GapAnalysis = memo(function GapAnalysis({
               </CardContent>
             </Card>
 
-            {/* Time to Expiry */}
+            {/* Expiry & Expected Move */}
             <Card className="border-border/50">
               <CardContent className="p-3 space-y-2">
-                <CardTitle icon={<Clock className="w-3.5 h-3.5 text-blue-500" />} text="Expiry Info" />
+                <CardTitle icon={<Clock className="w-3.5 h-3.5 text-blue-500" />} text="Expiry & Expected Move" />
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <p className="text-muted-foreground">Days to Expiry</p>
-                    <p className="font-bold text-lg">{analysis?.expiry?.daysToExpiry ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">Mode</p>
-                    <p className="font-bold">{rec?.riskLevel ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">Theta/Day</p>
-                    <p className="font-bold">{vix != null ? `~₹${(vix * 0.16).toFixed(1)}` : "—"}</p>
-                  </div>
+                  <div><p className="text-muted-foreground">Days to Expiry</p><p className="font-bold text-lg">{analysis?.expiry?.daysToExpiry ?? "—"}</p></div>
+                  <div><p className="text-muted-foreground">Mode</p><p className="font-bold">{rec?.riskLevel ?? "—"}</p></div>
+                  <div><p className="text-muted-foreground">Theta/Day</p><p className="font-bold">{gapInput.indiaVIX != null ? `~₹${(gapInput.indiaVIX * 0.16).toFixed(1)}` : "—"}</p></div>
                   <div>
                     <p className="text-muted-foreground">Expected Move</p>
-                    <p className="font-bold">{vix != null ? `±${Math.round(spotPrice * vix / 100 * Math.sqrt(4 / 365))} pts` : "—"}</p>
+                    <p className="font-bold">
+                      {gapInput.indiaVIX != null && spotPrice > 0
+                        ? `±${Math.round(spotPrice * gapInput.indiaVIX / 100 * Math.sqrt(4 / 365))} pts`
+                        : "—"}
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -522,22 +494,10 @@ export const GapAnalysis = memo(function GapAnalysis({
               <CardContent className="p-3 space-y-2">
                 <CardTitle icon={<AlertTriangle className="w-3.5 h-3.5 text-orange-500" />} text="Quick Reference" />
                 <div className="space-y-1.5 text-[10px]">
-                  <div className="flex items-start gap-2">
-                    <span className="text-emerald-500 mt-0.5">●</span>
-                    <span><strong>Long Buildup:</strong> Price ↑ + OI ↑ = New buying</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-red-500 mt-0.5">●</span>
-                    <span><strong>Short Buildup:</strong> Price ↓ + OI ↑ = New selling</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-amber-500 mt-0.5">●</span>
-                    <span><strong>Short Covering:</strong> Price ↑ + OI ↓ = Shorts exiting</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-blue-500 mt-0.5">●</span>
-                    <span><strong>Long Unwinding:</strong> Price ↓ + OI ↓ = Longs exiting</span>
-                  </div>
+                  <div className="flex items-start gap-2"><span className="text-emerald-500 mt-0.5">●</span><span><strong>Long Buildup:</strong> Price ↑ + OI ↑ = New buying</span></div>
+                  <div className="flex items-start gap-2"><span className="text-red-500 mt-0.5">●</span><span><strong>Short Buildup:</strong> Price ↓ + OI ↑ = New selling</span></div>
+                  <div className="flex items-start gap-2"><span className="text-amber-500 mt-0.5">●</span><span><strong>Short Covering:</strong> Price ↑ + OI ↓ = Shorts exiting</span></div>
+                  <div className="flex items-start gap-2"><span className="text-blue-500 mt-0.5">●</span><span><strong>Long Unwinding:</strong> Price ↓ + OI ↓ = Longs exiting</span></div>
                 </div>
               </CardContent>
             </Card>
@@ -548,9 +508,7 @@ export const GapAnalysis = memo(function GapAnalysis({
   );
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// SUB-COMPONENTS
-// ═══════════════════════════════════════════════════════════════════
+// ─── Sub-Components ─────────────────────────────────────────────
 
 function CardTitle({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
@@ -563,35 +521,35 @@ function CardTitle({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 function MetricPill({ label, value, color, sub }: { label: string; value: string; color?: string; sub?: string }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-card p-2 text-center">
-      <p className="text-[9px] text-muted-foreground uppercase tracking-wider">{label}</p>
-      <p className={`text-sm font-bold tabular-nums ${color ?? ""}`}>{value}</p>
-      {sub && <p className={`text-[9px] ${color ?? "text-muted-foreground"}`}>{sub}</p>}
+    <div className="rounded-lg border border-border/50 bg-card p-2 text-center min-w-0">
+      <p className="text-[9px] text-muted-foreground uppercase tracking-wider truncate">{label}</p>
+      <p className={`text-sm font-bold tabular-nums truncate ${color ?? ""}`}>{value}</p>
+      {sub && <p className={`text-[9px] truncate ${color ?? "text-muted-foreground"}`}>{sub}</p>}
     </div>
   );
 }
 
-function GapBar({ label, pct, color, icon }: { label: string; pct: number; color: string; icon: React.ReactNode }) {
+function GapBar({ label, pct, color, icon, act }: { label: string; pct: number; color: string; icon: React.ReactNode; act?: boolean }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
-        <span className="flex items-center gap-1.5 text-muted-foreground">
+        <span className={`flex items-center gap-1.5 ${act ? "font-bold text-foreground" : "text-muted-foreground"}`}>
           {icon} {label}
         </span>
         <span className="font-bold tabular-nums">{pct}%</span>
       </div>
       <div className="h-2 bg-muted/50 rounded-full overflow-hidden">
-        <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${pct}%`, opacity: 0.7 }} />
+        <div className={`h-full ${color} rounded-full transition-all ${act ? "opacity-100" : "opacity-40"}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
 }
 
-function MoodGauge({ pcr, vix }: { pcr: number; vix: number | undefined }) {
+function MoodGauge({ pcr, vix }: { pcr: number; vix: number | null }) {
   let score = 3;
   if (pcr > 1.3) score += 1;
   else if (pcr < 0.7) score -= 1;
-  if (typeof vix === 'number') {
+  if (typeof vix === "number") {
     if (vix > 20) score -= 1;
     else if (vix < 12) score += 1;
   }
@@ -614,12 +572,8 @@ function MoodGauge({ pcr, vix }: { pcr: number; vix: number | undefined }) {
           <div key={m.s} className="flex flex-col items-center gap-1">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
               m.s === score ? `${m.color} text-white` : "bg-muted/50 text-muted-foreground"
-            }`}>
-              {m.s}
-            </div>
-            <span className={`text-[8px] whitespace-pre-line ${m.s === score ? m.textColor : "text-muted-foreground"}`}>
-              {m.label}
-            </span>
+            }`}>{m.s}</div>
+            <span className={`text-[8px] whitespace-pre-line ${m.s === score ? m.textColor : "text-muted-foreground"}`}>{m.label}</span>
           </div>
         ))}
       </div>
@@ -630,4 +584,34 @@ function MoodGauge({ pcr, vix }: { pcr: number; vix: number | undefined }) {
       </div>
     </div>
   );
+}
+
+function computeSetups(spot: number, maxPain: number | null, vix: number | null) {
+  const atm = Math.round(spot / 50) * 50;
+  const entryUp = vix != null ? `~₹${Math.round(vix * 0.5 + 40)}` : "—";
+  const entryDown = vix != null ? `~₹${Math.round(vix * 0.5 + 35)}` : "—";
+  return [
+    {
+      name: "Gap Up > 50 pts", color: "emerald" as const,
+      action: `Buy ${atm} PE`, entry: entryUp,
+      sl: `${atm + 50}`, target: `${atm - 50}`, rr: "1:2",
+      note: "Fade the gap at resistance",
+    },
+    {
+      name: "Gap Up 20-50 pts", color: "yellow" as const,
+      action: "Wait for confirmation", entry: "—", sl: "—", target: "—", rr: "—",
+      note: "Watch for 15-min candle close",
+    },
+    {
+      name: "Gap Down > 50 pts", color: "red" as const,
+      action: `Buy ${atm} CE`, entry: entryDown,
+      sl: `${atm - 50}`, target: `${atm + 50}`, rr: "1:2",
+      note: "Buy the dip at support",
+    },
+    {
+      name: "Gap Down 20-50 pts", color: "orange" as const,
+      action: "Wait for confirmation", entry: "—", sl: "—", target: "—", rr: "—",
+      note: "Watch for 15-min candle close",
+    },
+  ];
 }

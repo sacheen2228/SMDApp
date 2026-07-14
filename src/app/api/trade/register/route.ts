@@ -36,10 +36,16 @@ export async function POST(req: NextRequest) {
       sl,
       tp1,
       tp2,
+      tp3,
       side = "BUY",
       confidence = 0,
       price,
+      spotPrice,
       snapshotId,
+      positionSize,
+      riskPerTrade,
+      qualityScore,
+      qualityGrade,
     } = body;
 
     if (!strategyId || !symbol || !entry || entry <= 0) {
@@ -64,10 +70,17 @@ export async function POST(req: NextRequest) {
       sl: Number(sl) || Number(entry) * 0.78,
       tp1: Number(tp1) || Number(entry),
       tp2: Number(tp2) || Number(tp1) || Number(entry),
+      tp3: tp3 ? Number(tp3) : undefined,
       status: "ACTIVE",
       sentAt: new Date().toISOString(),
       source: strategyId,
       snapshotId: snapshotId ?? undefined,
+      spotPrice: spotPrice ? Number(spotPrice) : undefined,
+      confidence: confidence ? Number(confidence) : undefined,
+      positionSize: positionSize ? Number(positionSize) : undefined,
+      riskPerTrade: riskPerTrade ? Number(riskPerTrade) : undefined,
+      qualityScore: qualityScore ? Number(qualityScore) : undefined,
+      qualityGrade: qualityGrade || undefined,
     };
 
     await addTrade(trade);

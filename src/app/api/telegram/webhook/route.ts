@@ -16,10 +16,18 @@ import { getHistory, appendTurn } from "@/lib/historyStore";
 import { processMessage } from "@/lib/telegram-bot";
 import type { OptionChainRow } from "@/lib/tradeAlertEngine";
 
+import { isTelegramSendWindow } from "@/lib/marketHours";
+
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 async function sendTelegramMessage(chatId: number, text: string) {
+  // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
+  // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
+  if (!isTelegramSendWindow()) {
+    console.warn("[webhook] outside 09:10-15:20 IST window — suppressed send");
+    return;
+  }
   await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

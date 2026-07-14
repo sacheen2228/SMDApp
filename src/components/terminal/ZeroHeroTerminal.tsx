@@ -12,7 +12,9 @@ import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
+import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
+import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -23,7 +25,7 @@ import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero
 async function registerTrades(
   strategyId: string,
   symbol: string,
-  candidates: { strike: number; type: "CE" | "PE"; entry: number; sl?: number; tp1?: number; tp2?: number; price?: number }[]
+  candidates: any[]
 ): Promise<void> {
   await Promise.all(
     candidates.map((c) =>
@@ -39,7 +41,14 @@ async function registerTrades(
           sl: c.sl,
           tp1: c.tp1,
           tp2: c.tp2,
+          tp3: c.tp3,
           price: c.price ?? c.entry,
+          confidence: c.confidence ?? c.conf,
+          spotPrice: c.spotPrice ?? c.spot,
+          positionSize: c.positionSize?.lots ?? c.positionSize,
+          riskPerTrade: c.riskPerTrade ?? c.riskPerTrade,
+          qualityScore: c.qualityScore,
+          qualityGrade: c.qualityGrade,
         }),
       }).catch(() => {})
     )
@@ -220,6 +229,7 @@ export function ZeroHeroTerminal() {
   const [vix, setVix] = useState(0);
   const [pcr, setPcr] = useState(0);
   const [maxPain, setMaxPain] = useState(0);
+  const [candles, setCandles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -295,6 +305,8 @@ export function ZeroHeroTerminal() {
       setMaxPain(mp);
       setNotAvailable(notAvail);
       setPcr(totalCallOI > 0 ? totalPutOI / totalCallOI : 1);
+      setVix(json.data?.summary?.indiaVIX || 0);
+      setCandles(json.data?.candles || []);
       setLastUpdate(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
       setOpen(isMarketOpen());
       setError(false);
@@ -660,7 +672,7 @@ export function ZeroHeroTerminal() {
             <FullZeroHero candidates={zhCandidates} isEligible={isEligible} symbol={symbol} expiryType={expiryType} openTrade={openTrade} />
           )}
           {activeTab === "smartmoney" && (
-            <SmartMoneyTab flowData={flowData} chain={chain} openTrade={openTrade} symbol={symbol} />
+            <SmartMoneyTab flowData={flowData} chain={chain} spot={spot} vix={vix} pcr={pcr} maxPain={maxPain} candles={candles} openTrade={openTrade} symbol={symbol} setSymbol={setSymbol} />
           )}
           {activeTab === "greeks" && (
             <GreeksTab chain={chain} />
@@ -1209,91 +1221,150 @@ function DOMTab({ symbol }: { symbol: string }) {
 }
 
 // ─── Smart Money Tab ───────────────────────────────────────────────
-function SmartMoneyTab({ flowData, chain, openTrade, symbol }: any) {
-  const hasOiChangeData = chain.some((r: ChainRow) => (Math.abs(r.ce?.oiChg || 0) + Math.abs(r.pe?.oiChg || 0)) > 0);
-  
-  const sorted = [...chain].sort((a, b) => Math.abs(b.ce?.oiChg || 0) + Math.abs(b.pe?.oiChg || 0) - (Math.abs(a.ce?.oiChg || 0) + Math.abs(a.pe?.oiChg || 0))).slice(0, 8);
+function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, openTrade, symbol: activeSymbol, setSymbol }: any) {
+  // ─── SMC Engine results ─────────────────────────────────────────
+  const smcResult = useMemo(() => {
+    if (!chain.length || !spot) return null;
+    try {
+      const sdmChain = chainToSDMStrikes(chain);
+      return runSMCAnalysis({
+        symbol: activeSymbol,
+        spot,
+        optionChain: sdmChain,
+        candles: candles as any[] | undefined,
+        vix: vix || undefined,
+      });
+    } catch {
+      return null;
+    }
+  }, [chain, spot, candles, vix, activeSymbol]);
 
-  // Record unusual-OI Smart Money candidates into the Trade Audit (backtest) engine
+  const smcCandidates = smcResult?.candidates || [];
+  const marketStructure = smcResult?.marketStructure;
+  const analysis = smcResult?.analysis;
+
+  // ─── Render helpers ─────────────────────────────────────────────
+  function renderCandTable() {
+    if (!smcCandidates.length) return null;
+    const h = ["Strike", "Type", "Confidence", "Entry", "SL", "TP1", "TP2", "TP3", "R:R", "Grade", "Sizing"];
+    return (
+      <table className="w-full border-collapse font-mono text-[12px]">
+        <thead>
+          <tr>
+            {h.map(hh => (
+              <th key={hh} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${hh === "Strike" || hh === "Grade" || hh === "Sizing" ? "text-left" : "text-right"}`}>{hh}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {smcCandidates.map((c: any, i: number) => (
+            <tr key={i} className="border-b border-[#1f2733] cursor-pointer hover:bg-[#151b25]" onClick={() => openTrade(c.strike, c.type, c.entry, c.rr)}>
+              <td className="text-left py-1.5 px-1 font-bold text-[#e8a33d]">{fmtInt(c.strike)}</td>
+              <td className="text-right py-1.5 px-1"><span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${c.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{c.type}</span></td>
+              <td className="text-right py-1.5 px-1">
+                <span className={`px-1.5 py-0.5 rounded font-bold text-[10.5px] ${
+                  c.confidence >= 90 ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" :
+                  c.confidence >= 80 ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" :
+                  c.confidence >= 70 ? "bg-[rgba(232,163,61,.18)] text-[#e8a33d]" :
+                  "bg-[rgba(242,73,92,.18)] text-[#f2495c]"
+                }`}>{c.confidence}%</span>
+              </td>
+              <td className="text-right py-1.5 px-1 text-[#1fbf75]">₹{fmt(c.entry)}</td>
+              <td className="text-right py-1.5 px-1 text-[#f2495c]">₹{fmt(c.sl)}</td>
+              <td className="text-right py-1.5 px-1">₹{fmt(c.tp1)}</td>
+              <td className="text-right py-1.5 px-1">{c.tp2 ? "₹"+fmt(c.tp2) : "—"}</td>
+              <td className="text-right py-1.5 px-1">{c.tp3 ? "₹"+fmt(c.tp3) : "—"}</td>
+              <td className="text-right py-1.5 px-1"><span className="px-1.5 py-0.5 rounded font-bold text-[10.5px] bg-[rgba(79,143,247,.18)] text-[#4f8ff7]">1:{c.rr?.toFixed(1)}</span></td>
+              <td className="text-left py-1.5 px-1">
+                <span className={`px-1.5 py-0.5 rounded font-bold text-[10.5px] ${
+                  c.qualityGrade === "A+" ? "bg-[rgba(212,175,55,.25)] text-[#d4af37]" :
+                  c.qualityGrade === "A" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" :
+                  c.qualityGrade === "B" ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" :
+                  c.qualityGrade === "C" ? "bg-[rgba(232,163,61,.18)] text-[#e8a33d]" :
+                  "bg-[rgba(242,73,92,.18)] text-[#f2495c]"
+                }`}>{c.qualityGrade}</span>
+              </td>
+              <td className="text-left py-1.5 px-1 text-[#7d8ba0] text-[10px]">
+                {c.positionSize?.lots ? `${c.positionSize.lots}L (₹${fmtInt(c.positionSize.maxLoss)} risk)` : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
+  function renderDetails() {
+    if (!marketStructure || !analysis) return null;
+    return (
+      <div className="grid grid-cols-3 gap-2 mt-2 text-[11px]">
+        <div className="bg-[#0c111a] rounded p-2">
+          <div className="font-bold mb-1 text-[#2dd4a7]">Market Structure</div>
+          <div><span className="text-[#7d8ba0]">Trend:</span> <span className={marketStructure.trend === "BULLISH" ? "text-[#1fbf75]" : "text-[#f2495c]"}>{marketStructure.trend}</span></div>
+          <div><span className="text-[#7d8ba0]">BOS:</span> {marketStructure.bos ? "✓" : "✗"}</div>
+          <div><span className="text-[#7d8ba0]">CHoCH:</span> {marketStructure.choch ? "✓" : "✗"}</div>
+          <div><span className="text-[#7d8ba0]">Liq Sweep:</span> {marketStructure.liquiditySweep ? "✓" : "✗"}</div>
+          <div><span className="text-[#7d8ba0]">OB count:</span> {marketStructure.orderBlocks?.length || 0}</div>
+          <div><span className="text-[#7d8ba0]">FVG count:</span> {marketStructure.fvgs?.length || 0}</div>
+        </div>
+        <div className="bg-[#0c111a] rounded p-2">
+          <div className="font-bold mb-1 text-[#e8a33d]">Scores</div>
+          <div><span className="text-[#7d8ba0]">ATR:</span> ₹{fmt(analysis.atr)}</div>
+          <div><span className="text-[#7d8ba0]">VWAP:</span> ₹{fmt(analysis.vwap)}</div>
+          <div><span className="text-[#7d8ba0]">PCR:</span> {analysis.pcr?.toFixed(2)}</div>
+          <div><span className="text-[#7d8ba0]">Confidence:</span> <span className={analysis.confidence >= (analysis.minConfidence || 75) ? "text-[#1fbf75]" : "text-[#e8a33d]"}>{analysis.confidence}%</span></div>
+          <div><span className="text-[#7d8ba0]">Min Conf:</span> <span className="text-[#4f8ff7]">{analysis.minConfidence}%</span></div>
+          <div><span className="text-[#7d8ba0]">Trend Score:</span> {analysis.trendScore}/100</div>
+        </div>
+        <div className="bg-[#0c111a] rounded p-2">
+          <div className="font-bold mb-1 text-[#a78bfa]">India Context</div>
+          <div><span className="text-[#7d8ba0]">Regime:</span> <span className="text-[#4f8ff7]">{analysis.regime}</span></div>
+          <div><span className="text-[#7d8ba0]">VIX:</span> <span className={analysis.vixRegime === "EXTREME" ? "text-[#f2495c]" : "text-[#e8a33d]"}>{analysis.vixRegime}</span></div>
+          <div><span className="text-[#7d8ba0]">OI Signal:</span> <span className={analysis.oiSignal === "BUILDUP" ? "text-[#1fbf75]" : "text-[#7d8ba0]"}>{analysis.oiSignal}</span></div>
+          <div><span className="text-[#7d8ba0]">PCR Trend:</span> {analysis.pcrTrend}</div>
+          <div><span className="text-[#7d8ba0]">DTE:</span> {analysis.daysToExpiry}d</div>
+          <div><span className="text-[#7d8ba0]">Max Pain:</span> ₹{fmtInt(analysis.maxPain)}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Auto-register candidates ──────────────────────────────────
+  const registeredRef = useRef(false);
   useEffect(() => {
-    if (!hasOiChangeData) return; // Skip recording if OI change data unavailable (e.g., SENSEX via BSE API)
-    const toRecord = sorted
-      .map((r: ChainRow) => {
-        const isCE = Math.abs(r.ce?.oiChg || 0) > Math.abs(r.pe?.oiChg || 0);
-        const d = isCE ? r.ce : r.pe;
-        const oiChg = Math.abs(d?.oiChg || 0);
-        return { r, isCE, d, oiChg };
-      })
-      .filter((x) => x.oiChg >= 50000)
-      .map((x) => {
-        const entry = x.d?.ltp || 0;
-        const rr = 2;
-        const slPct = 0.22;
-        return {
-          strike: x.r.strike,
-          type: (x.isCE ? "CE" : "PE") as "CE" | "PE",
-          entry,
-          sl: Math.round(entry * (1 - slPct) * 100) / 100,
-          tp1: Math.round(entry * (1 + slPct) * 100) / 100,
-          tp2: Math.round(entry * (1 + slPct * rr) * 100) / 100,
-          conf: Math.min(95, 60 + Math.min(35, x.oiChg / 20000)),
-          price: entry,
-          rr,
-        };
-      })
-      .filter((c) => c.entry > 0);
-    if (toRecord.length) registerTrades("SMC", symbol, toRecord).catch(() => {});
-    // M5: record the SMC scanner cycle as an AI-training row (every cycle).
-    recordScannerCycle(symbol, "SMC", toRecord).catch(() => {});
-  }, [sorted, symbol, chain, hasOiChangeData]);
+    if (registeredRef.current) return;
+    if (!smcCandidates.length) return;
+    registeredRef.current = true;
+    registerTrades("SMART_MONEY", activeSymbol, smcCandidates).catch(() => {});
+    recordScannerCycle(activeSymbol, "SMART_MONEY", smcCandidates.map((c: any) => ({
+      strike: c.strike, type: c.type, entry: c.entry, sl: c.sl,
+      tp1: c.tp1, tp2: c.tp2, conf: c.confidence, price: c.entry,
+    }))).catch(() => {});
+  }, [smcCandidates, activeSymbol]);
+
   return (
     <div className="space-y-3.5">
       <FIIFlowPanel flowData={flowData} />
       <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">Unusual OI buildup</span>{symbol === "SENSEX" && <span className="text-[#e8a33d] font-mono text-[10px] ml-2">(OI change unavailable from BSE API)</span>}</div>
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px] flex items-center justify-between">
+          <div>Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">SMC India Edition</span></div>
+          <div className="flex items-center gap-2">
+            {smcResult?.rejected && (
+              <span className="text-[#e8a33d] text-[10px] font-mono">{smcResult.rejectionReasons?.join(", ")}</span>
+            )}
+          </div>
+        </div>
         <div className="p-2.5 overflow-x-auto">
-          {!hasOiChangeData ? (
+          {!smcCandidates.length ? (
             <div className="text-center py-6 text-[#7d8ba0] text-[12px]">
-              <div className="font-bold text-[#e8a33d] mb-1">OI Change Data Unavailable</div>
-              <div>{symbol === "SENSEX" || symbol === "BANKEX" ? "BSE API does not provide OI change (oiChg) for SENSEX/BANKEX." : "Current data source does not provide OI change data."}</div>
-              <div className="text-[11px] mt-1">Smart Money Scanner requires OI change data to detect unusual buildup.</div>
+              <div className="font-bold text-[#e8a33d] mb-1">No SMC Candidates</div>
+              <div>Insufficient data to generate SMC signals. Ensure option chain, candles, and spot price are available.</div>
             </div>
           ) : (
-            <table className="w-full border-collapse font-mono text-[12px]">
-            <thead>
-              <tr>
-                {["Strike", "Type", "OI Chg", "Vol", "Interpretation", "Entry", "SL", "TP1/TP2", "R:R"].map((h) => (
-                  <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Strike" || h === "Interpretation" ? "text-left" : "text-right"}`}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((r: ChainRow, i: number) => {
-                const isCE = Math.abs(r.ce?.oiChg || 0) > Math.abs(r.pe?.oiChg || 0);
-                const d = isCE ? r.ce : r.pe;
-                const type = isCE ? "CE" : "PE";
-                const buildup = d && d.oiChg > 0
-                  ? (isCE ? "Call writing (resistance)" : "Put writing (support)")
-                  : (isCE ? "Call unwinding" : "Put unwinding");
-                const entry = d?.ltp || 0;
-                const slPct = 0.22;
-                const rr = 2;
-                return (
-                  <tr key={i} className="border-b border-[#1f2733] cursor-pointer hover:bg-[#151b25]" onClick={() => openTrade(r.strike, type, entry, rr)}>
-                    <td className="text-left py-1.5 px-1 font-bold text-[#e8a33d]">{fmtInt(r.strike)}</td>
-                    <td className="text-right py-1.5 px-1"><span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{type}</span></td>
-                    <td className={`text-right py-1.5 px-1 ${(d?.oiChg || 0) < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{d ? (d.oiChg > 0 ? "+" : "") + (Math.abs(d.oiChg) >= 1000 ? (d.oiChg / 1000).toFixed(1) + "K" : d.oiChg) : "—"}</td>
-                    <td className="text-right py-1.5 px-1">{d ? (d.vol >= 1000 ? (d.vol / 1000).toFixed(0) + "K" : d.vol) : "—"}</td>
-                    <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{buildup}</td>
-                    <td className="text-right py-1.5 px-1 text-[#1fbf75]">₹{fmt(entry)}</td>
-                    <td className="text-right py-1.5 px-1 text-[#f2495c]">₹{fmt(entry * (1 - slPct))}</td>
-                    <td className="text-right py-1.5 px-1">₹{fmt(entry * (1 + slPct))} / ₹{fmt(entry * (1 + slPct * rr))}</td>
-                    <td className="text-right py-1.5 px-1"><span className="px-1.5 py-0.5 rounded font-bold text-[10.5px] bg-[rgba(79,143,247,.18)] text-[#4f8ff7]">1:{rr}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+            <>
+              {renderCandTable()}
+              {renderDetails()}
+            </>
           )}
         </div>
       </div>

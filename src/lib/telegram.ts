@@ -1,5 +1,7 @@
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
+import { isTelegramSendWindow } from "./marketHours";
+
 function getBotToken(): string {
   return process.env.TELEGRAM_BOT_TOKEN || "";
 }
@@ -9,6 +11,12 @@ function getChatId(): string {
 }
 
 export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
+  // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
+  // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
+  if (!isTelegramSendWindow()) {
+    console.warn("[Telegram] outside 09:10-15:20 IST window — suppressed send");
+    return false;
+  }
   const token = getBotToken();
   const cid = chatId || getChatId();
   if (!token || !cid) {

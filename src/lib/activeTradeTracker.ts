@@ -20,13 +20,20 @@ export interface ActiveTrade {
   sl: number;
   tp1: number;
   tp2: number;
+  tp3?: number;
   status: 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT';
   sentAt: string;
   tp1HitAt?: string;
   tp2HitAt?: string;
   slHitAt?: string;
   source: string;
-  snapshotId?: string; // exact MarketSnapshot used for the decision (when available)
+  snapshotId?: string;
+  spotPrice?: number;
+  confidence?: number;
+  positionSize?: number;
+  riskPerTrade?: number;
+  qualityScore?: number;
+  qualityGrade?: string;
 }
 
 const activeTrades = new Map<string, ActiveTrade>();
@@ -60,8 +67,13 @@ export async function addTrade(trade: ActiveTrade): Promise<void> {
     stopLoss: trade.sl,
     target1: trade.tp1,
     target2: trade.tp2,
-    confidence: 0,
+    target3: trade.tp3,
+    confidence: trade.confidence ?? 0,
     strategy: trade.source,
+    riskPerTrade: trade.riskPerTrade ?? 0,
+    positionSize: trade.positionSize ?? 0,
+    qualityScore: trade.qualityScore ?? 0,
+    qualityGrade: trade.qualityGrade ?? "N/A",
   });
 
   // Mirror the signal into the Trade Audit (backtest verification) engine so
@@ -92,14 +104,15 @@ async function recordAuditSignal(trade: ActiveTrade): Promise<void> {
       symbol: trade.symbol,
       exchange: "NSE",
       instrumentType: auditInstrumentType(trade),
-      spotPrice: trade.entry,
+      spotPrice: trade.spotPrice ?? trade.entry,
       strikePrice: isOption ? trade.strike : null,
       optionType: isOption ? (trade.optionType as "CE" | "PE") : null,
       entryPrice: trade.entry,
       stopLoss: trade.sl,
       tp1: trade.tp1,
       tp2: trade.tp2,
-      signalConfidence: 0,
+      tp3: trade.tp3,
+      signalConfidence: trade.confidence ?? 0,
       trendDirection: auditTrend(trade),
       signalReason: `${trade.source} signal`,
       marketSession: istSession(),

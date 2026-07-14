@@ -7,7 +7,7 @@
 
 import { sendTelegramMessage } from "./telegramSend";
 import { recordIntradayTrade } from "./intraday-scanner";
-import { isMarketOpen } from "./marketHours";
+import { isTelegramSendWindow } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
@@ -23,6 +23,12 @@ const DIGEST_CHAT_IDS = (process.env.TELEGRAM_DIGEST_CHAT_IDS ?? "")
   .map((id) => id.trim())
   .filter(Boolean);
 
+function fetchWithTimeout(url: string, ms = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { cache: "no-store", signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 // Fetch SDM signal for a symbol+direction+expiry and push to candidates array
 async function fetchAndPushSignal(
   sym: string,
@@ -34,7 +40,7 @@ async function fetchAndPushSignal(
     let url = `${BASE}/api/sdm-signal?symbol=${encodeURIComponent(sym)}&dir=${direction}`;
     if (expiry) url += `&expiry=${encodeURIComponent(expiry)}`;
 
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return;
     const json = await res.json();
     if (!json.success || !json.signal) return;
@@ -55,7 +61,7 @@ async function fetchAndPushSignal(
 // Price fetcher for SL/TP checking — fetches live option price
 async function getCurrentOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
   try {
-    const res = await fetch(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+    const res = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`);
     if (!res.ok) return 0;
     const json = await res.json();
     const data = json?.data?.data || [];
@@ -132,7 +138,8 @@ ${alert.rationale}
 }
 
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
-  if (!isMarketOpen()) {
+  if (!isTelegramSendWindow()) {
+    console.error("[sendIntradayAlerts] outside 09:10-15:20 IST window — skipping");
     return { ran: false, newAlerts: 0 };
   }
   if (DIGEST_CHAT_IDS.length === 0) {

@@ -586,13 +586,15 @@ export async function runMultiDayBacktest(
       low: Math.min(...candles.map((c) => c.low)),
       close: candles[candles.length - 1]?.close || candles[0]?.close || 0,
     };
-    const giftNifty = candles[0]?.close || 0;
-
     // Day OHLC
     const dayOpen = candles[0].open;
     const dayClose = candles[candles.length - 1].close;
     const dayHigh = Math.max(...candles.map((c) => c.high));
     const dayLow = Math.min(...candles.map((c) => c.low));
+
+    // Use actual opening gap as Gift Nifty proxy for backtesting
+    // (real Gift Nifty data is not available for historical dates)
+    const giftNiftyPrice = prevDay.close > 0 ? dayOpen : prevDay.close;
 
     // Detect breakouts from price action
     const paBreakouts = detectPriceActionBreakouts(candles, prevDay);
@@ -606,7 +608,7 @@ export async function runMultiDayBacktest(
       sl_buffer: 0.002,
     });
     strategy.sr.setPreviousDay(prevDay.high, prevDay.low, prevDay.close);
-    strategy.sr.setGiftNiftyBias(giftNifty, prevDay.close);
+    strategy.sr.setGiftNiftyBias(giftNiftyPrice, prevDay.close);
 
     // Feed candles to strategy for S/R level tracking
     for (const candle of candles) {
