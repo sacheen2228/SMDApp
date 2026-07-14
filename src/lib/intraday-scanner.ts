@@ -470,8 +470,16 @@ export async function generateCandidates(
     const change = parseFloat(quote.change);
     const changePct = parseFloat(quote.change_percent);
     const volume = parseInt(quote.volume || "0");
-    const avgVolume = volume * 0.8;
-    const rvol = volume / avgVolume;
+    // Real relative volume: current volume vs the trailing average from 3mo candles
+    // (exclude the most recent bar — it may be a partial/intraday session).
+    const candleVols = (realCandles.get(stock.symbol) || [])
+      .map((c) => c.volume)
+      .filter((v) => v > 0);
+    const histVols = candleVols.slice(0, -1);
+    const avgVolume = histVols.length
+      ? Math.round(histVols.reduce((s, v) => s + v, 0) / histVols.length)
+      : Math.round(volume * 0.8); // graceful fallback only
+    const rvol = avgVolume > 0 ? volume / avgVolume : 1;
 
     // Technicals — computed from REAL 3mo daily OHLC candles via Yahoo Finance.
     // Neutral defaults only apply if candle history is unavailable for a symbol.
@@ -514,21 +522,41 @@ export async function generateCandidates(
     let newsScore = 50;
     const reasons: string[] = [];
 
-    // Technical scoring
-    if (isBullish) {
+    // Technical scoring — driven by PER-STOCK indicators, NOT the market-wide
+    // trend (which is SIDEWAYS today while individual stocks still trend).
+    // The market trend only modulates the final score, so sideways days keep
+    // differentiating stocks instead of flattening everyone to 30.
+    const techBull = [
+      ema9 > ema21,
+      ema21 > ema50,
+      rsi > 50 && rsi < 70,
+      macd > macdSignal,
+      adx > 25,
+    ].filter(Boolean).length;
+    const techBear = [
+      ema9 < ema21,
+      ema21 < ema50,
+      rsi < 50 && rsi > 30,
+      macd < macdSignal,
+      adx > 25,
+    ].filter(Boolean).length;
+
+    if (techBull > techBear) {
       if (ema9 > ema21) { technicalScore += 15; reasons.push("EMA9 > EMA21 (bullish crossover)"); }
       if (ema21 > ema50) { technicalScore += 10; reasons.push("EMA21 > EMA50 (uptrend)"); }
       if (rsi > 50 && rsi < 70) { technicalScore += 10; reasons.push(`RSI ${rsi.toFixed(0)} — bullish momentum`); }
       if (macd > macdSignal) { technicalScore += 10; reasons.push("MACD above signal"); }
       if (adx > 25) { technicalScore += 5; reasons.push(`ADX ${adx.toFixed(0)} — trending`); }
-    } else if (isBearish) {
+    } else if (techBear > techBull) {
       if (ema9 < ema21) { technicalScore += 15; reasons.push("EMA9 < EMA21 (bearish crossover)"); }
       if (ema21 < ema50) { technicalScore += 10; reasons.push("EMA21 < EMA50 (downtrend)"); }
       if (rsi < 50 && rsi > 30) { technicalScore += 10; reasons.push(`RSI ${rsi.toFixed(0)} — bearish momentum`); }
       if (macd < macdSignal) { technicalScore += 10; reasons.push("MACD below signal"); }
       if (adx > 25) { technicalScore += 5; reasons.push(`ADX ${adx.toFixed(0)} — trending`); }
     } else {
-      technicalScore = 30;
+      // Balanced per-stock — mild baseline from RSI position (not a flat constant)
+      technicalScore = 25;
+      if (rsi >= 45 && rsi <= 55) reasons.push(`RSI ${rsi.toFixed(0)} — balanced momentum`);
     }
 
     // Volume scoring
@@ -562,14 +590,19 @@ export async function generateCandidates(
     const marketScore = marketDirection.score;
 
     // Total score calculation
+    // Weights normalised to 1.00. Real, per-stock signals (technical,
+    // volume, sector) dominate; market context + coarse fundamental add
+    // modulation; options/news are neutral placeholders (no per-stock
+    // options/PCR or news feed) at minimal weight so they don't flatten
+    // the score for every stock.
     const totalScore = Math.round(
-      (marketScore * 0.15) +
-      (sectorScore * 0.10) +
-      (technicalScore * 0.35) +
-      (optionsScore * 0.15) +
-      (volumeScore * 0.10) +
+      (marketScore * 0.10) +
+      (sectorScore * 0.15) +
+      (technicalScore * 0.40) +
+      (optionsScore * 0.05) +
+      (volumeScore * 0.20) +
       (fundamentalScore * 0.05) +
-      (newsScore * 0.10)
+      (newsScore * 0.05)
     );
 
     // Direction from technical indicators (not totalScore threshold)

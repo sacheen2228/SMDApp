@@ -33,16 +33,13 @@ export default function ConnectionManager() {
       const res = await fetch("/api/telegram", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "system",
-          message: "✅ Telegram alerts connected successfully! All trade signals will be sent here.",
-        }),
+        body: JSON.stringify({ type: "verify" }),
       });
       const json = await res.json();
       if (json.success) {
-        setTelegramResult({ status: "success", msg: "Test message sent ✓ Check your Telegram" });
+        setTelegramResult({ status: "success", msg: `Connected ✓ @${json.username || "bot"}` });
       } else {
-        setTelegramResult({ status: "error", msg: "Bot API returned error" });
+        setTelegramResult({ status: "error", msg: json.error || "Bot API returned error" });
       }
     } catch (e: any) {
       setTelegramResult({ status: "error", msg: e.message || "Telegram test failed" });

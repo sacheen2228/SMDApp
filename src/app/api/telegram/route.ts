@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendTelegramMessage, sendTradeAlert, sendSignalAlert, sendSystemAlert } from "@/lib/telegram";
+import { sendTelegramMessage, sendTradeAlert, sendSignalAlert, sendSystemAlert, verifyTelegramBot } from "@/lib/telegram";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { type, ...params } = body;
+
+    // Connection test — validates the bot token via getMe (not gated by market hours).
+    if (type === "verify") {
+      const v = await verifyTelegramBot();
+      return NextResponse.json({ success: v.ok, username: v.username, error: v.description });
+    }
 
     let sent = false;
     switch (type) {
