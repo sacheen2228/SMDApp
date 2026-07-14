@@ -6,16 +6,27 @@ import { authConfig } from "./auth.config";
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PrismaAdapter(db),
-  session: { strategy: "database" },
+  // JWT sessions: readable by the Edge proxy without a database query, so the
+  // proxy can validate auth (see src/auth.config.ts) without Prisma. The
+  // Prisma adapter still persists the User + Account rows on Google sign-in.
+  session: { strategy: "jwt" },
   secret: process.env.AUTH_SECRET,
   trustHost: true,
   callbacks: {
     ...authConfig.callbacks,
-    // Expose the DB user id + role to the client session.
-    async session({ session, user }) {
+    // Persist the DB user id + role into the JWT.
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+        token.role = (user as { role?: string }).role;
+      }
+      return token;
+    },
+    // Expose the user id + role to the client session.
+    async session({ session, token }) {
       if (session.user) {
-        (session.user as { id?: string }).id = user.id;
-        (session.user as { role?: string }).role = (user as { role?: string }).role;
+        (session.user as { id?: string }).id = token.id as string;
+        (session.user as { role?: string }).role = token.role as string;
       }
       return session;
     },
