@@ -148,7 +148,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   }
 
   // 1. Check active trades for SL/TP hits
-  const { hitSL, hitTP1, hitTP2 } = await checkSLTP(getCurrentOptionPrice);
+  const { hitSL, hitTP1, hitTP2, hitTP3 } = await checkSLTP(getCurrentOptionPrice);
 
   let newAlerts = 0;
 
@@ -170,6 +170,14 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 
   for (const trade of hitTP2) {
     const text = formatSLTPHit(trade, "TP2");
+    const results = await Promise.all(
+      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
+    );
+    if (results.some(Boolean)) newAlerts++;
+  }
+
+  for (const trade of hitTP3) {
+    const text = formatSLTPHit(trade, "TP3");
     const results = await Promise.all(
       DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
     );
@@ -263,7 +271,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       const scanData = scannerJson?.data;
       if (scanData?.candidates) {
         const highConfStocks = scanData.candidates.filter(
-          (s: any) => s.monthlyOptionTrade && s.totalScore >= 80
+          (s: any) => s.monthlyOptionTrade && s.totalScore >= 70
         );
 
         for (const stock of highConfStocks) {
@@ -290,6 +298,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               sl: opt.stopLoss,
               tp1: opt.targets[0] || opt.premium,
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
+              tp3: opt.targets[2] || opt.targets[1] || opt.targets[0] || opt.premium,
               status: "ACTIVE",
               sentAt: new Date().toISOString(),
               source: "stock-scanner",
@@ -304,6 +313,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               stopLoss: opt.stopLoss,
               tp1: opt.targets[0] || opt.premium,
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
+              tp3: opt.targets[2] || opt.targets[1] || opt.targets[0] || opt.premium,
               confidence: stock.totalScore,
               reason: (stock.reasons || []).slice(0, 3).join(" · "),
               source: "stock-scanner",

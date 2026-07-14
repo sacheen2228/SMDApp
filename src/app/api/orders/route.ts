@@ -9,17 +9,20 @@ import type { OrderRequest } from '@/types';
 export async function GET() {
   try {
     const orders = await getOrderList();
-    
+
     return NextResponse.json({
       success: true,
       data: orders,
     });
   } catch (error: any) {
-    console.error('[API] Get orders error:', error);
-    return NextResponse.json(
-      { success: false, error: error.message || 'Failed to fetch orders' },
-      { status: 500 }
-    );
+    // Breeze auth / session failure should not crash the tab — degrade gracefully.
+    console.warn('[API] Get orders degraded (Breeze unavailable):', error?.message);
+    return NextResponse.json({
+      success: true,
+      degraded: true,
+      data: [],
+      message: 'Breeze not authenticated — live orders unavailable',
+    });
   }
 }
 

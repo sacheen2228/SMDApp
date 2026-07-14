@@ -21,7 +21,7 @@ export interface ActiveTrade {
   tp1: number;
   tp2: number;
   tp3?: number;
-  status: 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT';
+  status: 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'TP3_HIT' | 'SL_HIT';
   sentAt: string;
   tp1HitAt?: string;
   tp2HitAt?: string;
@@ -143,12 +143,14 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
   const now = new Date().toISOString();
   if (status === 'TP1_HIT') trade.tp1HitAt = now;
   else if (status === 'TP2_HIT') trade.tp2HitAt = now;
+  else if (status === 'TP3_HIT') trade.tp3HitAt = now;
   else if (status === 'SL_HIT') trade.slHitAt = now;
 
   // Calculate P&L at hit price
   const hitPrice = status === 'SL_HIT' ? trade.sl
     : status === 'TP1_HIT' ? trade.tp1
     : status === 'TP2_HIT' ? trade.tp2
+    : status === 'TP3_HIT' ? (trade.tp3 ?? trade.tp2)
     : 0;
   const pnl = getPnl(trade, hitPrice);
   const pnlPct = getPnlPct(trade, hitPrice);
@@ -162,14 +164,14 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
     pnl: Math.round(pnl * 100) / 100,
     pnlPercent: Math.round(pnlPct * 100) / 100,
     holdingTimeMin: getHoldingMins(trade),
-    tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : 'SL_HIT',
+      tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : status === 'TP3_HIT' ? 'TP3' : 'SL_HIT',
   });
 
   // 2. Sync the exit to the Trade Audit (backtest verification) engine. Feed
   //    the exit price as a tracking tick first so the engine marks the correct
   //    tp/sl-hit flag + MFE/MAE, then explicitly close it. Both are idempotent
   //    (no-op if the trade is already closed or was never recorded).
-  const reason = status === 'SL_HIT' ? 'stop_loss' : status === 'TP1_HIT' ? 'tp1' : 'tp2';
+  const reason = status === 'SL_HIT' ? 'stop_loss' : status === 'TP1_HIT' ? 'tp1' : status === 'TP2_HIT' ? 'tp2' : 'tp3';
   try {
     await updatePrice(trade.id, hitPrice);
     await closeTrade(trade.id, hitPrice, reason);
@@ -186,9 +188,11 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
 export function formatTradeStatus(status: string | undefined): string {
   switch (status) {
     case 'TP1_HIT':
-      return '🟢 TP1 HIT | TP2 PENDING';
+      return '🟢 TP1 HIT | TP2/TP3 PENDING';
     case 'TP2_HIT':
-      return '🟢 TP2 HIT | TRADE COMPLETED';
+      return '🟢 TP2 HIT | TP3 PENDING';
+    case 'TP3_HIT':
+      return '🟢 TP3 HIT | TRADE COMPLETED';
     case 'SL_HIT':
       return '🔴 SL HIT | TRADE CLOSED';
     case 'CLOSED':
@@ -206,6 +210,7 @@ export interface SLTPCheckResult {
   hitSL: ActiveTrade[];
   hitTP1: ActiveTrade[];
   hitTP2: ActiveTrade[];
+  hitTP3: ActiveTrade[];
 }
 
 export async function checkSLTP(
@@ -214,6 +219,7 @@ export async function checkSLTP(
   const hitSL: ActiveTrade[] = [];
   const hitTP1: ActiveTrade[] = [];
   const hitTP2: ActiveTrade[] = [];
+  const hitTP3: ActiveTrade[] = [];
 
   for (const trade of getActiveTrades()) {
     try {
@@ -224,6 +230,9 @@ export async function checkSLTP(
         if (currentPrice <= trade.sl && trade.status !== 'SL_HIT') {
           await updateTradeStatus(trade.id, 'SL_HIT');
           hitSL.push({ ...trade, status: 'SL_HIT' });
+        } else if (currentPrice >= (trade.tp3 ?? Infinity) && trade.status === 'ACTIVE') {
+          await updateTradeStatus(trade.id, 'TP3_HIT');
+          hitTP3.push({ ...trade, status: 'TP3_HIT' });
         } else if (currentPrice >= trade.tp2 && trade.status === 'ACTIVE') {
           await updateTradeStatus(trade.id, 'TP2_HIT');
           hitTP2.push({ ...trade, status: 'TP2_HIT' });
@@ -235,6 +244,9 @@ export async function checkSLTP(
         if (currentPrice >= trade.sl && trade.status !== 'SL_HIT') {
           await updateTradeStatus(trade.id, 'SL_HIT');
           hitSL.push({ ...trade, status: 'SL_HIT' });
+        } else if (currentPrice <= (trade.tp3 ?? -Infinity) && trade.status === 'ACTIVE') {
+          await updateTradeStatus(trade.id, 'TP3_HIT');
+          hitTP3.push({ ...trade, status: 'TP3_HIT' });
         } else if (currentPrice <= trade.tp2 && trade.status === 'ACTIVE') {
           await updateTradeStatus(trade.id, 'TP2_HIT');
           hitTP2.push({ ...trade, status: 'TP2_HIT' });
@@ -252,11 +264,11 @@ export async function checkSLTP(
 }
 
 // Format SL/TP hit message for Telegram
-export function formatSLTPHit(trade: ActiveTrade, hitType: 'SL' | 'TP1' | 'TP2'): string {
+export function formatSLTPHit(trade: ActiveTrade, hitType: 'SL' | 'TP1' | 'TP2' | 'TP3'): string {
   const isLoss = hitType === 'SL';
-  const header = isLoss ? '❌ STOP LOSS HIT' : hitType === 'TP2' ? '✅ TARGET 2 HIT' : '✅ TARGET 1 HIT';
+  const header = isLoss ? '❌ STOP LOSS HIT' : hitType === 'TP3' ? '✅ TARGET 3 HIT (1:4)' : hitType === 'TP2' ? '✅ TARGET 2 HIT (1:3)' : '✅ TARGET 1 HIT (1:2)';
   const emoji = isLoss ? '🔴' : '🟢';
-  const hitPrice = isLoss ? trade.sl : hitType === 'TP2' ? trade.tp2 : trade.tp1;
+  const hitPrice = isLoss ? trade.sl : hitType === 'TP3' ? (trade.tp3 ?? trade.tp2) : hitType === 'TP2' ? trade.tp2 : trade.tp1;
   const pnl = getPnl(trade, hitPrice);
   const pnlPct = getPnlPct(trade, hitPrice);
 

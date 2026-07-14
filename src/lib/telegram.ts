@@ -10,6 +10,23 @@ function getChatId(): string {
   return process.env.TELEGRAM_CHAT_ID || "";
 }
 
+export async function verifyTelegramBot(): Promise<{ ok: boolean; username?: string; description?: string }> {
+  const token = getBotToken();
+  if (!token) {
+    return { ok: false, description: "TELEGRAM_BOT_TOKEN not configured" };
+  }
+  try {
+    const res = await fetch(`${TELEGRAM_API}${token}/getMe`);
+    const data = await res.json();
+    if (!data.ok) {
+      return { ok: false, description: data.description || "getMe failed" };
+    }
+    return { ok: true, username: data.result?.username };
+  } catch (err: any) {
+    return { ok: false, description: err?.message || "network error" };
+  }
+}
+
 export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
   // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
   // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
