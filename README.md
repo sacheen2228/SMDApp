@@ -370,4 +370,83 @@ and CSV/JSON export. If the engine isn't running it shows a "start the engine" h
 | `src/lib/btst-engine.ts` | BTST 6-factor scoring engine + risk engine |
 | `src/lib/btst-scanner.ts` | BTST scanner (reuses intraday scanner real data) |
 | `src/app/api/btst/route.ts` | BTST scan API + Telegram alerts |
-| `src/components/btst/BTSTDashboard.tsx` | BTST AI dashboard tab (scanner + performance) | |
+| `src/components/btst/BTSTDashboard.tsx` | BTST AI dashboard tab (scanner + performance) |
+
+---
+
+## 12. Environment Variables
+
+All configuration is supplied through environment variables. **Never commit `.env`** — it holds
+secrets and is git-ignored. The repo ships a safe, placeholder-only template at `.env.example`.
+
+### 12.1 Setup
+
+```bash
+# 1. Copy the template
+cp .env.example .env
+
+# 2. Fill in real values in .env (every REPLACE_WITH_* / placeholder)
+#    At minimum you need:
+#      DATABASE_URL, BREEZE_APP_KEY, BREEZE_SECRET_KEY, BREEZE_USERNAME,
+#      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GROQ_API_KEY (or OPENROUTER_API_KEY),
+#      AUTH_SECRET (if you enable Auth.js login)
+
+# 3. Generate the Auth.js secret (only needed when using next-auth login)
+openssl rand -base64 32
+```
+
+### 12.2 Configuring Google OAuth (Auth.js / next-auth v5)
+
+1. Go to **https://console.cloud.google.com/apis/credentials**.
+2. Create an **OAuth 2.0 Client ID** of type *Web application*.
+3. Add an **Authorized redirect URI**:
+   - Local:  `http://localhost:3000/api/auth/callback/google`
+   - Prod:   `https://<your-domain>/api/auth/callback/google`
+4. Copy the **Client ID** → `AUTH_GOOGLE_ID` and **Client Secret** → `AUTH_GOOGLE_SECRET` in `.env`.
+5. Set `AUTH_SECRET` (see 12.1) and `AUTH_URL` to your app base URL.
+6. Restart the server. The callback route is provided by next-auth v5 automatically.
+
+> Google OAuth is optional. The app runs fully without it; it is only used if you wire up
+> `next-auth` login in your code.
+
+### 12.3 Variable reference
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | SQLite path for Prisma (e.g. `file:./db/custom.db`). |
+| `DB_PATH` | Optional raw DB path used by helpers. |
+| `AUTH_SECRET` | Auth.js session-encryption secret (`openssl rand -base64 32`). |
+| `AUTH_GOOGLE_ID` | Google OAuth client ID. |
+| `AUTH_GOOGLE_SECRET` | Google OAuth client secret. |
+| `AUTH_URL` | Base URL of the app (local or production). |
+| `BREEZE_APP_KEY` | ICICI Breeze app key (server-side). |
+| `BREEZE_SECRET_KEY` | ICICI Breeze secret key (server-side). |
+| `BREEZE_SESSION_TOKEN` | Optional pre-generated session token. |
+| `BREEZE_USERNAME` | Breeze account username. |
+| `BREEZE_PASSWORD` | Breeze account password. |
+| `NEXT_PUBLIC_BREEZE_API_KEY` | Breeze app key exposed to the browser. |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for alerts. |
+| `TELEGRAM_CHAT_ID` | Primary Telegram chat ID for alerts. |
+| `TELEGRAM_DAILY_CHAT_ID` | Chat ID for the daily digest. |
+| `TELEGRAM_DIGEST_CHAT_IDS` | Comma-separated digest recipient chat IDs. |
+| `TELEGRAM_ALLOW_OFFHOURS` | `true`/`false` — allow alerts outside market hours. |
+| `GROQ_API_KEY` | Groq LLM API key (agent chat). |
+| `OPENROUTER_API_KEY` | OpenRouter LLM API key (agent chat). |
+| `DEEPSEEK_API_KEY` | Optional DeepSeek key (unused by default). |
+| `NVIDIA_API_KEY` | Optional NVIDIA key (unused by default). |
+| `API_SECRET_KEY` / `API_SECRET` | Internal API shared secrets. |
+| `DAILY_SCAN_SECRET` | Secret authenticating the daily-scan cron. |
+| `NEXT_PUBLIC_TRADE_AUDIT_URL` | Trade Audit sidecar URL (default `:4001`). |
+| `NEXT_PUBLIC_MARKET_HISTORY_URL` | Market History sidecar URL (default `:4002`). |
+| `NEXT_PUBLIC_MARKET_RECORDER_URL` | Market Recorder URL. |
+| `NEXT_PUBLIC_BASE_URL` | Public base URL of this Next.js app. |
+| `INTERNAL_API_BASE` / `SMDAPP_API_BASE` | Server-side API base URLs. |
+| `NUXT_PUBLIC_API_BASE` | Legacy Nuxt client base (unused). |
+| `MARKET_HISTORY_DB` | SQLite path for the Market History sidecar. |
+| `MARKET_HISTORY_PORT` | Market History sidecar port (default `4002`). |
+| `PORT` | Main app / server port (default `3000`). |
+| `BACKTEST_DATA_SOURCE` | Backtest source: `breeze` \| `simulated`. |
+| `RECORDER_MODE` | Recorder tick mode: `realtime` \| `batch`. |
+| `RECORDER_SYMBOLS` | Comma-separated symbols the recorder tracks. |
+| `DEFAULT_FEES_PER_TRADE` | Default brokerage fee per trade (P&L calc). |
+| `NODE_ENV` | `development` \| `production`. | |
