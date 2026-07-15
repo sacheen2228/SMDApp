@@ -602,7 +602,7 @@ export class CandlestickBreakoutIndia {
       try {
         const { getIntradayCandles } = await import("@/lib/breeze-historical");
         const rawCandles = await getIntradayCandles(symbol, new Date().toISOString().split('T')[0], "5minute");
-        candles = rawCandles.map(c => ({
+        candles = (rawCandles.candles || []).map(c => ({
           open: c.open, high: c.high, low: c.low, close: c.close,
           volume: c.volume, timestamp: c.time,
         }));
