@@ -439,13 +439,28 @@ export async function GET(request: NextRequest) {
       return { date: dateStr, label: dateStr, daysToExpiry };
     });
 
-    // Generate intraday candles for chart — try real Breeze data first
-    const today = new Date().toISOString().split('T')[0];
+    // Generate intraday candles for chart — try real Breeze data first.
+    // Fetch up to 5 trading days of 5-min candles so the SMC engine has
+    // enough data to detect BOS/CHoCH even on sideways days.
     let candles5m: any[] = [];
     try {
       const { getIntradayCandles } = await import('@/lib/breeze-historical');
-      const candleResult = await getIntradayCandles(symbol, today, '5minute');
-      candles5m = candleResult.candles || [];
+      const seen = new Set<string>();
+      const seenDay = new Set<string>();
+      const d = new Date();
+      for (let attempt = 0; attempt < 10 && candles5m.length < 40; attempt++) {
+        const dateStr = d.toISOString().split('T')[0];
+        if (!seenDay.has(dateStr)) {
+          seenDay.add(dateStr);
+          const cr = await getIntradayCandles(symbol, dateStr, '5minute');
+          for (const c of cr.candles || []) {
+            const key = c.time || `${c.open}-${c.close}-${c.volume}`;
+            if (!seen.has(key)) { seen.add(key); candles5m.push(c); }
+          }
+        }
+        d.setDate(d.getDate() - 1);
+      }
+      candles5m.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
     } catch {
       // Fallback: empty candles — frontend should handle gracefully
       candles5m = [];
