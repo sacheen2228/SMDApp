@@ -439,9 +439,8 @@ export async function GET(request: NextRequest) {
       return { date: dateStr, label: dateStr, daysToExpiry };
     });
 
-    // Generate intraday candles for chart — try real Breeze data first.
-    // Fetch up to 5 trading days of 5-min candles so the SMC engine has
-    // enough data to detect BOS/CHoCH even on sideways days.
+    // Generate candles — try Breeze 5-min intraday first, fallback to
+    // Yahoo daily candles so the SMC engine always has structure data.
     let candles5m: any[] = [];
     try {
       const { getIntradayCandles } = await import('@/lib/breeze-historical');
@@ -462,8 +461,39 @@ export async function GET(request: NextRequest) {
       }
       candles5m.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
     } catch {
-      // Fallback: empty candles — frontend should handle gracefully
       candles5m = [];
+    }
+
+    // Fallback: Yahoo daily candles when Breeze unavailable.
+    if (candles5m.length < 10) {
+      try {
+        const yahooSym = symbol === 'SENSEX' ? '^BSESN' : '^NSEI';
+        const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=6mo&interval=1d`, {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const result = json?.chart?.result?.[0];
+          if (result?.timestamp && result?.indicators?.quote?.[0]) {
+            const ts = result.timestamp;
+            const q = result.indicators.quote[0];
+            for (let i = 0; i < ts.length; i++) {
+              const close = q.close?.[i];
+              if (close == null) continue;
+              const dt = new Date(ts[i] * 1000);
+              const pad = (n: number) => n.toString().padStart(2, '0');
+              candles5m.push({
+                time: `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} 00:00:00`,
+                open: q.open?.[i] ?? close,
+                high: q.high?.[i] ?? close,
+                low: q.low?.[i] ?? close,
+                close,
+                volume: q.volume?.[i] || 0,
+              });
+            }
+          }
+        }
+      } catch {}
     }
 
     // Attach live India VIX + previous close to the response summary (and the
