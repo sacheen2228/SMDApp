@@ -78,6 +78,8 @@ export async function getIntradayCandles(
   // For indices (NIFTY, SENSEX, etc.), use productType "cash" without strike/right/expiry
   const isIndex = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"].includes(stockCode.toUpperCase());
   const productType = isIndex ? "cash" : "options";
+  // Index spot candles need NSE/BSE exchange, not NFO/BFO
+  const cashExchange = isIndex ? (["SENSEX", "BANKEX"].includes(stockCode.toUpperCase()) ? "BSE" : "NSE") : exchangeCode;
 
   try {
     // Ensure Breeze session is valid
@@ -90,7 +92,7 @@ export async function getIntradayCandles(
       fromDate: fromDateStr,
       toDate: toDateStr,
       stockCode: stockCode,
-      exchangeCode: exchangeCode,
+      exchangeCode: cashExchange,
       productType: productType,
     };
 
