@@ -367,10 +367,20 @@ interface YahooData {
 // One chart call returns BOTH the live quote (meta) and 3 months of daily
 // OHLC candles (indicators.quote) — so we fetch quote + candles together.
 // Fetched in bounded-concurrency batches to keep latency reasonable.
+// Results are cached 30s so re-visiting the Scanner tab is instant.
+
+const yahooCache = new Map<string, { data: YahooData; ts: number }>();
+const YAHOO_CACHE_TTL = 30_000;
+
 async function fetchYahooData(symbols: string[]): Promise<YahooData> {
+  const cacheKey = symbols.join(",");
+  const cached = yahooCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < YAHOO_CACHE_TTL) return cached.data;
+
   const quotes = new Map<string, any>();
   const candles = new Map<string, Candle[]>();
-  const CONCURRENCY = 6;
+  const CONCURRENCY = 10;
+  const DEADLINE = Date.now() + 25_000;
 
   const fetchOne = async (sym: string) => {
     const yahooSym = `${sym}.NS`;
@@ -416,11 +426,14 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     }
   };
 
-  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
+  for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
     const batch = symbols.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(fetchOne));
   }
-  return { quotes, candles };
+
+  const data: YahooData = { quotes, candles };
+  yahooCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
 // Average True Range from real OHLC candles.
