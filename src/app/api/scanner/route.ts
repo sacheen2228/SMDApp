@@ -101,53 +101,66 @@ function getSector(symbol: string): string {
 }
 
 export async function GET(request: NextRequest) {
+  const TIMEOUT = 30_000;
+  const deadline = Date.now() + TIMEOUT;
+
   try {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
     const useLive = searchParams.get("live") === "true";
 
-    // Fetch real option chain data: Breeze → NSE → Simulation fallback
+    // Fetch real option chain data: Breeze → NSE (15s max for both)
     let chainData: any = null;
     try {
-      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
-      const { initSession } = await import("@/lib/icici-breeze/auth");
-      await initSession().catch(() => {});
-      const expiries = await getOptionChainExpiries(symbol);
-      for (const exp of expiries.slice(0, 3)) {
-        const chain = await getOptionChain(symbol, exp);
-        if (chain) {
-          chainData = {
-            spotPrice: chain.spotPrice,
-            data: chain.strikes.map((strike) => ({
-              strike,
-              ce: chain.calls.find((c) => c.strikePrice === strike) || null,
-              pe: chain.puts.find((p) => p.strikePrice === strike) || null,
-            })),
-            summary: { indiaVIX: 15 }, // VIX from separate endpoint
-          };
-          break;
-        }
-      }
+      await Promise.race([
+        (async () => {
+          const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
+          const { initSession } = await import("@/lib/icici-breeze/auth");
+          await initSession().catch(() => {});
+          const expiries = await getOptionChainExpiries(symbol);
+          for (const exp of expiries.slice(0, 3)) {
+            const chain = await getOptionChain(symbol, exp);
+            if (chain) {
+              chainData = {
+                spotPrice: chain.spotPrice,
+                data: chain.strikes.map((strike) => ({
+                  strike,
+                  ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+                  pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+                })),
+                summary: { indiaVIX: 15 },
+              };
+              break;
+            }
+          }
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 15_000)),
+      ]);
     } catch (e) {
       console.warn("[Scanner] Breeze option chain failed:", e);
     }
 
-    // Fallback to NSE
+    // Fallback to NSE (within remaining budget)
     if (!chainData) {
       try {
-        const { getNSEOptionChain } = await import("@/lib/nse-api");
-        const nseData = await getNSEOptionChain(symbol);
-        if (nseData?.records?.data) {
-          chainData = {
-            spotPrice: nseData.records?.underlyingValue || 0,
-            data: nseData.records.data.map((row: any) => ({
-              strike: row.strikePrice,
-              ce: row.CE ? { oi: row.CE.openInterest || 0, ltp: row.CE.lastPrice || 0 } : null,
-              pe: row.PE ? { oi: row.PE.openInterest || 0, ltp: row.PE.lastPrice || 0 } : null,
-            })),
-            summary: { indiaVIX: 15 },
-          };
-        }
+        await Promise.race([
+          (async () => {
+            const { getNSEOptionChain } = await import("@/lib/nse-api");
+            const nseData = await getNSEOptionChain(symbol);
+            if (nseData?.records?.data) {
+              chainData = {
+                spotPrice: nseData.records?.underlyingValue || 0,
+                data: nseData.records.data.map((row: any) => ({
+                  strike: row.strikePrice,
+                  ce: row.CE ? { oi: row.CE.openInterest || 0, ltp: row.CE.lastPrice || 0 } : null,
+                  pe: row.PE ? { oi: row.PE.openInterest || 0, ltp: row.PE.lastPrice || 0 } : null,
+                })),
+                summary: { indiaVIX: 15 },
+              };
+            }
+          })(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 10_000)),
+        ]);
       } catch (e) {
         console.warn("[Scanner] NSE failed:", e);
       }
@@ -204,6 +217,14 @@ export async function GET(request: NextRequest) {
       totalCallOI,
       totalPutOI,
     };
+
+    // Deadline check — if we've already spent too long, bail.
+    if (Date.now() >= deadline) {
+      return NextResponse.json({
+        success: false,
+        error: "Market data API timed out — try again later.",
+      }, { status: 504 });
+    }
 
     // Run the scan
     const result = await runIntradayScan(config);
@@ -285,10 +306,11 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("[Scanner API] Error:", error);
+    const isTimeout = error?.message?.includes("timed out") || Date.now() >= deadline;
+    console.error("[Scanner API] Error:", isTimeout ? "TIMEOUT" : error);
     return NextResponse.json(
-      { success: false, error: error.message || "Scanner failed" },
-      { status: 500 }
+      { success: false, error: isTimeout ? "Market data API timed out — try again later." : (error.message || "Scanner failed") },
+      { status: isTimeout ? 504 : 500 }
     );
   }
 }
