@@ -444,7 +444,7 @@ export async function GET(request: NextRequest) {
     let candles5m: any[] = [];
     try {
       const { getIntradayCandles } = await import('@/lib/breeze-historical');
-      candles5m = await getIntradayCandles(symbol, '5minute', selectedExpiry || '');
+      candles5m = await getIntradayCandles(symbol, today, '5minute');
     } catch {
       // Fallback: empty candles — frontend should handle gracefully
       candles5m = [];
