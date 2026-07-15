@@ -390,11 +390,10 @@ export const ScannerPanel = memo(function ScannerPanel({
     );
   }
 
-  const filteredCandidates = (result.candidates || []).filter(c => {
-    if (sectorFilter && c.sector !== sectorFilter) return false;
-    // Only surface high-accuracy setups (Confidence > 70%) for trading.
-    return (c.totalScore || 0) >= 70;
-  });
+  const filteredCandidates = (result.candidates || [])
+    .filter((c) => !sectorFilter || c.sector === sectorFilter)
+    .sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
+    .slice(0, 15);
 
   return (
     <div className="flex flex-col h-full overflow-auto">
