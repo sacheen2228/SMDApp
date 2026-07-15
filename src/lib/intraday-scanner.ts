@@ -386,7 +386,7 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     const yahooSym = `${sym}.NS`;
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
       if (!res.ok) return;
       const data = await res.json();
       const result = data?.chart?.result?.[0];
@@ -425,6 +425,10 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
       // skip unavailable symbol rather than fabricate data
     }
   };
+
+  // Probe one stock first. If Yahoo is unreachable, bail in ~4s.
+  await fetchOne(symbols[0]);
+  if (quotes.size === 0) return { quotes, candles };
 
   for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
     const batch = symbols.slice(i, i + CONCURRENCY);
