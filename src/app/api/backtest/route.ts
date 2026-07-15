@@ -46,7 +46,7 @@ async function runSingleDayBacktest(symbol: string, dateStr: string) {
     candles: await (async () => {
       try {
         const { getIntradayCandles } = await import("@/lib/breeze-historical");
-        return await getIntradayCandles(symbol, "5minute", dateStr);
+        return await getIntradayCandles(symbol, dateStr, "5minute");
       } catch {
         return [];
       }
