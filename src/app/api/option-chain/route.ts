@@ -210,7 +210,7 @@ export async function GET(request: NextRequest) {
       } catch {}
     }
 
-    if (!chainData || !chainData.data?.length) {
+    if (!chainData || (!chainData.data?.length && !chainData.calls?.length && !chainData.puts?.length)) {
       const spotPrice = chainData?.spotPrice || chainData?.summary?.spotPrice || 0;
       if (spotPrice > 0) {
         // Return spot price with empty chain — frontend can show spot + "no data" message
