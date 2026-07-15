@@ -271,7 +271,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       const scanData = scannerJson?.data;
       if (scanData?.candidates) {
         const highConfStocks = scanData.candidates.filter(
-          (s: any) => s.monthlyOptionTrade && s.totalScore >= 70
+          (s: any) => s.monthlyOptionTrade && s.totalScore >= 60
         );
 
         for (const stock of highConfStocks) {
