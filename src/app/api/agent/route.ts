@@ -147,7 +147,7 @@ export async function POST(req: NextRequest) {
         .then(r => r.json())
         .then(d => d.success ? d : null)
         .catch(() => null),
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(8000) })
+      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(30000) })
         .then(r => r.json())
         .then(d => d.success ? d.data : null)
         .catch(() => null),

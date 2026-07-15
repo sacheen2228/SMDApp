@@ -357,7 +357,7 @@ export const ScannerPanel = memo(function ScannerPanel({
     queryFn: async () => {
       setDataSource(null);
       setLiveError(null);
-      const res = await fetch(`/api/scanner?symbol=${symbol}&live=${useLive}`);
+      const res = await fetch(`/api/scanner?symbol=${symbol}&live=${useLive}`, { signal: AbortSignal.timeout(35_000) });
       if (!res.ok) throw new Error("Scanner failed");
       const json = await res.json();
       if (json.dataSource) setDataSource(json.dataSource);

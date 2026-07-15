@@ -407,7 +407,7 @@ export async function executeTool(
 
     case "get_scanner_picks": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(30000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch scanner";
         const picks = (data.data?.candidates || []).slice(0, 10);
