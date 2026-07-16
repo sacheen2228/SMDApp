@@ -307,13 +307,19 @@ export default function TradingDashboard() {
   const summary: MarketSummary | null = (() => {
     if (!data) return null;
     const raw = data as any;
-    const analysis = raw.analysis || {};
-    const inner = raw.data || {};
-    const chainSummary = inner.summary || {};
-    const chain = inner.data || [];
-    const spot = analysis.spotPrice ?? inner.spotPrice ?? 0;
+    // `data` is already json.data (returned by the query below). The API places
+    // live stats on json.data.summary AND the full analysis on json.analysis
+    // (top-level, NOT nested under json.data). Read from both correctly.
+    const chainSummary = raw.summary || {};
+    const analysis = (raw as any).analysis || {};
+    // Also recover top-level analysis if `data` was flattened elsewhere.
+    const topAnalysis = (window as any).__optionChainAnalysis || {};
+    const mergedAnalysis = { ...topAnalysis, ...analysis };
+    const chain = raw.data || [];
+    const spot = chainSummary.spotPrice ?? raw.spotPrice ?? mergedAnalysis.spotPrice ?? 0;
     const atmStrike =
-      analysis.atmStrike ??
+      chainSummary.atmStrike ??
+      mergedAnalysis.atmStrike ??
       (Array.isArray(chain) && chain.length
         ? chain.reduce((b: any, r: any) =>
             Math.abs(r.strike - spot) < Math.abs(b.strike - spot) ? r : b
@@ -327,11 +333,14 @@ export default function TradingDashboard() {
       prevClose: (typeof chainSummary.prevClose === 'number' ? chainSummary.prevClose : null),
       vixLive: chainSummary.vixLive ?? false,
       prevCloseLive: chainSummary.prevCloseLive ?? false,
-      pcr: analysis.pcr ?? 1,
-      maxPain: analysis.maxPain ?? 0,
-      totalCallOI: analysis.totalCallOI ?? 0,
-      totalPutOI: analysis.totalPutOI ?? 0,
+      pcr: chainSummary.pcr ?? mergedAnalysis.pcr ?? 1,
+      maxPain: chainSummary.maxPain ?? mergedAnalysis.maxPain ?? 0,
+      totalCallOI: chainSummary.totalCallOI ?? mergedAnalysis.totalCallOI ?? 0,
+      totalPutOI: chainSummary.totalPutOI ?? mergedAnalysis.totalPutOI ?? 0,
       atmStrike,
+      futuresPrice: mergedAnalysis.futuresPrice ?? null,
+      futuresPremium: mergedAnalysis.futuresPremium ?? null,
+      breadth: mergedAnalysis.breadth ?? null,
     };
   })();
 
