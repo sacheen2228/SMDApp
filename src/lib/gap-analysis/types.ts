@@ -68,23 +68,25 @@ export interface GapWeights {
   vix: number;
   breadth: number;
   globalCues: number;
+  institutionalFlow: number;
   expectedMove: number;
   historicalStats: number;
 }
 
 export const DEFAULT_WEIGHTS: GapWeights = {
-  giftNifty: 0.18,
-  futuresPremium: 0.12,
+  giftNifty: 0.16,
+  futuresPremium: 0.10,
   pcrOI: 0.10,
   oiBuildup: 0.10,
   maxPainDistance: 0.08,
   vwapDistance: 0.06,
   atr: 0.05,
   vix: 0.07,
-  breadth: 0.05,
-  globalCues: 0.07,
-  expectedMove: 0.06,
-  historicalStats: 0.06,
+  breadth: 0.04,
+  globalCues: 0.06,
+  institutionalFlow: 0.08,
+  expectedMove: 0.05,
+  historicalStats: 0.05,
 };
 
 export interface GapPrediction {

@@ -157,6 +157,30 @@ function factorBreadth(breadth: number | null): { score: number; explanation: st
   };
 }
 
+// FII/DII institutional cash flow. fiiNet/diiNet in Crores (negative = net selling).
+// Combined net flow is the signal: strong FII selling = bearish gap pressure,
+// strong DII buying partially offsets but FII dominates sentiment near open.
+function factorInstitutionalFlow(
+  fiiNet: number | null, diiNet: number | null
+): { score: number; explanation: string; dataStatus: DataAvailability } {
+  if (fiiNet === null && diiNet === null) {
+    return { score: 0, explanation: "FII/DII flow data unavailable", dataStatus: "MISSING" };
+  }
+  const fii = fiiNet ?? 0;
+  const dii = diiNet ?? 0;
+  const net = fii + dii; // combined institutional net (Crores)
+  // Scale: ±5000 Cr net maps roughly to ±100 score. FII weighted 1.0, DII 0.5
+  // (FII flow is the dominant pre-open sentiment driver).
+  const weighted = fii + dii * 0.5;
+  const score = Math.max(-100, Math.min(100, (weighted / 5000) * 100));
+  const dir = net > 0 ? "net institutional buying" : net < 0 ? "net institutional selling" : "neutral";
+  return {
+    score: Math.round(score),
+    explanation: `FII ${fii >= 0 ? "+" : ""}${fii.toFixed(0)} Cr, DII ${dii >= 0 ? "+" : ""}${dii.toFixed(0)} Cr → ${dir}`,
+    dataStatus: "AVAILABLE",
+  };
+}
+
 function factorGlobalCues(
   usMarket: number | null,
   asianMarket: number | null
@@ -277,6 +301,11 @@ export function predictGap(input: GapInput, weights: GapWeights = DEFAULT_WEIGHT
   const f9 = factorBreadth(input.breadth);
   if (f9.dataStatus === "MISSING") missingFields.push("Breadth");
   factors.push({ ...f9, name: "Breadth", weight: weights.breadth, weightedScore: f9.score * weights.breadth });
+
+  // 9b. Institutional Flow (FII/DII)
+  const fFlow = factorInstitutionalFlow(input.fiiNet, input.diiNet);
+  if (fFlow.dataStatus === "MISSING") missingFields.push("FII/DII");
+  factors.push({ ...fFlow, name: "Institutional Flow", weight: weights.institutionalFlow, weightedScore: fFlow.score * weights.institutionalFlow });
 
   // 10. Global Cues
   const f10 = factorGlobalCues(input.usMarketChange, input.asianMarketChange);

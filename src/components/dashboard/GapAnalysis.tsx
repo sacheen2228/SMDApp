@@ -47,6 +47,7 @@ const factorColors: Record<string, string> = {
   "ATR": "text-orange-400",
   "India VIX": "text-red-400",
   "Breadth": "text-pink-400",
+  "Institutional Flow": "text-indigo-400",
   "Global Cues": "text-sky-400",
   "Expected Move": "text-teal-400",
   "Historical Stats": "text-gray-400",
@@ -107,6 +108,7 @@ function buildGapInput(
   analysis: any, summary: any | undefined,
   spotPrice: number, giftNifty: any,
   chainData: any[] | undefined, candles: any[] | undefined,
+  fiiDii: any,
 ): GapInput {
   const pcr = analysis?.pcr ?? summary?.pcr ?? null;
   const oi = aggregateOIChange(analysis, chainData);
@@ -128,8 +130,8 @@ function buildGapInput(
     breadth: summary?.breadth ?? null,
     atr: vol.atr,
     vwapDistance: vol.vwapDistance,
-    fiiNet: summary?.fiiNet ?? null,
-    diiNet: summary?.diiNet ?? null,
+    fiiNet: typeof fiiDii?.fiiNet === "number" ? fiiDii.fiiNet : null,
+    diiNet: typeof fiiDii?.diiNet === "number" ? fiiDii.diiNet : null,
     usMarketChange: summary?.usMarketChange ?? null,
     asianMarketChange: summary?.asianMarketChange ?? null,
     usdinr: summary?.usdinr ?? null,
@@ -148,6 +150,7 @@ export const GapAnalysis = memo(function GapAnalysis({
   analysis, summary, spotPrice, symbol, expiryDate, chainData, candles,
 }: GapAnalysisProps) {
   const [giftNifty, setGiftNifty] = useState<any>(null);
+  const [fiiDii, setFiiDii] = useState<any>(null);
   const [showFactors, setShowFactors] = useState(true);
 
   useEffect(() => {
@@ -157,9 +160,16 @@ export const GapAnalysis = memo(function GapAnalysis({
       .catch(() => {});
   }, [spotPrice]);
 
+  useEffect(() => {
+    fetch(`/api/fii-dii`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setFiiDii(d); })
+      .catch(() => {});
+  }, []);
+
   const gapInput = useMemo(
-    () => buildGapInput(analysis, summary, spotPrice, giftNifty, chainData, candles),
-    [analysis, summary, spotPrice, giftNifty, chainData, candles],
+    () => buildGapInput(analysis, summary, spotPrice, giftNifty, chainData, candles, fiiDii),
+    [analysis, summary, spotPrice, giftNifty, chainData, candles, fiiDii],
   );
 
   const gapResult: GapPrediction = useMemo(

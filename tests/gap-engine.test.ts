@@ -118,9 +118,9 @@ describe("gap-engine (Phase 3)", () => {
 // ─── PHASE 4: Explainability Tests ──────────────────────────────
 
 describe("gap-engine explainability (Phase 4)", () => {
-  it("exposes per-factor breakdown with all 12 factors", () => {
+  it("exposes per-factor breakdown with all 13 factors", () => {
     const result = predictGap(makeInput());
-    expect(result.factors.length).toBe(12);
+    expect(result.factors.length).toBe(13);
     expect(result.factors[0].name).toBe("Gift Nifty");
     expect(result.factors[0].score).toBeDefined();
     expect(result.factors[0].weightedScore).toBeDefined();
@@ -264,7 +264,7 @@ describe("no fabricated values", () => {
     const input = makeInput({ historicalGapStats: null });
     const result = predictGap(input);
     // Should still produce a prediction without hardcoded gap sizes
-    expect(result.factors.length).toBe(12);
+    expect(result.factors.length).toBe(13);
   });
 
   it("gift-nifty fallback does NOT fabricate data (returns 503)", async () => {
