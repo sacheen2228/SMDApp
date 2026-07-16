@@ -27,7 +27,11 @@ export const YAHOO_SYMBOL_MAP: Record<string, string> = {
   'SENSEX': '^BSESN',
   'BANKEX': '^BSEBANK',
   'INDIAVIX': '^INDIAVIX',
-  'GIFTNIFTY': 'SGXNIFTY.NS',
+  // NOTE: Yahoo Finance has no dedicated Gift Nifty (SGX/GIFT futures) ticker.
+  // SGXNIFTY.NS does not resolve (404). The closest real, freely-available
+  // proxy is the NIFTY spot index (^NSEI): its regularMarketPrice vs
+  // chartPreviousClose is the genuine NIFTY gap reference used pre-market.
+  'GIFTNIFTY': '^NSEI',
 };
 
 // Cache for Yahoo data (2 minutes)
