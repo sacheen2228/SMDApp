@@ -203,8 +203,6 @@ function formatNews(n: NewsSummary, lang: "en" | "hi"): string {
     ``,
     `Headlines that matter:`,
     ...n.headlines.slice(0, 4).map((h) => `  • [${h.sentiment}] ${h.title}`),
-    ``,
-    `What I've learned watching this for 29 years: don't trade the news — trade the reaction to the news. By the time a headline hits your screen, the professionals have already positioned. Watch what price DOES after the news, not the news itself. If good news can't push the market higher, that tells you everything you need to know.`,
   ];
   return lines.join("\n");
 }
@@ -227,8 +225,6 @@ function formatGap(g: GapInfo, lang: "en" | "hi"): string {
       `कल का क्लोज़: ${fmt(g.previousClose ?? 0)}`,
       ``,
       `${dir} ओपन का संकेत है।`,
-      ``,
-      `29 साल में ये सीखा है: गैप हमेशा होल्ड नहीं होता। पहले 15-30 मिनट में मार्केट टेस्ट करता है कि गैप वैलिड है या नहीं। जल्दीबाज़ी में मत लीजिये — पहली घंटी के बाद 30 मिनट ज़रूर रुकिये। असली दिशा 10 बजे के बाद पता चलती है।`,
     ].join("\n");
   }
   return [
@@ -239,7 +235,7 @@ function formatGap(g: GapInfo, lang: "en" | "hi"): string {
     ``,
     `This points to a ${dir} open.`,
     ``,
-    `Here's what 29 years has taught me about gaps: they fill more often than they hold. The first 30 minutes of the session is the market's way of testing whether the gap is real or just noise. Don't chase the open. Let the auction settle — watch what happens at the 10:00 AM mark. If the gap holds with volume confirming, then you can act. If it starts fading, the opening range gives you the real levels for the day.`,
+    `Gaps tend to fill more often than they hold. The first 30 minutes is the market testing whether the gap is real or noise — watch the 10:00 AM mark: if it holds with volume, act; if it fades, the opening range gives the real levels.`,
     ``,
     `${(g.changePct ?? 0) > 0 ? "In a gap-up, the professionals are usually selling into strength. Be patient and wait for your entry — don't get caught in the opening auction frenzy." : (g.changePct ?? 0) < 0 ? "In a gap-down, the professionals are usually waiting to buy into weakness. Let the initial panic subside before you act." : "With no significant gap, the overnight session didn't give us a clear edge. Focus on the opening range — the real levels for the day get established in the first 30 minutes."}`,
   ].join("\n");
@@ -283,8 +279,6 @@ function formatCorrelation(c: CorrInfo, lang: "en" | "hi"): string {
     `Nifty: ${fmt(c.niftyPrice)} | Sensex: ${fmt(c.sensexPrice)}`,
     ``,
     `${divergenceNote}`,
-    ``,
-    `One thing I've learned in 29 years: correlation is a snapshot, not a prediction. When it breaks, pay attention — a divergence between Nifty and Sensex usually means money is rotating between large-caps and the broader market. That's a signal in itself.`,
   ].join("\n");
 }
 
@@ -299,13 +293,13 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
       return {
         language,
         intentKind: "greeting",
-        text: "सचिन जी, नमस्ते। मैं 29 सालों से भारतीय बाज़ार देख रहा हूँ — Harshad Mehta के ज़माने से लेकर आज तक। मैं सिर्फ़ नंबर नहीं देता, बताता हूँ कि उनका मतलब क्या है। निफ़्टी, बैंकनिफ़्टी, फिननिफ़्टी, मिडकैप, सेंसेक्स — किसी का ट्रेड चाहिये? या मार्केट का मूड, गैप, कोरिलेशन देखना है? बताइये।",
+        text: "सचिन जी, नमस्ते। मैं लाइव ऑप्शन चेन, ग्रीक्स, OI और FII/DII फ्लो पढ़कर ट्रेड सुझाता हूँ। निफ़्टी, बैंकनिफ़्टी, फिननिफ़्टी, मिडकैप, सेंसेक्स — किसी का ट्रेड चाहिये? या मार्केट का मूड, गैप, कोरिलेशन देखना है? बताइये।",
       };
     }
     return {
       language,
       intentKind: "greeting",
-      text: "Good to see you, Sachin. I've been watching these markets since before online trading existed — 29 years of Nifty openings, budget days, bear markets, bull runs, and everything in between. I don't just give you numbers; I read the tape and tell you what the smart money is doing. I can scan for trades across NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and SENSEX, give you the broader picture with news and sentiment, analyze the Gift Nifty gap for tomorrow's open, or break down the Nifty-Sensex correlation. What would you like me to look at?",
+      text: "Hi Sachin. I read the live option chain — OI buildup, Greeks (delta/IV skew), volume, PCR, VIX — plus FII/DII cash flow and the gap model, then suggest trades from that data. Ask me for a trade on NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY or SENSEX, or about news, gap, or correlation. What would you like me to look at?",
     };
   }
 
@@ -483,7 +477,11 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
         } else {
           lines.push(`   Target ₹${a.tp1.toFixed(2)} (${rewardPct}% gain)`);
         }
-        lines.push(`   R:R 1:${a.rr.toFixed(1)} • ${a.rationale.split("·").map(r => r.trim()).filter(Boolean)[0] || ""}`);
+        lines.push(`   R:R 1:${a.rr.toFixed(1)}`);
+        // Show the raw chain read so the bot explains WHAT it saw (Greeks, OI, IV skew)
+        if (a.atmRead) lines.push(`   🔬 Chain: ${a.atmRead}`);
+        const reasons = a.rationale.split("·").map(r => r.trim()).filter(Boolean);
+        reasons.forEach(r => lines.push(`   ↳ ${r}`));
         lines.push(``);
       });
 

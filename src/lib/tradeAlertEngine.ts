@@ -31,6 +31,7 @@ export interface TradeAlert {
   rr: 1 | 2 | 3 | 4;
   confidence: number;       // 0-100
   rationale: string;
+  atmRead?: string;          // raw ATM Greeks/OI snapshot the engine read from the chain
   expiry?: string;
   generatedAt: string;
 }
@@ -162,6 +163,16 @@ export function generateOptionAlert(inputs: EngineInputs): TradeAlert | null {
   const tp2 = entry * (1 + slPct * rr);
   const confidence = Math.max(50, Math.min(90, 60 + Math.abs(bias.score)));
 
+  const atmRead = (() => {
+    const c = atm.ce, p = atm.pe;
+    const parts = [
+      `ATM ${atm.strike}`,
+      `CE Δ${c.delta.toFixed(2)} IV${(c.iv).toFixed(1)} OI${(c.oi / 1000).toFixed(0)}K Chg${c.oiChg >= 0 ? "+" : ""}${c.oiChg}`,
+      `PE Δ${p.delta.toFixed(2)} IV${(p.iv).toFixed(1)} OI${(p.oi / 1000).toFixed(0)}K Chg${p.oiChg >= 0 ? "+" : ""}${p.oiChg}`,
+    ];
+    return parts.join(" · ");
+  })();
+
   return {
     id: `opt-${inputs.symbol}-${Date.now()}`,
     kind: "option",
@@ -173,6 +184,7 @@ export function generateOptionAlert(inputs: EngineInputs): TradeAlert | null {
     entry, sl, tp1, tp2, rr,
     confidence: Math.round(confidence),
     rationale: bias.reasons.join(" · ") || "Neutral setup — low conviction",
+    atmRead,
     expiry: inputs.expiryLabel,
     generatedAt: new Date().toISOString(),
   };
