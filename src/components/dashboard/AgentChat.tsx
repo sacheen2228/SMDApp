@@ -25,6 +25,10 @@ import {
   Newspaper,
   Link2,
   Building2,
+  Scan,
+  Activity,
+  Moon,
+  ClipboardList,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -79,9 +83,12 @@ const QUICK_ACTIONS = [
   { label: "FINNIFTY", icon: Bot, query: "FINNIFTY option trade now" },
   { label: "SENSEX", icon: Bot, query: "SENSEX option trade now" },
   { label: "News", icon: Newspaper, query: "What's the market news and sentiment right now?" },
-  { label: "Gap", icon: TrendingUp, query: "What's the Gift Nifty gap for tomorrow's open?" },
+  { label: "Gap", icon: TrendingUp, query: "What is the institutional gap prediction for tomorrow's open?" },
   { label: "FII/DII", icon: Building2, query: "What is today's FII and DII cash flow?" },
-  { label: "Gap Predict", icon: TrendingUp, query: "What is the institutional gap prediction for tomorrow's open?" },
+  { label: "Scanner", icon: Scan, query: "Show me today's stock scanner picks" },
+  { label: "Breakout", icon: Activity, query: "What are the breakout signals for NIFTY?" },
+  { label: "BTST", icon: Moon, query: "What are today's BTST picks?" },
+  { label: "My Trades", icon: ClipboardList, query: "What trades did we generate today?" },
   { label: "Correlation", icon: Link2, query: "Nifty vs Sensex correlation signal?" },
   { label: "बताओ", icon: Bot, query: "mujhe ek trade do" },
 ];

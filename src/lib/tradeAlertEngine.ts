@@ -330,6 +330,10 @@ export type IntentKind =
   | "gap"
   | "correlation"
   | "fiidii"
+  | "scanner"
+  | "breakout"
+  | "btst"
+  | "trades"
   | "greeting"
   | "unknown";
 
@@ -366,6 +370,20 @@ export function detectIntent(message: string): DetectedIntent {
   }
   if (/(gap|gift\s*nifty|giftnifty|tomorrow'?s?\s*open|next\s*open|opening\s*(bell|trade)|pre-?market)/.test(text)) {
     return { kind: "gap", symbol, raw: text };
+  }
+  // Specific intents MUST be checked before the generic "trade" rule,
+  // because words like "trade"/"buy" appear inside "btst"/"my trades".
+  if (/(scanner|scan|stock\s*pick|top\s*stock|candidate|breakout\s*stock|multibagger)/.test(text)) {
+    return { kind: "scanner", symbol, raw: text };
+  }
+  if (/(breakout|break\s*out|sr\s*level|support\s*resistance|fakeout|pattern\s*confirm)/.test(text)) {
+    return { kind: "breakout", symbol, raw: text };
+  }
+  if (/(btst|buy\s*today\s*sell\s*tomorrow|overnight\s*(trade|position)|carry\s*trade|positional)/.test(text)) {
+    return { kind: "btst", symbol, raw: text };
+  }
+  if (/trade/.test(text) && /(my|today|journal|generated|we|active|open\s*position|what|did|do)/.test(text) && !/option|ce|pe|\bcall\b|\bput\b/.test(text)) {
+    return { kind: "trades", symbol, raw: text };
   }
   if (/trade|signal|setup|entry|buy|sell|call|put|alert|option|strike|\bce\b|\bpe\b/.test(text)) {
     return { kind: "trade", symbol, raw: text };

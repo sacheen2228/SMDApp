@@ -97,6 +97,10 @@ export interface SDMContext {
     factors: { name: string; score: number; weightedScore: number; dataStatus: string; explanation: string }[];
     insufficientData: boolean;
   } | null>;
+  scannerLookup?: () => Promise<any | null>;
+  breakoutLookup?: (symbol: string) => Promise<any | null>;
+  btstLookup?: () => Promise<any | null>;
+  tradesLookup?: () => Promise<any | null>;
   // Conversation memory + hybrid intent resolution
   history?: ChatTurn[]; // last ~6 turns, most recent last
   llmResolve?: (
@@ -137,8 +141,12 @@ async function resolveIntent(
 ): Promise<{ kind: string; symbol?: string }> {
   const regexResult = detectIntent(message);
 
-  // Confident regex hit that doesn't look like a bare follow-up — trust it, skip the LLM call.
-  if (regexResult.kind !== "unknown" && !looksLikeFollowUp(message)) {
+  // Trust an explicit, specific intent immediately — even if it's short
+  // (e.g. "What are today's BTST picks?" is 5 words but unambiguous).
+  // Only short/generic queries (trade/greeting/unknown) fall through to the
+  // follow-up heuristic + LLM resolution.
+  const SPECIFIC = new Set(["scanner", "breakout", "btst", "trades", "fiidii", "news", "gap", "correlation"]);
+  if (regexResult.kind !== "unknown" && (SPECIFIC.has(regexResult.kind) || !looksLikeFollowUp(message))) {
     return regexResult;
   }
 
@@ -363,6 +371,101 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
       intentKind: "fiidii",
       text: `Here's today's institutional cash flow (NSE-derived):\n\n• FII Net: ${cr(f.fiiNet)}${tone(f.fiiNet)}\n• DII Net: ${cr(f.diiNet)}${tone(f.diiNet)}\n• Combined Net: ${cr(overall)}\n\nRegime: ${f.regime ?? "N/A"}\nAs of: ${f.asOf ?? ""}${f.stale ? " (stale — last known)" : ""}\n\nRead: ${bias}.`,
     };
+  }
+
+  // ── Scanner: top stock picks ──
+  if (intent.kind === "scanner") {
+    const s = await ctx.scannerLookup?.().catch(() => null) ?? null;
+    if (!s) {
+      return { language, intentKind: "scanner", text: language === "hi" ? "स्कैनर डेटा लोड नहीं हुआ।" : "Couldn't load scanner data right now." };
+    }
+    const lines: string[] = [];
+    const md = s.marketDirection;
+    const mdStr = md?.trend ?? s.overallBias ?? "N/A";
+    lines.push(language === "hi" ? `📡 स्टॉक स्कैनर — मार्केट: ${mdStr}` : `📡 Stock Scanner — Market: ${mdStr}`);
+    if (md?.details) lines.push(`   ${md.details}`.slice(0, 120));
+    const bulls = s.bestBullish || s.candidates?.filter((c: any) => (c.direction || c.bias) === "BULLISH") || [];
+    const bears = s.bestBearish || s.candidates?.filter((c: any) => (c.direction || c.bias) === "BEARISH") || [];
+    if (bulls.length) {
+      lines.push(language === "hi" ? `\n🟢 बुलिश पिक्स:` : `\n🟢 Bullish picks:`);
+      bulls.slice(0, 5).forEach((b: any) => {
+        const sc = b.totalScore ?? b.score ?? b.confidence ?? "?";
+        const r = Array.isArray(b.reasons) ? b.reasons[0] : b.reasons;
+        lines.push(`  • ${b.symbol} — score ${sc} · ${r ?? ""}`.slice(0, 110));
+      });
+    }
+    if (bears.length) {
+      lines.push(language === "hi" ? `\n🔴 बियरिश पिक्स:` : `\n🔴 Bearish picks:`);
+      bears.slice(0, 5).forEach((b: any) => {
+        const sc = b.totalScore ?? b.score ?? b.confidence ?? "?";
+        const r = Array.isArray(b.reasons) ? b.reasons[0] : b.reasons;
+        lines.push(`  • ${b.symbol} — score ${sc} · ${r ?? ""}`.slice(0, 110));
+      });
+    }
+    if (s.stocksToAvoid?.length) lines.push(language === "hi" ? `\n⚠️ बचें: ${s.stocksToAvoid.join(", ")}` : `\n⚠️ Avoid: ${s.stocksToAvoid.join(", ")}`);
+    return { language, intentKind: "scanner", text: lines.join("\n") };
+  }
+
+  // ── Breakout signals ──
+  if (intent.kind === "breakout") {
+    const b = await ctx.breakoutLookup?.(target).catch(() => null) ?? null;
+    if (!b) {
+      return { language, intentKind: "breakout", text: language === "hi" ? "ब्रेकआउट डेटा लोड नहीं हुआ।" : "Couldn't load breakout signals right now." };
+    }
+    const lines: string[] = [];
+    lines.push(language === "hi" ? `📈 ${target} ब्रेकआउट सिग्नल:` : `📈 ${target} Breakout Signals:`);
+    const items = b.signals ?? b.candidates ?? (Array.isArray(b) ? b : []);
+    if (items.length) {
+      items.slice(0, 6).forEach((it: any) => lines.push(`  • ${it.symbol ?? it.name ?? target} — ${it.type ?? it.direction ?? ""} @ ${it.level ?? it.price ?? ""} · ${it.note ?? it.reason ?? ""}`.slice(0, 110)));
+    } else {
+      lines.push(language === "hi" ? "  अभी कोई क्लियर ब्रेकआउट नहीं।" : "  No clear breakout right now.");
+    }
+    return { language, intentKind: "breakout", text: lines.join("\n") };
+  }
+
+  // ── BTST (buy today, sell tomorrow) ──
+  if (intent.kind === "btst") {
+    const bt = await ctx.btstLookup?.().catch(() => null) ?? null;
+    if (!bt || !bt.data?.length) {
+      return { language, intentKind: "btst", text: language === "hi" ? "आज BTST सेटअप नहीं मिला।" : "No BTST setup flagged today." };
+    }
+    const lines: string[] = [];
+    lines.push(language === "hi" ? "🌙 आज के BTST (कल बेचना) पिक्स:" : "🌙 Today's BTST (sell tomorrow) picks:");
+    bt.data.slice(0, 6).forEach((t: any) => {
+      const sym = t.symbol || t.stock || "?";
+      const entry = t.entry ?? t.buyPrice ?? t.ltp ?? "";
+      const tgt = t.target ?? t.tp ?? "";
+      const sl = t.stoploss ?? t.sl ?? "";
+      lines.push(`  • ${sym} — entry ${entry} · target ${tgt} · SL ${sl}`.trim());
+    });
+    return { language, intentKind: "btst", text: lines.join("\n") };
+  }
+
+  // ── Today's trades (journal) ──
+  if (intent.kind === "trades") {
+    const t = await ctx.tradesLookup?.().catch(() => null) ?? null;
+    if (!t) {
+      return { language, intentKind: "trades", text: language === "hi" ? "आज के ट्रेड लोड नहीं हुए।" : "Couldn't load today's trades." };
+    }
+    const lines: string[] = [];
+    lines.push(language === "hi"
+      ? `📋 आज (${t.date}) के ट्रेड: कुल ${t.total}, एक्टिव ${t.active}, TP ${t.tp}, SL ${t.sl}, एक्सपायर ${t.expired}`
+      : `📋 Today (${t.date}) trades: ${t.total} total, ${t.active} active, ${t.tp} TP hit, ${t.sl} SL hit, ${t.expired} expired`);
+    const list = t.trades || t.items || [];
+    if (list.length) {
+      lines.push("");
+      list.slice(0, 8).forEach((tr: any) => {
+        const sym = tr.symbol || "?";
+        const side = tr.side || tr.action || "";
+        const st = tr.strike ?? "";
+        const pnl = tr.pnl != null ? ` · P&L ₹${tr.pnl}` : "";
+        const status = tr.status ?? tr.state ?? "";
+        lines.push(`  • ${sym} ${st} ${side} — ${status}${pnl}`.trim());
+      });
+    } else {
+      lines.push(language === "hi" ? "  अभी कोई ट्रेड जनरेट नहीं हुआ।" : "  No trades generated yet today.");
+    }
+    return { language, intentKind: "trades", text: lines.join("\n") };
   }
 
   // ── Trade (all indices + equity fallback) ──

@@ -254,6 +254,34 @@ async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
       };
     } catch { return null; }
   };
+  ctx.scannerLookup = async () => {
+    try {
+      const r = await fetch(`${base}/api/scanner`, { cache: "no-store" });
+      const d = await r.json();
+      return d.success ? d.data : null;
+    } catch { return null; }
+  };
+  ctx.breakoutLookup = async (sym: string) => {
+    try {
+      const r = await fetch(`${base}/api/breakout?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const d = await r.json();
+      return d.success ? d.data : null;
+    } catch { return null; }
+  };
+  ctx.btstLookup = async () => {
+    try {
+      const r = await fetch(`${base}/api/btst`, { cache: "no-store" });
+      const d = await r.json();
+      return d.success ? d.data : null;
+    } catch { return null; }
+  };
+  ctx.tradesLookup = async () => {
+    try {
+      const r = await fetch(`${base}/api/trades/today`, { cache: "no-store" });
+      const d = await r.json();
+      return d.success ? d : null;
+    } catch { return null; }
+  };
 
   ctx.history = getHistory(CHAT_KEY);
   ctx.llmResolve = llmResolveIntent;
