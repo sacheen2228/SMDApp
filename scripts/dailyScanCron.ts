@@ -44,11 +44,16 @@ const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm windo
                                                  //  precise 9:15-15:30 market-hours boundary)
 const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
+// Runs AFTER market close (NSE/BSE keep the final day's option chain with
+// full OI/OI-chg/volume available past 7:30pm IST). Collects all F&O stock
+// option chains into the DomAnalysis table for next-day pre-market analysis.
+const DOM_ANALYSIS_SCHEDULE = "35 19 * * 1-5"; // 7:35pm, Mon-Fri — after-hours DOM capture
 
 console.log(`[dailyScanCron] daily digest scheduled for "${DAILY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] DOM analysis (after-hours) scheduled for "${DOM_ANALYSIS_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
   DAILY_SCHEDULE,
@@ -112,6 +117,31 @@ cron.schedule(
       console.log(`[dailyScanCron] BTST close done — closed=${result.closed}`);
     } catch (err) {
       console.error("[dailyScanCron] BTST close failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  DOM_ANALYSIS_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] running after-hours DOM analysis (all F&O stocks)...");
+    try {
+      const base = process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 3000}`;
+      const secret = process.env.DAILY_SCAN_SECRET || "sdm-cron-9f3a2b";
+      const res = await fetch(`${base}/api/cron/dom-analysis?all=true&secret=${encodeURIComponent(secret)}`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${secret}` },
+        signal: AbortSignal.timeout(300000), // allow several minutes for ~180 symbols
+      });
+      const json = await res.json();
+      if (json.success) {
+        console.log(`[dailyScanCron] DOM analysis done — analyzed=${json.analyzed} stored=${json.stored} errors=${(json.errors || []).length}`);
+      } else {
+        console.error("[dailyScanCron] DOM analysis returned error:", json.error);
+      }
+    } catch (err) {
+      console.error("[dailyScanCron] DOM analysis failed", err);
     }
   },
   { timezone: TIMEZONE }

@@ -105,7 +105,12 @@ async function readFromDB(symbols: string[]): Promise<Map<string, PerStockOption
       }
 
       if (record && record.strikes) {
-        const strikes = record.strikes as unknown as DOMStrike[];
+        // The dom-analysis cron stores strikes in a FLAT shape
+        // ({ ceOI, ceOIChg, ceVol, ceLTP, peOI, ... }) whereas the live
+        // NSE fetcher (dom-analysis.ts) stores them NESTED ({ ce:{oi,...}, pe:{...} }).
+        // Normalize both into the nested DOMStrike shape the rest of this
+        // module expects, so pre-market reads work regardless of source.
+        const strikes = normalizeStrikes(record.strikes as unknown as any[]);
         const optionData = domStrikesToOptionData(strikes);
         const pcr = record.pcr || calculatePCR(strikes);
         const maxPain = record.maxPain || calculateMaxPain(strikes);
@@ -242,6 +247,54 @@ export async function fetchPerStockOptionChains(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
+// Normalize stored strikes into the nested DOMStrike shape expected by
+// domStrikesToOptionData(). Handles both formats produced by the codebase:
+//   - live NSE fetcher: { strike, ce:{oi,oiChg,volume,ltp,iv,...}, pe:{...} }
+//   - dom-analysis cron: { strike, ceOI, ceOIChg, ceVol, ceLTP, peOI, ... }
+function normalizeStrikes(raw: any[]): DOMStrike[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((s) => {
+    if (s.ce || s.pe) {
+      // Already nested — pass through (fill missing fields with 0).
+      return {
+        strike: s.strike,
+        ce: s.ce ? {
+          oi: s.ce.oi ?? 0, oiChg: s.ce.oiChg ?? 0, volume: s.ce.volume ?? 0,
+          ltp: s.ce.ltp ?? 0, iv: s.ce.iv ?? 0, bid: s.ce.bid ?? 0, ask: s.ce.ask ?? 0,
+          bidQty: s.ce.bidQty ?? 0, askQty: s.ce.askQty ?? 0,
+          totalBuyQty: s.ce.totalBuyQty ?? 0, totalSellQty: s.ce.totalSellQty ?? 0,
+        } : null,
+        pe: s.pe ? {
+          oi: s.pe.oi ?? 0, oiChg: s.pe.oiChg ?? 0, volume: s.pe.volume ?? 0,
+          ltp: s.pe.ltp ?? 0, iv: s.pe.iv ?? 0, bid: s.pe.bid ?? 0, ask: s.pe.ask ?? 0,
+          bidQty: s.pe.bidQty ?? 0, askQty: s.pe.askQty ?? 0,
+          totalBuyQty: s.pe.totalBuyQty ?? 0, totalSellQty: s.pe.totalSellQty ?? 0,
+        } : null,
+      };
+    }
+    // Flat cron format — map ceOI/ceLTP/etc → nested ce/pe.
+    return {
+      strike: s.strike,
+      ce: (s.ceOI ?? s.ceOi) != null ? {
+        oi: s.ceOI ?? s.ceOi ?? 0,
+        oiChg: s.ceOIChg ?? s.ceOiChg ?? 0,
+        volume: s.ceVol ?? s.ceVolume ?? 0,
+        ltp: s.ceLTP ?? s.ceLtp ?? 0,
+        iv: 0,
+        bid: 0, ask: 0, bidQty: 0, askQty: 0, totalBuyQty: 0, totalSellQty: 0,
+      } : null,
+      pe: (s.peOI ?? s.peOi) != null ? {
+        oi: s.peOI ?? s.peOi ?? 0,
+        oiChg: s.peOIChg ?? s.peOiChg ?? 0,
+        volume: s.peVol ?? s.peVolume ?? 0,
+        ltp: s.peLTP ?? s.peLtp ?? 0,
+        iv: 0,
+        bid: 0, ask: 0, bidQty: 0, askQty: 0, totalBuyQty: 0, totalSellQty: 0,
+      } : null,
+    };
+  });
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
