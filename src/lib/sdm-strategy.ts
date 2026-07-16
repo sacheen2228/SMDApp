@@ -168,6 +168,11 @@ export function runFullAnalysis(
   symbol = 'NIFTY',
 ): FullAnalysis {
   const chain = strikes.filter((s) => s.ce || s.pe);
+  if (chain.length === 0) {
+    // No usable strikes — return a safe empty analysis instead of crashing
+    // on chain[0].strike. The route will still surface spot price / errors.
+    return emptyAnalysis(spotPrice, expiryDate, symbol);
+  }
   let totalCEOI = 0, totalPEOI = 0, totalCallVolume = 0, totalPutVolume = 0;
   let maxPain = spotPrice, maxTotalOI = 0;
   let ceWallStrike = spotPrice, peWallStrike = spotPrice;
@@ -343,6 +348,59 @@ export function runFullAnalysis(
     },
     greeks: { vix: 15 },
     strikes: strikesOI,
+  };
+}
+
+// Safe fallback when the option chain has no usable strikes (e.g. after-hours
+// when BSE/NSE return empty data). Prevents the chain[0].strike crash in
+// runFullAnalysis and lets the route surface a clear "no data" response.
+function emptyAnalysis(spotPrice: number, expiryDate: string, symbol: string): FullAnalysis {
+  return {
+    spotPrice,
+    expiryDate,
+    atmStrike: spotPrice,
+    pcr: 1,
+    maxPain: spotPrice,
+    totalCallOI: 0,
+    totalPutOI: 0,
+    totalCallVolume: 0,
+    totalPutVolume: 0,
+    sentiment: 'neutral',
+    recommendation: {
+      confidence: 0,
+      action: 'NO TRADE',
+      strike: spotPrice,
+      direction: 'CALL',
+      optionType: null,
+      sdmScore: 0,
+      riskLevel: 'EXTREME',
+      oibuildup: 'neutral',
+      gammaWallSupport: spotPrice,
+      gammaWallResistance: spotPrice,
+      entryPrice: 0,
+      idealBuyRange: { low: 0, high: 0 },
+      lateEntryWarning: false,
+      stopLoss: 0,
+      stopLossReason: 'No option chain data available',
+      tp1Pct: 0, tp1: 0, tp2Pct: 0, tp2: 0, tp3Pct: 0, tp3: 0,
+      trailingTarget: false,
+      reasons: [`No usable option chain for ${symbol} — analysis unavailable`],
+    },
+    sdm: {
+      total: 0,
+      sentiment: 'neutral',
+      confidence: 0,
+      pcr: 1,
+      maxPain: spotPrice,
+      breakdown: { 'PCR': '1.00', 'Max Pain': spotPrice.toString(), 'CE OI': '0L', 'PE OI': '0L' },
+    },
+    spot: { spot: spotPrice, atmStrike: spotPrice, change: 0, changePct: 0 },
+    expiry: { label: expiryDate, daysToExpiry: getStandardizedExpiry(symbol)?.days_to_expiry ?? 1, date: expiryDate },
+    oiAnalysis: { totalCallOI: 0, totalPutOI: 0, pcr: 1, maxPain: spotPrice, sentiment: 'neutral' },
+    gammaWalls: [],
+    moneyFlow: { direction: 'neutral', smartMoneyDirection: 'neutral', callWriting: false, putWriting: false },
+    greeks: { vix: 15 },
+    strikes: [],
   };
 }
 
