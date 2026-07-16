@@ -153,7 +153,7 @@ async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
   };
   ctx.gapLookup = async () => {
     try {
-      const r = await fetch(`${base}/api/gift-nifty?spot=${spot}`, { cache: "no-store" });
+      const r = await fetch(`${base}/api/gift-nifty?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
       return mapGap(await r.json());
     } catch { return { available: false }; }
   };

@@ -4,13 +4,19 @@ import { fetchYahooIndexData } from '@/lib/yahoo-finance-api';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const spotPrice = parseFloat(searchParams.get('spot') || '0');
+    const symbol = (searchParams.get('symbol') || 'NIFTY').toUpperCase();
 
-    const data = await fetchYahooIndexData('GIFTNIFTY');
+    // NIFTY uses the Gift Nifty proxy (^NSEI). SENSEX has no Gift Nifty
+    // equivalent, so we use the live SENSEX index (^BSESN) spot vs its
+    // previous close as the pre-open gap proxy. Both are real Yahoo data.
+    const yahooKey = symbol === 'SENSEX' ? 'SENSEX' : 'GIFTNIFTY';
+
+    const data = await fetchYahooIndexData(yahooKey);
     if (data && data.regularMarketPrice && data.previousClose) {
       const gap = data.regularMarketPrice - data.previousClose;
       return NextResponse.json({
         success: true,
+        symbol,
         price: data.regularMarketPrice,
         change: data.change,
         changePct: data.changePct,
@@ -18,6 +24,7 @@ export async function GET(request: NextRequest) {
         gap,
         gapPct: data.previousClose > 0 ? (gap / data.previousClose) * 100 : 0,
         source: 'live',
+        proxy: symbol === 'SENSEX' ? 'SENSEX spot vs prev close' : 'Gift Nifty',
       });
     }
 

@@ -77,16 +77,16 @@ interface AgentChatProps {
 
 // Quick prompts — the bot now answers trades (all indices), news,
 // gap (Gift Nifty) and correlation (Nifty–Sensex).
-const QUICK_ACTIONS = [
+const QUICK_ACTIONS: { label: string; icon: any; query: string | ((symbol: string) => string) }[] = [
   { label: "NIFTY", icon: Bot, query: "NIFTY option trade now" },
   { label: "BANKNIFTY", icon: Bot, query: "BANKNIFTY option trade now" },
   { label: "FINNIFTY", icon: Bot, query: "FINNIFTY option trade now" },
   { label: "SENSEX", icon: Bot, query: "SENSEX option trade now" },
   { label: "News", icon: Newspaper, query: "What's the market news and sentiment right now?" },
-  { label: "Gap", icon: TrendingUp, query: "What is the institutional gap prediction for tomorrow's open?" },
+  { label: "Gap", icon: TrendingUp, query: (s) => `What is the institutional gap prediction for ${s} for tomorrow's open?` },
   { label: "FII/DII", icon: Building2, query: "What is today's FII and DII cash flow?" },
   { label: "Scanner", icon: Scan, query: "Show me today's stock scanner picks" },
-  { label: "Breakout", icon: Activity, query: "What are the breakout signals for NIFTY?" },
+  { label: "Breakout", icon: Activity, query: (s) => `What are the breakout signals for ${s}?` },
   { label: "BTST", icon: Moon, query: "What are today's BTST picks?" },
   { label: "My Trades", icon: ClipboardList, query: "What trades did we generate today?" },
   { label: "Correlation", icon: Link2, query: "Nifty vs Sensex correlation signal?" },
@@ -543,7 +543,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
                 variant="ghost"
                 size="sm"
                 className="h-6 text-[9px] px-1.5 shrink-0 gap-0.5 text-muted-foreground hover:text-foreground"
-                onClick={() => sendTextMessage(qa.query)}
+                onClick={() => sendTextMessage(typeof qa.query === "function" ? qa.query(symbol) : qa.query)}
                 disabled={loading}
               >
                 <qa.icon className="h-2.5 w-2.5" />
