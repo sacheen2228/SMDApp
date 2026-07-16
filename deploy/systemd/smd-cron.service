@@ -1,0 +1,17 @@
+[Unit]
+Description=SMDApp Daily Scan Cron (Telegram alerts, BTST, after-hours DOM capture)
+After=network-online.target smdapp.service
+Requires=smdapp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sachin/Desktop/SMDApp
+ExecStart=/home/sachin/.bun/bin/bun x tsx scripts/dailyScanCron.ts
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
