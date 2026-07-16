@@ -291,6 +291,7 @@ export function ZeroHeroTerminal() {
   const [lastUpdate, setLastUpdate] = useState("--:--:--");
   const [trades, setTrades] = useState<Trade[]>([]);
   const [rec, setRec] = useState<TradeRec | null>(null);
+  const [fiiDii, setFiiDii] = useState<{ fiiNet: number | null; diiNet: number | null; totalNet: number | null; regime: string | null; asOf: string | null; stale?: boolean; source?: string } | null>(null);
   const fetchGenRef = useRef(0);
 
   // Positions (local state)
@@ -446,6 +447,25 @@ export function ZeroHeroTerminal() {
     } catch {}
   }, [symbol]);
 
+  // ─── Fetch real FII/DII cash flow (NSE-derived, via /api/fii-dii) ──
+  const fetchFiiDii = useCallback(async (gen: number) => {
+    try {
+      const res = await fetch(`/api/fii-dii`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (!json.success || gen !== fetchGenRef.current) return;
+      setFiiDii({
+        fiiNet: json.fiiNet ?? null,
+        diiNet: json.diiNet ?? null,
+        totalNet: json.totalNet ?? null,
+        regime: json.regime ?? null,
+        asOf: json.asOf ?? null,
+        stale: json.stale ?? false,
+        source: json.source ?? "live",
+      });
+    } catch {}
+  }, []);
+
   // ─── Initial + periodic fetch ────────────────────────────────────
   useEffect(() => {
     const gen = ++fetchGenRef.current;
@@ -459,17 +479,20 @@ export function ZeroHeroTerminal() {
     fetchVix(gen);
     fetchRec(gen);
     fetchTrades(gen);
+    fetchFiiDii(gen);
     const interval = setInterval(() => fetchChain(gen), 30000);
     const vixInterval = setInterval(() => fetchVix(gen), 60000);
     const recInterval = setInterval(() => fetchRec(gen), 120000);
     const tradesInterval = setInterval(() => fetchTrades(gen), 60000);
+    const fiiDiiInterval = setInterval(() => fetchFiiDii(gen), 300000);
     return () => {
       clearInterval(interval);
       clearInterval(vixInterval);
       clearInterval(recInterval);
       clearInterval(tradesInterval);
+      clearInterval(fiiDiiInterval);
     };
-  }, [fetchChain, fetchVix, fetchRec, fetchTrades]);
+  }, [fetchChain, fetchVix, fetchRec, fetchTrades, fetchFiiDii]);
 
   // ─── Clock ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -576,7 +599,7 @@ export function ZeroHeroTerminal() {
     recordScannerCycle(symbol, "ZERO_HERO", zhCandidates).catch(() => {});
   }, [activeTab, isEligible, zhCandidates, symbol]);
 
-  // ─── FII/DII flow from OI ───────────────────────────────────────
+  // ─── FII/DII flow from OI + real NSE cash flow ─────────────────
   const flowData = useMemo(() => {
     let totalCallOIChg = 0, totalPutOIChg = 0, totalCallVol = 0, totalPutVol = 0;
     for (const s of chain) {
@@ -593,8 +616,24 @@ export function ZeroHeroTerminal() {
     if (engineBias === "BULLISH" || engineBias === "BEARISH") bias = engineBias;
     else if (oiBias === "NEUTRAL" && engineBias === "NEUTRAL") bias = "NEUTRAL";
     const strength = Math.round(50 + Math.max(Math.abs(ratio), engineBias === "NEUTRAL" ? 0 : 0.2) * 50);
-    return { totalCallOIChg, totalPutOIChg, totalCallVol, totalPutVol, bias, strength, pcr, smartMoney: marketSentiment.smartMoney, callWriting: marketSentiment.callWriting, putWriting: marketSentiment.putWriting };
-  }, [chain, pcr, marketSentiment]);
+    // Real FII/DII cash figures (NSE-derived via /api/fii-dii). When available,
+    // the panel surfaces the actual net institutional activity alongside OI flow.
+    const fiiNet = fiiDii?.fiiNet ?? null;
+    const diiNet = fiiDii?.diiNet ?? null;
+    const totalNet = fiiDii?.totalNet ?? (fiiNet !== null && diiNet !== null ? fiiNet + diiNet : null);
+    // Real cash flow overrides the OI-derived bias when clearly directional.
+    let cashBias = bias;
+    if (fiiNet !== null && Math.abs(fiiNet) > 500) {
+      cashBias = fiiNet < 0 ? "BEARISH" : "BULLISH";
+    }
+    return {
+      totalCallOIChg, totalPutOIChg, totalCallVol, totalPutVol,
+      bias: cashBias, oiBias, strength, pcr,
+      smartMoney: marketSentiment.smartMoney, callWriting: marketSentiment.callWriting, putWriting: marketSentiment.putWriting,
+      fiiNet, diiNet, totalNet,
+      fiiStale: fiiDii?.stale ?? false, fiiAsOf: fiiDii?.asOf ?? null, fiiRegime: fiiDii?.regime ?? null,
+    };
+  }, [chain, pcr, marketSentiment, fiiDii]);
 
   // ─── Open trade modal ────────────────────────────────────────────
   function openTrade(strike: number, type: "CE" | "PE", ltp: number, rrOverride?: number) {
@@ -828,7 +867,7 @@ export function ZeroHeroTerminal() {
                   <input type="number" value={modalQty} min={1} onChange={(e) => setModalQty(parseInt(e.target.value) || 1)}
                     className="w-[100px] bg-[#151b25] border border-[#1f2733] text-[#dfe6ee] px-2 py-1.5 rounded-md font-mono text-right" />
                 ) : (
-                  <b style={{ color: color || "#dfe6ee" }}>{value as string}</b>
+                  <b style={{ color: (color as string) || "#dfe6ee" }}>{value as string}</b>
                 )}
               </div>
             ))}
@@ -1051,13 +1090,18 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
 
 // ─── FII Flow Panel ────────────────────────────────────────────────
 function FIIFlowPanel({ flowData }: { flowData: any }) {
-  const { totalCallOIChg, totalPutOIChg, bias, strength, smartMoney, callWriting, putWriting } = flowData;
+  const { totalCallOIChg, totalPutOIChg, bias, strength, smartMoney, callWriting, putWriting, fiiNet, diiNet, totalNet, fiiStale, fiiAsOf, fiiRegime } = flowData;
   const bearish = bias === "BEARISH";
   const bullish = bias === "BULLISH";
   // Engine-driven institutional activity: bullish flow = buying calls / writing puts;
   // bearish flow = writing calls / buying puts.
   const buying = bullish ? "CALLS" : bearish ? "PUTS" : "NEUTRAL";
   const writing = bullish ? "PUTS" : bearish ? "CALLS" : "NEUTRAL";
+  const fmtCr = (n: number | null) => {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return `${n > 0 ? "+" : ""}${Math.round(n).toLocaleString("en-IN")} Cr`;
+  };
+  const cashColor = (n: number | null) => n === null ? "text-[#7d8ba0]" : n < 0 ? "text-[#f2495c]" : "text-[#1fbf75]";
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
@@ -1065,6 +1109,31 @@ function FIIFlowPanel({ flowData }: { flowData: any }) {
         <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${bearish ? "bg-[rgba(242,73,92,.18)] text-[#f2495c]" : bullish ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>{bias}</span>
       </div>
       <div className="p-3">
+        {/* Real NSE-derived FII/DII cash flow */}
+        <div className="mb-3 rounded-lg border border-[#1f2733] bg-[#151b25] p-2.5 space-y-1.5">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-[#7d8ba0]">FII Net (Cash)</span>
+            <span className={`font-mono font-bold ${cashColor(fiiNet)}`}>{fmtCr(fiiNet)}</span>
+          </div>
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-[#7d8ba0]">DII Net (Cash)</span>
+            <span className={`font-mono font-bold ${cashColor(diiNet)}`}>{fmtCr(diiNet)}</span>
+          </div>
+          <div className="flex items-center justify-between text-[11px] border-t border-[#1f2733] pt-1.5">
+            <span className="text-[#7d8ba0]">Combined Net</span>
+            <span className={`font-mono font-bold ${cashColor(totalNet)}`}>{fmtCr(totalNet)}</span>
+          </div>
+          {fiiRegime && (
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-[#7d8ba0]">Regime</span>
+              <span className="font-semibold text-[#a78bfa]">{fiiRegime}</span>
+            </div>
+          )}
+          <div className="text-[9px] text-[#5d6b80] font-mono">
+            {fiiStale ? "Stale (last known) · " : ""}{fiiAsOf ?? "NSE-derived"} · 5m refresh
+          </div>
+        </div>
+
         <div className="text-[11px] text-[#7d8ba0] mb-1">Call OI Change</div>
         <div className="h-2.5 rounded-md bg-[#151b25] overflow-hidden mb-1">
           <div className="h-full rounded-md" style={{

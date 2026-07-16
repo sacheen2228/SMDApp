@@ -231,11 +231,11 @@ export const GapAnalysis = memo(function GapAnalysis({
             </div>
             <h1 className="text-2xl font-black tracking-tight">GAP INTELLIGENCE</h1>
           </div>
-          <p className="text-xs text-muted-foreground">Institutional 12-Factor Gap Engine — Factor Breakdown Below</p>
+            <p className="text-xs text-muted-foreground">Institutional 13-Factor Gap Engine — Factor Breakdown Below</p>
         </div>
 
-        {/* ═══════ TOP METRICS BAR (13 columns) ═══════ */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-13 gap-1.5">
+        {/* ═══════ TOP METRICS BAR ═══════ */}
+        <div className="flex flex-wrap gap-1.5">
           <MetricPill label="Spot" value={fmtFull(spotPrice)} />
           <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"}
             color={giftNifty ? (giftNifty.price > (prevClose || 0) ? "text-emerald-500" : giftNifty.price < (prevClose || 0) ? "text-red-500" : "") : "text-muted-foreground"}
@@ -247,6 +247,8 @@ export const GapAnalysis = memo(function GapAnalysis({
           <MetricPill label="Expected Move" value={expectedMovePts != null ? `±${expectedMovePts} pts` : "—"} color="text-teal-400" />
           <MetricPill label="OI Bias" value={`${peOI > ceOI ? "BULL" : ceOI > peOI ? "BEAR" : "NEUTRAL"}`}
             color={peOI > ceOI ? "text-emerald-500" : ceOI > peOI ? "text-red-500" : "text-muted-foreground"} />
+          <MetricPill label="FII Net" value={fiiDii?.fiiNet != null ? `${fiiDii.fiiNet > 0 ? "+" : ""}${Math.round(fiiDii.fiiNet).toLocaleString("en-IN")}` : "—"} color={fiiDii?.fiiNet != null ? (fiiDii.fiiNet < 0 ? "text-red-500" : "text-emerald-500") : "text-muted-foreground"} />
+          <MetricPill label="DII Net" value={fiiDii?.diiNet != null ? `${fiiDii.diiNet > 0 ? "+" : ""}${Math.round(fiiDii.diiNet).toLocaleString("en-IN")}` : "—"} color={fiiDii?.diiNet != null ? (fiiDii.diiNet < 0 ? "text-red-500" : "text-emerald-500") : "text-muted-foreground"} />
         </div>
 
         {gapResult.insufficientData && (
