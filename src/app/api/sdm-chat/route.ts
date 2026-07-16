@@ -163,6 +163,97 @@ async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
       return mapCorr(await r.json());
     } catch { return null; }
   };
+  ctx.fiiDiiLookup = async () => {
+    try {
+      const r = await fetch(`${base}/api/fii-dii`, { cache: "no-store" });
+      const d = await r.json();
+      if (!d.success) return null;
+      return {
+        fiiNet: d.fiiNet ?? null,
+        diiNet: d.diiNet ?? null,
+        totalNet: d.totalNet ?? null,
+        regime: d.regime ?? null,
+        asOf: d.asOf ?? null,
+        stale: d.stale ?? false,
+      };
+    } catch { return null; }
+  };
+  ctx.gapPredictionLookup = async () => {
+    try {
+      const r = await fetch(`${base}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+      const json = await r.json();
+      const d = json?.data;
+      if (!d) return null;
+      const { predictGap } = await import("@/lib/gap-analysis/gap-engine");
+      const { DEFAULT_WEIGHTS } = await import("@/lib/gap-analysis/types");
+      const summary = d.summary || {};
+      const candles = d.candles || [];
+      const analysis = json.analysis || {};
+      // Derive ATR + VWAP distance from candles (real data)
+      let atr: number | null = null, vwapDistance: number | null = null;
+      if (candles.length >= 2 && spot) {
+        const rows = candles.map((c: any) => ({ h: +c.high, l: +c.low, c: +c.close, o: +c.open, v: +c.volume }))
+          .filter((x: any) => isFinite(x.h) && isFinite(x.l) && isFinite(x.c) && x.h > 0);
+        if (rows.length >= 2) {
+          const trs: number[] = [];
+          for (let i = 1; i < rows.length; i++) {
+            const p = rows[i - 1].c;
+            trs.push(Math.max(rows[i].h - rows[i].l, Math.abs(rows[i].h - p), Math.abs(rows[i].l - p)));
+          }
+          atr = trs.reduce((a: number, b: number) => a + b, 0) / trs.length;
+          let pv = 0, pvq = 0;
+          for (const x of rows) { const typ = (x.h + x.l + x.c) / 3; const v = x.v > 0 ? x.v : 1; pv += typ * v; pvq += v; }
+          const vwap = pvq > 0 ? pv / pvq : rows[rows.length - 1].c;
+          vwapDistance = ((spot - vwap) / vwap) * 100;
+        }
+      }
+      const fii = await ctx.fiiDiiLookup?.().catch(() => null) ?? null;
+      const input = {
+        prevClose: typeof summary.prevClose === "number" ? summary.prevClose : null,
+        currentSpot: spot || null,
+        currentFutures: analysis.futuresPrice ?? null,
+        giftNiftyPrice: null,
+        giftNiftyPrevClose: null,
+        indiaVIX: typeof summary.indiaVIX === "number" ? summary.indiaVIX : null,
+        pcrOI: summary.pcr ?? null,
+        pcrVolume: null,
+        maxPain: analysis.maxPain ?? summary.maxPain ?? null,
+        ceOIChange: analysis.totalCallOI ?? null,
+        peOIChange: analysis.totalPutOI ?? null,
+        optionIV: null,
+        futuresPremium: null,
+        breadth: null,
+        atr,
+        vwapDistance,
+        fiiNet: fii?.fiiNet ?? null,
+        diiNet: fii?.diiNet ?? null,
+        usMarketChange: null,
+        asianMarketChange: null,
+        usdinr: null,
+        crudeChange: null,
+        newsRiskScore: null,
+        economicCalendarRisk: null,
+        historicalGapUpPct: null,
+        historicalGapDownPct: null,
+        historicalGapStats: null,
+        timestamp: new Date().toISOString(),
+        symbol,
+      };
+      const pred = predictGap(input as any, DEFAULT_WEIGHTS);
+      return {
+        prediction: pred.prediction,
+        probability: pred.probability,
+        confidence: pred.confidence,
+        bullScore: pred.bullScore,
+        bearScore: pred.bearScore,
+        insufficientData: pred.insufficientData,
+        factors: pred.factors.map((f: any) => ({
+          name: f.name, score: f.score, weightedScore: f.weightedScore,
+          dataStatus: f.dataStatus, explanation: f.explanation,
+        })),
+      };
+    } catch { return null; }
+  };
 
   ctx.history = getHistory(CHAT_KEY);
   ctx.llmResolve = llmResolveIntent;

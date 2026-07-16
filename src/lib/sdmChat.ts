@@ -84,6 +84,19 @@ export interface SDMContext {
   newsLookup?: () => Promise<NewsSummary | null>;
   gapLookup?: () => Promise<GapInfo | null>;
   correlationLookup?: () => Promise<CorrInfo | null>;
+  fiiDiiLookup?: () => Promise<{
+    fiiNet: number | null; diiNet: number | null; totalNet: number | null;
+    regime: string | null; asOf: string | null; stale: boolean;
+  } | null>;
+  gapPredictionLookup?: () => Promise<{
+    prediction: "UP" | "DOWN" | "FLAT";
+    probability: number;
+    confidence: number;
+    bullScore: number;
+    bearScore: number;
+    factors: { name: string; score: number; weightedScore: number; dataStatus: string; explanation: string }[];
+    insufficientData: boolean;
+  } | null>;
   // Conversation memory + hybrid intent resolution
   history?: ChatTurn[]; // last ~6 turns, most recent last
   llmResolve?: (
@@ -328,6 +341,36 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
     return { language, intentKind: "correlation", text: formatCorrelation(c, language) };
   }
 
+  // ── FII / DII institutional flow ──
+  if (intent.kind === "fiidii") {
+    const f = await ctx.fiiDiiLookup?.().catch(() => null) ?? null;
+    if (!f || (f.fiiNet === null && f.diiNet === null)) {
+      return {
+        language,
+        intentKind: "fiidii",
+        text: language === "hi" ? "FII/DII डेटा अभी लोड नहीं हुआ — थोड़ी देर में ट्राई करें।" : "Couldn't load FII/DII flow right now — try again in a moment.",
+      };
+    }
+    const cr = (n: number | null) => (n === null ? "N/A" : `${n > 0 ? "+" : ""}${Math.round(n).toLocaleString("en-IN")} Cr`);
+    const tone = (n: number | null) => (n === null ? "" : n < 0 ? " 🔴 net selling" : " 🟢 net buying");
+    const overall = f.totalNet ?? ((f.fiiNet ?? 0) + (f.diiNet ?? 0));
+    const bias = overall < -300 ? "net institutional selling pressure — that's a headwind for bulls"
+      : overall > 300 ? "net institutional buying support — tailwind for bulls"
+      : "roughly balanced institutional flow";
+    if (language === "hi") {
+      return {
+        language,
+        intentKind: "fiidii",
+        text: `आज का FII/DII फ्लो (कैश मार्केट):\n\n• FII नेट: ${cr(f.fiiNet)}${tone(f.fiiNet)}\n• DII नेट: ${cr(f.diiNet)}${tone(f.diiNet)}\n• कुल नेट: ${cr(overall)}\n\nरेजिम: ${f.regime ?? "N/A"}\nअपडेट: ${f.asOf ?? ""}${f.stale ? " (पुराना डेटा)" : ""}\n\nमतलब: ${bias}।`,
+      };
+    }
+    return {
+      language,
+      intentKind: "fiidii",
+      text: `Here's today's institutional cash flow (NSE-derived):\n\n• FII Net: ${cr(f.fiiNet)}${tone(f.fiiNet)}\n• DII Net: ${cr(f.diiNet)}${tone(f.diiNet)}\n• Combined Net: ${cr(overall)}\n\nRegime: ${f.regime ?? "N/A"}\nAs of: ${f.asOf ?? ""}${f.stale ? " (stale — last known)" : ""}\n\nRead: ${bias}.`,
+    };
+  }
+
   // ── Trade (all indices + equity fallback) ──
   if (intent.kind === "trade") {
     const indexNames = ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"];
@@ -455,6 +498,24 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
           : `Those are my top picks across the board. Remember: risk per trade stays under 2% of capital. The market will wait for you — patience is what separates the professionals from the rest.`
         )
       );
+
+      // Market context footer: FII/DII flow + gap prediction (real data)
+      const fii = await ctx.fiiDiiLookup?.().catch(() => null) ?? null;
+      const gap = await ctx.gapPredictionLookup?.().catch(() => null) ?? null;
+      const foot: string[] = [];
+      if (fii && (fii.fiiNet !== null || fii.diiNet !== null)) {
+        const cr = (n: number | null) => (n === null ? "N/A" : `${n > 0 ? "+" : ""}${Math.round(n).toLocaleString("en-IN")}`);
+        foot.push(language === "hi"
+          ? `📊 FII/DII: FII ${cr(fii.fiiNet)} | DII ${cr(fii.diiNet)} Cr${fii.regime ? ` · ${fii.regime}` : ""}`
+          : `📊 Institutional flow — FII ${cr(fii.fiiNet)} | DII ${cr(fii.diiNet)} Cr${fii.regime ? ` · ${fii.regime}` : ""}`);
+      }
+      if (gap && !gap.insufficientData) {
+        const dir = gap.prediction === "UP" ? (language === "hi" ? "गैप अप" : "Gap Up") : gap.prediction === "DOWN" ? (language === "hi" ? "गैप डाउन" : "Gap Down") : (language === "hi" ? "फ्लैट" : "Flat");
+        foot.push(language === "hi"
+          ? `🔮 गैप प्रेडिक्शन: ${dir} (${gap.probability}% · कॉन्फिडेंस ${gap.confidence}%)`
+          : `🔮 Gap prediction: ${dir} (${gap.probability}% · confidence ${gap.confidence}%)`);
+      }
+      if (foot.length) lines.push(``, ...foot);
 
       return {
         language,

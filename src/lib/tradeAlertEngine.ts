@@ -317,6 +317,7 @@ export type IntentKind =
   | "news"
   | "gap"
   | "correlation"
+  | "fiidii"
   | "greeting"
   | "unknown";
 
@@ -356,6 +357,9 @@ export function detectIntent(message: string): DetectedIntent {
   }
   if (/trade|signal|setup|entry|buy|sell|call|put|alert|option|strike|\bce\b|\bpe\b/.test(text)) {
     return { kind: "trade", symbol, raw: text };
+  }
+  if (/(fii|dii|institutional\s*flow|foreign\s*institutional|domestic\s*institutional|net\s*(buy|sell|flow)|cash\s*market\s*(flow|activity))/i.test(text)) {
+    return { kind: "fiidii", symbol, raw: text };
   }
   if (/(news|sentiment|headline|market\s*(mood|analysis|today|now)|how'?s?\s*the\s*market|what'?s?\s*the\s*news)/.test(text)) {
     return { kind: "news", symbol, raw: text };
