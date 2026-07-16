@@ -10,18 +10,18 @@ export interface FIIDIIResult {
   source: "live" | "stale" | "unavailable";
 }
 
-// NiftyTrader is the only FII/DII source reachable from this host (NSE, BSE,
-// Moneycontrol, Sensibull, Investing, Trendlyne, ET are all blocked / denied).
-// Resilience is therefore built via: (a) multiple extraction strategies on the
-// same page, (b) a one-shot retry on transient failures, and (c) a stale-cache
-// fallback so the gap tab keeps showing the last known REAL figure instead of
-// dropping to MISSING when a live scrape briefly fails.
-const SOURCE_URLS = [
+// Two independent real sources (both ultimately NSE-derived):
+//  1. MrChartist JSON API — fast, no browser needed, primary.
+//  2. NiftyTrader scrape (Playwright) — browser fallback if the JSON API fails.
+// NSE/BSE/Moneycontrol/Sensibull/Investing/Trendlyne/ET are all blocked or
+// access-denied from this host, so these two are the only reachable options.
+const MRCHARTIST_URL = "https://fii-diidata.mrchartist.com/api/data";
+const NIFTYTRADER_URLS = [
   "https://www.niftytrader.in/fii-dii-data",
   "https://www.niftytrader.in/fii-dii-trading-activity",
 ];
 
-// In-memory cache (server side). NiftyTrader updates once per session.
+// In-memory cache (server side). Sources update once per session.
 let cache: { data: FIIDIIResult; ts: number } | null = null;
 const CACHE_MS = 10 * 60 * 1000; // fresh data valid for 10 min
 const STALE_MS = 6 * 60 * 60 * 1000; // serve up to 6h-old data as "stale"
@@ -61,8 +61,35 @@ function parseCr(text: string | undefined): number | null {
   return sign * num;
 }
 
-// Extract figures from raw page text using two independent strategies so a
-// minor layout change to either format still yields data.
+// ─── Primary source: MrChartist JSON API ─────────────────────────
+async function fetchMrChartist(): Promise<FIIDIIResult | null> {
+  try {
+    const res = await withTimeout(
+      fetch(MRCHARTIST_URL, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) }),
+      13000,
+      "mrchartist fetch",
+    );
+    if (!res.ok) return null;
+    const j = await res.json();
+    const fiiNet = typeof j.fii_net === "number" ? j.fii_net : null;
+    const diiNet = typeof j.dii_net === "number" ? j.dii_net : null;
+    if (fiiNet === null && diiNet === null) return null;
+    return {
+      fiiNet,
+      diiNet,
+      totalNet: typeof j.fii_net === "number" && typeof j.dii_net === "number" ? j.fii_net + j.dii_net : null,
+      fiiStreak: typeof j.fii_streak === "string" ? j.fii_streak : null,
+      regime: typeof j.regime === "string" ? j.regime : null,
+      asOf: j._updated_at ?? j.date ?? null,
+      source: "live",
+    };
+  } catch (e: any) {
+    console.error("[FII/DII] MrChartist failed:", e?.message || e);
+    return null;
+  }
+}
+
+// ─── Fallback source: NiftyTrader scrape ─────────────────────────
 function extractFromText(text: string): {
   fiiNet: number | null; diiNet: number | null; totalNet: number | null;
   fiiStreak: string | null; regime: string | null; asOf: string | null;
@@ -96,36 +123,27 @@ function extractFromText(text: string): {
   };
 }
 
-async function scrapeOnce(): Promise<FIIDIIResult | null> {
+async function fetchNiftyTrader(): Promise<FIIDIIResult | null> {
   let browser: Browser | null = null;
   try {
     browser = await withTimeout(getBrowser(), 15000, "browser launch");
-    let lastErr: any = null;
-    for (const url of SOURCE_URLS) {
+    for (const url of NIFTYTRADER_URLS) {
       try {
         const page = await withTimeout(browser.newPage(), 10000, "newPage");
-        await withTimeout(
-          page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }),
-          18000,
-          "goto",
-        );
+        await withTimeout(page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }), 18000, "goto");
         const text = await withTimeout(page.evaluate(() => document.body.innerText), 10000, "evaluate");
         await page.close().catch(() => {});
-
         const ex = extractFromText(text);
         if (ex.fiiNet !== null || ex.diiNet !== null || ex.totalNet !== null) {
           return { ...ex, source: "live" };
         }
-        lastErr = "no figures extracted from " + url;
-      } catch (e: any) {
-        lastErr = e?.message || e;
+      } catch {
         // try next URL
       }
     }
-    console.error("[FII/DII] all sources failed:", lastErr);
     return null;
   } catch (err: any) {
-    console.error("[FII/DII] scrape failed:", err?.message || err);
+    console.error("[FII/DII] NiftyTrader scrape failed:", err?.message || err);
     return null;
   }
 }
@@ -134,14 +152,21 @@ export async function fetchFIIDII(): Promise<FIIDIIResult> {
   // Fresh cache hit.
   if (cache && Date.now() - cache.ts < CACHE_MS) return cache.data;
 
-  const fresh = await scrapeOnce();
-  if (fresh) {
-    cache = { data: fresh, ts: Date.now() };
-    return fresh;
+  // 1) Primary: fast JSON API.
+  const primary = await fetchMrChartist();
+  if (primary) {
+    cache = { data: primary, ts: Date.now() };
+    return primary;
   }
 
-  // Live scrape failed — fall back to a recent (stale) cache so the gap tab
-  // still shows the last known REAL figures rather than dropping to MISSING.
+  // 2) Fallback: browser scrape.
+  const fallback = await fetchNiftyTrader();
+  if (fallback) {
+    cache = { data: fallback, ts: Date.now() };
+    return fallback;
+  }
+
+  // 3) Last-known real data (stale) so the gap tab doesn't drop to MISSING.
   if (cache && Date.now() - cache.ts < STALE_MS) {
     return { ...cache.data, source: "stale" };
   }
