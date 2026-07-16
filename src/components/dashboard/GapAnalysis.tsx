@@ -321,6 +321,40 @@ export const GapAnalysis = memo(function GapAnalysis({
                 <MoodGauge pcr={pcr} vix={gapInput.indiaVIX} />
               </CardContent>
             </Card>
+
+            {/* FII / DII Institutional Flow */}
+            <Card className="border-border/50">
+              <CardContent className="p-3 space-y-2">
+                <CardTitle icon={<Activity className="w-3.5 h-3.5 text-indigo-400" />} text="FII / DII Flow" />
+                {fiiDii?.fiiNet != null || fiiDii?.diiNet != null ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">FII Net</span>
+                      <span className={`font-bold ${fiiDii.fiiNet < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                        {fiiDii.fiiNet > 0 ? "+" : ""}{fiiDii.fiiNet?.toLocaleString("en-IN")} Cr
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">DII Net</span>
+                      <span className={`font-bold ${fiiDii.diiNet < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                        {fiiDii.diiNet > 0 ? "+" : ""}{fiiDii.diiNet?.toLocaleString("en-IN")} Cr
+                      </span>
+                    </div>
+                    {fiiDii.regime && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Regime</span>
+                        <span className="font-semibold text-indigo-300">{fiiDii.regime}</span>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-muted-foreground">
+                      {fiiDii.stale ? "Stale (last known) · " : ""}{fiiDii.asOf ?? ""}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">FII/DII feed unavailable</p>
+                )}
+              </CardContent>
+            </Card>
           </div>
 
           {/* ─── CENTER: Gap Prediction ─── */}

@@ -7,8 +7,10 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   try {
     const data = await fetchFIIDII();
-    if (data.source === "live" && (data.fiiNet !== null || data.diiNet !== null)) {
-      return NextResponse.json({ success: true, ...data });
+    if (data.source === "live" || data.source === "stale") {
+      // `stale: true` means the live scrape failed but we are serving the last
+      // known REAL figures from cache (never fabricated data).
+      return NextResponse.json({ success: true, stale: data.source === "stale", ...data });
     }
     // Do NOT fabricate. Return 503 so callers know FII/DII data is unavailable.
     return NextResponse.json(
