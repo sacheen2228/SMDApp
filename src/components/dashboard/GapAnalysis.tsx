@@ -20,6 +20,7 @@ interface GapAnalysisProps {
   symbol: string;
   expiryDate: string;
   chainData?: any[];
+  candles?: any[];
 }
 
 function fmtFull(n: number): string {
@@ -51,11 +52,65 @@ const factorColors: Record<string, string> = {
   "Historical Stats": "text-gray-400",
 };
 
+// Aggregate total CE/PE OI change across the option chain (real data).
+function aggregateOIChange(analysis: any, chainData: any[] | undefined): { ce: number | null; pe: number | null } {
+  if (Array.isArray(analysis?.strikes) && analysis.strikes.length) {
+    let ce = 0, pe = 0;
+    for (const s of analysis.strikes) {
+      ce += typeof s.callOIChange === "number" ? s.callOIChange : 0;
+      pe += typeof s.putOIChange === "number" ? s.putOIChange : 0;
+    }
+    return { ce, pe };
+  }
+  if (Array.isArray(chainData) && chainData.length) {
+    let ce = 0, pe = 0;
+    for (const s of chainData) {
+      ce += s?.ce?.oiChg ?? 0;
+      pe += s?.pe?.oiChg ?? 0;
+    }
+    return { ce, pe };
+  }
+  return { ce: null, pe: null };
+}
+
+// Derive ATR (% of spot) and VWAP-distance (%) from daily candles (real data).
+function deriveVolatility(candles: any[] | undefined, spot: number): { atr: number | null; vwapDistance: number | null } {
+  if (!Array.isArray(candles) || candles.length < 2 || !spot) return { atr: null, vwapDistance: null };
+  const rows = candles
+    .map((c: any) => ({ h: +c.high, l: +c.low, c: +c.close, o: +c.open, v: +c.volume }))
+    .filter((r: any) => isFinite(r.h) && isFinite(r.l) && isFinite(r.c) && r.h > 0);
+  if (rows.length < 2) return { atr: null, vwapDistance: null };
+
+  const trs: number[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const p = rows[i - 1].c;
+    const { h, l, c } = rows[i];
+    trs.push(Math.max(h - l, Math.abs(h - p), Math.abs(l - p)));
+  }
+  const atr = trs.reduce((a: number, b: number) => a + b, 0) / trs.length;
+
+  let pv = 0, pvq = 0;
+  for (const r of rows) {
+    const typ = (r.h + r.l + r.c) / 3;
+    const v = r.v > 0 ? r.v : 1;
+    pv += typ * v; pvq += v;
+  }
+  const vwap = pvq > 0 ? pv / pvq : rows[rows.length - 1].c;
+
+  return {
+    atr: atr,
+    vwapDistance: ((spot - vwap) / vwap) * 100,
+  };
+}
+
 function buildGapInput(
   analysis: any, summary: any | undefined,
   spotPrice: number, giftNifty: any,
+  chainData: any[] | undefined, candles: any[] | undefined,
 ): GapInput {
   const pcr = analysis?.pcr ?? summary?.pcr ?? null;
+  const oi = aggregateOIChange(analysis, chainData);
+  const vol = deriveVolatility(candles, spotPrice);
   return {
     prevClose: typeof summary?.prevClose === "number" ? summary.prevClose : null,
     currentSpot: spotPrice || null,
@@ -66,13 +121,13 @@ function buildGapInput(
     pcrOI: pcr,
     pcrVolume: summary?.pcrVolume ?? null,
     maxPain: analysis?.maxPain ?? summary?.maxPain ?? null,
-    ceOIChange: analysis?.ceOIChg ?? summary?.callOiChange ?? null,
-    peOIChange: analysis?.peOIChg ?? summary?.putOiChange ?? null,
+    ceOIChange: oi.ce,
+    peOIChange: oi.pe,
     optionIV: summary?.iv ?? null,
     futuresPremium: analysis?.futuresPremium ?? summary?.futuresPremium ?? null,
     breadth: summary?.breadth ?? null,
-    atr: summary?.atr ?? null,
-    vwapDistance: summary?.vwapDistance ?? null,
+    atr: vol.atr,
+    vwapDistance: vol.vwapDistance,
     fiiNet: summary?.fiiNet ?? null,
     diiNet: summary?.diiNet ?? null,
     usMarketChange: summary?.usMarketChange ?? null,
@@ -85,12 +140,12 @@ function buildGapInput(
     historicalGapDownPct: null,
     historicalGapStats: null,
     timestamp: new Date().toISOString(),
-    symbol: "NIFTY",
+    symbol: analysis?.symbol ?? "NIFTY",
   };
 }
 
 export const GapAnalysis = memo(function GapAnalysis({
-  analysis, summary, spotPrice, symbol, expiryDate, chainData,
+  analysis, summary, spotPrice, symbol, expiryDate, chainData, candles,
 }: GapAnalysisProps) {
   const [giftNifty, setGiftNifty] = useState<any>(null);
   const [showFactors, setShowFactors] = useState(true);
@@ -103,8 +158,8 @@ export const GapAnalysis = memo(function GapAnalysis({
   }, [spotPrice]);
 
   const gapInput = useMemo(
-    () => buildGapInput(analysis, summary, spotPrice, giftNifty),
-    [analysis, summary, spotPrice, giftNifty],
+    () => buildGapInput(analysis, summary, spotPrice, giftNifty, chainData, candles),
+    [analysis, summary, spotPrice, giftNifty, chainData, candles],
   );
 
   const gapResult: GapPrediction = useMemo(

@@ -99,9 +99,9 @@ describe("gap-engine (Phase 3)", () => {
     expect(result.missingFields).toContain("PreviousClose");
   });
 
-  it("returns INSUFFICIENT DATA when Gift Nifty missing", () => {
+  it("still produces a prediction when Gift Nifty is missing (core factors available)", () => {
     const result = predictGap(makeInput({ giftNiftyPrice: null }));
-    expect(result.insufficientData).toBe(true);
+    expect(result.insufficientData).toBe(false);
     expect(result.missingFields).toContain("GiftNifty");
   });
 
@@ -268,13 +268,14 @@ describe("no fabricated values", () => {
   });
 
   it("gift-nifty fallback does NOT fabricate data (returns 503)", async () => {
-    // This tests the existing gift-nifty route's behavior
-    // Pass a bogus spot price to trigger no-data scenario — but the route uses
-    // Yahoo fetch internally, so we can't fully test here. Verify the engine handles
-    // null Gift Nifty correctly.
+    // The engine must never invent a Gift Nifty value; a null Gift Nifty is
+    // reported as a missing field and the prediction is still computed from the
+    // real core factors (PCR / OI / VWAP / ATR / VIX) rather than being forced
+    // to FLAT/insufficient.
     const result = predictGap(makeInput({ giftNiftyPrice: null }));
-    expect(result.insufficientData).toBe(true);
-    expect(result.prediction).toBe("FLAT");
+    expect(result.missingFields).toContain("GiftNifty");
+    expect(result.insufficientData).toBe(false);
+    expect(["UP", "DOWN", "FLAT"]).toContain(result.prediction);
   });
 });
 

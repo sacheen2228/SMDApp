@@ -291,11 +291,29 @@ export function predictGap(input: GapInput, weights: GapWeights = DEFAULT_WEIGHT
   factors.push({ ...f12, name: "Historical Stats", weight: weights.historicalStats, weightedScore: f12.score * weights.historicalStats });
 
   // ─── Check for INSUFFICIENT DATA ─────────────────────────────
-  const essentialMissing = ["PreviousClose", "GiftNifty"].filter(f => missingFields.includes(f));
-  const hasGiftNifty = input.giftNiftyPrice !== null;
+  // Gift Nifty is a helpful booster but NOT mandatory: we can still produce a
+  // real prediction from the option-chain / candle factors. Only hard-gate on
+  // the genuinely essential inputs (prevClose + spot), and otherwise allow the
+  // prediction when enough core factors (PCR / OI / VWAP / ATR / VIX) are present.
   const hasPrevClose = input.prevClose !== null;
+  const hasSpot = input.currentSpot !== null;
+  const hasGiftNifty = input.giftNiftyPrice !== null;
+  const hasHistorical = input.historicalGapStats != null;
+  const coreFactorCount =
+    (input.pcrOI !== null ? 1 : 0) +
+    (input.ceOIChange !== null && input.peOIChange !== null ? 1 : 0) +
+    (input.maxPain !== null ? 1 : 0) +
+    (input.vwapDistance !== null ? 1 : 0) +
+    (input.atr !== null ? 1 : 0) +
+    (input.indiaVIX !== null ? 1 : 0);
 
-  if (!hasPrevClose || !hasGiftNifty) {
+  // A prediction is valid when we have the essential price anchors (prevClose +
+  // spot) AND at least one real signal source: Gift Nifty, a sufficient set of
+  // core chain/candle factors, or historical gap statistics. Gift Nifty alone
+  // is no longer mandatory — the chain/candle factors are enough on their own.
+  const hasEnoughSignal = hasGiftNifty || hasHistorical || coreFactorCount >= 3;
+
+  if (!hasPrevClose || !hasSpot || !hasEnoughSignal) {
     return {
       prediction: "FLAT",
       probability: 0,

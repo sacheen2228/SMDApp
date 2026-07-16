@@ -451,6 +451,11 @@ export default function TradingDashboard() {
     return [];
   }, [data?.data]);
 
+  const candles = useMemo(() => {
+    if (Array.isArray(data?.data?.candles)) return data.data.candles;
+    return [];
+  }, [data?.data?.candles]);
+
   // Market session info
   const marketSession = useMemo(() => getCurrentSession(), []);
 
@@ -797,6 +802,7 @@ return (
             symbol={symbol}
             expiryDate={selectedExpiry}
             chainData={chainData}
+            candles={candles}
           />
         </div>
         ) : viewMode === 'agent' ? (
