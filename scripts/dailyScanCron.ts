@@ -35,6 +35,7 @@ import cron from "node-cron";
 import { sendDailyDigest } from "../src/lib/sendDailyDigest";
 import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
+import { runEodClose } from "./eod-close";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
 
 const TIMEZONE = "Asia/Kolkata";
@@ -44,6 +45,7 @@ const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm windo
                                                  //  precise 9:15-15:30 market-hours boundary)
 const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
+const EOD_CLOSE_SCHEDULE = "45 15 * * 1-5";    // 3:45pm, Mon-Fri — force-close still-open trades with real closing premium
 // Runs AFTER market close (NSE/BSE keep the final day's option chain with
 // full OI/OI-chg/volume available past 7:30pm IST). Collects all F&O stock
 // option chains into the DomAnalysis table for next-day pre-market analysis.
@@ -54,6 +56,7 @@ console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" 
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] DOM analysis (after-hours) scheduled for "${DOM_ANALYSIS_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] EOD close scheduled for "${EOD_CLOSE_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
   DAILY_SCHEDULE,
@@ -117,6 +120,20 @@ cron.schedule(
       console.log(`[dailyScanCron] BTST close done — closed=${result.closed}`);
     } catch (err) {
       console.error("[dailyScanCron] BTST close failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  EOD_CLOSE_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] EOD close — force-closing open trades with closing premium...");
+    try {
+      const result = await runEodClose();
+      console.log(`[dailyScanCron] EOD close done — closed=${result.closed} skipped=${result.skipped} errors=${result.errors}`);
+    } catch (err) {
+      console.error("[dailyScanCron] EOD close failed", err);
     }
   },
   { timezone: TIMEZONE }

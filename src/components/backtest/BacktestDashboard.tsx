@@ -244,8 +244,8 @@ export default function BacktestDashboard() {
       {error && (
         <div className="text-[10px] text-amber-400 bg-amber-500/10 rounded px-3 py-2 flex items-center gap-2">
           <AlertTriangle className="h-3 w-3 shrink-0" />
-          {error} — start the engine first:
-          <code className="text-[9px] bg-amber-500/20 px-1 py-0.5 rounded">cd trade-audit && ./start.sh</code>
+           {error} — start the engine first:
+           <code className="text-[9px] bg-amber-500/20 px-1 py-0.5 rounded">systemctl --user start trade-audit.service</code>
         </div>
       )}
 
