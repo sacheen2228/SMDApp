@@ -62,7 +62,8 @@ server.log
 start.sh
 ict_bot_v5.py
 server.pid
-how_to start.txtMiniCPM-V/
+how_to start.txt
+MiniCPM-V/
 __pycache__/
 *.pyc
 os
