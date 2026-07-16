@@ -3,7 +3,7 @@
 // SDMBot terminal UI, so chat/Telegram and the UI never diverge.
 
 import { NextRequest, NextResponse } from "next/server";
-import { generateTradeRecommendation } from "@/lib/sdm-recommendation";
+import { generateTradeRecommendation } from "@/lib/sdm-strategy";
 import { calculateGreeks } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
 import { sendTradeAlert } from "@/lib/telegram";

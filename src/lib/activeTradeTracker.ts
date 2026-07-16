@@ -260,7 +260,7 @@ export async function checkSLTP(
     }
   }
 
-  return { hitSL, hitTP1, hitTP2 };
+  return { hitSL, hitTP1, hitTP2, hitTP3 };
 }
 
 // Format SL/TP hit message for Telegram

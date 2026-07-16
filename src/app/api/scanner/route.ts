@@ -100,67 +100,89 @@ function getSector(symbol: string): string {
   return sectorMap[symbol] || "Other";
 }
 
-export async function GET(request: NextRequest) {
-  const TIMEOUT = 30_000;
-  const deadline = Date.now() + TIMEOUT;
+// Estimate spot from the option chain by finding the ATM strike
+// (the strike with the highest combined call+put OI). Used as a fallback
+// when the provider doesn't return a usable spot price.
+function estimateSpotFromChain(chain: any[]): number {
+  if (!Array.isArray(chain) || chain.length === 0) return 0;
+  let bestStrike = 0;
+  let bestOI = -1;
+  for (const row of chain) {
+    const callOI = row?.ce?.oi || 0;
+    const putOI = row?.pe?.oi || 0;
+    const total = callOI + putOI;
+    if (total > bestOI) {
+      bestOI = total;
+      bestStrike = row.strike;
+    }
+  }
+  return bestStrike;
+}
 
+// Rough VIX proxy: average of call + put IV at the ATM strikes.
+// Better than a hardcoded 15 which is wrong during high-volatility events.
+function estimateVixFromChain(chain: any[]): number {
+  if (!Array.isArray(chain) || chain.length === 0) return 15;
+  const ivs: number[] = [];
+  for (const row of chain) {
+    if (row?.ce?.iv) ivs.push(row.ce.iv);
+    if (row?.pe?.iv) ivs.push(row.pe.iv);
+  }
+  if (ivs.length === 0) return 15;
+  const avg = ivs.reduce((a, b) => a + b, 0) / ivs.length;
+  return Math.round(avg * 10) / 10;
+}
+
+export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
     const useLive = searchParams.get("live") === "true";
 
-    // Fetch real option chain data: Breeze → NSE (15s max for both)
+    // Fetch real option chain data: Breeze → NSE → Simulation fallback
     let chainData: any = null;
     try {
-      await Promise.race([
-        (async () => {
-          const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
-          const { initSession } = await import("@/lib/icici-breeze/auth");
-          await initSession().catch(() => {});
-          const expiries = await getOptionChainExpiries(symbol);
-          for (const exp of expiries.slice(0, 3)) {
-            const chain = await getOptionChain(symbol, exp);
-            if (chain) {
-              chainData = {
-                spotPrice: chain.spotPrice,
-                data: chain.strikes.map((strike) => ({
-                  strike,
-                  ce: chain.calls.find((c) => c.strikePrice === strike) || null,
-                  pe: chain.puts.find((p) => p.strikePrice === strike) || null,
-                })),
-                summary: { indiaVIX: 15 },
-              };
-              break;
-            }
-          }
-        })(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 15_000)),
-      ]);
+      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
+      const { initSession } = await import("@/lib/icici-breeze/auth");
+      await initSession().catch((e: any) =>
+        console.warn("[Scanner] Breeze session init failed (continuing with NSE fallback):", e?.message)
+      );
+      const expiries = await getOptionChainExpiries(symbol);
+      for (const exp of expiries.slice(0, 3)) {
+        const chain = await getOptionChain(symbol, exp);
+        if (chain) {
+          chainData = {
+            spotPrice: chain.spotPrice,
+            data: chain.strikes.map((strike) => ({
+              strike,
+              ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+              pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+            })),
+            summary: { indiaVIX: 15 }, // VIX from separate endpoint
+          };
+          break;
+        }
+      }
     } catch (e) {
       console.warn("[Scanner] Breeze option chain failed:", e);
     }
 
-    // Fallback to NSE (within remaining budget)
+    // Fallback to NSE
     if (!chainData) {
       try {
-        await Promise.race([
-          (async () => {
-            const { getNSEOptionChain } = await import("@/lib/nse-api");
-            const nseData = await getNSEOptionChain(symbol);
-            if (nseData?.records?.data) {
-              chainData = {
-                spotPrice: nseData.records?.underlyingValue || 0,
-                data: nseData.records.data.map((row: any) => ({
-                  strike: row.strikePrice,
-                  ce: row.CE ? { oi: row.CE.openInterest || 0, ltp: row.CE.lastPrice || 0 } : null,
-                  pe: row.PE ? { oi: row.PE.openInterest || 0, ltp: row.PE.lastPrice || 0 } : null,
-                })),
-                summary: { indiaVIX: 15 },
-              };
-            }
-          })(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 10_000)),
-        ]);
+        const { getNSEOptionChain } = await import("@/lib/nse-api");
+        const nseData = await getNSEOptionChain(symbol);
+        if (nseData?.records?.data) {
+          chainData = {
+            spotPrice: nseData.records?.underlyingValue || 0,
+            data: nseData.records.data.map((row: any) => ({
+              strike: row.strikePrice,
+              ce: row.CE ? { oi: row.CE.openInterest || 0, ltp: row.CE.lastPrice || 0 } : null,
+              pe: row.PE ? { oi: row.PE.openInterest || 0, ltp: row.PE.lastPrice || 0 } : null,
+            })),
+            summary: { indiaVIX: 15 },
+          };
+        }
       } catch (e) {
         console.warn("[Scanner] NSE failed:", e);
       }
@@ -175,9 +197,24 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract market metrics
-    const spotPrice = chainData.spotPrice || 24000;
+    // Derive spot price: prefer the provider's spot, else estimate from the
+    // option chain ATM (highest combined OI strike). Never fall back to a
+    // hardcoded index number — that silently corrupts every downstream calc
+    // for BANKNIFTY (~52K), SENSEX (~80K) and individual stocks.
     const optionChain = chainData.data || [];
     const summary = chainData.summary || {};
+    const rawSpot = chainData.spotPrice;
+    const spotPrice =
+      rawSpot && rawSpot > 0
+        ? rawSpot
+        : estimateSpotFromChain(optionChain);
+
+    if (spotPrice <= 0) {
+      return NextResponse.json({
+        success: false,
+        error: "Option chain returned no usable spot price — cannot run scan.",
+      }, { status: 503 });
+    }
 
     // Calculate PCR and other metrics from option chain
     let totalCallOI = 0;
@@ -190,7 +227,11 @@ export async function GET(request: NextRequest) {
 
     const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
     const maxPain = summary.maxPain || spotPrice;
-    const vix = summary.indiaVIX || 15;
+    // VIX: prefer the provider value; otherwise estimate from average ATM IV
+    // (a rough but data-driven proxy) instead of a hardcoded constant.
+    const vix = summary.indiaVIX && summary.indiaVIX > 0
+      ? summary.indiaVIX
+      : estimateVixFromChain(optionChain);
 
     // Live stock data is fetched inside runIntradayScan (generateCandidates)
     // via Yahoo Finance for the full NIFTY50 universe. There is no simulated
@@ -218,16 +259,14 @@ export async function GET(request: NextRequest) {
       totalPutOI,
     };
 
-    // Deadline check — if we've already spent too long, bail.
-    if (Date.now() >= deadline) {
-      return NextResponse.json({
-        success: false,
-        error: "Market data API timed out — try again later.",
-      }, { status: 504 });
-    }
-
-    // Run the scan
-    const result = await runIntradayScan(config);
+    // Run the scan (guard against runaway latency so we fail fast
+    // instead of hanging the request for minutes).
+    const scanTimeoutMs = 55_000;
+    const scanPromise = runIntradayScan(config);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Scanner timed out after 55s")), scanTimeoutMs)
+    );
+    const result = await Promise.race([scanPromise, timeoutPromise]);
 
     // Apply real news scores to candidates
     if (marketNews && marketNews.articles.length > 0) {
@@ -241,15 +280,19 @@ export async function GET(request: NextRequest) {
           const avgSentiment = stockNews.reduce((sum, a) => sum + a.sentiment, 0) / stockNews.length;
           const newsScore = Math.round((avgSentiment + 1) * 50);
 
-          // Recalculate total score with real news weight (10%)
+          // Recalculate total score. Must preserve the AI component — the
+          // per-stock option-chain re-scoring in intraday-scanner feeds
+          // candidate.aiScore, which is dropped by the old reweight below.
+          // Keep the same weighting used by the scanner core (AI 10%, news 10%).
           const newTotalScore = Math.round(
-            (candidate.marketScore * 0.15) +
-            (candidate.sectorScore * 0.10) +
+            (candidate.marketScore * 0.10) +
+            (candidate.sectorScore * 0.12) +
             (candidate.technicalScore * 0.35) +
-            (candidate.optionsScore * 0.15) +
-            (candidate.volumeScore * 0.10) +
+            (candidate.optionsScore * 0.05) +
+            (candidate.volumeScore * 0.18) +
             (candidate.fundamentalScore * 0.05) +
-            (newsScore * 0.10)
+            (newsScore * 0.10) +
+            (candidate.aiScore * 0.10)
           );
 
           return {
@@ -306,11 +349,10 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    const isTimeout = error?.message?.includes("timed out") || Date.now() >= deadline;
-    console.error("[Scanner API] Error:", isTimeout ? "TIMEOUT" : error);
+    console.error("[Scanner API] Error:", error);
     return NextResponse.json(
-      { success: false, error: isTimeout ? "Market data API timed out — try again later." : (error.message || "Scanner failed") },
-      { status: isTimeout ? 504 : 500 }
+      { success: false, error: error.message || "Scanner failed" },
+      { status: 500 }
     );
   }
 }

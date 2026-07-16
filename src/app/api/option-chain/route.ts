@@ -4,13 +4,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOptionChain, getOptionChainExpiries } from '@/lib/icici-breeze/option-chain';
 import { initSession } from '@/lib/icici-breeze/auth';
-import { runFullAnalysis } from '@/lib/sdm-engine';
+import { runFullAnalysis } from '@/lib/sdm-strategy';
 import { validateAndSanitize } from '@/lib/data-validation';
 import { calculateGreeks } from '@/lib/greeks';
 import { getNSEOptionChain } from '@/lib/nse-api';
 import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
-import type { OptionChainStrike } from '@/lib/sdm-engine';
+import type { OptionChainStrike } from '@/lib/sdm-strategy';
 
 // Init Breeze session on first request
 let sessionInitialized = false;
@@ -92,6 +92,28 @@ export async function GET(request: NextRequest) {
       console.warn('[API] ICICI Breeze failed, trying NSE API:', breezeError);
     }
     
+    // Extract level-2 market depth (real depth-of-market) from a NSE leg.
+    // NSE shape: leg.marketDepth = { buy:[{price,quantity}], sell:[{price,quantity}] }
+    function extractDepth(leg: any) {
+      const md = leg?.marketDepth;
+      if (!md) return undefined;
+      const buys = Array.isArray(md.buy) ? md.buy : (Array.isArray(md) ? md.filter((x: any) => x.flag === 'buy' || x.flag === 'B' || x.type === 'buy') : []);
+      const sells = Array.isArray(md.sell) ? md.sell : (Array.isArray(md) ? md.filter((x: any) => x.flag === 'sell' || x.flag === 'S' || x.type === 'sell') : []);
+      if (!buys.length && !sells.length) return undefined;
+      const bestBid = buys[0] || {};
+      const bestAsk = sells[0] || {};
+      const totalBuyQty = buys.reduce((a: number, x: any) => a + (x.quantity || 0), 0);
+      const totalSellQty = sells.reduce((a: number, x: any) => a + (x.quantity || 0), 0);
+      return {
+        bidPrice: bestBid.price || 0,
+        bidQty: bestBid.quantity || 0,
+        askPrice: bestAsk.price || 0,
+        askQty: bestAsk.quantity || 0,
+        totalBuyQty,
+        totalSellQty,
+      };
+    }
+
     // Fallback to NSE API
     if (!chainData) {
       try {
@@ -112,6 +134,7 @@ export async function GET(request: NextRequest) {
                 vega: row.CE.greeks?.vega || 0,
                 bid: row.CE.bid || 0,
                 ask: row.CE.ask || 0,
+                depth: extractDepth(row.CE),
               } : null,
               pe: row.PE ? {
                 ltp: row.PE.lastPrice || 0,
@@ -125,6 +148,7 @@ export async function GET(request: NextRequest) {
                 vega: row.PE.greeks?.vega || 0,
                 bid: row.PE.bid || 0,
                 ask: row.PE.ask || 0,
+                depth: extractDepth(row.PE),
               } : null,
             })),
             spotPrice: nseData.records?.underlyingValue || 0,

@@ -18,11 +18,11 @@ interface YahooIndexData {
 }
 
 // Map our symbols to Yahoo Finance symbols
-const YAHOO_SYMBOL_MAP: Record<string, string> = {
+export const YAHOO_SYMBOL_MAP: Record<string, string> = {
   'NIFTY': '^NSEI',
   'BANKNIFTY': '^NSEBANK',
-  'FINNIFTY': '^NSEMIDCAP',
-  'MIDCPNIFTY': '^NSEMIDCAP',
+  'FINNIFTY': '^NIFIFIN',
+  'MIDCPNIFTY': '^NIFTYMID',
   'NIFTYNXT50': '^NSENXT50',
   'SENSEX': '^BSESN',
   'BANKEX': '^BSEBANK',

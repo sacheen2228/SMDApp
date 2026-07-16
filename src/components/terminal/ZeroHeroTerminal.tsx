@@ -13,8 +13,9 @@ import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENT
 import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
-import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
+import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/ProTradeEngine";
 import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
+import { runSMCWithEngine } from "@/lib/smc-strategy";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -145,8 +146,58 @@ function fmtInt(n: number): string {
 interface ChainRow {
   strike: number;
   atm: boolean;
-  ce: { oi: number; oiChg: number; vol: number; iv: number; delta: number; ltp: number; gamma: number; theta: number; vega: number } | null;
-  pe: { oi: number; oiChg: number; vol: number; iv: number; delta: number; ltp: number; gamma: number; theta: number; vega: number } | null;
+  ce: { oi: number; oiChg: number; vol: number; iv: number; delta: number; ltp: number; gamma: number; theta: number; vega: number; bid?: number; ask?: number } | null;
+  pe: { oi: number; oiChg: number; vol: number; iv: number; delta: number; ltp: number; gamma: number; theta: number; vega: number; bid?: number; ask?: number } | null;
+}
+
+// ─── Shared Greek Signals (used by GreeksTab + Today's Trade) ─────
+interface GreekSignals {
+  skewLabel: "PUT SKEW" | "CALL SKEW" | "BALANCED";
+  skewPct: number;
+  avgCEIV: number;
+  avgPEIV: number;
+  gammaStrike: number;
+  gammaMax: number;
+  thetaStrike: number;
+  thetaType: "CE" | "PE";
+  thetaMax: number;
+  deltaBandCE: number[];
+  deltaBandPE: number[];
+}
+
+function computeGreekSignals(chain: ChainRow[]): GreekSignals {
+  const atmIdx = chain.findIndex((r) => r.atm);
+  const near = atmIdx >= 0 ? chain.slice(Math.max(0, atmIdx - 5), Math.min(chain.length, atmIdx + 6)) : chain.slice(0, 11);
+  const ceIVs = near.map((r) => r.ce?.iv || 0).filter((v) => v > 0);
+  const peIVs = near.map((r) => r.pe?.iv || 0).filter((v) => v > 0);
+  const avgCEIV = ceIVs.length ? ceIVs.reduce((a, b) => a + b, 0) / ceIVs.length : 0;
+  const avgPEIV = peIVs.length ? peIVs.reduce((a, b) => a + b, 0) / peIVs.length : 0;
+  const skewPct = avgCEIV > 0 ? ((avgPEIV - avgCEIV) / avgCEIV) * 100 : 0;
+  let gammaStrike = 0, gammaMax = 0;
+  for (const r of near) {
+    const g = Math.max(r.ce?.gamma || 0, r.pe?.gamma || 0);
+    if (g > gammaMax) { gammaMax = g; gammaStrike = r.strike; }
+  }
+  let thetaStrike = 0, thetaMax = 0, thetaType: "CE" | "PE" = "CE";
+  for (const r of near) {
+    const cT = Math.abs(r.ce?.theta || 0);
+    const pT = Math.abs(r.pe?.theta || 0);
+    if (cT > thetaMax) { thetaMax = cT; thetaStrike = r.strike; thetaType = "CE"; }
+    if (pT > thetaMax) { thetaMax = pT; thetaStrike = r.strike; thetaType = "PE"; }
+  }
+  return {
+    skewLabel: skewPct > 8 ? "PUT SKEW" : skewPct < -8 ? "CALL SKEW" : "BALANCED",
+    skewPct,
+    avgCEIV,
+    avgPEIV,
+    gammaStrike,
+    gammaMax,
+    thetaStrike,
+    thetaType,
+    thetaMax,
+    deltaBandCE: near.filter((r) => { const d = r.ce?.delta || 0; return d >= 0.25 && d <= 0.45; }).map((r) => r.strike),
+    deltaBandPE: near.filter((r) => { const d = Math.abs(r.pe?.delta || 0); return d >= 0.25 && d <= 0.45; }).map((r) => r.strike),
+  };
 }
 
 interface ZHCandidate {
@@ -161,6 +212,7 @@ interface ZHCandidate {
   prob: number;
   conf: number;
   stars: number;
+  greekTags: string[];
 }
 
 interface TradeRec {
@@ -229,7 +281,9 @@ export function ZeroHeroTerminal() {
   const [vix, setVix] = useState(0);
   const [pcr, setPcr] = useState(0);
   const [maxPain, setMaxPain] = useState(0);
+  const [marketSentiment, setMarketSentiment] = useState<{ sentiment: string; smartMoney: string; callWriting: boolean; putWriting: boolean }>({ sentiment: "neutral", smartMoney: "neutral", callWriting: false, putWriting: false });
   const [candles, setCandles] = useState<any[]>([]);
+  const [atr, setAtr] = useState<number | null>(null); // Option 1: real per-instrument ATR
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -249,7 +303,7 @@ export function ZeroHeroTerminal() {
   const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set(["NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK"]));
 
   const inst = getInstrument(symbol);
-  const lotSize = inst?.lotSize || 65;
+  const lotSize = inst?.lotSize || 75;
   const isEligible = isFNO(symbol); // All F&O indices + F&O equity stocks eligible for Zero Hero
 
   // ─── Fetch option chain ──────────────────────────────────────────
@@ -278,8 +332,8 @@ export function ZeroHeroTerminal() {
         return {
           strike: s.strike,
           atm: false,
-          ce: s.ce ? { oi: s.ce.oi || 0, oiChg: s.ce.oiChg || 0, vol: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, ltp: s.ce.ltp || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: s.ce.vega || 0 } : null,
-          pe: s.pe ? { oi: s.pe.oi || 0, oiChg: s.pe.oiChg || 0, vol: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, ltp: s.pe.ltp || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: s.pe.vega || 0 } : null,
+          ce: s.ce ? { oi: s.ce.oi || 0, oiChg: s.ce.oiChg || 0, vol: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, ltp: s.ce.ltp || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: s.ce.vega || 0, bid: s.ce.bid, ask: s.ce.ask } : null,
+          pe: s.pe ? { oi: s.pe.oi || 0, oiChg: s.pe.oiChg || 0, vol: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, ltp: s.pe.ltp || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: s.pe.vega || 0, bid: s.pe.bid, ask: s.pe.ask } : null,
         };
       });
 
@@ -305,12 +359,30 @@ export function ZeroHeroTerminal() {
       setMaxPain(mp);
       setNotAvailable(notAvail);
       setPcr(totalCallOI > 0 ? totalPutOI / totalCallOI : 1);
+      // Engine-derived market sentiment (Institutional Trading Engine) — drives FII/DII bias
+      const an = json.analysis || {};
+      const mf = an.moneyFlow || {};
+      setMarketSentiment({
+        sentiment: (an.sentiment || mf.direction || "neutral"),
+        smartMoney: (mf.smartMoneyDirection || an.sentiment || "neutral"),
+        callWriting: !!mf.callWriting,
+        putWriting: !!mf.putWriting,
+      });
       setVix(json.data?.summary?.indiaVIX || 0);
       setCandles(json.data?.candles || []);
       setLastUpdate(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
       setOpen(isMarketOpen());
       setError(false);
       setErrorMsg("");
+
+      // Option 1: real per-instrument ATR(14) for Zero Hero SL/TP (server route → Yahoo daily)
+      try {
+        const atrRes = await fetch(`/api/atr?symbol=${encodeURIComponent(symbol)}`);
+        if (atrRes.ok) {
+          const atrJson = await atrRes.json();
+          if (typeof atrJson.atr === "number") setAtr(atrJson.atr);
+        }
+      } catch {}
     } catch (e: any) {
       if (gen !== fetchGenRef.current) return;
       setError(true);
@@ -435,6 +507,7 @@ export function ZeroHeroTerminal() {
     const nearStrikes = chain.filter((s) => Math.abs(s.strike - spot) <= threshold);
     // Chain-wide context computed ONCE (reuses sdm-oianalysis, gamma-blast, expiry-calculator)
     const ctx = analyzeZeroHeroChain(chain, spot, vix || 14, symbol);
+    const greek = computeGreekSignals(chain);
     const lotSize = getInstrument(symbol)?.lotSize || 75;
     const list: ZHCandidate[] = [];
     for (const s of nearStrikes) {
@@ -449,20 +522,40 @@ export function ZeroHeroTerminal() {
           delta: d.delta || 0,
           iv: d.iv || 15,
           oiChg: d.oiChg || 0,
+          oi: d.oi || 0,
           volume: d.vol || 0,
+          bid: d.bid,
+          ask: d.ask,
           spot,
           lotSize,
           capital: 100000,
           riskPerTradePercent: 2,
           maxPositionSize: 10,
           context: ctx,
+          atr: atr ?? undefined,
+          candles,
+          fullChain: chain,
         });
-        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars });
+        // ─── Greek signal boost ──────────────────────────────
+        const tags: string[] = [];
+        let boost = 0;
+        if (greek.skewLabel === "PUT SKEW" && type === "PE") { boost += 5; tags.push("IV SKEW"); }
+        if (greek.skewLabel === "CALL SKEW" && type === "CE") { boost += 5; tags.push("IV SKEW"); }
+        if (greek.gammaStrike === s.strike) { boost += 3; tags.push("GAMMA SPIKE"); }
+        const deltaAbs = Math.abs(d.delta || 0);
+        if (deltaAbs >= 0.25 && deltaAbs <= 0.45) { boost += 2; tags.push("DELTA SWEET"); }
+        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: Math.min(100, r.conf + boost), stars: r.stars, greekTags: tags });
       }
     }
     list.sort((a, b) => b.conf - a.conf);
-    return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [chain, spot, isEligible, vix, symbol]);
+    // Keep BOTH sides visible: take the top 5 CE and top 5 PE so puts aren't
+    // crowded out by higher-confidence calls, then merge + re-rank.
+    const topCE = list.filter((c) => c.type === "CE").slice(0, 5);
+    const topPE = list.filter((c) => c.type === "PE").slice(0, 5);
+    return [...topCE, ...topPE]
+      .sort((a, b) => b.conf - a.conf)
+      .map((c, i) => ({ ...c, rank: i + 1 }));
+  }, [chain, spot, isEligible, vix, symbol, atr]);
 
   // ─── Record Zero Hero candidates into the Trade Audit (backtest) engine ─
   useEffect(() => {
@@ -492,10 +585,16 @@ export function ZeroHeroTerminal() {
     }
     const totalOIChg = Math.abs(totalCallOIChg) + Math.abs(totalPutOIChg);
     const ratio = totalOIChg > 0 ? (totalCallOIChg - totalPutOIChg) / totalOIChg : 0;
-    const bias = ratio > 0.1 ? "BULLISH" : ratio < -0.1 ? "BEARISH" : "NEUTRAL";
-    const strength = Math.round(50 + Math.abs(ratio) * 50);
-    return { totalCallOIChg, totalPutOIChg, totalCallVol, totalPutVol, bias, strength, pcr };
-  }, [chain, pcr]);
+    // Blend raw OI-change ratio with the engine's market sentiment so the panel
+    // reflects the Institutional Trading Engine rather than a static value.
+    const engineBias = (marketSentiment.sentiment || "neutral").toUpperCase();
+    const oiBias = ratio > 0.1 ? "BULLISH" : ratio < -0.1 ? "BEARISH" : "NEUTRAL";
+    let bias = oiBias;
+    if (engineBias === "BULLISH" || engineBias === "BEARISH") bias = engineBias;
+    else if (oiBias === "NEUTRAL" && engineBias === "NEUTRAL") bias = "NEUTRAL";
+    const strength = Math.round(50 + Math.max(Math.abs(ratio), engineBias === "NEUTRAL" ? 0 : 0.2) * 50);
+    return { totalCallOIChg, totalPutOIChg, totalCallVol, totalPutVol, bias, strength, pcr, smartMoney: marketSentiment.smartMoney, callWriting: marketSentiment.callWriting, putWriting: marketSentiment.putWriting };
+  }, [chain, pcr, marketSentiment]);
 
   // ─── Open trade modal ────────────────────────────────────────────
   function openTrade(strike: number, type: "CE" | "PE", ltp: number, rrOverride?: number) {
@@ -526,6 +625,21 @@ export function ZeroHeroTerminal() {
   }
 
   const totalPnl = positions.reduce((s, p) => s + (p.ltp - p.entry) * p.qty * p.lot, 0);
+
+  // Mark-to-market: refresh each open position's LTP from the live chain so
+  // P&L is never permanently stuck at entry (was always ₹0 before this fix).
+  useEffect(() => {
+    setPositions((prev) =>
+      prev.length === 0
+        ? prev
+        : prev.map((p) => {
+            const row = chain.find((r) => r.strike === p.strike);
+            const leg = p.type === "CE" ? row?.ce : row?.pe;
+            const ltp = leg?.ltp;
+            return ltp && ltp > 0 ? { ...p, ltp } : p;
+          })
+    );
+  }, [chain]);
 
   // ═══════ RENDER ═══════════════════════════════════════════════════
   return (
@@ -769,13 +883,19 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
         </div>
         <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
           <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
-            <span>🔥 Zero Hero Scanner</span>
+            <span>🔥 Today's Trade</span>
             <span className="text-[#7d8ba0] font-mono text-[11px]">{isEligible ? "Top 5" : "All stocks (BTST)"}</span>
           </div>
           <div className="p-2.5 overflow-y-auto" style={{ maxHeight: 420 }}>
             {!isEligible ? (
               <div className="text-[#7d8ba0] text-center py-8 text-[12.5px]">Zero Hero BTST scans all stocks. Switch to an F&O instrument for weekly/monthly expiry trades.</div>
-            ) : zhCandidates.slice(0, 5).map((z: ZHCandidate, idx: number) => (
+            ) : (() => {
+              // Balanced CE+PE in overview: show top 3 CE + top 2 PE (or vice versa)
+              // so puts aren't crowded out by higher-confidence calls.
+              const ceTop = zhCandidates.filter((z: ZHCandidate) => z.type === "CE").slice(0, 3);
+              const peTop = zhCandidates.filter((z: ZHCandidate) => z.type === "PE").slice(0, 2);
+              return [...ceTop, ...peTop].sort((a: ZHCandidate, b: ZHCandidate) => b.conf - a.conf);
+            })().map((z: ZHCandidate, idx: number) => (
               <div key={idx} className="flex justify-between items-center py-1.5 border-b border-[#1f2733] font-mono text-[11.5px] cursor-pointer hover:bg-[#151b25] px-1"
                 onClick={() => openTrade(z.strike, z.type, z.entry, z.rr)}>
                 <span>{idx + 1}. {fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span></span>
@@ -874,7 +994,7 @@ function FullOptionChain({ chain, spot, atmStrike, openTrade }: any) {
 function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }: any) {
   if (!isEligible) return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🎯 Zero Hero Scanner — Full</div>
+      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🎯 Today's Trade</div>
       <div className="p-4 text-[#7d8ba0] text-center py-10">Zero Hero covers all F&O instruments (weekly/monthly expiry) + BTST for all stocks. Switch instrument to view.</div>
     </div>
   );
@@ -883,7 +1003,7 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
-        <span>🎯 Zero Hero Scanner — Full</span>
+        <span>🎯 Today's Trade</span>
         <span className="text-[#7d8ba0] font-mono text-[11px]">
           {symbol} · {expiryType} · sorted by confidence
           {exp && (
@@ -902,7 +1022,20 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
             className="grid grid-cols-[.5fr_1.2fr_.6fr_1fr_1fr_1fr_.8fr_.6fr] gap-1.5 items-center py-2 border-b border-[#1f2733] font-mono text-[11.5px] cursor-pointer hover:bg-[#151b25]"
             onClick={() => openTrade(z.strike, z.type, z.entry, z.rr)}>
             <div>{idx + 1}</div>
-            <div>{fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span></div>
+            <div>
+              {fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span>
+              {z.greekTags.length > 0 && (
+                <div className="flex gap-1 mt-1">
+                  {z.greekTags.map((tag) => (
+                    <span key={tag} className={`text-[9px] font-bold px-1 py-px rounded ${
+                      tag === "IV SKEW" ? "bg-[rgba(232,163,61,.2)] text-[#e8a33d]" :
+                      tag === "GAMMA SPIKE" ? "bg-[rgba(79,143,247,.2)] text-[#4f8ff7]" :
+                      "bg-[rgba(45,212,167,.2)] text-[#2dd4a7]"
+                    }`}>{tag}</span>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="text-[#1fbf75]">₹{fmt(z.entry)}</div>
             <div>₹{fmt(z.tp1)} / ₹{fmt(z.tp2)}</div>
             <div className="text-[#f2495c]">₹{fmt(z.sl)}</div>
@@ -918,13 +1051,18 @@ function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }:
 
 // ─── FII Flow Panel ────────────────────────────────────────────────
 function FIIFlowPanel({ flowData }: { flowData: any }) {
-  const { totalCallOIChg, totalPutOIChg, bias, strength } = flowData;
+  const { totalCallOIChg, totalPutOIChg, bias, strength, smartMoney, callWriting, putWriting } = flowData;
   const bearish = bias === "BEARISH";
+  const bullish = bias === "BULLISH";
+  // Engine-driven institutional activity: bullish flow = buying calls / writing puts;
+  // bearish flow = writing calls / buying puts.
+  const buying = bullish ? "CALLS" : bearish ? "PUTS" : "NEUTRAL";
+  const writing = bullish ? "PUTS" : bearish ? "CALLS" : "NEUTRAL";
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
         <span>FII / DII Flow</span>
-        <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${bearish ? "bg-[rgba(242,73,92,.18)] text-[#f2495c]" : "bg-[rgba(31,191,117,.18)] text-[#1fbf75]"}`}>{bias}</span>
+        <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${bearish ? "bg-[rgba(242,73,92,.18)] text-[#f2495c]" : bullish ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>{bias}</span>
       </div>
       <div className="p-3">
         <div className="text-[11px] text-[#7d8ba0] mb-1">Call OI Change</div>
@@ -947,10 +1085,17 @@ function FIIFlowPanel({ flowData }: { flowData: any }) {
         <div className={`font-mono font-bold text-[12px] ${totalPutOIChg >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
           {totalPutOIChg >= 0 ? "+" : ""}{fmt(totalPutOIChg)}
         </div>
-        <div className="flex gap-3 mt-3 text-[11px] text-[#7d8ba0]">
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#f2495c] inline-block" /> Selling</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#1fbf75] inline-block" /> Buying</span>
+        <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
+          <div className={`rounded px-2 py-1.5 border ${bullish ? "border-[#1fbf75]/40 bg-[rgba(31,191,117,.12)] text-[#1fbf75]" : "border-[#1f2733] text-[#7d8ba0]"}`}>
+            <div className="font-bold">Buying</div>
+            <div className="font-mono">{buying}</div>
+          </div>
+          <div className={`rounded px-2 py-1.5 border ${bearish ? "border-[#f2495c]/40 bg-[rgba(242,73,92,.12)] text-[#f2495c]" : "border-[#1f2733] text-[#7d8ba0]"}`}>
+            <div className="font-bold">Writing</div>
+            <div className="font-mono">{writing}</div>
+          </div>
         </div>
+        <div className="text-[10px] text-[#5d6b80] mt-2 font-mono">Smart money: {String(smartMoney || "neutral").toUpperCase()}{callWriting ? " · call writing" : ""}{putWriting ? " · put writing" : ""}</div>
       </div>
     </div>
   );
@@ -984,7 +1129,8 @@ function OIDistribution({ chain, maxPain }: { chain: ChainRow[]; maxPain: number
 
 // ─── Greeks Tab ────────────────────────────────────────────────────
 function GreeksTab({ chain }: { chain: ChainRow[] }) {
-  const metrics = ["IV", "Delta", "Theta", "Gamma", "Vega"] as const;
+  const greekMetrics = ["IV", "Delta", "Theta", "Gamma", "Vega"] as const;
+
   function greekColor(val: number, max: number) {
     const t = Math.max(-1, Math.min(1, val / max));
     if (t >= 0) {
@@ -995,37 +1141,125 @@ function GreeksTab({ chain }: { chain: ChainRow[] }) {
       return `rgba(${r},73,92,${0.25 + 0.55 * Math.abs(t)})`;
     }
   }
+
+  function getGreekValue(d: any, metric: string): { v: number; disp: string } {
+    if (!d || d.ltp <= 0) return { v: 0, disp: "—" };
+    if (metric === "IV") return { v: (d.iv || 0) - 18, disp: (d.iv || 0).toFixed(1) };
+    if (metric === "Delta") return { v: (d.delta || 0) - 0.5, disp: (d.delta || 0).toFixed(2) };
+    if (metric === "Theta") { const t = -(d.theta || 0); return { v: t, disp: t.toFixed(2) }; }
+    if (metric === "Gamma") return { v: d.gamma || 0, disp: Math.abs(d.gamma || 0).toFixed(3) };
+    if (metric === "Vega") return { v: d.vega || 0, disp: Math.abs(d.vega || 0).toFixed(2) };
+    return { v: 0, disp: "—" };
+  }
+
+  const colorScale = (metric: string) => metric === "IV" ? 10 : metric === "Delta" ? 0.5 : 1;
+
+  // ─── Greek-derived trading signals ────────────────────────
+  const gs = computeGreekSignals(chain);
+  const skewSignal = gs.skewLabel === "PUT SKEW" ? "Bearish — puts priced higher, market fears downside" : gs.skewLabel === "CALL SKEW" ? "Bullish — calls priced higher, market pricing upside" : "Neutral — no significant skew";
+
   return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Greek Heatmap <span className="text-[#7d8ba0] font-mono text-[11px]">ATM ± 8 strikes</span></div>
-      <div className="p-3 overflow-x-auto">
-        <div style={{ display: "flex" }}>
-          <div style={{ width: 50 }} />
-          {chain.map((r) => (
-            <div key={r.strike} style={{ width: 56, textAlign: "center", fontSize: 10, color: r.atm ? "#e8a33d" : "#7d8ba0", fontFamily: "var(--mono)", fontWeight: r.atm ? 700 : 400 }}>
-              {r.atm ? "ATM" : String(r.strike).slice(-3)}
+    <div className="space-y-3">
+      {/* ─── Heatmap ─── */}
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Greek Heatmap <span className="text-[#7d8ba0] font-mono text-[11px]">ATM ± 8 strikes</span></div>
+        <div className="p-3 overflow-x-auto">
+          {/* Strike headers */}
+          <div style={{ display: "flex" }}>
+            <div style={{ width: 58 }} />
+            {chain.map((r) => (
+              <div key={r.strike} style={{ width: 52, textAlign: "center", fontSize: 10, color: r.atm ? "#e8a33d" : "#7d8ba0", fontFamily: "var(--mono)", fontWeight: r.atm ? 700 : 400 }}>
+                {r.atm ? "ATM" : String(r.strike).slice(-3)}
+              </div>
+            ))}
+          </div>
+          {/* CE rows (green-tinted) */}
+          <div className="text-[10px] font-bold text-[#1fbf75] mt-1 mb-0.5" style={{ paddingLeft: 58 }}>CALL (CE)</div>
+          {greekMetrics.map((metric) => (
+            <div key={`ce-${metric}`} style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: 2 }}>
+              <div style={{ width: 58, fontSize: 10, color: "#1fbf75", textAlign: "right", paddingRight: 6, fontWeight: 500 }}>{metric}</div>
+              {chain.map((r) => {
+                const { v, disp } = getGreekValue(r.ce, metric);
+                return (
+                  <div key={r.strike} style={{ width: 52, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: "var(--mono)", borderRadius: 3, background: greekColor(v, colorScale(metric)) }}>
+                    {disp}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {/* PE rows (red-tinted) */}
+          <div className="text-[10px] font-bold text-[#f2495c] mt-2 mb-0.5" style={{ paddingLeft: 58 }}>PUT (PE)</div>
+          {greekMetrics.map((metric) => (
+            <div key={`pe-${metric}`} style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: 2 }}>
+              <div style={{ width: 58, fontSize: 10, color: "#f2495c", textAlign: "right", paddingRight: 6, fontWeight: 500 }}>{metric}</div>
+              {chain.map((r) => {
+                const { v, disp } = getGreekValue(r.pe, metric);
+                return (
+                  <div key={r.strike} style={{ width: 52, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: "var(--mono)", borderRadius: 3, background: greekColor(v, colorScale(metric)) }}>
+                    {disp}
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>
-        {metrics.map((metric) => (
-          <div key={metric} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 3 }}>
-            <div style={{ width: 50, fontSize: 10.5, color: "#7d8ba0", textAlign: "right", paddingRight: 6 }}>{metric}</div>
-            {chain.map((r) => {
-              const d = metric === "CE" ? r.ce : r.pe;
-              let v = 0, disp = "—";
-              if (metric === "IV") { v = (d?.iv || 0) - 18; disp = (d?.iv || 0).toFixed(1); }
-              if (metric === "Delta") { v = (d?.delta || 0) - 0.5; disp = (d?.delta || 0).toFixed(2); }
-              if (metric === "Theta") { v = -(d?.theta || 0); disp = v.toFixed(2); }
-              if (metric === "Gamma") { v = d?.gamma || 0; disp = Math.abs(v).toFixed(3); }
-              if (metric === "Vega") { v = d?.vega || 0; disp = Math.abs(v).toFixed(2); }
-              return (
-                <div key={r.strike} style={{ width: 56, height: 24, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontFamily: "var(--mono)", borderRadius: 3, background: greekColor(v, metric === "IV" ? 10 : metric === "Delta" ? 0.5 : 1) }}>
-                  {disp}
-                </div>
-              );
-            })}
+      </div>
+
+      {/* ─── Greek Trading Signals ─── */}
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">
+          Greek Trading Signals <span className="text-[#7d8ba0] font-mono text-[11px]">auto-detected from live greeks</span>
+        </div>
+        <div className="p-3 grid grid-cols-3 gap-3">
+          {/* IV Skew */}
+          <div className={`rounded-lg border p-2.5 ${gs.skewLabel === "PUT SKEW" ? "border-[#f2495c]/30 bg-[rgba(242,73,92,.08)]" : gs.skewLabel === "CALL SKEW" ? "border-[#1fbf75]/30 bg-[rgba(31,191,117,.08)]" : "border-[#1f2733] bg-[#0d1117]"}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-[#e8a33d]">IV Skew</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${gs.skewLabel === "PUT SKEW" ? "bg-[rgba(242,73,92,.2)] text-[#f2495c]" : gs.skewLabel === "CALL SKEW" ? "bg-[rgba(31,191,117,.2)] text-[#1fbf75]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>{gs.skewLabel}</span>
+            </div>
+            <div className="font-mono text-[11px] text-[#c9d1d9] mb-0.5">
+              CE avg IV: <span className="text-[#1fbf75]">{gs.avgCEIV.toFixed(1)}</span> · PE avg IV: <span className="text-[#f2495c]">{gs.avgPEIV.toFixed(1)}</span>
+            </div>
+            <div className="text-[10px] text-[#7d8ba0]">{skewSignal}</div>
           </div>
-        ))}
+
+          {/* Gamma Spike */}
+          <div className="rounded-lg border border-[#4f8ff7]/30 bg-[rgba(79,143,247,.08)] p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-[#e8a33d]">Gamma Spike</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[rgba(79,143,247,.2)] text-[#4f8ff7]">{gs.gammaStrike ? fmtInt(gs.gammaStrike) : "—"}</span>
+            </div>
+            <div className="font-mono text-[11px] text-[#c9d1d9] mb-0.5">
+              Max gamma: <span className="text-[#4f8ff7]">{gs.gammaMax.toFixed(3)}</span> {gs.gammaStrike ? `@ ${fmtInt(gs.gammaStrike)}` : ""}
+            </div>
+            <div className="text-[10px] text-[#7d8ba0]">{gs.gammaStrike ? `High pin risk at ${fmtInt(gs.gammaStrike)} — expect fast moves near this strike` : "No significant gamma concentration detected"}</div>
+          </div>
+
+          {/* Theta Zone */}
+          <div className="rounded-lg border border-[#2dd4a7]/30 bg-[rgba(45,212,167,.08)] p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-[#e8a33d]">Theta Decay Zone</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[rgba(45,212,167,.2)] text-[#2dd4a7]">{gs.thetaStrike ? `${fmtInt(gs.thetaStrike)} ${gs.thetaType}` : "—"}</span>
+            </div>
+            <div className="font-mono text-[11px] text-[#c9d1d9] mb-0.5">
+              Max theta: <span className="text-[#2dd4a7]">₹{gs.thetaMax.toFixed(0)}/day</span> {gs.thetaStrike ? `@ ${fmtInt(gs.thetaStrike)} ${gs.thetaType}` : ""}
+            </div>
+            <div className="text-[10px] text-[#7d8ba0]">{gs.thetaStrike ? `Best strike for selling ${gs.thetaType} — earns ₹${gs.thetaMax.toFixed(0)} daily decay` : "No significant theta decay detected"}</div>
+          </div>
+        </div>
+
+        {/* Delta Sweet Spot */}
+        {(gs.deltaBandCE.length > 0 || gs.deltaBandPE.length > 0) && (
+          <div className="px-3 pb-3">
+            <div className="rounded-lg border border-[#1f2733] bg-[#0d1117] p-2.5">
+              <span className="text-[11px] font-bold text-[#e8a33d]">Delta Sweet Spot (0.25–0.45):</span>
+              {gs.deltaBandCE.length > 0 && <span className="text-[10px] font-mono text-[#1fbf75] ml-2">CE: {gs.deltaBandCE.map(fmtInt).join(", ")}</span>}
+              {gs.deltaBandPE.length > 0 && <span className="text-[10px] font-mono text-[#f2495c] ml-2">PE: {gs.deltaBandPE.map(fmtInt).join(", ")}</span>}
+              <span className="text-[10px] text-[#7d8ba0] ml-2">— best directional exposure, not too expensive</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1227,7 +1461,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
     if (!chain.length || !spot) return null;
     try {
       const sdmChain = chainToSDMStrikes(chain);
-      return runSMCAnalysis({
+      return runSMCWithEngine({
         symbol: activeSymbol,
         spot,
         optionChain: sdmChain,
@@ -1330,11 +1564,11 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
   }
 
   // ─── Auto-register candidates ──────────────────────────────────
-  const registeredRef = useRef(false);
+  const registeredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (registeredRef.current) return;
+    if (registeredRef.current === activeSymbol) return;
     if (!smcCandidates.length) return;
-    registeredRef.current = true;
+    registeredRef.current = activeSymbol;
     registerTrades("SMART_MONEY", activeSymbol, smcCandidates).catch(() => {});
     recordScannerCycle(activeSymbol, "SMART_MONEY", smcCandidates.map((c: any) => ({
       strike: c.strike, type: c.type, entry: c.entry, sl: c.sl,

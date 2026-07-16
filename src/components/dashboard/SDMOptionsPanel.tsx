@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import type { FullAnalysis, StrikeOI } from '@/lib/sdm-engine';
+import type { FullAnalysis, StrikeOI } from '@/lib/sdm-strategy';
 
 interface SDMOptionsPanelProps {
   analysis: FullAnalysis | null;

@@ -8,7 +8,7 @@ import type { SDMOptionStrike, SDMRecommendation, CandleData } from "@/types/sdm
 import {
   generateTradeRecommendation,
   validateOptionChain,
-} from "@/lib/sdm-recommendation";
+} from "@/lib/sdm-strategy";
 import {
   evaluateDataHealth,
   type DataHealthReport,
@@ -197,6 +197,20 @@ export function SDMBot({
     const chain = processOptionChain(optionChainData);
     if (chain.length === 0) return;
 
+    // Resolve a trade's OWN premium from the chain (so multi-strike positions
+    // are each evaluated against their correct LTP, not a single shared price).
+    const priceFor = (strike: number, type: "CE" | "PE"): number => {
+      const s = chain.find((x: SDMOptionStrike) => x.strike === strike);
+      return s ? (type === "CE" ? (s.ce?.ltp ?? 0) : (s.pe?.ltp ?? 0)) : 0;
+    };
+    // Expiry square-off: past 15:30 IST (server may be in any TZ).
+    const isPastSquareOff = (): boolean => {
+      const nowIST = new Date(Date.now() + 330 * 60000);
+      const h = nowIST.getHours();
+      const m = nowIST.getMinutes();
+      return h > 15 || (h === 15 && m >= 30);
+    };
+
     // Self-validation
     const validation = validateOptionChain(chain, spotPrice, symbol);
     const issues = [...validation.issues, ...validation.warnings];
@@ -256,20 +270,10 @@ export function SDMBot({
     ) {
       recommendationRef.current = lastRecRef.current;
 
-      // Still update active trades with current LTP
-      const selectedData = chain.find(
-        (s: SDMOptionStrike) => s.strike === lastRecRef.current!.strike
-      );
-      const currentLTP = lastRecRef.current!.direction.includes("CALL")
-        ? selectedData?.ce?.ltp || 0
-        : selectedData?.pe?.ltp || 0;
-      tracker.updateTrades(currentLTP, spotPrice);
+      // Still update active trades with current LTP (per-strike resolver)
+      tracker.updateTrades(priceFor, spotPrice);
 
-      if (
-        lastRecRef.current!.isExpiryDay &&
-        new Date().getHours() >= 15 &&
-        new Date().getMinutes() >= 30
-      ) {
+      if (lastRecRef.current!.isExpiryDay && isPastSquareOff()) {
         tracker.expireAllActiveTrades();
       }
       return;
@@ -349,21 +353,11 @@ export function SDMBot({
           );
         }
 
-        // Update active trades with current LTP
-        const selectedData = chain.find(
-          (s: SDMOptionStrike) => s.strike === rec.strike
-        );
-        const currentLTP = rec.direction.includes("CALL")
-          ? selectedData?.ce?.ltp || 0
-          : selectedData?.pe?.ltp || 0;
-        tracker.updateTrades(currentLTP, spotPrice);
+        // Update active trades with current LTP (per-strike resolver)
+        tracker.updateTrades(priceFor, spotPrice);
 
-        // Expire all trades after 15:30 on expiry day
-        if (
-          rec.isExpiryDay &&
-          new Date().getHours() >= 15 &&
-          new Date().getMinutes() >= 30
-        ) {
+        // Expire all trades after 15:30 IST on expiry day
+        if (rec.isExpiryDay && isPastSquareOff()) {
           tracker.expireAllActiveTrades();
         }
       } catch (err) {

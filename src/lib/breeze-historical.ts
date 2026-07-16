@@ -158,6 +158,66 @@ export async function getIntradayCandles(
   }
 }
 
+// ─── Get daily candles (used for real per-instrument ATR) ──────────
+export async function getDailyCandles(
+  symbol: string,
+  days: number = 100
+): Promise<IntradayCandleResult> {
+  const upperSym = symbol.toUpperCase();
+  const stockCode = BREEZE_STOCK_CODE[upperSym];
+  const isIndex = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"].includes(stockCode?.toUpperCase());
+  if (!stockCode || !isIndex) {
+    return { candles: [], source: "fallback", warning: `Unknown index ${symbol}` };
+  }
+  // Index spot candles live on NSE/BSE cash, not NFO/BFO
+  const cashExchange = ["SENSEX", "BANKEX"].includes(stockCode.toUpperCase()) ? "BSE" : "NSE";
+
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 24 * 3600 * 1000);
+  const fmt = (d: Date): string => {
+    const p = (n: number) => n.toString().padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 00:00:00`;
+  };
+
+  try {
+    await initSession();
+    const breeze = getBreezeClient();
+    const result = await breeze.getHistoricalDatav2({
+      interval: "1day",
+      fromDate: fmt(from),
+      toDate: fmt(to),
+      stockCode,
+      exchangeCode: cashExchange,
+      productType: "cash",
+    });
+
+    if (!result || result.Error || result.Status === 401) {
+      const msg = result?.Error || result?.Message || "Breeze daily historical failed";
+      console.warn(`[Breeze Daily] ${msg} for ${symbol}`);
+      return { candles: [], source: "fallback", warning: msg };
+    }
+
+    const raw = result.Success || result.data || result || [];
+    const candles: HistoricalCandle[] = [];
+    for (const c of raw) {
+      const t = c.time || c.datetime || c.date || c.timestamp;
+      if (!t) continue;
+      const o = Number(c.open ?? c.o ?? 0);
+      const h = Number(c.high ?? c.h ?? 0);
+      const l = Number(c.low ?? c.l ?? 0);
+      const cl = Number(c.close ?? c.c ?? 0);
+      const v = Number(c.volume ?? c.v ?? 0);
+      if (!o && !h && !l && !cl) continue;
+      candles.push({ time: t, open: o, high: h, low: l, close: cl, volume: v });
+    }
+    candles.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    return { candles, source: "breeze" };
+  } catch (err: any) {
+    console.warn(`[Breeze Daily] Exception for ${symbol}:`, err.message);
+    return { candles: [], source: "fallback", warning: err.message };
+  }
+}
+
 // ─── Get the exact candle at a specific timestamp (or nearest before) ──
 export function findCandleAtOrBefore(
   candles: HistoricalCandle[],
@@ -215,6 +275,19 @@ export function verifyTradeAgainstCandles(
   },
   candles: HistoricalCandle[]
 ): TradeVerificationResult {
+  // Baseline P&L from the stored exit price — the correct value when no
+  // candle replay occurs (handled by the early-return below). The replay path
+  // recomputes it from the actual candle exit price before returning. Scoped
+  // in an IIFE so its locals don't collide with the replay-path declarations.
+  const baselinePnl = (() => {
+    const exitForPnl = trade.exitPrice ?? trade.entryPrice;
+    const perLot = trade.direction === "long"
+      ? exitForPnl - trade.entryPrice
+      : trade.entryPrice - exitForPnl;
+    const v = perLot * trade.lotSize;
+    return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0;
+  })();
+
   const result: TradeVerificationResult = {
     entryVerified: false,
     entryReason: "",
@@ -227,21 +300,15 @@ export function verifyTradeAgainstCandles(
     actualExitPrice: null,
     actualExitTime: null,
     mismatchDetails: [],
+    // Static fields known upfront
+    direction: trade.direction,
+    lotSize: trade.lotSize,
+    computedPnl: baselinePnl,
   };
 
   if (!candles || !Array.isArray(candles) || candles.length === 0) {
     result.entryReason = "No candle data available for verification";
     result.exitReason = "No candle data available for verification";
-    // Compute P&L from stored exit price even without candles
-    const exitForPnl = trade.exitPrice ?? trade.entryPrice;
-    const perLot = trade.direction === "long"
-      ? exitForPnl - trade.entryPrice
-      : trade.entryPrice - exitForPnl;
-    const lotSize = trade.lotSize ?? 0;
-    const computed = perLot * lotSize;
-    result.computedPnl = Number.isFinite(computed) ? Math.round(computed * 100) / 100 : 0;
-    result.lotSize = trade.lotSize;
-    result.direction = trade.direction;
     return result;
   }
 

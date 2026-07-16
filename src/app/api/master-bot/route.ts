@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateTradePlan } from "@/lib/master-bot-engine";
+import { generateTradePlan } from "@/lib/masterbot-strategy";
 import { sendTelegramMessage } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";

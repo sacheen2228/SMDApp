@@ -4,7 +4,7 @@
 import { analyzeOptionChain } from "@/lib/sdm-oianalysis";
 import { detectSwingPoints, detectStructureEvents } from "@/lib/market-structure";
 import { calculateVWAP } from "@/lib/ml-engine";
-import { calculateATR } from "@/lib/signal-engine";
+import { calculateATR } from "@/lib/orca-strategy";
 import { computeVolumeProfile, findPOC, findValueArea } from "@/lib/volume-analysis";
 import type { SDMOptionStrike } from "@/types/sdm";
 

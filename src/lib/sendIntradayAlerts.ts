@@ -15,6 +15,12 @@ import {
   checkSLTP, addTrade, formatSLTPHit,
   hasActiveTrade
 } from "./activeTradeTracker";
+import { runSMCWithEngine } from "./smc-strategy";
+import type { SDMOptionStrike, CandleData } from "@/types/sdm";
+import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "./ProTradeEngine";
+import { getDailyATR } from "./atr-daily";
+
+const ZH_SYMBOLS = ["NIFTY", "SENSEX"];
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 
@@ -27,6 +33,14 @@ function fetchWithTimeout(url: string, ms = 8000): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { cache: "no-store", signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+function getQualityBand(score: number): { emoji: string; label: string } {
+  if (score >= 70) return { emoji: "🟢", label: "A+ Institutional Setup" };
+  if (score >= 65) return { emoji: "🟢", label: "High Probability" };
+  if (score >= 60) return { emoji: "🟡", label: "Good Setup" };
+  if (score >= 55) return { emoji: "🟠", label: "Watchlist / Aggressive Entry" };
+  return { emoji: "⚪", label: "Below Threshold" };
 }
 
 // Fetch SDM signal for a symbol+direction+expiry and push to candidates array
@@ -50,7 +64,7 @@ async function fetchAndPushSignal(
 
     const conf = (alert.confidence || 0) / 100;
     const rr = alert.rr || 1;
-    if (conf < 0.6 || rr < 1.5) return;
+    if (conf < 0.55 || rr < 1.5) return;
 
     candidates.push({ symbol: sym, alert });
   } catch {
@@ -116,13 +130,15 @@ function formatSDMMessage(alert: any): string {
   const isCall = alert.optionType === "CE";
   const emoji = isCall ? "🟢" : "🔴";
   const direction = isCall ? "Bullish" : "Bearish";
+  const band = getQualityBand(alert.confidence);
   const pnlRisk = alert.entry > 0 ? Math.abs((alert.entry - alert.sl) / alert.entry * 100).toFixed(1) : "—";
   const pnlReward = alert.entry > 0 ? Math.abs((alert.tp1 - alert.entry) / alert.entry * 100).toFixed(1) : "—";
 
-  return `⚡ SDM Signal — ${alert.symbol}
+  return `${band.emoji} ${band.label} (${alert.confidence}%)
+⚡ SDM Signal — ${alert.symbol}
 
 ${emoji} ${alert.side} ${alert.instrument}
-${direction} | Confidence: ${alert.confidence}%
+${direction}
 
 Strike: ${alert.strike} ${alert.optionType} ${alert.expiry ? `| ${alert.expiry}` : ""}
 Entry: ₹${alert.entry.toFixed(2)}
@@ -260,7 +276,150 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       }
   }
 
-  // 5. Stock scanner alerts — monthly expiry, confidence ≥ 80%
+  // 6. SMC (Smart Money) alerts — monthly expiry, confidence ≥ 55%
+  try {
+    const smcSymbols = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
+    for (const sym of smcSymbols) {
+      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}`);
+      if (!chainRes.ok) continue;
+      const chainJson = await chainRes.json();
+      const chainData = chainJson?.data;
+      if (!chainData?.data) continue;
+      const spot = chainData.spotPrice || 0;
+      const vix = chainData.summary?.indiaVIX || 15;
+      const apiChain = chainData.data as any[];
+      const optionChain: SDMOptionStrike[] = apiChain.map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, theta: row.ce.theta || 0, gamma: row.ce.gamma || 0, vega: row.ce.vega || 0 } : null,
+        pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, theta: row.pe.theta || 0, gamma: row.pe.gamma || 0, vega: row.pe.vega || 0 } : null,
+      }));
+      const rawCandles = (chainData.candles || []) as any[];
+      const candles: CandleData[] = rawCandles
+        .filter((c: any) => c.open && c.close)
+        .map((c: any) => ({
+          time: new Date(c.time).getTime(),
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume || 0,
+        }));
+      const smcResult = runSMCWithEngine({ symbol: sym, spot, optionChain, candles, vix, capital: 100000, riskPercent: 2 });
+      for (const c of smcResult.candidates) {
+        if (c.confidence < 55) continue;
+        const sig = `${sym}|${c.strike}|${c.type}|SMC`;
+        if (alreadySentToday(sig)) continue;
+        const band = getQualityBand(c.confidence);
+        const text = `${band.emoji} ${band.label} (${c.confidence}%)
+🧠 SMC — ${sym}
+
+${c.type === "CE" ? "🟢" : "🔴"} BUY ${c.type} | ${sym} ${c.strike}
+
+Entry: ₹${c.entry.toFixed(2)}
+Stop: ₹${c.sl.toFixed(2)}
+Target 1: ₹${c.tp1.toFixed(2)}
+Target 2: ₹${c.tp2.toFixed(2)}
+R:R 1:${c.rr.toFixed(1)}
+Confidence: ${c.confidence}%
+
+${(c.reasons || []).slice(0, 2).join(" · ")}
+
+⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
+        const results = await Promise.all(DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, text)));
+        if (results.some(Boolean)) {
+          markSentToday(sig);
+          newAlerts++;
+        }
+      }
+    }
+  } catch {
+    // Non-blocking — SMC analysis may fail
+  }
+
+  // 7. ZERO_HERO alerts — confidence ≥ 55%
+  try {
+    for (const sym of ZH_SYMBOLS) {
+      const dailyAtr = await getDailyATR(sym); // Option 1: real per-instrument ATR
+      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}`);
+      if (!chainRes.ok) continue;
+      const chainJson = await chainRes.json();
+      const chainData = chainJson?.data;
+      if (!chainData?.data) continue;
+      const spot = chainData.spotPrice || 0;
+      const vix = chainData.summary?.indiaVIX || 15;
+      const apiChain = chainData.data as any[];
+      const zhCandles = ((chainData.candles || []) as any[])
+        .filter((c: any) => c.open && c.close)
+        .map((c: any) => ({
+          time: new Date(c.time).getTime(),
+          open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0,
+        }));
+      const zhFullChain = apiChain.map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, theta: row.ce.theta || 0, gamma: row.ce.gamma || 0, vega: row.ce.vega || 0 } : null,
+        pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, theta: row.pe.theta || 0, gamma: row.pe.gamma || 0, vega: row.pe.vega || 0 } : null,
+      }));
+      const context = analyzeZeroHeroChain(apiChain, spot, vix, sym);
+      const threshold = spot * 0.02;
+      const nearStrikes = apiChain.filter((s: any) => Math.abs(s.strike - spot) <= threshold);
+      for (const s of nearStrikes) {
+        for (const type of ["CE", "PE"] as const) {
+          const leg = type === "CE" ? s.ce : s.pe;
+          if (!leg || !leg.ltp || leg.ltp <= 0) continue;
+          const evalResult = evaluateZeroHeroCandidate({
+            strike: s.strike,
+            type,
+            ltp: leg.ltp,
+            delta: leg.delta || 0,
+            iv: leg.iv || 0,
+            oiChg: leg.oiChg || 0,
+            oi: leg.oi || 0,
+            volume: leg.volume || 0,
+            bid: leg.bid,
+            ask: leg.ask,
+            spot,
+            lotSize: 25,
+            capital: 100000,
+            riskPerTradePercent: 2,
+            maxPositionSize: 10,
+            context,
+            atr: dailyAtr ?? undefined,
+            candles: zhCandles,
+            fullChain: zhFullChain,
+          });
+          const minConf = type === "PE" ? 45 : 55;
+          if (evalResult.conf < minConf) continue;
+          const sig = `${sym}|${s.strike}|${type}|ZH`;
+          if (alreadySentToday(sig)) continue;
+          const band = getQualityBand(evalResult.conf);
+          const text = `${band.emoji} ${band.label} (${evalResult.conf}%)
+⚡ ${sym}
+
+${type === "CE" ? "🟢" : "🔴"} BUY ${type} | ${sym} ${s.strike}
+
+Entry: ₹${leg.ltp.toFixed(2)}
+Stop: ₹${evalResult.sl.toFixed(2)}
+Target 1: ₹${evalResult.tp1.toFixed(2)}
+Target 2: ₹${evalResult.tp2.toFixed(2)}
+R:R 1:${evalResult.rr.toFixed(1)}
+Stars: ${"⭐".repeat(evalResult.stars)}
+
+OI Chg: ${leg.oiChg >= 0 ? "+" : ""}${leg.oiChg.toLocaleString()} | IV: ${(leg.iv || 0).toFixed(1)}% | Δ: ${(leg.delta || 0).toFixed(2)}
+
+⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
+          const results = await Promise.all(DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, text)));
+          if (results.some(Boolean)) {
+            markSentToday(sig);
+            newAlerts++;
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-blocking — ZERO_HERO analysis may fail
+  }
+
+  // 5. Stock scanner alerts — monthly expiry
   try {
     const scannerRes = await fetch(
       `${BASE}/api/scanner?symbol=NIFTY&live=true`,
@@ -271,7 +430,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       const scanData = scannerJson?.data;
       if (scanData?.candidates) {
         const highConfStocks = scanData.candidates.filter(
-          (s: any) => s.monthlyOptionTrade && s.totalScore >= 60
+          (s: any) => s.monthlyOptionTrade && s.totalScore >= 55
         );
 
         for (const stock of highConfStocks) {
@@ -313,7 +472,6 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               stopLoss: opt.stopLoss,
               tp1: opt.targets[0] || opt.premium,
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
-              tp3: opt.targets[2] || opt.targets[1] || opt.targets[0] || opt.premium,
               confidence: stock.totalScore,
               reason: (stock.reasons || []).slice(0, 3).join(" · "),
               source: "stock-scanner",
@@ -333,12 +491,14 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 function formatStockOptionAlert(stock: any, opt: any): string {
   const isCall = opt.optionType === "CE";
   const emoji = isCall ? "🟢" : "🔴";
+  const band = getQualityBand(stock.totalScore);
   const rr = stock.riskReward ? `1:${stock.riskReward.toFixed(1)}` : "—";
   const reasons = (stock.reasons || []).slice(0, 3).join(" · ") || "Scanner pick";
   const direction = isCall ? "Bullish" : "Bearish";
   const targets = opt.targets.map((t: number, i: number) => `T${i + 1} ₹${t.toFixed(2)}`).join(" | ");
 
-  return `📊 STOCK OPTION — ${stock.symbol}
+  return `${band.emoji} ${band.label} (${stock.totalScore}%)
+📊 STOCK OPTION — ${stock.symbol}
 
 ${emoji} BUY ${opt.optionType} | ${stock.symbol} ${opt.strike}
 
@@ -347,7 +507,6 @@ ${emoji} BUY ${opt.optionType} | ${stock.symbol} ${opt.strike}
 🛑 Stop Loss: ₹${opt.stopLoss.toFixed(2)}
 🎯 ${targets}
 📐 R:R ${rr}
-⭐ Confidence: ${stock.totalScore}%
 📈 ${direction} | ${reasons}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}

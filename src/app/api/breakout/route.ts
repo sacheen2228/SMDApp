@@ -2,7 +2,7 @@
 // Runs candlestick breakout + fakeout detection engine
 
 import { NextRequest, NextResponse } from "next/server";
-import { CandlestickBreakoutIndia, type BreakoutSignal } from "@/lib/candlestick-breakout";
+import { CandlestickBreakoutIndia, type BreakoutSignal } from "@/lib/breakout-strategy";
 
 // Cache strategy instance per session
 let strategyInstance: CandlestickBreakoutIndia | null = null;

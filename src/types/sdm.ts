@@ -181,6 +181,7 @@ export interface TradeRecord {
   time: string;
   direction: "CALL" | "PUT" | "SELL_CALL" | "SELL_PUT";
   strike: number;
+  lotSize: number;
   entry: number;
   tp1: number;
   tp2: number;

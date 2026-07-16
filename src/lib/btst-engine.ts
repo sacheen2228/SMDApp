@@ -223,7 +223,9 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   const riskPerShare = entry - sl;
   const maxCapital = 100000;
   const riskPct = 1.0; // 1% account risk
-  const qty = riskPerShare > 0 ? Math.floor((maxCapital * riskPct / 100) / riskPerShare) : 0;
+  const qtyRaw = riskPerShare > 0 ? Math.floor((maxCapital * riskPct / 100) / riskPerShare) : 0;
+  // Capital clamp: a tight ATR stop must not deploy more than the account.
+  const qty = Math.min(qtyRaw, Math.floor(maxCapital / entry));
   const capital = qty * entry;
   const riskPerTrade = qty * riskPerShare;
 
@@ -269,5 +271,5 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
 
 // ─── Should this stock be alerted? ────────────────────────────────
 export function shouldAlertBTST(a: BTSTAnalysis): boolean {
-  return a.total >= 85 && a.gapRisk !== "High";
+  return a.total >= 55 && a.gapRisk !== "High";
 }

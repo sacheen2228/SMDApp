@@ -45,21 +45,37 @@ export async function validateSession(): Promise<boolean> {
 // ─── Initialize Session ───────────────────────────────────────────
 export async function initSession(): Promise<boolean> {
   try {
-    // Try cached session first
+    // Try cached in-memory session first, but verify it's still valid.
+    // A stale token would otherwise make every Breeze call fail silently.
     if (currentApiSession) {
-      return true;
+      try {
+        const breeze = getBreezeClient();
+        await breeze.getCustomerDetails();
+        return true;
+      } catch {
+        // Cached session is dead — drop it and re-init below.
+        currentApiSession = null;
+        breezeClient = null;
+      }
     }
 
-    // Try loading cached session from disk
+    // Try loading cached session from disk (verify it's not expired)
     try {
       const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
       const cached: CachedSession = JSON.parse(raw);
       if (cached.expiresAt > Date.now()) {
         currentApiSession = cached.apiSession;
-        return true;
+        try {
+          const breeze = getBreezeClient();
+          await breeze.getCustomerDetails();
+          return true;
+        } catch {
+          currentApiSession = null;
+          breezeClient = null;
+        }
       }
     } catch {
-      // No cached session or expired
+      // No cached session or unreadable
     }
 
     // Try env session token
@@ -147,8 +163,16 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
       console.warn('[Breeze Auth] Auth error detected, re-initializing session...');
       currentApiSession = null;
       breezeClient = null;
+      // Clear any stale on-disk session so we don't loop on a dead token.
+      try { fs.unlinkSync(SESSION_FILE); } catch {}
       const ok = await initSession();
-      if (!ok) throw new Error('Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN.');
+      if (!ok) {
+        throw new Error(
+          'Breeze session expired and re-init failed. Generate a fresh session token at ' +
+          `https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(process.env.BREEZE_APP_KEY || '')} ` +
+          'and update BREEZE_SESSION_TOKEN in .env, then restart.'
+        );
+      }
       return await fn(getBreezeClient());
     }
     throw err;

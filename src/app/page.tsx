@@ -41,7 +41,7 @@ import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
 
 import { getLotSize } from '@/lib/symbol-config';
-import type { FullAnalysis } from '@/lib/sdm-engine';
+import type { FullAnalysis } from '@/lib/sdm-strategy';
 import type { SDMRecommendation } from '@/types/sdm';
 import { getCurrentSession } from '@/lib/market-session';
 

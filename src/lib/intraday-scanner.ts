@@ -7,124 +7,37 @@ import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engin
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import { recordScannerResult, type ScannerResultInput } from "./market/record-scanner";
 import { recordSignal } from "./trade-audit-client";
+import { runIntradayWithEngine } from "./equity-strategy";
 
-// ─── Types ────────────────────────────────────────────────────────
-export interface ScannerConfig {
-  symbol: string;
-  spotPrice: number;
-  optionChain: SDMOptionStrike[];
-  vix: number;
-  pcr: number;
-  maxPain: number;
-  totalCallOI: number;
-  totalPutOI: number;
-}
+// Import types + helpers from the client-safe module so they're available
+// internally AND re-exported for server-side consumers.
+import {
+  getGradeColor,
+  getDirectionColor,
+  getConvictionColor,
+} from "./intraday-scanner-types";
+import type {
+  ScannerConfig,
+  MonthlyOptionTrade,
+  StockCandidate,
+  MarketDirection,
+  SectorStrength,
+  ScanResult,
+} from "./intraday-scanner-types";
 
-export interface MonthlyOptionTrade {
-  strike: number;
-  optionType: "CE" | "PE";
-  expiry: string;
-  expiryLabel: string;
-  premium: number;
-  stopLoss: number;
-  targets: number[];
-  direction: "BUY" | "SELL";
-  summary: string;
-}
-
-export interface StockCandidate {
-  symbol: string;
-  name: string;
-  sector: string;
-  currentPrice: number;
-  change: number;
-  changePct: number;
-  volume: number;
-  avgVolume: number;
-  rvol: number;
-  marketCap: number;
-  // Technicals
-  ema9: number;
-  ema21: number;
-  ema50: number;
-  rsi: number;
-  macd: number;
-  macdSignal: number;
-  adx: number;
-  atr: number;
-  // Options (if F&O)
-  pcr: number;
-  totalOI: number;
-  oiChange: number;
-  iv: number;
-  // Monthly option trade
-  monthlyOptionTrade?: MonthlyOptionTrade;
-  // Scores
-  marketScore: number;
-  sectorScore: number;
-  technicalScore: number;
-  optionsScore: number;
-  volumeScore: number;
-  fundamentalScore: number;
-  newsScore: number;
-  totalScore: number;
-  // Trade setup
-  direction: "BULLISH" | "BEARISH" | "NEUTRAL";
-  entry: number;
-  stopLoss: number;
-  target1: number;
-  target2: number;
-  riskReward: number;
-  holdingTime: string;
-  grade: "A+" | "A" | "B+" | "B" | "C" | "D";
-  conviction: "HIGH" | "MEDIUM" | "LOW";
-  reasons: string[];
-  technicalSummary: string;
-  optionsSummary: string;
-  volumeSummary: string;
-  fundamentalNote: string;
-  institutionalActivity: string;
-  supportLevels: number[];
-  resistanceLevels: number[];
-}
-
-export interface MarketDirection {
-  trend: "STRONG_BULLISH" | "BULLISH" | "SIDEWAYS" | "VOLATILE" | "BEARISH" | "STRONG_BEARISH";
-  score: number;
-  details: string;
-  niftyTrend: string;
-  bankNiftyTrend: string;
-  vixLevel: string;
-  breadth: string;
-  globalCues: string;
-}
-
-export interface SectorStrength {
-  sector: string;
-  strength: number;
-  change: number;
-  leadingStocks: string[];
-  laggards: string[];
-}
-
-export interface ScanResult {
-  timestamp: string;
-  marketDirection: MarketDirection;
-  sectors: SectorStrength[];
-  candidates: StockCandidate[];
-  bestBullish: StockCandidate | null;
-  bestBearish: StockCandidate | null;
-  stocksToAvoid: string[];
-  overallBias: string;
-  keyRisks: string[];
-  dataQuality: "LIVE" | "SIMULATED" | "PARTIAL";
-  marketSentiment?: {
-    overall: number;
-    label: string;
-    topBullish: any[];
-    topBearish: any[];
-  } | null;
-}
+export {
+  getGradeColor,
+  getDirectionColor,
+  getConvictionColor,
+};
+export type {
+  ScannerConfig,
+  MonthlyOptionTrade,
+  StockCandidate,
+  MarketDirection,
+  SectorStrength,
+  ScanResult,
+};
 
 // ─── NIFTY 50 + F&O Universe ──────────────────────────────────────
 const NIFTY50_STOCKS: { symbol: string; name: string; sector: string }[] = [
@@ -367,26 +280,16 @@ interface YahooData {
 // One chart call returns BOTH the live quote (meta) and 3 months of daily
 // OHLC candles (indicators.quote) — so we fetch quote + candles together.
 // Fetched in bounded-concurrency batches to keep latency reasonable.
-// Results are cached 30s so re-visiting the Scanner tab is instant.
-
-const yahooCache = new Map<string, { data: YahooData; ts: number }>();
-const YAHOO_CACHE_TTL = 30_000;
-
 async function fetchYahooData(symbols: string[]): Promise<YahooData> {
-  const cacheKey = symbols.join(",");
-  const cached = yahooCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < YAHOO_CACHE_TTL) return cached.data;
-
   const quotes = new Map<string, any>();
   const candles = new Map<string, Candle[]>();
-  const CONCURRENCY = 10;
-  const DEADLINE = Date.now() + 25_000;
+  const CONCURRENCY = 6;
 
   const fetchOne = async (sym: string) => {
     const yahooSym = `${sym}.NS`;
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
       if (!res.ok) return;
       const data = await res.json();
       const result = data?.chart?.result?.[0];
@@ -426,18 +329,11 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     }
   };
 
-  // Probe one stock first. If Yahoo is unreachable, bail in ~4s.
-  await fetchOne(symbols[0]);
-  if (quotes.size === 0) return { quotes, candles };
-
-  for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
+  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
     const batch = symbols.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(fetchOne));
   }
-
-  const data: YahooData = { quotes, candles };
-  yahooCache.set(cacheKey, { data, ts: Date.now() });
-  return data;
+  return { quotes, candles };
 }
 
 // Average True Range from real OHLC candles.
@@ -599,6 +495,31 @@ export async function generateCandidates(
     // News score (neutral — no news API integration yet)
     newsScore = 50;
 
+    // AI confidence — run the institutional AI engine per-stock using
+    // the stock's own candles + the NIFTY index option chain as market context.
+    let aiScore = 0;
+    let aiDirection: "BUY" | "SELL" | "NO_TRADE" = "NO_TRADE";
+    let aiReasons: string[] = [];
+    if (stockCandles && stockCandles.length >= 10 && config.optionChain.length > 0) {
+      try {
+        const aiCandles: Candle[] = stockCandles.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        }));
+        const { runAIOnCandidate } = await import("./ai-scanner-adapter");
+        const signal = runAIOnCandidate(aiCandles, config.optionChain, basePrice);
+        aiScore = signal.confidence;
+        aiDirection = signal.direction;
+        aiReasons = signal.reasons.slice(0, 3);
+      } catch {
+        // AI engine failure is non-blocking
+      }
+    }
+
     // Sector score
     const sectorData = sectors.find(s => s.sector === stock.sector);
     const sectorScore = sectorData?.strength || 50;
@@ -614,12 +535,13 @@ export async function generateCandidates(
     // the score for every stock.
     const totalScore = Math.round(
       (marketScore * 0.10) +
-      (sectorScore * 0.15) +
-      (technicalScore * 0.40) +
+      (sectorScore * 0.12) +
+      (technicalScore * 0.35) +
       (optionsScore * 0.05) +
-      (volumeScore * 0.20) +
+      (volumeScore * 0.18) +
       (fundamentalScore * 0.05) +
-      (newsScore * 0.05)
+      (newsScore * 0.05) +
+      (aiScore * 0.10)
     );
 
     // Direction from technical indicators (not totalScore threshold)
@@ -652,6 +574,32 @@ export async function generateCandidates(
     }
     riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
 
+    // Engine-backed intraday levels (single source of truth) when real candles exist
+    const engineCandles = stockCandles;
+    if (engineCandles && engineCandles.length >= 5) {
+      try {
+        const ev = runIntradayWithEngine(basePrice, engineCandles, atr, {
+          symbol: stock.symbol,
+          changePct,
+          rsi,
+          adx,
+          ema9,
+          ema21,
+          volume,
+          avgVolume,
+        });
+        if (ev.eligible) {
+          entry = ev.entry;
+          stopLoss = ev.stopLoss;
+          target1 = ev.target1;
+          target2 = ev.target2;
+          riskReward = ev.riskReward;
+        }
+      } catch {
+        // keep legacy ATR-based levels if the engine fails
+      }
+    }
+
     // Grade
     let grade: StockCandidate["grade"] = "C";
     if (totalScore >= 85) grade = "A+";
@@ -682,6 +630,11 @@ export async function generateCandidates(
 
     // Holding time
     const holdingTime = adx > 30 ? "2-4 hours" : "1-2 hours";
+
+    // Add AI reasons to the reasons list
+    for (const r of aiReasons) {
+      reasons.push(`AI: ${r}`);
+    }
 
     // Institutional activity (from real volume data)
     const institutionalActivity = rvol > 2.0 ? "High volume anomaly detected" :
@@ -738,6 +691,9 @@ export async function generateCandidates(
       institutionalActivity,
       supportLevels: supportLevels.map(l => Math.round(l * 100) / 100),
       resistanceLevels: resistanceLevels.map(l => Math.round(l * 100) / 100),
+      aiScore: Math.round(aiScore),
+      aiDirection,
+      aiReasons,
     });
   }
 
@@ -762,6 +718,80 @@ export async function runIntradayScan(config: ScannerConfig): Promise<ScanResult
 
   // Filter — show all candidates, sector filter applied in UI
   const highProbCandidates = candidates.filter(c => c.totalScore >= 20);
+
+  // Re-score top 15 candidates with per-stock NSE option chains.
+  // The initial AI score uses the NIFTY index option chain as market context.
+  // This second pass feeds each stock's own option chain for much more accurate signals.
+  const topCandidates = highProbCandidates.slice(0, 10);
+  const topSymbols = topCandidates.map(c => c.symbol);
+
+  let perStockChains: Map<string, any> = new Map();
+  try {
+    const { fetchPerStockOptionChains } = await import("./per-stock-option-chain");
+    perStockChains = await fetchPerStockOptionChains(topSymbols);
+  } catch (e: any) {
+    // Per-stock re-scoring is an enhancement — never block the scan on it.
+    console.warn("[Scanner] Per-stock AI re-scoring unavailable:", e?.message);
+  }
+
+  // Re-fetch candles for top candidates (needed for AI engine breakout detection)
+  const { candles: topCandles } = await fetchYahooData(topSymbols);
+
+  for (const candidate of topCandidates) {
+    const chain = perStockChains.get(candidate.symbol);
+    if (!chain || chain.optionData.length === 0) continue;
+
+    // Re-run AI engine with per-stock option chain
+    const stockCandles = topCandles.get(candidate.symbol) || [];
+    if (stockCandles.length < 10) continue;
+
+    try {
+      const aiCandles: Candle[] = stockCandles.map((c: any) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+
+      // Build AI input with per-stock option chain
+      const { buildAIInput } = await import("./ai-scanner-adapter");
+      const input = buildAIInput(aiCandles, chain.strikes.map(s => ({
+        strike: s.strike,
+        ce: s.ce ? {
+          ltp: s.ce.ltp, oi: s.ce.oi, oiChg: s.ce.oiChg,
+          volume: s.ce.volume, iv: s.ce.iv, delta: 0, theta: 0, gamma: 0, vega: 0,
+        } : null,
+        pe: s.pe ? {
+          ltp: s.pe.ltp, oi: s.pe.oi, oiChg: s.pe.oiChg,
+          volume: s.pe.volume, iv: s.pe.iv, delta: 0, theta: 0, gamma: 0, vega: 0,
+        } : null,
+      })), candidate.currentPrice);
+
+      const { OptionChainInstitutionalAI } = await import("@/lib/institutional-ai");
+      const engine = new OptionChainInstitutionalAI();
+      const signal = engine.analyze(input);
+
+      if (signal.confidence > candidate.aiScore) {
+        // Per-stock analysis is more accurate — update the candidate
+        const aiBoost = signal.confidence - candidate.aiScore;
+        candidate.aiScore = signal.confidence;
+        candidate.aiDirection = signal.direction;
+        candidate.aiReasons = signal.reasons.slice(0, 3);
+
+        // Recalculate totalScore with the improved AI score
+        // Original: market*0.10 + sector*0.12 + tech*0.35 + options*0.05 + vol*0.18 + fund*0.05 + news*0.05 + ai*0.10
+        // We only adjust the AI component
+        candidate.totalScore = Math.round(candidate.totalScore + aiBoost * 0.10);
+      }
+    } catch {
+      // Per-stock AI failure is non-blocking
+    }
+  }
+
+  // Re-sort by updated scores
+  highProbCandidates.sort((a, b) => b.totalScore - a.totalScore);
 
   // Get best picks
   const bestBullish = highProbCandidates.find(c => c.direction === "BULLISH") || null;
@@ -813,36 +843,6 @@ function formatOI(oi: number): string {
   if (Math.abs(oi) >= 100000) return (oi / 100000).toFixed(1) + " L";
   if (Math.abs(oi) >= 1000) return (oi / 1000).toFixed(1) + "K";
   return oi.toString();
-}
-
-// ─── Grade Colors ─────────────────────────────────────────────────
-export function getGradeColor(grade: string): string {
-  switch (grade) {
-    case "A+": return "bg-emerald-500 text-white";
-    case "A": return "bg-emerald-600 text-white";
-    case "B+": return "bg-yellow-500 text-white";
-    case "B": return "bg-yellow-600 text-white";
-    case "C": return "bg-orange-500 text-white";
-    case "D": return "bg-red-500 text-white";
-    default: return "bg-muted";
-  }
-}
-
-export function getDirectionColor(direction: string): string {
-  switch (direction) {
-    case "BULLISH": return "text-emerald-500";
-    case "BEARISH": return "text-red-500";
-    default: return "text-muted-foreground";
-  }
-}
-
-export function getConvictionColor(conviction: string): string {
-  switch (conviction) {
-    case "HIGH": return "bg-emerald-600 text-white";
-    case "MEDIUM": return "bg-yellow-600 text-white";
-    case "LOW": return "bg-orange-500 text-white";
-    default: return "bg-muted";
-  }
 }
 
 // ─── Migration: Scanner Results persistence ───────────────────────

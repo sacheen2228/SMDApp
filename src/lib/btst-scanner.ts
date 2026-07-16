@@ -7,6 +7,7 @@
 
 import { runIntradayScan } from "./intraday-scanner";
 import { analyzeBTST, type BTSTAnalysis } from "./btst-engine";
+import { runBTSTWithEngine } from "./equity-strategy";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
 import { createTrade, updateTrade } from "./tradeStore";
@@ -98,7 +99,7 @@ async function buildIndexETFBTST(): Promise<BTSTAnalysis[]> {
     const macdSignal = calculateEMA(macdSeries, 9).at(-1) ?? 0;
     const avgVolume = d.volume * 0.8;
 
-    const analysis = analyzeBTST({
+    const analysis = runBTSTWithEngine({
       symbol: etf.sym,
       name: etf.label,
       sector: "Index",
@@ -123,7 +124,7 @@ async function buildIndexETFBTST(): Promise<BTSTAnalysis[]> {
       breadth: 0.6,
       atr,
       isFNO: false,
-    });
+    }, d.candles, atr);
 
     if (analysis.grade !== "SKIP") out.push(analysis);
   }
@@ -154,7 +155,7 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
     // Map scanner technicals → BTST engine input.
     // relativeStrength approximated from the stock's own momentum vs a flat market.
     // deliveryPct / breadth are not available from Yahoo — derived as honest proxies.
-    const analysis = analyzeBTST({
+    const analysis = runBTSTWithEngine({
       symbol: c.symbol,
       name: c.name,
       sector: c.sector,
@@ -179,7 +180,7 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
       breadth: 0.55,
       atr: c.atr,
       isFNO,
-    });
+    }, (c as any).candles, c.atr);
 
     if (analysis.grade !== "SKIP") candidates.push(analysis);
   }

@@ -6,7 +6,7 @@ import {
   CandlestickBreakoutIndia,
   type BreakoutSignal,
   type Candle,
-} from "@/lib/candlestick-breakout";
+} from "@/lib/breakout-strategy";
 import { getLotSize } from "@/lib/symbol-config";
 import {
   getBacktestDataProvider,

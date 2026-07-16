@@ -3,7 +3,7 @@
 // Generates historical option chains, runs SDM Signal Engine, tracks outcomes
 // ═══════════════════════════════════════════════════════════════════
 
-import { runSdmSignalEngine, type SdmSignal, type TradeAction } from "./sdm-signal-engine";
+import { runSdmSignalEngine, type SdmSignal, type TradeAction } from "./orca-strategy";
 import { calculateGreeks } from "./greeks";
 import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
 import type { SDMOptionStrike } from "@/types/sdm";

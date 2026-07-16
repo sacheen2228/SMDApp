@@ -5,7 +5,7 @@
 // No new databases, APIs, or architecture.
 
 import { calculateGreeks } from "@/lib/greeks";
-import { calculateATR } from "@/lib/signal-engine";
+import { calculateATR } from "@/lib/orca-strategy";
 import { calculateVWAP, calculateEMA, calculateADX } from "@/lib/ml-engine";
 import { analyzeOptionChain, classifyOIPattern } from "@/lib/sdm-oianalysis";
 import {
@@ -786,7 +786,9 @@ function computePositionSize(
   const capitalRisk = capital * (kellyPct / 100);
   const maxLots = maxPositionSize > 0 ? maxPositionSize : 100;
   const rawLots = Math.floor(capitalRisk / (stopDistance * lotSize));
-  const lots = Math.min(maxLots, Math.max(1, rawLots));
+  // Floor at 0 (not 1): if the risk budget yields <1 lot, do NOT force a
+  // trade that breaches the risk cap — reject instead.
+  const lots = Math.min(maxLots, Math.max(0, rawLots));
   const quantity = lots * lotSize;
   const capitalUsed = entry * quantity;
   const maxLoss = stopDistance * quantity;
@@ -797,7 +799,7 @@ function computePositionSize(
     quantity,
     capitalUsed: Math.round(capitalUsed * 100) / 100,
     maxLoss: Math.round(maxLoss * 100) / 100,
-    maxGain: Math.round(maxLoss * 2 * (confidence / 50)) / 100,
+    maxGain: Math.round(maxLoss * 2 * (confidence / 50) * 100) / 100,
     riskPercent: Math.round(actualRiskPct * 100) / 100,
   };
 }
@@ -945,7 +947,7 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
 
       // Per-strike confidence with per-strike Greeks
       const perStrikeConf = Math.min(100, Math.round(
-        structureScore * 0.25 +
+        structureScore * 0.20 +
         liquidityScore * 0.05 +
         orderBlockScore * 0.10 +
         fvgScore * 0.05 +

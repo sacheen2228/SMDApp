@@ -48,6 +48,7 @@ import {
   Settings,
   Table2,
   ArrowUpDown,
+  Brain,
 } from "lucide-react";
 import {
   getGradeColor,
@@ -55,7 +56,7 @@ import {
   getConvictionColor,
   type ScanResult,
   type StockCandidate,
-} from "@/lib/intraday-scanner";
+} from "@/lib/intraday-scanner-types";
 
 interface ScannerPanelProps {
   symbol: string;
@@ -133,6 +134,16 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {stock.aiScore > 0 && (
+              <Badge className={`${
+                stock.aiDirection === "BUY" ? "bg-blue-600 text-white" :
+                stock.aiDirection === "SELL" ? "bg-purple-600 text-white" :
+                "bg-muted text-muted-foreground"
+              }`}>
+                <Brain className="h-2.5 w-2.5 mr-0.5" />
+                AI {stock.aiScore}
+              </Badge>
+            )}
             <Badge className={getGradeColor(stock.grade)}>{stock.grade}</Badge>
             <Badge className={getConvictionColor(stock.conviction)}>{stock.conviction}</Badge>
           </div>
@@ -289,6 +300,23 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
               <p className="mt-0.5">{stock.institutionalActivity}</p>
             </div>
 
+            {/* AI Analysis */}
+            {stock.aiScore > 0 && (
+              <div>
+                <span className="font-semibold text-blue-500 flex items-center gap-1">
+                  <Brain className="h-2.5 w-2.5" /> AI Analysis ({stock.aiDirection} {stock.aiScore}/100)
+                </span>
+                <ul className="mt-1 space-y-0.5">
+                  {stock.aiReasons.map((reason, i) => (
+                    <li key={i} className="flex items-start gap-1 text-[9px]">
+                      <CheckCircle className="h-2.5 w-2.5 text-blue-500 mt-0.5 shrink-0" />
+                      <span>{reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Support/Resistance */}
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -333,6 +361,12 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
                   <span>Volume</span>
                   <span>{stock.volumeScore}/100</span>
                 </div>
+                {stock.aiScore > 0 && (
+                  <div className="flex justify-between text-blue-500">
+                    <span className="font-semibold">AI Confidence</span>
+                    <span className="font-bold">{stock.aiScore}/100</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -357,7 +391,7 @@ export const ScannerPanel = memo(function ScannerPanel({
     queryFn: async () => {
       setDataSource(null);
       setLiveError(null);
-      const res = await fetch(`/api/scanner?symbol=${symbol}&live=${useLive}`, { signal: AbortSignal.timeout(35_000) });
+      const res = await fetch(`/api/scanner?symbol=${symbol}&live=${useLive}`, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error("Scanner failed");
       const json = await res.json();
       if (json.dataSource) setDataSource(json.dataSource);

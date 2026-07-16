@@ -21,7 +21,7 @@ import {
   XCircle,
   AlertTriangle,
 } from 'lucide-react';
-import type { FullAnalysis, TradeRecommendation } from '@/lib/sdm-engine';
+import type { FullAnalysis, TradeRecommendation } from '@/lib/sdm-strategy';
 
 interface SDMDashboardProps {
   analysis: FullAnalysis | null;

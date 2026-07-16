@@ -8,7 +8,7 @@ import { db } from "@/lib/db";
 let trades: TradeRecord[] = [];
 let cacheLoaded = false;
 const MAX_TRADES_EXPIRY = 4;
-let lotSize = 65;
+let lotSize = 75;
 let currentSymbol = "NIFTY";
 
 // ─── Cache Management ────────────────────────────────────────────
@@ -32,6 +32,7 @@ function dbTradeToRecord(t: any): TradeRecord {
     time: new Date(t.entryTime).toLocaleTimeString("en-IN", { hour12: false }),
     direction: t.type as TradeRecord["direction"],
     strike: t.strike,
+    lotSize: t.positionSize ?? 65,
     entry: t.entryPrice,
     tp1: t.target1 ?? 0,
     tp2: t.target2 ?? 0,
@@ -99,7 +100,8 @@ export function addTrade(
   isExpiryDay: boolean,
   grade: TradeGrade = "C",
   confidence: number = 50,
-  reason: string = ""
+  reason: string = "",
+  lotSizeIn?: number
 ): TradeRecord | null {
   if (isExpiryDay && trades.length >= MAX_TRADES_EXPIRY) {
     return null;
@@ -114,6 +116,7 @@ export function addTrade(
     time: now.toLocaleTimeString("en-IN", { hour12: false }),
     direction,
     strike,
+    lotSize: lotSizeIn ?? lotSize,
     entry,
     tp1,
     tp2,
@@ -146,7 +149,7 @@ export function addTrade(
         aiReasonSnapshot: reason,
         status: "OPEN",
         riskPerTrade: 0,
-        positionSize: lotSize,
+        positionSize: lotSizeIn ?? lotSize,
         stopLoss: sl,
         target1: tp1,
         target2: tp2,
@@ -167,7 +170,7 @@ export function partialExit(
   const trade = trades.find((t) => t.id === tradeId);
   if (!trade || trade.status !== "active") return false;
 
-  const exitQuantity = Math.floor(lotSize * (percent / 100));
+  const exitQuantity = Math.floor(trade.lotSize * (percent / 100));
   const pnl = trade.direction.includes("CALL")
     ? (price - trade.entry) * exitQuantity
     : (trade.entry - price) * exitQuantity;
@@ -264,14 +267,29 @@ function getTrailingSL(
 }
 
 // ─── Update Trades with Current LTP ──────────────────────────────
-export function updateTrades(currentLTP: number, currentSpot: number): void {
+export function updateTrades(
+  getPrice: (strike: number, type: "CE" | "PE") => number,
+  currentSpot: number
+): void {
   for (const trade of trades) {
     if (trade.status !== "active" && trade.status !== "partial_exit") continue;
+
+    // Resolve THIS trade's own premium from the chain (not a single shared LTP)
+    const type: "CE" | "PE" =
+      trade.direction === "CALL" || trade.direction === "SELL_CALL" ? "CE" : "PE";
+    const currentLTP = getPrice(trade.strike, type);
+    if (currentLTP <= 0) continue; // no quote for this strike — skip evaluation
 
     const isBuy =
       trade.direction === "CALL" || trade.direction === "PUT";
     const isSell =
       trade.direction === "SELL_CALL" || trade.direction === "SELL_PUT";
+
+    // Remaining quantity after any partial exits, so the final-leg P&L is not
+    // double-counted against the already-booked partial profit.
+    const totalExitedPct = trade.partialExits.reduce((s, e) => s + e.percent, 0);
+    const remainingQty = Math.max(0, Math.round(trade.lotSize * (1 - totalExitedPct / 100)));
+    const qty = remainingQty > 0 ? remainingQty : trade.lotSize;
 
     let updated = false;
     let newStatus: string | null = null;
@@ -287,12 +305,12 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
     if (trailSl !== null && trailSl > 0) {
       if (isBuy && currentLTP <= trailSl) {
         newStatus = "tp_hit";
-        exitPnL = (trailSl - trade.entry) * lotSize;
+        exitPnL = (trailSl - trade.entry) * qty;
         hitLevel = "TRAILING_SL";
         exitReason = `Trailing SL hit at ${trailSl}`;
       } else if (isSell && currentLTP >= trailSl) {
         newStatus = "sl_hit";
-        exitPnL = (trade.entry - trailSl) * lotSize;
+        exitPnL = (trade.entry - trailSl) * qty;
         hitLevel = "TRAILING_SL";
         exitReason = `Trailing SL hit at ${trailSl}`;
       }
@@ -303,7 +321,7 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
       if (isBuy) {
         if (trade.tp3 > 0 && currentLTP >= trade.tp3) {
           newStatus = "tp_hit";
-          exitPnL = (trade.tp3 - trade.entry) * lotSize;
+          exitPnL = (trade.tp3 - trade.entry) * qty;
           hitLevel = "TP3";
           // Trail SL to TP2
           tradeHighestLevel.set(trade.id, "TP3");
@@ -317,7 +335,7 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
         } else if (trade.tp2 > 0 && currentLTP >= trade.tp2) {
           if (highest !== "TP3" && highest !== "TP2") {
             newStatus = "tp_hit";
-            exitPnL = (trade.tp2 - trade.entry) * lotSize;
+            exitPnL = (trade.tp2 - trade.entry) * qty;
             hitLevel = "TP2";
             tradeHighestLevel.set(trade.id, "TP2");
             exitReason = `TP2 hit at ${trade.tp2}`;
@@ -325,28 +343,28 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
         } else if (currentLTP >= trade.tp1) {
           if (!highest) {
             newStatus = "tp_hit";
-            exitPnL = (trade.tp1 - trade.entry) * lotSize;
+            exitPnL = (trade.tp1 - trade.entry) * qty;
             hitLevel = "TP1";
             tradeHighestLevel.set(trade.id, "TP1");
             exitReason = `TP1 hit at ${trade.tp1}`;
           }
         } else if (currentLTP <= trade.sl) {
           newStatus = "sl_hit";
-          exitPnL = (trade.sl - trade.entry) * lotSize;
+          exitPnL = (trade.sl - trade.entry) * qty;
           hitLevel = "SL";
           exitReason = `SL hit at ${trade.sl}`;
         }
       } else if (isSell) {
         if (trade.tp3 > 0 && currentLTP <= trade.tp3) {
           newStatus = "tp_hit";
-          exitPnL = (trade.entry - trade.tp3) * lotSize;
+          exitPnL = (trade.entry - trade.tp3) * qty;
           hitLevel = "TP3";
           tradeHighestLevel.set(trade.id, "TP3");
           exitReason = `TP3 hit at ${trade.tp3}`;
         } else if (trade.tp2 > 0 && currentLTP <= trade.tp2) {
           if (highest !== "TP3" && highest !== "TP2") {
             newStatus = "tp_hit";
-            exitPnL = (trade.entry - trade.tp2) * lotSize;
+            exitPnL = (trade.entry - trade.tp2) * qty;
             hitLevel = "TP2";
             tradeHighestLevel.set(trade.id, "TP2");
             exitReason = `TP2 hit at ${trade.tp2}`;
@@ -354,14 +372,14 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
         } else if (currentLTP <= trade.tp1) {
           if (!highest) {
             newStatus = "tp_hit";
-            exitPnL = (trade.entry - trade.tp1) * lotSize;
+            exitPnL = (trade.entry - trade.tp1) * qty;
             hitLevel = "TP1";
             tradeHighestLevel.set(trade.id, "TP1");
             exitReason = `TP1 hit at ${trade.tp1}`;
           }
         } else if (currentLTP >= trade.sl) {
           newStatus = "sl_hit";
-          exitPnL = (trade.entry - trade.sl) * lotSize;
+          exitPnL = (trade.entry - trade.sl) * qty;
           hitLevel = "SL";
           exitReason = `SL hit at ${trade.sl}`;
         }
@@ -370,7 +388,7 @@ export function updateTrades(currentLTP: number, currentSpot: number): void {
 
     if (newStatus) {
       trade.status = newStatus as any;
-      trade.pnl = exitPnL;
+      trade.pnl += exitPnL; // accumulate (correct for partial-exit remainder)
       trade.exitReason = exitReason || undefined;
       updated = true;
 
