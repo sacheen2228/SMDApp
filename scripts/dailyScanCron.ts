@@ -9,27 +9,10 @@
 //
 // Fires at 9:20am IST every weekday. Adjust the cron expression / days as needed.
 
-import fs from "node:fs";
-import path from "node:path";
-
-// ─── Load .env (bun does this automatically; this keeps it working
-// under plain `tsx` / node too, so the cron sees TELEGRAM_* tokens). ───
-function loadEnv(): void {
-  try {
-    const envPath = path.resolve(process.cwd(), ".env");
-    if (!fs.existsSync(envPath)) return;
-    const raw = fs.readFileSync(envPath, "utf8");
-    for (const line of raw.split("\n")) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-      if (m && process.env[m[1]] === undefined) {
-        process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-      }
-    }
-  } catch {
-    /* best-effort */
-  }
-}
-loadEnv();
+// Load .env (TELEGRAM_* tokens etc.) BEFORE any module that reads env at
+// eval-time is imported. ES imports are hoisted + evaluated in order, so this
+// must come first.
+import "./_loadEnv";
 
 import cron from "node-cron";
 import { sendDailyDigest } from "../src/lib/sendDailyDigest";

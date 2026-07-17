@@ -50,7 +50,12 @@ export async function initSession(): Promise<boolean> {
     if (currentApiSession) {
       try {
         const breeze = getBreezeClient();
-        await breeze.getCustomerDetails();
+        await Promise.race([
+          breeze.getCustomerDetails(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Breeze getCustomerDetails timed out')), 8000)
+          ),
+        ]);
         return true;
       } catch {
         // Cached session is dead — drop it and re-init below.
@@ -67,7 +72,12 @@ export async function initSession(): Promise<boolean> {
         currentApiSession = cached.apiSession;
         try {
           const breeze = getBreezeClient();
-          await breeze.getCustomerDetails();
+          await Promise.race([
+            breeze.getCustomerDetails(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Breeze getCustomerDetails timed out')), 8000)
+            ),
+          ]);
           return true;
         } catch {
           currentApiSession = null;
@@ -104,7 +114,15 @@ export async function generateSession(apiSession?: string): Promise<any> {
   const breeze = getBreezeClient();
   console.log('[Breeze SDK] Generating session with:', session.substring(0, 10) + '...');
 
-  const result = await breeze.generateSession(config.secretKey, session);
+  // Guard against the Breeze SDK hanging indefinitely when the API is
+  // unreachable or the token is dead — without this, a stuck session init
+  // blocks the entire option-chain fetch (and thus the Telegram alert scan).
+  const result = await Promise.race([
+    breeze.generateSession(config.secretKey, session),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Breeze generateSession timed out after 8s')), 8000)
+    ),
+  ]);
 
   // Breeze SDK returns undefined on success (no error object = success)
   // Only treat as error if result explicitly has an error
@@ -155,7 +173,12 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
   }
   const client = getBreezeClient();
   try {
-    return await fn(client);
+    return await Promise.race([
+      fn(client),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Breeze SDK call timed out after 8s')), 8000)
+      ),
+    ]);
   } catch (err: any) {
     const msg = String(err?.message || err?.status || err || '');
     const isAuthErr = AUTH_ERROR_PATTERNS.some(p => msg.toUpperCase().includes(String(p).toUpperCase()));
