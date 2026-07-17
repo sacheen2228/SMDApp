@@ -17,3 +17,8 @@ export const INDICES = [
 ] as const;
 
 export const ALL_SYMBOLS: string[] = [...INDICES];
+
+// Weekly-expiry trades are restricted to NIFTY & SENSEX only (liquid,
+// tight spreads). Monthly-expiry strategies (SMC, stock scanner, etc.)
+// continue to sweep the full index universe.
+export const WEEKLY_SYMBOLS: string[] = ["NIFTY", "SENSEX"];

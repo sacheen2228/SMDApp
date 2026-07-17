@@ -9,7 +9,7 @@ import { sendTelegramMessage } from "./telegramSend";
 import { recordIntradayTrade } from "./intraday-scanner";
 import { isTelegramSendWindow } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
-import { ALL_SYMBOLS } from "./stockUniverse";
+import { ALL_SYMBOLS, WEEKLY_SYMBOLS } from "./stockUniverse";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import {
   checkSLTP, addTrade, formatSLTPHit,
@@ -224,24 +224,27 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     return { ran: true, newAlerts };
   }
 
-  // 3. Fetch SDM V2 recommendations for each symbol (both CE and PE, weekly + monthly)
+  // 3. Fetch SDM V2 recommendations (both CE and PE).
+  //    Weekly expiry → NIFTY & SENSEX ONLY (liquid, tight spreads).
+  //    Monthly expiry → full index universe (as before).
   const candidates: { symbol: string; alert: any }[] = [];
 
-  for (const sym of symbolsToScan) {
-    // Get monthly expiry date for this symbol
-    const monthlyExpiry = getNextMonthlyExpiry(sym);
+  const weeklySyms = WEEKLY_SYMBOLS.filter(sym => !hasActiveTrade(sym));
+  const monthlySyms = symbolsToScan;
 
+  for (const sym of weeklySyms) {
     for (const direction of ['CALL', 'PUT'] as const) {
-      // Weekly expiry (default — no expiry param)
-      for (const expiryOpt of [null, monthlyExpiry?.date]) {
-        if (!expiryOpt) {
-          // Fetch weekly expiry (no expiry param)
-          await fetchAndPushSignal(sym, direction, candidates);
-        } else {
-          // Fetch monthly expiry
-          await fetchAndPushSignal(sym, direction, candidates, expiryOpt);
-        }
-      }
+      // Weekly expiry (no expiry param)
+      await fetchAndPushSignal(sym, direction, candidates);
+    }
+  }
+
+  for (const sym of monthlySyms) {
+    const monthlyExpiry = getNextMonthlyExpiry(sym);
+    if (!monthlyExpiry?.date) continue;
+    for (const direction of ['CALL', 'PUT'] as const) {
+      // Monthly expiry only
+      await fetchAndPushSignal(sym, direction, candidates, monthlyExpiry.date);
     }
   }
 
