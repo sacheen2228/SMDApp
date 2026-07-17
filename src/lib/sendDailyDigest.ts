@@ -7,7 +7,7 @@
 import { runDailyScan, type SymbolSnapshot } from "./dailyScan";
 import { formatDailyDigest } from "./dailyDigest";
 import { sendTelegramMessage } from "./telegramSend";
-import { ALL_SYMBOLS } from "./stockUniverse";
+import { ALL_SYMBOLS, WEEKLY_SYMBOLS } from "./stockUniverse";
 import { fetchNewsSentiment } from "./newsSentimentAdapter";
 import { isTelegramSendWindow } from "./marketHours";
 import type { OptionChainRow } from "./tradeAlertEngine";
@@ -66,7 +66,9 @@ export async function sendDailyDigest(): Promise<{ sent: boolean; pickCount: num
     return { sent: false, pickCount: 0 };
   }
 
-  const picks = await runDailyScan(ALL_SYMBOLS, { fetchSnapshot });
+  // Weekly-expiry digest is restricted to NIFTY & SENSEX only (liquid,
+  // tight spreads). Monthly-expiry strategies still sweep the full universe.
+  const picks = await runDailyScan(WEEKLY_SYMBOLS, { fetchSnapshot });
   const message = formatDailyDigest(picks);
 
   const results = await Promise.all(

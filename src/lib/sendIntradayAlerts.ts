@@ -292,11 +292,13 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     });
   }
 
-  // 6. SMC (Smart Money) alerts — monthly expiry, confidence ≥ 55%
+  // 6. SMC (Smart Money) alerts — monthly expiry only, confidence ≥ 55%
   try {
     const smcSymbols = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
     for (const sym of smcSymbols) {
-      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}`);
+      const monthlyExpiry = getNextMonthlyExpiry(sym);
+      const expiryParam = monthlyExpiry?.date ? `&expiry=${encodeURIComponent(monthlyExpiry.date)}` : "";
+      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}${expiryParam}`);
       if (!chainRes.ok) continue;
       const chainJson = await chainRes.json();
       const chainData = chainJson?.data;
