@@ -292,13 +292,14 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     });
   }
 
-  // 6. SMC (Smart Money) alerts — monthly expiry only, confidence ≥ 55%
+  // 6. SMC (Smart Money) alerts — restricted to WEEKLY_SYMBOLS (NIFTY/SENSEX)
+  //    like all weekly-expiry strategies. Monthly-expiry SMC for the other
+  //    indices is paused here because the NSE fallback can't reliably return
+  //    their true monthly chain while Breeze auth is down.
   try {
-    const smcSymbols = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
+    const smcSymbols = WEEKLY_SYMBOLS.filter(sym => !hasActiveTrade(sym));
     for (const sym of smcSymbols) {
-      const monthlyExpiry = getNextMonthlyExpiry(sym);
-      const expiryParam = monthlyExpiry?.date ? `&expiry=${encodeURIComponent(monthlyExpiry.date)}` : "";
-      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}${expiryParam}`);
+      const chainRes = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(sym)}`);
       if (!chainRes.ok) continue;
       const chainJson = await chainRes.json();
       const chainData = chainJson?.data;

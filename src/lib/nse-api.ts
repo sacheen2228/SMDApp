@@ -9,20 +9,28 @@ function getNSEClient(): NSEClient {
   return nseClient;
 }
 
-export async function getNSEOptionChain(symbol: string) {
+export async function getNSEOptionChain(symbol: string, expiry?: string) {
   const client = getNSEClient();
+  // NSE V3 expects expiry as "DD-Mon-YYYY"; accept that or ISO and normalize.
+  let expiryParam = expiry;
+  if (expiryParam && /^\d{4}-\d{2}-\d{2}$/.test(expiryParam)) {
+    const d = new Date(expiryParam);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    expiryParam = `${d.getUTCDate().toString().padStart(2, '0')}-${months[d.getUTCMonth()]}-${d.getUTCFullYear()}`;
+  }
   try {
     // SENSEX is on BSE, try BSE type first
     const isBSE = symbol.toUpperCase() === 'SENSEX' || symbol.toUpperCase() === 'BANKEX';
     const data = await client.optionChainV3({
       symbol,
       type: isBSE ? 'BSE' : 'Indices',
+      ...(expiryParam ? { expiry: expiryParam } : {}),
     });
     return data;
   } catch (err: any) {
     // Fallback: try as Indices for all
     try {
-      const data = await client.optionChainV3({ symbol, type: 'Indices' });
+      const data = await client.optionChainV3({ symbol, type: 'Indices', ...(expiryParam ? { expiry: expiryParam } : {}) });
       return data;
     } catch (err2: any) {
       console.error('[NSE API] Option chain error:', err2.message);

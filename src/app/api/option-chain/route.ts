@@ -117,8 +117,16 @@ export async function GET(request: NextRequest) {
     // Fallback to NSE API
     if (!chainData) {
       try {
-        const nseData = await getNSEOptionChain(symbol);
-        if (nseData?.records?.data) {
+        let nseData = await getNSEOptionChain(symbol, expiry);
+        // If the requested expiry yielded no strikes (e.g. a non-existent or
+        // wrong monthly date), fall back to the nearest available expiry so
+        // the route never 503s on an empty chain.
+        if (expiry && (!nseData?.records?.data || nseData.records.data.length === 0) && nseData?.records?.expiryDates?.length) {
+          const nearest = nseData.records.expiryDates[0];
+          console.warn(`[API] NSE empty for expiry=${expiry}, falling back to ${nearest}`);
+          nseData = await getNSEOptionChain(symbol, nearest);
+        }
+        if (nseData?.records?.data && nseData.records.data.length > 0) {
           chainData = {
             data: nseData.records.data.map((row: any) => ({
               strike: row.strikePrice,
@@ -153,7 +161,7 @@ export async function GET(request: NextRequest) {
             })),
             spotPrice: nseData.records?.underlyingValue || 0,
             expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
-            selectedExpiry: nseData.records?.expiryDates?.[0] || '',
+            selectedExpiry: expiry || nseData.records?.expiryDates?.[0] || '',
             summary: { spotPrice: nseData.records?.underlyingValue || 0 },
           };
           source = 'nse-api';
