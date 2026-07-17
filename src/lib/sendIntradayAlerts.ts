@@ -495,12 +495,25 @@ OI Chg: ${leg.oiChg >= 0 ? "+" : ""}${leg.oiChg.toLocaleString()} | IV: ${(leg.i
     // Non-blocking — stock scanner may time out
   }
 
-  // Flush queued new-signal alerts: send only the top MAX_ALERTS_PER_SCAN
-  // by confidence so a busy market doesn't spam the channel. SL/TP exit
-  // alerts above are sent immediately (few + time-critical).
-  alertQueue.sort((a, b) => b.conf - a.conf);
-  const toSend = alertQueue.slice(0, MAX_ALERTS_PER_SCAN);
-  for (const a of toSend) {
+  // Flush queued new-signal alerts. To avoid one busy symbol crowding out
+  // the others, take the top PER_SYMBOL_ALERTS for EACH symbol (by confidence)
+  // then cap the total at MAX_ALERTS_PER_SCAN. SL/TP exit alerts above are
+  // sent immediately (few + time-critical).
+  const PER_SYMBOL_ALERTS = 4;
+  const bySymbol = new Map<string, QueuedAlert[]>();
+  for (const a of alertQueue) {
+    const sym = a.sig.split("|")[0] || "?";
+    if (!bySymbol.has(sym)) bySymbol.set(sym, []);
+    bySymbol.get(sym)!.push(a);
+  }
+  const toSend: QueuedAlert[] = [];
+  for (const list of bySymbol.values()) {
+    list.sort((x, y) => y.conf - x.conf);
+    toSend.push(...list.slice(0, PER_SYMBOL_ALERTS));
+  }
+  toSend.sort((a, b) => b.conf - a.conf);
+  const finalSend = toSend.slice(0, MAX_ALERTS_PER_SCAN);
+  for (const a of finalSend) {
     const results = await Promise.all(
       DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, a.text))
     );
