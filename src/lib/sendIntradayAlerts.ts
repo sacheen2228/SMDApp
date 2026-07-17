@@ -29,6 +29,24 @@ const DIGEST_CHAT_IDS = (process.env.TELEGRAM_DIGEST_CHAT_IDS ?? "")
   .map((id) => id.trim())
   .filter(Boolean);
 
+// Hard cap on how many alerts a single scan run pushes to Telegram, so a
+// healthy market (many valid setups) doesn't spam the channel. Only the
+// highest-confidence setups across ALL strategies are sent.
+const MAX_ALERTS_PER_SCAN = 8;
+
+interface QueuedAlert {
+  text: string;
+  conf: number;
+  sig: string;
+  onSend?: () => Promise<void>; // record trade / audit side-effects
+}
+
+const alertQueue: QueuedAlert[] = [];
+
+function queueAlert(text: string, conf: number, sig: string, onSend?: () => Promise<void>): void {
+  alertQueue.push({ text, conf, sig, onSend });
+}
+
 function fetchWithTimeout(url: string, ms = 8000): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
@@ -231,49 +249,44 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   candidates.sort((a, b) => (b.alert.confidence || 0) - (a.alert.confidence || 0));
   const topCandidates = candidates.slice(0, 12);
 
-  // 4. Send index-level SDM alerts
+  // 4. Queue index-level SDM alerts (flushed + capped at the end)
   for (const c of topCandidates) {
     const signature = buildSignature(c.symbol, c.alert);
     if (alreadySentToday(signature)) continue;
 
     const text = formatSDMMessage(c.alert);
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
-
-      if (results.some(Boolean)) {
-        markSentToday(signature);
-        await addTrade({
-          id: c.alert.id,
-          symbol: c.symbol,
-          side: c.alert.side,
-          instrument: c.alert.instrument,
-          strike: c.alert.strike || 0,
-          optionType: c.alert.optionType || "",
-          entry: c.alert.entry,
-          sl: c.alert.sl,
-          tp1: c.alert.tp1,
-          tp2: c.alert.tp2,
-          status: "ACTIVE",
-          sentAt: new Date().toISOString(),
-          source: "sdm-v2-engine",
-        });
-        // Migration: also record executed intraday trades to Trade Audit sidecar.
-        await recordIntradayTrade({
-          id: c.alert.id,
-          symbol: c.symbol,
-          optionType: (c.alert.optionType as "CE" | "PE") || "CE",
-          strike: c.alert.strike || 0,
-          entry: c.alert.entry,
-          stopLoss: c.alert.sl,
-          tp1: c.alert.tp1,
-          tp2: c.alert.tp2,
-          confidence: c.alert.confidence,
-          reason: c.alert.rationale,
-          source: "sdm-v2-engine",
-        });
-        newAlerts++;
-      }
+    queueAlert(text, c.alert.confidence || 0, signature, async () => {
+      markSentToday(signature);
+      await addTrade({
+        id: c.alert.id,
+        symbol: c.symbol,
+        side: c.alert.side,
+        instrument: c.alert.instrument,
+        strike: c.alert.strike || 0,
+        optionType: c.alert.optionType || "",
+        entry: c.alert.entry,
+        sl: c.alert.sl,
+        tp1: c.alert.tp1,
+        tp2: c.alert.tp2,
+        status: "ACTIVE",
+        sentAt: new Date().toISOString(),
+        source: "sdm-v2-engine",
+      });
+      // Migration: also record executed intraday trades to Trade Audit sidecar.
+      await recordIntradayTrade({
+        id: c.alert.id,
+        symbol: c.symbol,
+        optionType: (c.alert.optionType as "CE" | "PE") || "CE",
+        strike: c.alert.strike || 0,
+        entry: c.alert.entry,
+        stopLoss: c.alert.sl,
+        tp1: c.alert.tp1,
+        tp2: c.alert.tp2,
+        confidence: c.alert.confidence,
+        reason: c.alert.rationale,
+        source: "sdm-v2-engine",
+      });
+    });
   }
 
   // 6. SMC (Smart Money) alerts — monthly expiry, confidence ≥ 55%
@@ -325,11 +338,9 @@ Confidence: ${c.confidence}%
 ${(c.reasons || []).slice(0, 2).join(" · ")}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
-        const results = await Promise.all(DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, text)));
-        if (results.some(Boolean)) {
+        queueAlert(text, c.confidence, sig, async () => {
           markSentToday(sig);
-          newAlerts++;
-        }
+        });
       }
     }
   } catch {
@@ -407,11 +418,9 @@ Stars: ${"⭐".repeat(evalResult.stars)}
 OI Chg: ${leg.oiChg >= 0 ? "+" : ""}${leg.oiChg.toLocaleString()} | IV: ${(leg.iv || 0).toFixed(1)}% | Δ: ${(leg.delta || 0).toFixed(2)}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
-          const results = await Promise.all(DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, text)));
-          if (results.some(Boolean)) {
+          queueAlert(text, evalResult.conf, sig, async () => {
             markSentToday(sig);
-            newAlerts++;
-          }
+          });
         }
       }
     }
@@ -439,11 +448,7 @@ OI Chg: ${leg.oiChg >= 0 ? "+" : ""}${leg.oiChg.toLocaleString()} | IV: ${(leg.i
           if (alreadySentToday(sig)) continue;
 
           const text = formatStockOptionAlert(stock, opt);
-          const results = await Promise.all(
-            DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-          );
-
-          if (results.some(Boolean)) {
+          queueAlert(text, stock.totalScore, sig, async () => {
             markSentToday(sig);
             const tradeId = `stk-${stock.symbol}-${Date.now()}`;
             await addTrade({
@@ -476,13 +481,33 @@ OI Chg: ${leg.oiChg >= 0 ? "+" : ""}${leg.oiChg.toLocaleString()} | IV: ${(leg.i
               reason: (stock.reasons || []).slice(0, 3).join(" · "),
               source: "stock-scanner",
             });
-            newAlerts++;
-          }
+          });
         }
       }
     }
   } catch {
     // Non-blocking — stock scanner may time out
+  }
+
+  // Flush queued new-signal alerts: send only the top MAX_ALERTS_PER_SCAN
+  // by confidence so a busy market doesn't spam the channel. SL/TP exit
+  // alerts above are sent immediately (few + time-critical).
+  alertQueue.sort((a, b) => b.conf - a.conf);
+  const toSend = alertQueue.slice(0, MAX_ALERTS_PER_SCAN);
+  for (const a of toSend) {
+    const results = await Promise.all(
+      DIGEST_CHAT_IDS.map((id) => sendTelegramMessage(id, a.text))
+    );
+    if (results.some(Boolean)) {
+      newAlerts++;
+      if (a.onSend) {
+        try {
+          await a.onSend();
+        } catch {
+          /* non-blocking */
+        }
+      }
+    }
   }
 
   return { ran: true, newAlerts };

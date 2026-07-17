@@ -18,6 +18,11 @@ interface CachedSession {
 let breezeClient: BreezeConnect | null = null;
 let currentApiSession: string | null = null;
 
+// Once Breeze auth is confirmed dead for this process, skip ALL Breeze
+// attempts and let callers fall back to NSE immediately (no 8s hang per
+// symbol). Reset only if a fresh session token is provided.
+let breezeAuthDead = false;
+
 // ─── Get Config ───────────────────────────────────────────────────
 export function getConfig() {
   const appKey = process.env.BREEZE_APP_KEY || '';
@@ -26,6 +31,12 @@ export function getConfig() {
 
   if (!appKey || !secretKey) {
     throw new Error('Missing BREEZE_APP_KEY or BREEZE_SECRET_KEY in .env');
+  }
+
+  // A freshly-provided token means we should re-attempt auth (clear any
+  // prior "auth dead" short-circuit from a stale/expired token).
+  if (sessionToken && sessionToken !== currentApiSession) {
+    breezeAuthDead = false;
   }
 
   return { appKey, secretKey, sessionToken };
@@ -44,6 +55,7 @@ export async function validateSession(): Promise<boolean> {
 
 // ─── Initialize Session ───────────────────────────────────────────
 export async function initSession(): Promise<boolean> {
+  if (breezeAuthDead) return false;
   try {
     // Try cached in-memory session first, but verify it's still valid.
     // A stale token would otherwise make every Breeze call fail silently.
@@ -98,6 +110,7 @@ export async function initSession(): Promise<boolean> {
     return false;
   } catch (err) {
     console.error('[Breeze SDK] initSession error:', err);
+    breezeAuthDead = true;
     return false;
   }
 }
@@ -129,6 +142,7 @@ export async function generateSession(apiSession?: string): Promise<any> {
   if (result && (result as any)?.Status === 401) {
     const errMsg = (result as any)?.Error || 'Authentication failed — token may be expired';
     console.error('[Breeze SDK] Session generation failed:', errMsg);
+    breezeAuthDead = true;
     throw new Error(`Breeze auth failed: ${errMsg}. Please generate a new session token at https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(config.appKey)}`);
   }
 
@@ -168,6 +182,9 @@ export { BreezeConnect };
 const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED'];
 
 export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>): Promise<T> {
+  if (breezeAuthDead) {
+    throw new Error('Breeze auth disabled (dead token) — caller should use fallback');
+  }
   if (!currentApiSession) {
     await initSession();
   }
