@@ -187,9 +187,25 @@ export const GapAnalysis = memo(function GapAnalysis({
   const rec = analysis?.recommendation;
   const oiTotal = ceOI + peOI || 1;
   const cePct = ceOI / oiTotal;
+  const daysToExpiry = typeof analysis?.expiry?.daysToExpiry === "number" ? analysis.expiry.daysToExpiry : 4;
   const expectedMovePts = gapInput.indiaVIX != null && spotPrice > 0
-    ? Math.round(spotPrice * gapInput.indiaVIX / 100 * Math.sqrt(4 / 365))
+    ? Math.round(spotPrice * gapInput.indiaVIX / 100 * Math.sqrt(Math.max(1, daysToExpiry) / 365))
     : null;
+
+  // Real ATM strike + premiums from the live option chain (not a fake formula).
+  const atmInfo = useMemo(() => {
+    if (!chainData?.length || !spotPrice) return { strike: null, ce: null, pe: null };
+    let atm = chainData[0], best = Infinity;
+    for (const s of chainData) {
+      const dd = Math.abs(s.strike - spotPrice);
+      if (dd < best) { best = dd; atm = s; }
+    }
+    return {
+      strike: atm.strike ?? null,
+      ce: atm.ce?.ltp ?? null,
+      pe: atm.pe?.ltp ?? null,
+    };
+  }, [chainData, spotPrice]);
 
   const predColor = gapResult.prediction === "UP" ? "text-emerald-400" 
     : gapResult.prediction === "DOWN" ? "text-red-400" 
@@ -543,7 +559,7 @@ export const GapAnalysis = memo(function GapAnalysis({
             <Card className="border-border/50">
               <CardContent className="p-3 space-y-3">
                 <CardTitle icon={<Shield className="w-3.5 h-3.5 text-amber-500" />} text="Gap Trading Setups" />
-                {computeSetups(spotPrice, maxPain, gapInput.indiaVIX).map((setup, i) => (
+                {computeSetups(atmInfo.strike, atmInfo.ce, atmInfo.pe, expectedMovePts).map((setup, i) => (
                   <div key={i} className="rounded-lg border border-border/50 p-2.5 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <Badge variant="outline" className={`text-[9px] ${
@@ -577,7 +593,9 @@ export const GapAnalysis = memo(function GapAnalysis({
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div><p className="text-muted-foreground">Days to Expiry</p><p className="font-bold text-lg">{analysis?.expiry?.daysToExpiry ?? "—"}</p></div>
                   <div><p className="text-muted-foreground">Mode</p><p className="font-bold">{rec?.riskLevel ?? "—"}</p></div>
-                  <div><p className="text-muted-foreground">Theta/Day</p><p className="font-bold">{gapInput.indiaVIX != null ? `~₹${(gapInput.indiaVIX * 0.16).toFixed(1)}` : "—"}</p></div>
+                  <div><p className="text-muted-foreground">Theta/Day</p><p className="font-bold">{
+                    atmInfo.ce != null ? `~₹${((atmInfo.ce + (atmInfo.pe ?? 0)) / 2 / Math.max(1, daysToExpiry)).toFixed(1)}` : "—"
+                  }</p></div>
                   <div>
                     <p className="text-muted-foreground">Expected Move</p>
                     <p className="font-bold">
@@ -687,15 +705,26 @@ function MoodGauge({ pcr, vix }: { pcr: number; vix: number | null }) {
   );
 }
 
-function computeSetups(spot: number, maxPain: number | null, vix: number | null) {
-  const atm = Math.round(spot / 50) * 50;
-  const entryUp = vix != null ? `~₹${Math.round(vix * 0.5 + 40)}` : "—";
-  const entryDown = vix != null ? `~₹${Math.round(vix * 0.5 + 35)}` : "—";
+function computeSetups(
+  atmStrike: number | null,
+  atmCE: number | null,
+  atmPE: number | null,
+  expectedMovePts: number | null,
+) {
+  const atm = atmStrike ?? 0;
+  // SL / target are spot levels around the ATM derived from the expected move.
+  // SL at ⅓ of the expected move, target at ⅔ → R:R ≈ 1:2 for the fade/dip trade.
+  const em = expectedMovePts ?? 0;
+  const slBand = Math.round(em * 0.33);
+  const tpBand = Math.round(em * 0.66);
+  const entryUp = atmPE != null ? `~₹${atmPE.toFixed(1)}` : "—";
+  const entryDown = atmCE != null ? `~₹${atmCE.toFixed(1)}` : "—";
+  const lvl = (n: number) => (n ? Math.round(n).toLocaleString("en-IN") : "—");
   return [
     {
       name: "Gap Up > 50 pts", color: "emerald" as const,
-      action: `Buy ${atm} PE`, entry: entryUp,
-      sl: `${atm + 50}`, target: `${atm - 50}`, rr: "1:2",
+      action: atm ? `Buy ${atm} PE` : "Buy ATM PE", entry: entryUp,
+      sl: lvl(atm + slBand), target: lvl(atm - tpBand), rr: "1:2",
       note: "Fade the gap at resistance",
     },
     {
@@ -705,8 +734,8 @@ function computeSetups(spot: number, maxPain: number | null, vix: number | null)
     },
     {
       name: "Gap Down > 50 pts", color: "red" as const,
-      action: `Buy ${atm} CE`, entry: entryDown,
-      sl: `${atm - 50}`, target: `${atm + 50}`, rr: "1:2",
+      action: atm ? `Buy ${atm} CE` : "Buy ATM CE", entry: entryDown,
+      sl: lvl(atm - slBand), target: lvl(atm + tpBand), rr: "1:2",
       note: "Buy the dip at support",
     },
     {
