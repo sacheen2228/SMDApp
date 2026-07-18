@@ -6,7 +6,7 @@ import {
   TrendingUp, TrendingDown, ChevronDown, Search, X, RefreshCw,
   Wifi, WifiOff, Zap, Activity, ArrowUpRight, ArrowDownRight,
   Building2, AlertTriangle, Brain, Shield, Minus, BarChart3,
-  Flame, Trophy,
+  Flame, Trophy, Crosshair, Layers, CalendarClock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
@@ -16,6 +16,7 @@ import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/ProTradeEngine";
 import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
 import { runSMCWithEngine } from "@/lib/smc-strategy";
+import { ATMStraddleRange } from "@/components/dashboard/ATMStraddleRange";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -105,18 +106,22 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "dom" | "history" | "watchlist" | "positions";
+type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
   { id: "options", icon: <Link2 size={19} />, label: "Option Chain" },
   { id: "zerohero", icon: <Target size={19} />, label: "Zero Hero" },
+  { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "greeks", icon: <Grid3X3 size={19} />, label: "Greeks" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "history", icon: <Clock size={19} />, label: "Trade History" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
   { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
+  { id: "straddle", icon: <Crosshair size={19} />, label: "Straddle Range v2" },
+  { id: "ide", icon: <Layers size={19} />, label: "Institutional Derivatives" },
+  { id: "top5", icon: <Flame size={19} />, label: "Today's Trade" },
 ];
 
 function getISTTime(): Date {
@@ -262,6 +267,438 @@ function StarRating({ count }: { count: number }) {
     </span>
   );
 }
+
+// ─── Institutional Derivatives Engine Tab (NIFTY / SENSEX only) ──────────
+function InstitutionalDerivativesView() {
+  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
+  const [sig, setSig] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState(0);
+
+  const fetchSig = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/ide?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "no data");
+      setSig(json.signal);
+      setError(null);
+      setUpdatedAt(Date.now());
+    } catch (e: any) {
+      setError(e?.message || "failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [sym]);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchSig();
+    const id = setInterval(fetchSig, 15000);
+    return () => clearInterval(id);
+  }, [fetchSig]);
+
+  const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(1)) : "--");
+  const decColor = (d: string) =>
+    d === "BUY_CALL" ? "text-[#1fbf75]" : d === "BUY_PUT" ? "text-[#f2495c]" : "text-[#7d8ba0]";
+
+  let barPos = 50;
+  if (sig) {
+    const span = sig.resistance - sig.support;
+    barPos = span > 0 ? ((sig.raw.spot - sig.support) / span) * 100 : 50;
+    barPos = Math.max(2, Math.min(98, barPos));
+  }
+
+  return (
+    <div className="flex flex-col gap-2 h-full">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Layers className="h-4 w-4 text-emerald-400" />
+          <span className="text-sm font-bold">Institutional Derivatives Engine</span>
+          <span className="text-[10px] text-[#7d8ba0]">Option Chain + Greeks + OI + FII/DII → Decision</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
+          <span>Index:</span>
+          {(["NIFTY", "SENSEX"] as const).map((s) => (
+            <button key={s} onClick={() => setSym(s)}
+              className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
+          ))}
+          {loading && <Activity className="h-3 w-3 animate-spin" />}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          <button onClick={fetchSig} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
+        </div>
+      </div>
+
+      {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
+
+      {sig && (
+        <>
+          {/* Pipeline row */}
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
+            <IdeStat label="Spot" value={fmt(sig.raw.spot)} />
+            <IdeStat label="ATM" value={fmt(sig.raw.atm)} />
+            <IdeStat label="ATM CE" value={fmt(sig.raw.ce)} />
+            <IdeStat label="ATM PE" value={fmt(sig.raw.pe)} />
+            <IdeStat label="PCR" value={fmt(sig.raw.pcr)} />
+            <IdeStat label="IV" value={fmt(sig.raw.iv)} />
+          </div>
+
+          {/* Expected Move + S/R */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
+            <IdeCard title="Expected Move">
+              <div className="text-2xl font-extrabold text-emerald-400">{fmt(sig.expectedMove)}</div>
+              <div className="text-[10px] text-[#7d8ba0]">{sig.expectedMovePct}% of spot</div>
+            </IdeCard>
+            <IdeCard title="Support">
+              <div className="text-2xl font-extrabold text-[#1fbf75]">{fmt(sig.support)}</div>
+              <StrengthBar label="Strength" v={sig.supportStrength} />
+            </IdeCard>
+            <IdeCard title="Resistance">
+              <div className="text-2xl font-extrabold text-[#f2495c]">{fmt(sig.resistance)}</div>
+              <StrengthBar label="Strength" v={sig.resistanceStrength} />
+            </IdeCard>
+          </div>
+
+          {/* Range bar */}
+          <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
+            <div className="relative h-3 rounded-full bg-gradient-to-r from-[#1fbf75]/30 via-[#1f2733] to-[#f2495c]/30">
+              <div className="absolute inset-y-0 left-1/2 w-px bg-[#7d8ba0]" />
+              <div className="absolute -top-1 h-5 w-1.5 rounded bg-emerald-400 shadow" style={{ left: `${barPos}%`, transform: "translateX(-50%)" }} />
+            </div>
+            <div className="flex justify-between text-[10px] mt-1 text-[#7d8ba0]">
+              <span>S {fmt(sig.support)}</span><span>R {fmt(sig.resistance)}</span>
+            </div>
+          </div>
+
+          {/* Decision + probabilities */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
+            <IdeCard title="Decision">
+              <div className={`text-xl font-extrabold ${decColor(sig.decision)}`}>{sig.decision.replace("_", " ")}</div>
+              <div className="text-[10px] text-[#7d8ba0] mt-1">Confidence {sig.confidence}%</div>
+            </IdeCard>
+            <IdeCard title="CE (Call) Probability">
+              <ProbBar v={sig.callProbability} color="#1fbf75" />
+            </IdeCard>
+            <IdeCard title="PE (Put) Probability">
+              <ProbBar v={sig.putProbability} color="#f2495c" />
+            </IdeCard>
+          </div>
+
+          {/* Strike + SL + TP */}
+          {sig.decision !== "NO_TRADE" && sig.recommendedStrike != null && (
+            <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
+              <div className="text-[12px] font-bold mb-2">
+                Trade Plan — {sig.recommendedType} @ {fmt(sig.recommendedStrike)}
+              </div>
+              <div className="grid grid-cols-4 gap-2 text-center">
+                <IdeStat label="Entry" value={fmt(sig.entry)} />
+                <IdeStat label="SL" value={fmt(sig.stopLoss)} tone="text-[#f2495c]" />
+                <IdeStat label="TP1" value={fmt(sig.target1)} tone="text-[#1fbf75]" />
+                <IdeStat label="TP2" value={fmt(sig.target2)} tone="text-[#1fbf75]" />
+              </div>
+            </div>
+          )}
+
+          {/* Reasons */}
+          <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
+            <div className="text-[11px] font-bold mb-1.5">Engine Reasoning</div>
+            <ul className="text-[10px] text-[#9fb0c3] space-y-0.5">
+              {sig.reasons.map((r: string, i: number) => <li key={i}>• {r}</li>)}
+            </ul>
+          </div>
+
+          <div className="text-[10px] text-[#7d8ba0]">
+            Pure derivatives engine — no SMC / BOS / CHOCH / Order Blocks / FVG / EMA / VWAP / RSI / MACD / candlesticks.
+            Gamma, OI-change, IV and FII positioning scored adaptively (percentile vs last 25 sessions).
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function IdeStat({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="rounded border border-[#1f2733] bg-[#10151d] p-1.5">
+      <div className="text-[9px] text-[#7d8ba0] uppercase">{label}</div>
+      <div className={`text-[13px] font-bold ${tone || "text-[#dfe6ee]"}`}>{value}</div>
+    </div>
+  );
+}
+function IdeCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-2.5">
+      <div className="text-[10px] text-[#7d8ba0] uppercase mb-1">{title}</div>
+      {children}
+    </div>
+  );
+}
+function StrengthBar({ label, v }: { label: string; v: number }) {
+  const color = v >= 60 ? "bg-[#1fbf75]" : v >= 40 ? "bg-[#e8a33d]" : "bg-[#f2495c]";
+  return (
+    <div className="mt-1">
+      <div className="flex justify-between text-[9px] text-[#7d8ba0]"><span>{label}</span><span>{v}</span></div>
+      <div className="h-1.5 rounded-full bg-[#1f2733] overflow-hidden mt-0.5"><div className={`h-full ${color}`} style={{ width: `${v}%` }} /></div>
+    </div>
+  );
+}
+function ProbBar({ v, color }: { v: number; color: string }) {
+  return (
+    <div className="mt-1">
+      <div className={`text-2xl font-extrabold`} style={{ color }}>{v}%</div>
+      <div className="h-2 rounded-full bg-[#1f2733] overflow-hidden mt-1"><div className="h-full" style={{ width: `${v}%`, background: color }} /></div>
+    </div>
+  );
+}
+
+// ─── Daily Derivatives Recommendation Tab (NIFTY / SENSEX only) ──────────
+function DailyDerivativesView() {
+  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
+  const [rec, setRec] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState(0);
+
+  const fetchRec = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "no data");
+      setRec(json.recommendation);
+      setError(null);
+      setUpdatedAt(Date.now());
+    } catch (e: any) {
+      setError(e?.message || "failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [sym]);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchRec();
+    const id = setInterval(fetchRec, 15000);
+    return () => clearInterval(id);
+  }, [fetchRec]);
+
+  const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(1)) : "--");
+  const actColor = (a: string) =>
+    a === "BUY_CALL" ? "text-[#1fbf75]" : a === "BUY_PUT" ? "text-[#f2495c]" : "text-[#7d8ba0]";
+  const actBg = (a: string) =>
+    a === "BUY_CALL" ? "bg-[#1fbf75]/15 border-[#1fbf75]/40" : a === "BUY_PUT" ? "bg-[#f2495c]/15 border-[#f2495c]/40" : "bg-[#1f2733] border-[#1f2733]";
+
+  return (
+    <div className="flex flex-col gap-2 h-full">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CalendarClock className="h-4 w-4 text-emerald-400" />
+          <span className="text-sm font-bold">Daily Trade Recommendation</span>
+          <span className="text-[10px] text-[#7d8ba0]">Derivatives Engine · {sym}</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
+          <span>Index:</span>
+          {(["NIFTY", "SENSEX"] as const).map((s) => (
+            <button key={s} onClick={() => setSym(s)}
+              className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
+          ))}
+          {loading && <Activity className="h-3 w-3 animate-spin" />}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          <button onClick={fetchRec} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
+        </div>
+      </div>
+
+      {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
+
+      {rec && (
+        <>
+          {/* Decision banner */}
+          <div className={`rounded-lg border p-3 ${actBg(rec.action)}`}>
+            <div className="flex items-center justify-between">
+              <span className={`text-xl font-extrabold ${actColor(rec.action)}`}>
+                {rec.action.replace("_", " ")}
+                {rec.type && rec.strike ? ` · ${rec.type} ${fmt(rec.strike)}` : ""}
+              </span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/30">
+                Confidence {rec.confidence}%
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-center">
+              <DStat label="Entry" value={fmt(rec.entry)} />
+              <DStat label="Stop Loss" value={fmt(rec.stopLoss)} tone="text-[#f2495c]" />
+              <DStat label="TP1" value={fmt(rec.tp1)} tone="text-[#1fbf75]" />
+              <DStat label="TP2" value={fmt(rec.tp2)} tone="text-[#1fbf75]" />
+            </div>
+            {rec.action !== "NO_TRADE" && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-1 text-center">
+                <DStat label="Strike" value={fmt(rec.strike)} />
+                <DStat label="TP3" value={fmt(rec.tp3)} tone="text-[#1fbf75]" />
+                <DStat label="Exp. Move" value={fmt(rec.expectedMove)} />
+                <DStat label="Exp. Move %" value={`${rec.expectedMovePct}%`} />
+              </div>
+            )}
+          </div>
+
+          {/* S/R + probabilities */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
+            <IdeCard title="Support / Resistance">
+              <div className="text-[13px] font-bold text-[#1fbf75]">S {fmt(rec.support)}</div>
+              <div className="text-[13px] font-bold text-[#f2495c]">R {fmt(rec.resistance)}</div>
+              <div className="text-[10px] text-[#7d8ba0] mt-0.5">Sup str {rec.supportStrength} · Res str {rec.resistanceStrength}</div>
+            </IdeCard>
+            <IdeCard title="CE (Call) Probability">
+              <ProbBar v={rec.callProbability} color="#1fbf75" />
+            </IdeCard>
+            <IdeCard title="PE (Put) Probability">
+              <ProbBar v={rec.putProbability} color="#f2495c" />
+            </IdeCard>
+          </div>
+
+          {/* Full reasoning */}
+          <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3 flex-1 overflow-auto">
+            <div className="text-[11px] font-bold mb-1.5">Complete Reasoning (Option Chain + Derivatives only)</div>
+            <ul className="text-[10px] text-[#9fb0c3] space-y-1">
+              {rec.reasoning.map((r: string, i: number) => (
+                <li key={i} className="flex gap-1.5"><span className="text-[#2dd4a7]">▸</span><span>{r}</span></li>
+              ))}
+            </ul>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DStat({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="rounded border border-[#1f2733] bg-[#10151d] p-1.5">
+      <div className="text-[9px] text-[#7d8ba0] uppercase">{label}</div>
+      <div className={`text-[13px] font-bold ${tone || "text-[#dfe6ee]"}`}>{value}</div>
+    </div>
+  );
+}
+
+// ─── Today's Trade — Top 5 (NIFTY / SENSEX only) ───────────────────────
+function TodaysTradeView() {
+  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
+  const [top5, setTop5] = useState<any[]>([]);
+  const [em, setEm] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState(0);
+
+  const fetchTop = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/today-trades?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "no data");
+      setTop5(json.top5 || []);
+      setEm(json.expectedMove || 0);
+      setError(null);
+      setUpdatedAt(Date.now());
+    } catch (e: any) {
+      setError(e?.message || "failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [sym]);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchTop();
+    const id = setInterval(fetchTop, 15000);
+    return () => clearInterval(id);
+  }, [fetchTop]);
+
+  const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(2)) : "--");
+  const stars = (n: number) => "★".repeat(Math.max(0, Math.min(5, n))) + "☆".repeat(Math.max(0, 5 - Math.min(5, n)));
+
+  return (
+    <div className="flex flex-col gap-2 h-full">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Flame className="h-4 w-4 text-orange-400" />
+          <span className="text-sm font-bold">🔥 Today&apos;s Trade — Top 5</span>
+          <span className="text-[10px] text-[#7d8ba0]">Derivatives Engine · Exp.Move ₹{fmt(em)}</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
+          <span>Index:</span>
+          {(["NIFTY", "SENSEX"] as const).map((s) => (
+            <button key={s} onClick={() => setSym(s)}
+              className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-orange-500/20 text-orange-400 border border-orange-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
+          ))}
+          {loading && <Activity className="h-3 w-3 animate-spin" />}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          <button onClick={fetchTop} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
+        </div>
+      </div>
+
+      {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
+
+      <div className="flex-1 overflow-auto">
+        {top5.length === 0 && !loading && !error && (
+          <div className="p-6 text-center text-[#7d8ba0] text-[12.5px]">No candidates scored above threshold right now.</div>
+        )}
+        <div className="flex flex-col gap-1.5">
+          {top5.map((c) => {
+            const isCall = c.type === "CE";
+            const color = isCall ? "text-[#1fbf75]" : "text-[#f2495c]";
+            return (
+              <div key={`${c.rank}-${c.strike}-${c.type}`}
+                className="flex items-center gap-3 rounded-lg border border-[#1f2733] bg-[#10151d] px-3 py-2.5">
+                <div className="w-5 text-center text-[15px] font-extrabold text-[#7d8ba0]">{c.rank}</div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[14px] font-bold ${color}`}>{c.strike} {c.type}</span>
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/30 text-[#9fb0c3]">{c.direction}</span>
+                  </div>
+                  <div className="text-[10px] text-[#7d8ba0] mt-0.5">
+                    Entry ₹{fmt(c.entry)} · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[13px] font-bold text-[#dfe6ee]">1:{c.rr}</div>
+                  <div className="text-[12px] text-[#e8a33d] tracking-tight">{stars(c.stars)}</div>
+                </div>
+                <div className="w-12 text-right">
+                  <div className="text-[13px] font-bold" style={{ color }}>{c.confidence}%</div>
+                  <div className="text-[9px] text-[#7d8ba0]">conf</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="text-[10px] text-[#7d8ba0]">
+        Ranked by the Institutional Derivatives Engine across near-ATM strikes (both sides). R:R = (TP1 − Entry) / (Entry − SL), SL at ½ Expected Move. Pure derivatives data — no SMC / TA indicators.
+      </div>
+    </div>
+  );
+}
+
+// ─── ATM Straddle Range Tab (NIFTY / SENSEX only) ─────────────────────
+const IndexStraddleView = () => {
+  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
+  return (
+    <div className="flex flex-col gap-2 h-full">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-[#7d8ba0] font-bold">Index:</span>
+        {(["NIFTY", "SENSEX"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setSym(s)}
+            className={`px-3 py-1 rounded text-[11px] font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-auto">
+        <ATMStraddleRange symbol={sym} autoRefresh />
+      </div>
+    </div>
+  );
+};
 
 // ─── Main Component ────────────────────────────────────────────────
 export function ZeroHeroTerminal() {
@@ -841,6 +1278,18 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "positions" && (
             <PositionsTab positions={positions} closePosition={closePosition} totalPnl={totalPnl} />
+          )}
+          {activeTab === "straddle" && (
+            <IndexStraddleView />
+          )}
+          {activeTab === "ide" && (
+            <InstitutionalDerivativesView />
+          )}
+          {activeTab === "daily" && (
+            <DailyDerivativesView />
+          )}
+          {activeTab === "top5" && (
+            <TodaysTradeView />
           )}
         </div>
       </div>
@@ -1627,10 +2076,11 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           <div><span className="text-[#7d8ba0]">PCR Trend:</span> {analysis.pcrTrend}</div>
           <div><span className="text-[#7d8ba0]">DTE:</span> {analysis.daysToExpiry}d</div>
           <div><span className="text-[#7d8ba0]">Max Pain:</span> ₹{fmtInt(analysis.maxPain)}</div>
-        </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
 
   // ─── Auto-register candidates ──────────────────────────────────
   const registeredRef = useRef<string | null>(null);

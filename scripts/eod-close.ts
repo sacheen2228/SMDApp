@@ -16,6 +16,7 @@
 
 import { getTrades, closeTrade, type TradeFilters, type TradesPage } from "../src/lib/trade-audit-client";
 import { resolveOutcomes, ALL_STRATEGIES } from "../src/lib/market/outcome-pipeline";
+import { db } from "../src/lib/db";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
 
@@ -39,6 +40,36 @@ export async function runEodClose(): Promise<{ closed: number; skipped: number; 
   let page = 1;
   const seen = new Set<string>();
 
+  // Mirror a closed audit trade back into the Prisma Trade table so the
+  // Terminal "Trade History" tab shows real Exit / P&L / Status (not blanks).
+  // The audit trade id IS the Prisma tradeId. P&L = exit - entry for BUY legs.
+  const syncPrisma = async (tradeId: string, exitPrice: number, exitReason: string) => {
+    try {
+      const existing = await db.trade.findUnique({ where: { tradeId } });
+      if (!existing) return;
+      const entry = existing.entryPrice || 0;
+      const isBuy = (existing.side || "BUY").toUpperCase() !== "SELL";
+      const pnl = isBuy ? exitPrice - entry : entry - exitPrice;
+      const pnlPercent = entry ? (pnl / entry) * 100 : 0;
+      await db.trade.update({
+        where: { tradeId },
+        data: {
+          exitPrice,
+          exitReason,
+          exitTime: new Date(),
+          pnl,
+          pnlPercent,
+          status: exitReason === "time_exit" ? "CLOSED" : exitReason,
+          holdingTimeMin: existing.entryTime
+            ? Math.max(0, (Date.now() - new Date(existing.entryTime).getTime()) / 60000)
+            : null,
+        },
+      });
+    } catch (e: any) {
+      console.error(`[eod-close] prisma sync failed for ${tradeId}:`, e?.message);
+    }
+  };
+
   // The audit API paginates (default page size 50, max 500); walk all open trades.
   while (true) {
     const data: TradesPage = await getTrades({ ...filters, page, pageSize: 500 } as any);
@@ -61,6 +92,7 @@ export async function runEodClose(): Promise<{ closed: number; skipped: number; 
         // staying open forever and skewing the accuracy denominator.
         try {
           await closeTrade(t.id, Number(t.entryPrice) || 0, "time_exit");
+          await syncPrisma(t.id, Number(t.entryPrice) || 0, "time_exit");
           skipped++;
         } catch {
           errors++;
@@ -70,6 +102,7 @@ export async function runEodClose(): Promise<{ closed: number; skipped: number; 
 
       try {
         await closeTrade(t.id, closePx, "time_exit");
+        await syncPrisma(t.id, closePx, "time_exit");
         closed++;
       } catch {
         errors++;
