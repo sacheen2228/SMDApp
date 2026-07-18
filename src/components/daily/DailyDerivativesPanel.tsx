@@ -39,7 +39,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(symbol)}&record=true`, { cache: "no-store" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "failed");
       setRec(json.recommendation);

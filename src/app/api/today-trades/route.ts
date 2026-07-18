@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { rankStrikes, type ChainContext, type StrikeLeg } from "@/lib/institutional-derivatives-engine";
+import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
@@ -89,6 +90,37 @@ export async function GET(req: NextRequest) {
       chosen.push(ranked[1]);
     }
     const top = chosen.map((c, i) => ({ rank: i + 1, ...c }));
+
+    // ── Paper-record the ranked candidates into the Trade Audit sidecar so the
+    // IDE signals get backtest-verified (MFE/MAE, win rate, R-multiple). Each
+    // poll feeds the live premium as a tracking tick (idempotent per day).
+    // Only candidates that clear the engine's confidence floor are recorded.
+    const shouldRecord = req.nextUrl.searchParams.get("record") === "true";
+    if (shouldRecord) {
+      try {
+        const toRecord = ranked
+          .filter((c) => c.probability >= 55)
+          .slice(0, 3)
+          .map((c) => ({
+            strike: c.strike,
+            type: c.type,
+            entry: c.entry,
+            sl: c.stopLoss,
+            tp1: c.tp1,
+            tp2: c.tp2,
+            tp3: c.tp3,
+            rr: c.rr,
+            conf: c.probability,
+            reason: `IDE Top — prob ${c.probability}, R:R ${c.rr}`,
+            price: c.entry,
+          }));
+        if (toRecord.length) {
+          await recordOptionSignals("IDE_TOP", symbol, toRecord);
+        }
+      } catch {
+        /* audit recording is best-effort */
+      }
+    }
 
     return NextResponse.json({ success: true, symbol, expectedMove, top });
   } catch (err: any) {
