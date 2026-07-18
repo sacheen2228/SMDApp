@@ -461,7 +461,7 @@ function DailyDerivativesView() {
 
   const fetchRec = useCallback(async () => {
     try {
-      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(sym)}&record=true`, { cache: "no-store" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "no data");
       setRec(json.recommendation);
@@ -588,7 +588,7 @@ function TodaysTradeView() {
 
   const fetchTop = useCallback(async () => {
     try {
-      const res = await fetch(`/api/today-trades?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+      const res = await fetch(`/api/today-trades?symbol=${encodeURIComponent(sym)}&record=true`, { cache: "no-store" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "no data");
       setTop5(json.top5 || []);

@@ -8,7 +8,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { buildDailyDerivativesRecommendation } from "@/lib/daily-derivatives-recommendation";
-import { recordSignal } from "@/lib/trade-audit-client";
+import { recordSignal, updatePrice } from "@/lib/trade-audit-client";
+import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 import { type StrikeLeg, type ChainContext } from "@/lib/institutional-derivatives-engine";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
@@ -129,15 +130,21 @@ export async function GET(req: NextRequest) {
     }, { strikes, ctx, daysToExpiry });
 
     // Persist confirmed trades into the audit sidecar (same workflow as scanners).
+    // Each poll also feeds the live premium as a tracking tick so the engine
+    // computes MFE/MAE and auto-closes on SL/TP (real backtest verification).
     if (shouldRecord && rec.action !== "NO_TRADE" && rec.strike != null && rec.entry != null) {
       try {
         const trend = rec.action === "BUY_CALL" ? "BULLISH" : "BEARISH";
+        const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" })
+          .format(new Date()).replace(/-/g, "");
+        const tradeId = `${STRATEGY}-${symbol}-${rec.strike}-${rec.type}-${ymd}`;
         await recordSignal({
+          tradeId,
           strategyId: STRATEGY,
           strategyVersion: "1.0",
           symbol,
           exchange: "NSE",
-          instrumentType: "INDEX",
+          instrumentType: "OPTIONS",
           spotPrice: spot,
           strikePrice: rec.strike,
           optionType: rec.type,
@@ -150,9 +157,13 @@ export async function GET(req: NextRequest) {
           aiConfidence: rec.confidence,
           probabilityScore: rec.action === "BUY_CALL" ? rec.callProbability : rec.putProbability,
           trendDirection: trend,
-          marketSession: "MIDDAY",
+          marketSession: istSession(),
           signalReason: rec.reasoning.join(" | "),
         });
+        // Feed the live ATM premium as a tracking tick (real backtest).
+        if (rec.entry && rec.entry > 0) {
+          await updatePrice(tradeId, rec.entry).catch(() => {});
+        }
       } catch {
         /* audit recording is best-effort */
       }
