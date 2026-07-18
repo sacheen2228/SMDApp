@@ -39,6 +39,7 @@ import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
+import DailyDerivativesPanel from '@/components/daily/DailyDerivativesPanel';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -237,7 +238,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -631,6 +632,11 @@ return (
               onClick={() => { setViewMode('btst'); setDisplayMode('pro'); }}>
               <Flame className="h-2.5 w-2.5 mr-0.5" /> BTST
             </Button>
+            <Button variant={viewMode === 'daily' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'daily' ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/25' : 'text-muted-foreground hover:text-violet-500'}`}
+              onClick={() => { setViewMode('daily'); setDisplayMode('pro'); }}>
+              <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Daily Derivatives
+            </Button>
             <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
@@ -824,6 +830,11 @@ return (
         /* ═══════ BACKTEST AUDIT ENGINE ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <BacktestDashboard />
+        </div>
+        ) : viewMode === 'daily' ? (
+        /* ═══════ DAILY DERIVATIVES RECOMMENDATION ═══════ */
+        <div className="flex-1 overflow-auto">
+          <DailyDerivativesPanel symbol={symbol} />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
