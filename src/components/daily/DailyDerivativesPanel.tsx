@@ -27,7 +27,10 @@ interface DailyRec {
   reasoning: string[];
 }
 
-function DailyDerivativesPanel({ symbol }: { symbol: string }) {
+const SYMBOLS = ["NIFTY", "SENSEX"] as const;
+
+function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: string }) {
+  const [symbol, setSymbol] = useState<string>(SYMBOLS.includes(initialSymbol as any) ? (initialSymbol as any) : "NIFTY");
   const [rec, setRec] = useState<DailyRec | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,12 +64,22 @@ function DailyDerivativesPanel({ symbol }: { symbol: string }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <CalendarClock className="h-4 w-4 text-violet-500" />
-          <span className="text-[13px] font-bold text-foreground">Daily Derivatives — {symbol}</span>
+          <span className="text-[13px] font-bold text-foreground">Daily Derivatives</span>
         </div>
-        <button onClick={load} disabled={loading}
-          className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
-          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-muted/50 rounded-lg p-0.5">
+            {SYMBOLS.map((s) => (
+              <button key={s} onClick={() => setSymbol(s)}
+                className={`h-6 text-[10px] px-2 font-bold rounded ${symbol === s ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-violet-400"}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+          <button onClick={load} disabled={loading}
+            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Refresh
+          </button>
+        </div>
       </div>
 
       {error && <div className="text-[12px] text-rose-400 p-3">{error}</div>}
