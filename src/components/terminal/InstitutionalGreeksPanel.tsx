@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Activity, Zap, TrendingUp, TrendingDown, ChevronDown, ChevronRight, Target, ShieldAlert } from "lucide-react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { Activity, Zap, TrendingUp, TrendingDown, ChevronDown, ChevronRight, Target, ShieldAlert, BarChart3 } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell, ComposedChart, Line, Area } from "recharts";
 import type { EngineResult, StrikeScore, WeightSet, MarketRegime } from "@/lib/institutional-greeks-engine";
-
-// ─── Helpers ──────────────────────────────────────────────────────
 
 const fmt = (n: number, d = 1) =>
   n == null || isNaN(n) ? "—" : n.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -19,255 +18,237 @@ const scoreColor = (s: number) => {
   return "#7d8ba0";
 };
 
-const regimeColors: Record<MarketRegime, string> = {
+const regimeBadge: Record<MarketRegime, string> = {
   expiry: "bg-[rgba(232,163,61,.15)] text-[#e8a33d] border-[#e8a33d]/30",
   lowVol: "bg-[rgba(79,143,247,.15)] text-[#4f8ff7] border-[#4f8ff7]/30",
   highIV: "bg-[rgba(242,73,92,.15)] text-[#f2495c] border-[#f2495c]/30",
   normal: "bg-[rgba(125,139,160,.12)] text-[#7d8ba0] border-[#7d8ba0]/30",
 };
 
-const regimeIcons: Record<MarketRegime, string> = {
-  expiry: "⚡",
-  lowVol: "📉",
-  highIV: "🔥",
-  normal: "⚖️",
-};
-
-// ─── Score Ring ───────────────────────────────────────────────────
-
-function ScoreRing({ score, size = 36 }: { score: number; size?: number }) {
-  const color = scoreColor(score);
-  const pct = Math.min(100, score);
-  const r = (size - 6) / 2;
-  const circ = 2 * Math.PI * r;
-  const offset = circ - (pct / 100) * circ;
-
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="transform -rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1f2733" strokeWidth={3} />
-        <circle
-          cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke={color} strokeWidth={3} strokeDasharray={circ} strokeDashoffset={offset}
-          strokeLinecap="round" className="transition-all duration-700"
-        />
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-[10px] font-mono font-bold" style={{ color }}>{fmt(score)}</span>
-      </div>
-    </div>
-  );
+function getMoneyness(strike: number, spot: number, type: "CE" | "PE"): string {
+  if (strike === spot) return "ATM";
+  if (type === "CE") {
+    return strike > spot ? "OTM" : "ITM";
+  } else {
+    return strike < spot ? "OTM" : "ITM";
+  }
 }
-
-// ─── TP/SL Visual Bar ─────────────────────────────────────────────
-
-function TPSLBar({ entry, tp, sl }: { entry: number; tp: number; sl: number }) {
-  if (!entry || !tp || !sl) return null;
-
-  const range = Math.max(tp - sl, 1);
-  const entryPct = ((entry - sl) / range) * 100;
-  const tpPct = 100;
-  const slPct = 0;
-
-  return (
-    <div className="relative h-6 w-full my-1">
-      {/* Background bar */}
-      <div className="absolute inset-0 rounded-full bg-[#151b25] overflow-hidden">
-        {/* Loss zone (red) */}
-        <div
-          className="absolute left-0 top-0 h-full bg-[rgba(242,73,92,.15)]"
-          style={{ width: `${entryPct}%` }}
-        />
-        {/* Profit zone (green) */}
-        <div
-          className="absolute right-0 top-0 h-full bg-[rgba(45,212,167,.15)]"
-          style={{ width: `${100 - entryPct}%` }}
-        />
-      </div>
-      {/* Entry marker */}
-      <div
-        className="absolute top-0 h-full w-0.5 bg-[#dfe6ee]"
-        style={{ left: `${entryPct}%` }}
-      />
-      {/* TP marker */}
-      <div
-        className="absolute top-0 h-full w-0.5 bg-[#2dd4a7]"
-        style={{ left: `${tpPct}%` }}
-      />
-      {/* SL marker */}
-      <div
-        className="absolute top-0 h-full w-0.5 bg-[#f2495c]"
-        style={{ left: `${slPct}%` }}
-      />
-      {/* Labels */}
-      <div className="absolute -bottom-3 text-[8px] font-mono text-[#f2495c]" style={{ left: `${slPct}%`, transform: "translateX(-50%)" }}>
-        ₹{fmt(sl)}
-      </div>
-      <div className="absolute -bottom-3 text-[8px] font-mono text-[#dfe6ee]" style={{ left: `${entryPct}%`, transform: "translateX(-50%)" }}>
-        ₹{fmt(entry)}
-      </div>
-      <div className="absolute -bottom-3 text-[8px] font-mono text-[#2dd4a7]" style={{ left: `${tpPct}%`, transform: "translateX(-100%)" }}>
-        ₹{fmt(tp)}
-      </div>
-    </div>
-  );
-}
-
-// ─── Score Bar (compact) ──────────────────────────────────────────
 
 function ScoreBar({ label, score }: { label: string; score: number }) {
   const pct = Math.min(100, score);
   const color = scoreColor(score);
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[8px] text-[#7d8ba0] w-12 text-right font-mono shrink-0">{label}</span>
-      <div className="flex-1 h-1 bg-[#151b25] rounded-full overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: color }}
-        />
+    <div className="flex items-center gap-1">
+      <span className="text-[9px] text-[#7d8ba0] w-11 text-right font-mono shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-[#1f2733] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
       </div>
-      <span className="text-[8px] font-mono w-6 shrink-0" style={{ color }}>{fmt(score)}</span>
+      <span className="text-[9px] font-mono w-7 shrink-0 font-bold" style={{ color }}>{fmt(score)}</span>
     </div>
   );
 }
 
-// ─── Strike Card ──────────────────────────────────────────────────
+function TPSLBar({ entry, tp, sl }: { entry: number; tp: number; sl: number }) {
+  if (!entry || !tp || !sl) return null;
+  const range = Math.max(tp - sl, 1);
+  const entryPct = ((entry - sl) / range) * 100;
+  return (
+    <div className="relative h-5 w-full">
+      <div className="absolute inset-0 rounded-full bg-[#1f2733] overflow-hidden">
+        <div className="absolute left-0 top-0 h-full bg-[rgba(242,73,92,.15)]" style={{ width: `${entryPct}%` }} />
+        <div className="absolute right-0 top-0 h-full bg-[rgba(45,212,167,.15)]" style={{ width: `${100 - entryPct}%` }} />
+      </div>
+      <div className="absolute top-0 h-full w-0.5 bg-[#dfe6ee]" style={{ left: `${entryPct}%` }} />
+      <div className="absolute top-0 h-full w-0.5 bg-[#2dd4a7]" style={{ right: 0 }} />
+      <div className="absolute top-0 h-full w-0.5 bg-[#f2495c]" style={{ left: 0 }} />
+      <div className="absolute -bottom-3.5 text-[8px] font-mono text-[#f2495c]" style={{ left: 0 }}>₹{fmt(sl)}</div>
+      <div className="absolute -bottom-3.5 text-[8px] font-mono text-[#dfe6ee]" style={{ left: `${entryPct}%`, transform: "translateX(-50%)" }}>₹{fmt(entry)}</div>
+      <div className="absolute -bottom-3.5 text-[8px] font-mono text-[#2dd4a7]" style={{ right: 0 }}>₹{fmt(tp)}</div>
+    </div>
+  );
+}
 
-function StrikeCard({
-  s,
-  rank,
-  onTrade,
-  spot,
+// ─── Score Distribution Chart ─────────────────────────────────────
+
+function ScoreChart({ strikes, spot }: { strikes: StrikeScore[]; spot: number }) {
+  const chartData = useMemo(() => {
+    return strikes
+      .filter((s) => s.type === "CE")
+      .sort((a, b) => a.strike - b.strike)
+      .map((s) => ({
+        strike: s.strike,
+        score: s.institutionalScore,
+        tp: s.tp,
+        sl: s.sl,
+        entry: s.raw.ltp,
+        isATM: s.strike === Math.round(spot / 50) * 50,
+        label: `${s.strike}`,
+      }));
+  }, [strikes, spot]);
+
+  const atmStrike = Math.round(spot / 50) * 50;
+
+  return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <BarChart3 className="h-3 w-3 text-[#4f8ff7]" />
+        <span className="text-[10px] font-bold text-[#7d8ba0] uppercase">CE Score Distribution</span>
+      </div>
+      <div className="h-[120px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} margin={{ top: 2, right: 2, bottom: 0, left: -20 }}>
+            <XAxis dataKey="strike" tick={{ fontSize: 8, fill: "#7d8ba0" }} interval={Math.max(0, Math.floor(chartData.length / 8))} />
+            <YAxis tick={{ fontSize: 8, fill: "#7d8ba0" }} domain={[0, 100]} />
+            <Tooltip
+              contentStyle={{ background: "#151b25", border: "1px solid #1f2733", borderRadius: 8, fontSize: 10 }}
+              formatter={(val: number, name: string) => [`${fmt(val)}`, name === "score" ? "Score" : name]}
+              labelFormatter={(l) => `Strike ${l}`}
+            />
+            <ReferenceLine x={atmStrike} stroke="#e8a33d" strokeDasharray="3 3" strokeWidth={1} />
+            <Bar dataKey="score" radius={[3, 3, 0, 0]} maxBarSize={20}>
+              {chartData.map((entry, i) => (
+                <Cell key={i} fill={entry.isATM ? "#e8a33d" : scoreColor(entry.score)} fillOpacity={0.8} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ─── TP/SL Range Chart ────────────────────────────────────────────
+
+function TPSLChart({ strikes, spot }: { strikes: StrikeScore[]; spot: number }) {
+  const chartData = useMemo(() => {
+    return strikes
+      .filter((s) => s.type === "CE")
+      .sort((a, b) => a.strike - b.strike)
+      .map((s) => ({
+        strike: s.strike,
+        tp: s.tp,
+        entry: s.raw.ltp,
+        sl: s.sl,
+        rr: s.rr,
+        label: `${s.strike}`,
+      }));
+  }, [strikes]);
+
+  const atmStrike = Math.round(spot / 50) * 50;
+
+  return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Target className="h-3 w-3 text-[#2dd4a7]" />
+        <span className="text-[10px] font-bold text-[#7d8ba0] uppercase">CE TP / Entry / SL Range</span>
+      </div>
+      <div className="h-[120px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData} margin={{ top: 2, right: 2, bottom: 0, left: -20 }}>
+            <XAxis dataKey="strike" tick={{ fontSize: 8, fill: "#7d8ba0" }} interval={Math.max(0, Math.floor(chartData.length / 8))} />
+            <YAxis tick={{ fontSize: 8, fill: "#7d8ba0" }} />
+            <Tooltip
+              contentStyle={{ background: "#151b25", border: "1px solid #1f2733", borderRadius: 8, fontSize: 10 }}
+              formatter={(val: number, name: string) => [`₹${fmt(val)}`, name === "tp" ? "TP" : name === "entry" ? "Entry" : name === "sl" ? "SL" : name]}
+              labelFormatter={(l) => `Strike ${l}`}
+            />
+            <ReferenceLine x={atmStrike} stroke="#e8a33d" strokeDasharray="3 3" strokeWidth={1} />
+            <Area dataKey="tp" stroke="#2dd4a7" fill="#2dd4a7" fillOpacity={0.08} strokeWidth={1.5} dot={false} />
+            <Line dataKey="entry" stroke="#dfe6ee" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+            <Area dataKey="sl" stroke="#f2495c" fill="#f2495c" fillOpacity={0.08} strokeWidth={1.5} dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ─── Strike Row ───────────────────────────────────────────────────
+
+function StrikeRow({
+  s, rank, onTrade, spot,
 }: {
-  s: StrikeScore;
-  rank: number;
+  s: StrikeScore; rank: number;
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
   spot: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const rrColor = s.rr >= 2 ? "#2dd4a7" : s.rr >= 1.5 ? "#4f8ff7" : "#e8a33d";
-  const distFromATM = Math.abs(s.strike - spot);
-  const distPct = ((distFromATM / spot) * 100).toFixed(1);
   const isCE = s.type === "CE";
+  const money = getMoneyness(s.strike, spot, s.type);
+  const moneyColor = money === "ATM" ? "text-[#e8a33d]" : money === "ITM" ? "text-[#4f8ff7]" : "text-[#7d8ba0]";
 
   return (
     <div className="border-b border-[#1f2733] last:border-b-0">
-      {/* Main row */}
       <div
         className="grid grid-cols-[28px_1fr_44px_60px_56px_56px_50px_48px_48px] gap-1 items-center py-2 px-2 cursor-pointer hover:bg-[#151b25]/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        {/* Rank */}
         <div className="text-[10px] text-[#7d8ba0] font-bold">#{rank}</div>
-
-        {/* Strike + direction + distance */}
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="font-mono font-bold text-[#dfe6ee] text-[12px]">{fmtInt(s.strike)}</span>
-            <span className="text-[8px] text-[#7d8ba0] font-mono">{distPct}%OTM</span>
-          </div>
-          <div className="flex items-center gap-1 mt-0.5">
-            <span className={`text-[8px] font-bold px-1 py-px rounded ${isCE ? "bg-[rgba(45,212,167,.12)] text-[#2dd4a7]" : "bg-[rgba(242,73,92,.12)] text-[#f2495c]"}`}>
-              {s.type}
-            </span>
+            <span className={`text-[8px] font-bold px-1 py-px rounded ${isCE ? "bg-[rgba(45,212,167,.12)] text-[#2dd4a7]" : "bg-[rgba(242,73,92,.12)] text-[#f2495c]"}`}>{s.type}</span>
+            <span className={`text-[8px] font-mono font-bold ${moneyColor}`}>{money}</span>
           </div>
         </div>
-
-        {/* Score ring */}
-        <div className="flex justify-center">
-          <ScoreRing score={s.institutionalScore} size={34} />
+        <div className="text-center">
+          <span className="font-mono font-bold text-[14px] leading-none" style={{ color: scoreColor(s.institutionalScore) }}>
+            {fmt(s.institutionalScore)}
+          </span>
         </div>
-
-        {/* Premium */}
+        <div className="text-right font-mono font-bold text-[14px] text-[#2dd4a7] leading-none">₹{fmt(s.raw.ltp)}</div>
+        <div className="text-[10px] font-mono text-[#a0aec0] leading-tight">
+          <span className="text-[#dfe6ee]">Γ</span>{s.raw.gamma.toFixed(4)}{' '}
+          <span className="text-[#dfe6ee]">Δ</span>{s.raw.delta.toFixed(2)}{' '}
+          <span className="text-[#f2495c]">Θ</span>{fmt(s.raw.theta)}{' '}
+          <span className="text-[#e8a33d]">{fmt(s.raw.iv)}%</span>
+        </div>
+        <div className="text-right font-mono font-bold text-[11px] text-[#2dd4a7]">₹{fmt(s.tp)}</div>
+        <div className="text-right font-mono font-bold text-[11px] text-[#f2495c]">₹{fmt(s.sl)}</div>
         <div className="text-right">
-          <div className="text-[11px] font-mono font-bold text-[#2dd4a7]">₹{fmt(s.raw.ltp)}</div>
-        </div>
-
-        {/* Greeks compact */}
-        <div className="flex gap-2 text-[9px] font-mono">
-          <span title="Gamma" className="text-[#dfe6ee]">Γ{s.raw.gamma.toFixed(4)}</span>
-          <span title="Delta" className="text-[#dfe6ee]">Δ{s.raw.delta.toFixed(2)}</span>
-        </div>
-
-        {/* Theta + IV */}
-        <div className="flex gap-2 text-[9px] font-mono">
-          <span title="Theta" className="text-[#f2495c]">Θ{fmt(s.raw.theta)}</span>
-          <span title="IV" className="text-[#e8a33d]">{fmt(s.raw.iv)}%</span>
-        </div>
-
-        {/* TP */}
-        <div className="text-right">
-          <span className="text-[10px] font-mono font-bold text-[#2dd4a7]">₹{fmt(s.tp)}</span>
-        </div>
-
-        {/* SL */}
-        <div className="text-right">
-          <span className="text-[10px] font-mono font-bold text-[#f2495c]">₹{fmt(s.sl)}</span>
-        </div>
-
-        {/* R:R */}
-        <div className="text-right">
-          <span className="text-[10px] font-mono font-bold" style={{ color: rrColor }}>{fmt(s.rr)}x</span>
+          <span className="text-[12px] font-mono font-bold" style={{ color: rrColor }}>{fmt(s.rr)}x</span>
         </div>
       </div>
 
-      {/* Expanded details */}
       {expanded && (
-        <div className="px-3 pb-3 bg-[#0a1018]">
-          {/* TP/SL Visual */}
-          <div className="mb-3">
-            <div className="flex items-center gap-4 text-[9px] text-[#7d8ba0] mb-1">
-              <span className="flex items-center gap-1"><Target className="h-2.5 w-2.5 text-[#2dd4a7]" /> TP ₹{fmt(s.tp)} <span className="text-[#2dd4a7]">(+{fmt(((s.tp - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
-              <span className="flex items-center gap-1"><ShieldAlert className="h-2.5 w-2.5 text-[#f2495c]" /> SL ₹{fmt(s.sl)} <span className="text-[#f2495c]">({fmt(((s.sl - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
-              <span className="font-bold" style={{ color: rrColor }}>R:R {fmt(s.rr)}x</span>
-            </div>
-            <TPSLBar entry={s.raw.ltp} tp={s.tp} sl={s.sl} />
-            <div className="h-3" />
+        <div className="px-3 pb-2.5 bg-[#0a1018]">
+          <div className="flex items-center gap-4 text-[10px] text-[#7d8ba0] mb-1">
+            <span className="flex items-center gap-1"><Target className="h-2.5 w-2.5 text-[#2dd4a7]" /> TP ₹{fmt(s.tp)} <span className="text-[#2dd4a7] font-bold">(+{fmt(((s.tp - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
+            <span className="flex items-center gap-1"><ShieldAlert className="h-2.5 w-2.5 text-[#f2495c]" /> SL ₹{fmt(s.sl)} <span className="text-[#f2495c] font-bold">({fmt(((s.sl - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
+            <span className="font-bold" style={{ color: rrColor }}>R:R {fmt(s.rr)}x</span>
           </div>
-
-          {/* Score breakdown + details */}
+          <TPSLBar entry={s.raw.ltp} tp={s.tp} sl={s.sl} />
+          <div className="h-3" />
           <div className="grid grid-cols-3 gap-3">
-            {/* Greeks scores */}
             <div className="space-y-1">
-              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Greeks</div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-0.5">Greeks</div>
               <ScoreBar label="Gamma" score={s.gammaScore} />
               <ScoreBar label="Delta" score={s.deltaScore} />
               <ScoreBar label="Theta" score={s.thetaScore} />
               <ScoreBar label="Vega" score={s.vegaScore} />
             </div>
-
-            {/* Flow scores */}
             <div className="space-y-1">
-              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Flow</div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-0.5">Flow</div>
               <ScoreBar label="OI" score={s.oiScore} />
               <ScoreBar label="OI Chg" score={s.oiChangeScore} />
               <ScoreBar label="Volume" score={s.volumeScore} />
               <ScoreBar label="PCR" score={s.pcrScore} />
             </div>
-
-            {/* Market + trade */}
             <div className="space-y-1">
-              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Market</div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-0.5">Market</div>
               <ScoreBar label="IV" score={s.ivScore} />
               <ScoreBar label="Liquidity" score={s.liquidityScore} />
-              <div className="flex gap-2 text-[8px] text-[#7d8ba0] font-mono mt-1">
+              <div className="flex gap-2 text-[9px] text-[#7d8ba0] font-mono mt-1">
                 <span>Bid ₹{fmt(s.raw.bid)}</span>
                 <span>Ask ₹{fmt(s.raw.ask)}</span>
               </div>
-              <div className="flex gap-2 text-[8px] text-[#7d8ba0] font-mono">
+              <div className="flex gap-2 text-[9px] text-[#7d8ba0] font-mono">
                 <span>OI {fmtInt(s.raw.oi)}</span>
                 <span>Vol {fmtInt(s.raw.volume)}</span>
               </div>
-              <div className="flex gap-2 text-[8px] font-mono">
-                <span className={s.raw.oiChg >= 0 ? "text-[#2dd4a7]" : "text-[#f2495c]"}>
-                  OIΔ {s.raw.oiChg >= 0 ? "+" : ""}{fmtInt(s.raw.oiChg)}
-                </span>
-              </div>
             </div>
           </div>
-
-          {/* Trade button */}
           <button
             onClick={(e) => { e.stopPropagation(); onTrade(s.strike, s.type, s.raw.ltp); }}
             className="mt-2 w-full py-1.5 rounded-lg bg-[#2dd4a7]/10 text-[#2dd4a7] text-[11px] font-bold hover:bg-[#2dd4a7]/20 transition-colors border border-[#2dd4a7]/20"
@@ -280,7 +261,7 @@ function StrikeCard({
   );
 }
 
-// ─── Dynamic Weights Bar ──────────────────────────────────────────
+// ─── Weights Display ──────────────────────────────────────────────
 
 function WeightsDisplay({ weights, regime }: { weights: WeightSet; regime: MarketRegime }) {
   const labels: Record<string, string> = {
@@ -288,34 +269,19 @@ function WeightsDisplay({ weights, regime }: { weights: WeightSet; regime: Marke
     oi: "OI", oiChange: "ΔOI", volume: "Vol", liquidity: "Liq",
   };
   const sorted = Object.entries(weights).sort((a, b) => b[1] - a[1]);
-
   return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-[9px] text-[#7d8ba0] font-bold uppercase">Dynamic Weights</span>
-        <span className={`px-1.5 py-px rounded text-[8px] font-bold border ${regimeColors[regime]}`}>
-          {regimeIcons[regime]} {regime}
-        </span>
-      </div>
-      <div className="flex gap-1 items-end h-5">
-        {sorted.map(([key, val]) => {
-          const pct = Math.round(val * 100);
-          const isTop = sorted[0][0] === key;
-          return (
-            <div key={key} className="flex flex-col items-center gap-0.5 flex-1">
-              <div
-                className="w-full rounded-t transition-all duration-500"
-                style={{
-                  height: `${Math.max(4, pct * 0.8)}px`,
-                  background: isTop ? scoreColor(pct) : "#1f2733",
-                }}
-              />
-              <span className="text-[7px] text-[#7d8ba0] font-mono">{labels[key]}</span>
-              <span className="text-[8px] font-mono font-bold" style={{ color: isTop ? scoreColor(pct) : "#7d8ba0" }}>{pct}%</span>
-            </div>
-          );
-        })}
-      </div>
+    <div className="flex gap-1 items-end h-5">
+      {sorted.map(([key, val]) => {
+        const pct = Math.round(val * 100);
+        const isTop = sorted[0][0] === key;
+        return (
+          <div key={key} className="flex flex-col items-center gap-0.5 flex-1">
+            <div className="w-full rounded-t" style={{ height: `${Math.max(3, pct * 0.7)}px`, background: isTop ? scoreColor(pct) : "#1f2733" }} />
+            <span className="text-[7px] text-[#7d8ba0] font-mono">{labels[key]}</span>
+            <span className="text-[8px] font-mono font-bold" style={{ color: isTop ? scoreColor(pct) : "#7d8ba0" }}>{pct}%</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -332,13 +298,11 @@ export function InstitutionalGreeksPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
+  const [showCharts, setShowCharts] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(
-        `/api/institutional-greeks?symbol=${encodeURIComponent(symbol)}`,
-        { cache: "no-store" }
-      );
+      const res = await fetch(`/api/institutional-greeks?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "Engine failed");
@@ -360,13 +324,12 @@ export function InstitutionalGreeksPanel({
   }, [fetchData]);
 
   const tableHeader = (
-    <div className="grid grid-cols-[28px_1fr_44px_60px_56px_56px_50px_48px_48px] gap-1 items-center py-1 px-2 border-b border-[#1f2733] text-[8px] text-[#7d8ba0] uppercase font-bold">
+    <div className="grid grid-cols-[28px_1fr_44px_60px_56px_56px_50px_48px_48px] gap-1 items-center py-1 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
       <div>#</div>
       <div>Strike</div>
       <div className="text-center">Score</div>
       <div className="text-right">Premium</div>
-      <div>Γ Δ</div>
-      <div>Θ IV</div>
+      <div>Greeks</div>
       <div className="text-right">TP</div>
       <div className="text-right">SL</div>
       <div className="text-right">R:R</div>
@@ -375,38 +338,43 @@ export function InstitutionalGreeksPanel({
 
   return (
     <div className="flex flex-col gap-2 h-full">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-[#2dd4a7]" />
           <span className="text-sm font-bold">Institutional Greeks</span>
+          {data && (
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${regimeBadge[data.regime]}`}>
+              {data.regimeLabel}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
           {(["NIFTY", "SENSEX"] as const).map((s) => (
             <button
-              key={s}
-              onClick={() => setSymbol(s)}
+              key={s} onClick={() => setSymbol(s)}
               className={`px-2 py-0.5 rounded font-bold transition-colors ${
                 symbol === s
                   ? "bg-[#2dd4a7]/20 text-[#2dd4a7] border border-[#2dd4a7]/40"
                   : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0] hover:bg-[#1f2733]"
               }`}
-            >
-              {s}
-            </button>
+            >{s}</button>
           ))}
+          <button
+            onClick={() => setShowCharts(!showCharts)}
+            className={`px-2 py-0.5 rounded font-bold transition-colors border ${
+              showCharts
+                ? "bg-[#4f8ff7]/20 text-[#4f8ff7] border-[#4f8ff7]/40"
+                : "bg-[#10151d] border-[#1f2733] text-[#7d8ba0]"
+            }`}
+          >Charts</button>
           {loading && <Activity className="h-3 w-3 animate-spin" />}
-          {updatedAt > 0 && (
-            <span className="text-[9px]">{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>
-          )}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
         </div>
       </div>
 
-      {/* Stats + Weights row */}
       {data && (
-        <div className="grid grid-cols-[1fr_280px] gap-2">
-          {/* Stats */}
-          <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2 flex items-center gap-4">
+        <div className="grid grid-cols-[1fr_260px] gap-2">
+          <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2 flex items-center gap-4 text-[10px]">
             <div>
               <div className="text-[8px] text-[#7d8ba0] uppercase">Spot</div>
               <div className="text-[13px] font-mono font-bold text-[#dfe6ee]">{fmtInt(data.spot)}</div>
@@ -421,60 +389,59 @@ export function InstitutionalGreeksPanel({
             </div>
             <div>
               <div className="text-[8px] text-[#7d8ba0] uppercase">Regime</div>
-              <div className={`text-[11px] font-bold ${regimeColors[data.regime].split(' ')[1]}`}>
-                {regimeIcons[data.regime]} {data.regimeLabel}
-              </div>
+              <div className={`text-[11px] font-bold ${regimeBadge[data.regime].split(' ')[1]}`}>{data.regimeLabel}</div>
             </div>
           </div>
-          <WeightsDisplay weights={data.weights} regime={data.regime} />
+          <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2">
+            <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Dynamic Weights</div>
+            <WeightsDisplay weights={data.weights} regime={data.regime} />
+          </div>
         </div>
       )}
 
-      {/* Error */}
       {error && (
-        <div className="bg-[#10151d] border border-[#f2495c]/30 rounded-[10px] p-3 text-center text-[#f2495c] text-xs">
-          {error}
-        </div>
+        <div className="bg-[#10151d] border border-[#f2495c]/30 rounded-[10px] p-4 text-center text-[#f2495c] text-sm">{error}</div>
       )}
 
-      {/* Content */}
       {!error && data && (
         <div className="flex-1 overflow-y-auto space-y-2">
-          {/* Top Calls */}
+          {showCharts && data.strikes.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              <ScoreChart strikes={data.strikes} spot={data.spot} />
+              <TPSLChart strikes={data.strikes} spot={data.spot} />
+            </div>
+          )}
+
           <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-[#1f2733] flex items-center gap-2">
-              <TrendingUp className="h-3 w-3 text-[#2dd4a7]" />
-              <span className="font-bold text-[12px] text-[#2dd4a7]">Top 5 Calls</span>
-              <span className="text-[9px] text-[#7d8ba0]">— Best scores</span>
+            <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
+              <TrendingUp className="h-3.5 w-3.5 text-[#2dd4a7]" />
+              <span className="font-bold text-[13px] text-[#2dd4a7]">Top 5 Calls</span>
             </div>
             {tableHeader}
             {data.topCalls.length === 0 ? (
-              <div className="p-3 text-center text-[#7d8ba0] text-[11px]">No qualified calls</div>
+              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified calls</div>
             ) : (
               data.topCalls.map((s, i) => (
-                <StrikeCard key={`c-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
+                <StrikeRow key={`c-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
               ))
             )}
           </div>
 
-          {/* Top Puts */}
           <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-[#1f2733] flex items-center gap-2">
-              <TrendingDown className="h-3 w-3 text-[#f2495c]" />
-              <span className="font-bold text-[12px] text-[#f2495c]">Top 5 Puts</span>
-              <span className="text-[9px] text-[#7d8ba0]">— Best scores</span>
+            <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
+              <TrendingDown className="h-3.5 w-3.5 text-[#f2495c]" />
+              <span className="font-bold text-[13px] text-[#f2495c]">Top 5 Puts</span>
             </div>
             {tableHeader}
             {data.topPuts.length === 0 ? (
-              <div className="p-3 text-center text-[#7d8ba0] text-[11px]">No qualified puts</div>
+              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified puts</div>
             ) : (
               data.topPuts.map((s, i) => (
-                <StrikeCard key={`p-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
+                <StrikeRow key={`p-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
               ))
             )}
           </div>
 
-          {/* All Ranked */}
           <RankedStrikesAll strikes={data.strikes} onTrade={onTrade} spot={data.spot} />
         </div>
       )}
@@ -482,36 +449,34 @@ export function InstitutionalGreeksPanel({
   );
 }
 
-// ─── All Ranked Strikes ───────────────────────────────────────────
-
 function RankedStrikesAll({
-  strikes,
-  onTrade,
-  spot,
+  strikes, onTrade, spot,
 }: {
   strikes: StrikeScore[];
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
   spot: number;
 }) {
   const [open, setOpen] = useState(false);
-
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div
-        className="px-3 py-1.5 border-b border-[#1f2733] flex items-center justify-between cursor-pointer hover:bg-[#151b25] transition-colors"
+        className="px-3 py-2 border-b border-[#1f2733] flex items-center justify-between cursor-pointer hover:bg-[#151b25] transition-colors"
         onClick={() => setOpen(!open)}
       >
-        <span className="font-bold text-[12px]">
-          All Ranked Strikes <span className="text-[#7d8ba0] font-mono text-[10px]">({strikes.length})</span>
+        <span className="font-bold text-[13px]">
+          All Ranked Strikes <span className="text-[#7d8ba0] font-mono text-[11px]">({strikes.length})</span>
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5 text-[#7d8ba0]" /> : <ChevronRight className="h-3.5 w-3.5 text-[#7d8ba0]" />}
       </div>
       {open && (
-        <div className="max-h-[400px] overflow-y-auto">
-          {strikes.map((s, i) => (
-            <StrikeCard key={`a-${s.type}-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={spot} />
-          ))}
-        </div>
+        <>
+          {tableHeader}
+          <div className="max-h-[400px] overflow-y-auto">
+            {strikes.map((s, i) => (
+              <StrikeRow key={`a-${s.type}-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={spot} />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
