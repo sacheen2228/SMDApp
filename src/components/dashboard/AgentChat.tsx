@@ -343,16 +343,16 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
   };
 
   const callSDM = async (query: string, signal?: AbortSignal): Promise<SDMResponse> => {
-    const res = await fetch("/api/sdm-chat", {
+    const res = await fetch("/api/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: query, symbol }),
+      body: JSON.stringify({ message: query, symbol, spotPrice }),
       signal,
     });
     if (!res.ok) throw new Error("request_failed");
     const data = await res.json();
     return {
-      text: data.text || "Sorry, I couldn't process that.",
+      text: data.response || data.text || "Sorry, I couldn't process that.",
       language: data.language || "en",
       alert: data.alert ?? null,
     };
@@ -375,7 +375,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 90000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
       const reply = await callSDM(query, controller.signal);

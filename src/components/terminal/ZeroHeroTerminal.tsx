@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  Home, Link2, Target, Wallet, Grid3X3, Clock, Star, Briefcase,
+  Home, Link2, Target, Wallet, Clock, Star, Briefcase,
   TrendingUp, TrendingDown, ChevronDown, Search, X, RefreshCw,
   Wifi, WifiOff, Zap, Activity, ArrowUpRight, ArrowDownRight,
   Building2, AlertTriangle, Brain, Shield, Minus, BarChart3,
@@ -11,6 +11,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { InstitutionalGreeksPanel } from "@/components/terminal/InstitutionalGreeksPanel";
+import GreekFlowHeatmap from "@/components/terminal/GreekFlowHeatmap";
+import EnhancedOptionChain from "@/components/terminal/EnhancedOptionChain";
 import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
@@ -106,7 +108,7 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "instgreeks" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
+type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -114,8 +116,8 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "zerohero", icon: <Target size={19} />, label: "Zero Hero" },
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
-  { id: "greeks", icon: <Grid3X3 size={19} />, label: "Greeks" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
+  { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "history", icon: <Clock size={19} />, label: "Trade History" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
@@ -541,7 +543,7 @@ function TodaysTradeView() {
       const res = await fetch(`/api/today-trades?symbol=${encodeURIComponent(sym)}&record=true`, { cache: "no-store" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "no data");
-      setTop5(json.top5 || []);
+      setTop5(json.top || []);
       setEm(json.expectedMove || 0);
       setError(null);
       setUpdatedAt(Date.now());
@@ -599,7 +601,7 @@ function TodaysTradeView() {
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <span className={`text-[14px] font-bold ${color}`}>{c.strike} {c.type}</span>
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/30 text-[#9fb0c3]">{c.direction}</span>
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/30 text-[#9fb0c3]">{c.side || c.direction}</span>
                   </div>
                   <div className="text-[10px] text-[#7d8ba0] mt-0.5">
                     Entry ₹{fmt(c.entry)} · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}
@@ -610,8 +612,8 @@ function TodaysTradeView() {
                   <div className="text-[12px] text-[#e8a33d] tracking-tight">{stars(c.stars)}</div>
                 </div>
                 <div className="w-12 text-right">
-                  <div className="text-[13px] font-bold" style={{ color }}>{c.confidence}%</div>
-                  <div className="text-[9px] text-[#7d8ba0]">conf</div>
+                  <div className="text-[13px] font-bold" style={{ color }}>{c.probability ?? c.confidence}%</div>
+                  <div className="text-[9px] text-[#7d8ba0]">prob</div>
                 </div>
               </div>
             );
@@ -1105,7 +1107,7 @@ export function ZeroHeroTerminal() {
             />
           )}
           {activeTab === "options" && (
-            <FullOptionChain chain={chain} spot={spot} atmStrike={atmStrike} openTrade={openTrade} />
+            <EnhancedOptionChain chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain} openTrade={openTrade} />
           )}
           {activeTab === "zerohero" && (
             <FullZeroHero candidates={zhCandidates} isEligible={isEligible} symbol={symbol} expiryType={expiryType} openTrade={openTrade} />
@@ -1113,11 +1115,11 @@ export function ZeroHeroTerminal() {
           {activeTab === "smartmoney" && (
             <SmartMoneyTab flowData={flowData} chain={chain} spot={spot} vix={vix} pcr={pcr} maxPain={maxPain} candles={candles} openTrade={openTrade} symbol={symbol} setSymbol={setSymbol} />
           )}
-          {activeTab === "greeks" && (
-            <GreeksTab chain={chain} />
-          )}
           {activeTab === "instgreeks" && (
             <InstitutionalGreeksPanel onTrade={openTrade} />
+          )}
+          {activeTab === "greekflow" && (
+            <GreekFlowHeatmap onTrade={openTrade} />
           )}
           {activeTab === "dom" && (
             <DOMTab symbol={symbol} />
@@ -1217,7 +1219,7 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
                 </div>
               </div>
             ) : (
-              <OptionChainTable chain={chain} atmStrike={atmStrike} openTrade={openTrade} />
+              <EnhancedOptionChain chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain} openTrade={openTrade} />
             )}
           </div>
         </div>
@@ -1437,53 +1439,6 @@ function OIDistribution({ chain, maxPain }: { chain: ChainRow[]; maxPain: number
 }
 
 // ─── Greeks Tab ────────────────────────────────────────────────────
-function GreeksTab({ chain }: { chain: ChainRow[] }) {
-  const metrics = ["IV", "Delta", "Theta", "Gamma", "Vega"] as const;
-  function greekColor(val: number, max: number) {
-    const t = Math.max(-1, Math.min(1, val / max));
-    if (t >= 0) {
-      const g = Math.round(191 * t + 40 * (1 - t));
-      return `rgba(31,${g},117,${0.25 + 0.55 * Math.abs(t)})`;
-    } else {
-      const r = Math.round(242 * Math.abs(t) + 40 * (1 - Math.abs(t)));
-      return `rgba(${r},73,92,${0.25 + 0.55 * Math.abs(t)})`;
-    }
-  }
-  return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Greek Heatmap <span className="text-[#7d8ba0] font-mono text-[11px]">ATM ± 8 strikes</span></div>
-      <div className="p-3 overflow-x-auto">
-        <div style={{ display: "flex" }}>
-          <div style={{ width: 50 }} />
-          {chain.map((r) => (
-            <div key={r.strike} style={{ width: 56, textAlign: "center", fontSize: 10, color: r.atm ? "#e8a33d" : "#7d8ba0", fontFamily: "var(--mono)", fontWeight: r.atm ? 700 : 400 }}>
-              {r.atm ? "ATM" : String(r.strike).slice(-3)}
-            </div>
-          ))}
-        </div>
-        {metrics.map((metric) => (
-          <div key={metric} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 3 }}>
-            <div style={{ width: 50, fontSize: 10.5, color: "#7d8ba0", textAlign: "right", paddingRight: 6 }}>{metric}</div>
-            {chain.map((r) => {
-              const d = metric === "CE" ? r.ce : r.pe;
-              let v = 0, disp = "—";
-              if (metric === "IV") { v = (d?.iv || 0) - 18; disp = (d?.iv || 0).toFixed(1); }
-              if (metric === "Delta") { v = (d?.delta || 0) - 0.5; disp = (d?.delta || 0).toFixed(2); }
-              if (metric === "Theta") { v = -(d?.theta || 0); disp = v.toFixed(2); }
-              if (metric === "Gamma") { v = d?.gamma || 0; disp = Math.abs(v).toFixed(3); }
-              if (metric === "Vega") { v = d?.vega || 0; disp = Math.abs(v).toFixed(2); }
-              return (
-                <div key={r.strike} style={{ width: 56, height: 24, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontFamily: "var(--mono)", borderRadius: 3, background: greekColor(v, metric === "IV" ? 10 : metric === "Delta" ? 0.5 : 1) }}>
-                  {disp}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 interface DOMData {
   spot: number;
