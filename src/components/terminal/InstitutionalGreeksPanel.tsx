@@ -66,11 +66,12 @@ function StrikeRow({
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const rrColor = s.rr >= 2 ? "text-[#2dd4a7]" : s.rr >= 1.5 ? "text-[#4f8ff7]" : "text-[#e8a33d]";
 
   return (
     <>
       <div
-        className="grid grid-cols-[30px_70px_60px_60px_45px_45px_45px_45px_55px_40px_40px_50px] gap-1 items-center py-2 px-2 border-b border-[#1f2733] font-mono text-[11px] cursor-pointer hover:bg-[#151b25] transition-colors"
+        className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-2 px-2 border-b border-[#1f2733] font-mono text-[11px] cursor-pointer hover:bg-[#151b25] transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="text-[#7d8ba0] font-bold">#{rank}</div>
@@ -85,9 +86,13 @@ function StrikeRow({
         <div className={s.raw.oiChg >= 0 ? "text-[#2dd4a7]" : "text-[#f2495c]"}>{s.raw.oiChg >= 0 ? "+" : ""}{fmtInt(s.raw.oiChg)}</div>
         <div className="text-[#dfe6ee]">{fmtInt(s.raw.volume)}</div>
         <div className="text-[#e8a33d]">{fmt(s.raw.iv)}%</div>
+        <div className="text-[#2dd4a7]">₹{fmt(s.tp)}</div>
+        <div className={`flex gap-0.5 items-center ${rrColor}`}>
+          <span>₹{fmt(s.sl)}</span>
+        </div>
       </div>
       {expanded && (
-        <div className="px-3 py-2 bg-[#0a1018] border-b border-[#1f2733] grid grid-cols-3 gap-2">
+        <div className="px-3 py-2 bg-[#0a1018] border-b border-[#1f2733] grid grid-cols-4 gap-2">
           <div className="space-y-1">
             <ScoreBar label="Gamma" score={s.gammaScore} />
             <ScoreBar label="Delta" score={s.deltaScore} />
@@ -106,14 +111,35 @@ function StrikeRow({
             <div className="flex gap-3 mt-2 text-[9px] text-[#7d8ba0]">
               <span>Bid: ₹{fmt(s.raw.bid)}</span>
               <span>Ask: ₹{fmt(s.raw.ask)}</span>
-              <span>Spread: ₹{fmt(s.raw.spread)}</span>
             </div>
             <div className="flex gap-3 mt-1 text-[9px] text-[#7d8ba0]">
               <span>PCR: {fmt(s.raw.pcr)}</span>
+              <span>Spread: ₹{fmt(s.raw.spread)}</span>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="bg-[#10151d] rounded-[8px] p-2 border border-[#1f2733]">
+              <div className="text-[9px] text-[#7d8ba0] mb-1 uppercase font-bold">Trade Plan</div>
+              <div className="flex justify-between text-[10px] mb-1">
+                <span className="text-[#7d8ba0]">Entry</span>
+                <span className="text-[#dfe6ee] font-bold">₹{fmt(s.raw.ltp)}</span>
+              </div>
+              <div className="flex justify-between text-[10px] mb-1">
+                <span className="text-[#7d8ba0]">TP</span>
+                <span className="text-[#2dd4a7] font-bold">₹{fmt(s.tp)}</span>
+              </div>
+              <div className="flex justify-between text-[10px] mb-1">
+                <span className="text-[#7d8ba0]">SL</span>
+                <span className="text-[#f2495c] font-bold">₹{fmt(s.sl)}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#7d8ba0]">R:R</span>
+                <span className={`font-bold ${rrColor}`}>{fmt(s.rr)}x</span>
+              </div>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); onTrade(s.strike, s.type, s.raw.ltp); }}
-              className="mt-2 px-3 py-1 rounded bg-[#2dd4a7]/15 text-[#2dd4a7] text-[10px] font-bold hover:bg-[#2dd4a7]/25 transition-colors"
+              className="w-full px-3 py-1 rounded bg-[#2dd4a7]/15 text-[#2dd4a7] text-[10px] font-bold hover:bg-[#2dd4a7]/25 transition-colors"
             >
               Trade {s.type}
             </button>
@@ -244,10 +270,10 @@ export function InstitutionalGreeksPanel({
             <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
               <TrendingUp className="h-3.5 w-3.5 text-[#2dd4a7]" />
               <span className="font-bold text-[13px] text-[#2dd4a7]">Top 5 Calls</span>
-              <span className="text-[10px] text-[#7d8ba0]">— Institutional Score &gt; 85</span>
+              <span className="text-[10px] text-[#7d8ba0]">— Best institutional scores</span>
             </div>
             {/* Header */}
-            <div className="grid grid-cols-[30px_70px_60px_60px_45px_45px_45px_45px_55px_40px_40px_50px] gap-1 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
+            <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
               <div>#</div>
               <div>Strike</div>
               <div>Score</div>
@@ -260,9 +286,11 @@ export function InstitutionalGreeksPanel({
               <div>Chg</div>
               <div>Vol</div>
               <div>IV</div>
+              <div>TP</div>
+              <div>SL</div>
             </div>
             {data.topCalls.length === 0 ? (
-              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified calls (score &gt; 85)</div>
+              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified calls</div>
             ) : (
               data.topCalls.map((s, i) => (
                 <StrikeRow key={`c-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} />
@@ -275,9 +303,9 @@ export function InstitutionalGreeksPanel({
             <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
               <TrendingDown className="h-3.5 w-3.5 text-[#f2495c]" />
               <span className="font-bold text-[13px] text-[#f2495c]">Top 5 Puts</span>
-              <span className="text-[10px] text-[#7d8ba0]">— Institutional Score &gt; 85</span>
+              <span className="text-[10px] text-[#7d8ba0]">— Best institutional scores</span>
             </div>
-            <div className="grid grid-cols-[30px_70px_60px_60px_45px_45px_45px_45px_55px_40px_40px_50px] gap-1 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
+            <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
               <div>#</div>
               <div>Strike</div>
               <div>Score</div>
@@ -290,9 +318,11 @@ export function InstitutionalGreeksPanel({
               <div>Chg</div>
               <div>Vol</div>
               <div>IV</div>
+              <div>TP</div>
+              <div>SL</div>
             </div>
             {data.topPuts.length === 0 ? (
-              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified puts (score &gt; 85)</div>
+              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified puts</div>
             ) : (
               data.topPuts.map((s, i) => (
                 <StrikeRow key={`p-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} />
@@ -332,7 +362,7 @@ function RankedStrikesAll({
       </div>
       {open && (
         <>
-          <div className="grid grid-cols-[30px_70px_60px_60px_45px_45px_45px_45px_55px_40px_40px_50px] gap-1 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
+          <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
             <div>#</div>
             <div>Strike</div>
             <div>Score</div>
@@ -345,6 +375,8 @@ function RankedStrikesAll({
             <div>Chg</div>
             <div>Vol</div>
             <div>IV</div>
+            <div>TP</div>
+            <div>SL</div>
           </div>
           <div className="max-h-[400px] overflow-y-auto">
             {strikes.map((s, i) => (

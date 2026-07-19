@@ -55,6 +55,9 @@ export interface StrikeScore {
   liquidityScore: number;
   pcrScore: number;
   ivScore: number;
+  tp: number;
+  sl: number;
+  rr: number;
   raw: {
     gamma: number;
     delta: number;
@@ -203,6 +206,54 @@ function ivScore(iv: number, regime: MarketRegime): number {
   return Math.max(0, 100 - (iv - 18) * 3);
 }
 
+// ─── TP/SL Calculation (Dynamic, Greeks-Based) ───────────────────
+
+function computeTPSL(
+  ltp: number,
+  gamma: number,
+  delta: number,
+  theta: number,
+  vega: number,
+  iv: number,
+  spotPrice: number,
+  strike: number,
+  type: "CE" | "PE"
+): { tp: number; sl: number; rr: number } {
+  if (ltp <= 0) return { tp: 0, sl: 0, rr: 0 };
+
+  // Expected move: IV * spot * sqrt(1/365) for 1 day holding
+  const expectedMove = spotPrice * (iv / 100) * Math.sqrt(1 / 365);
+
+  // Delta impact: premium change from underlying moving by expectedMove
+  // For OTM options, only a fraction of expected move translates to premium change
+  const moneyness = type === "CE"
+    ? Math.max(0, 1 - Math.abs(strike - spotPrice) / spotPrice)
+    : Math.max(0, 1 - Math.abs(strike - spotPrice) / spotPrice);
+  const deltaSensitivity = delta * expectedMove;
+  const gammaBoost = 0.5 * gamma * expectedMove * expectedMove;
+
+  // Theta decay to subtract (1 day)
+  const thetaDecay = Math.abs(theta);
+
+  // --- SL ---
+  // SL = 2x theta decay + 2% of premium cushion
+  // Floor 5% of premium, cap 25% of premium
+  const slBase = thetaDecay * 2 + ltp * 0.02;
+  const sl = Math.max(ltp * 0.05, Math.min(ltp * 0.25, slBase));
+
+  // --- TP ---
+  // TP = delta impact + gamma convexity - half day theta
+  // Scale by moneyness (ATM gets full impact, deep OTM gets less)
+  const tpRaw = (deltaSensitivity + gammaBoost) * Math.max(0.3, moneyness) - thetaDecay * 0.5;
+  // Floor 10% of premium
+  const tp = Math.max(ltp * 0.10, tpRaw);
+
+  // --- R:R ---
+  const rr = sl > 0 ? tp / sl : 0;
+
+  return { tp: Math.round(tp * 100) / 100, sl: Math.round(sl * 100) / 100, rr: Math.round(rr * 100) / 100 };
+}
+
 // ─── Core Scoring Function ────────────────────────────────────────
 
 export function institutionalScore(option: {
@@ -243,20 +294,24 @@ function shouldReject(
   spread: number,
   regime: MarketRegime
 ): boolean {
+  const hasOI = leg.oi > 0 || leg.volume > 0;
+
   // Low liquidity: spread > 3% of LTP
   if (leg.ltp > 0 && spread / leg.ltp > 0.03) return true;
 
   // Wide spread: absolute spread > 8% of LTP
   if (leg.ltp > 0 && spread > leg.ltp * 0.08) return true;
 
-  // Low volume: < 5000 contracts (index options have high volume)
-  if (leg.volume < 5000) return true;
+  // Only enforce volume/OI filters when data is available (SENSEX BSE has no OI)
+  if (hasOI) {
+    if (leg.volume < 5000) return true;
+  }
 
-  // Extreme theta: > ₹30/day decay (NIFTY ATM theta is ~20)
-  if (Math.abs(leg.theta) > 30) return true;
+  // Extreme theta: > ₹50/day decay
+  if (Math.abs(leg.theta) > 50) return true;
 
-  // Low gamma: < 0.0005 (near expiry deep OTM)
-  if (leg.gamma < 0.0005) return true;
+  // Low gamma: < 0.0003
+  if (leg.gamma < 0.0003) return true;
 
   return false;
 }
@@ -367,6 +422,12 @@ export function runInstitutionalEngine(
           spread,
         }, weights);
 
+        const tpsl = computeTPSL(
+          row.ce.ltp, row.ce.gamma, Math.abs(row.ce.delta),
+          row.ce.theta, row.ce.vega, row.ce.iv,
+          spot, row.strike, "CE"
+        );
+
         scored.push({
           strike: row.strike,
           type: "CE",
@@ -381,6 +442,9 @@ export function runInstitutionalEngine(
           liquidityScore: Math.round(liquidityScore(spread) * 10) / 10,
           pcrScore: Math.round(pcrScore(globalPcr) * 10) / 10,
           ivScore: Math.round(ivScore(row.ce.iv, regime) * 10) / 10,
+          tp: tpsl.tp,
+          sl: tpsl.sl,
+          rr: tpsl.rr,
           raw: {
             gamma: row.ce.gamma,
             delta: row.ce.delta,
@@ -433,6 +497,12 @@ export function runInstitutionalEngine(
           spread,
         }, weights);
 
+        const tpsl = computeTPSL(
+          row.pe.ltp, row.pe.gamma, Math.abs(row.pe.delta),
+          row.pe.theta, row.pe.vega, row.pe.iv,
+          spot, row.strike, "PE"
+        );
+
         scored.push({
           strike: row.strike,
           type: "PE",
@@ -447,6 +517,9 @@ export function runInstitutionalEngine(
           liquidityScore: Math.round(liquidityScore(spread) * 10) / 10,
           pcrScore: Math.round(pcrScore(globalPcr) * 10) / 10,
           ivScore: Math.round(ivScore(row.pe.iv, regime) * 10) / 10,
+          tp: tpsl.tp,
+          sl: tpsl.sl,
+          rr: tpsl.rr,
           raw: {
             gamma: row.pe.gamma,
             delta: row.pe.delta,
