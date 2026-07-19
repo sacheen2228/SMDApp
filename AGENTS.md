@@ -57,8 +57,12 @@ bun run dev        # starts on :3000
 | `src/lib/orca-backtest.ts` | ORCA backtest (uses fake option chains) |
 | `src/lib/sdm-trade-tracker.ts` | Trade lifecycle: add/update/expire, DB persistence |
 | `src/stores/useTradingStore.ts` | Zustand store for trading state |
-| `src/app/api/agent/route.ts` | AI Agent (Angel) API with LLM |
-| `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode |
+| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 13 tools |
+| `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode — calls `/api/agent` |
+| `src/lib/greek-flow-engine.ts` | Institutional Greek Flow scoring engine (10 factors, history tracking, TP/SL) |
+| `src/app/api/greek-flow/route.ts` | Greek Flow API endpoint |
+| `src/components/terminal/GreekFlowHeatmap.tsx` | Greek Flow Heatmap UI (heat colors, top panel, top 5 calls/puts) |
+| `src/components/terminal/EnhancedOptionChain.tsx` | Enhanced Option Chain (Greeks, IV skew, OI bars, click-to-trade, sorting) |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
 | `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |
 | `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
