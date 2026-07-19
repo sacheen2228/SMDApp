@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
+import { InstitutionalGreeksPanel } from "@/components/terminal/InstitutionalGreeksPanel";
 import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
@@ -105,7 +106,7 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
+type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "greeks" | "instgreeks" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -114,6 +115,7 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "greeks", icon: <Grid3X3 size={19} />, label: "Greeks" },
+  { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "history", icon: <Clock size={19} />, label: "Trade History" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
@@ -1113,6 +1115,9 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "greeks" && (
             <GreeksTab chain={chain} />
+          )}
+          {activeTab === "instgreeks" && (
+            <InstitutionalGreeksPanel onTrade={openTrade} />
           )}
           {activeTab === "dom" && (
             <DOMTab symbol={symbol} />
