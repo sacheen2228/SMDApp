@@ -236,17 +236,15 @@ function computeTPSL(
   const thetaDecay = Math.abs(theta);
 
   // --- SL ---
-  // SL = 2x theta decay + 2% of premium cushion
-  // Floor 5% of premium, cap 25% of premium
-  const slBase = thetaDecay * 2 + ltp * 0.02;
-  const sl = Math.max(ltp * 0.05, Math.min(ltp * 0.25, slBase));
+  // SL = Entry - (2× theta + 2% cushion). Floor: max loss 25% of premium
+  const slLoss = thetaDecay * 2 + ltp * 0.02;
+  const sl = Math.max(ltp * 0.75, ltp - Math.min(ltp * 0.25, slLoss));
 
   // --- TP ---
-  // TP = delta impact + gamma convexity - half day theta
-  // Scale by moneyness (ATM gets full impact, deep OTM gets less)
-  const tpRaw = (deltaSensitivity + gammaBoost) * Math.max(0.3, moneyness) - thetaDecay * 0.5;
-  // Floor 10% of premium
-  const tp = Math.max(ltp * 0.10, tpRaw);
+  // TP = Entry + (delta impact + gamma convexity - half day theta)
+  // Floor: min 15% gain on premium
+  const tpGain = (deltaSensitivity + gammaBoost) * Math.max(0.3, moneyness) - thetaDecay * 0.5;
+  const tp = ltp + Math.max(ltp * 0.15, tpGain);
 
   // --- R:R ---
   const rr = sl > 0 ? tp / sl : 0;
