@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Activity, Zap, TrendingUp, TrendingDown, RefreshCw } from "lucide-react";
+import { Activity, Zap, TrendingUp, TrendingDown, ChevronDown, ChevronRight, Target, ShieldAlert } from "lucide-react";
 import type { EngineResult, StrikeScore, WeightSet, MarketRegime } from "@/lib/institutional-greeks-engine";
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -13,17 +13,10 @@ const fmtInt = (n: number) =>
   n == null || isNaN(n) ? "—" : Math.round(n).toLocaleString("en-IN");
 
 const scoreColor = (s: number) => {
-  if (s >= 85) return "text-[#2dd4a7]";
-  if (s >= 70) return "text-[#4f8ff7]";
-  if (s >= 50) return "text-[#e8a33d]";
-  return "text-[#7d8ba0]";
-};
-
-const scoreBg = (s: number) => {
-  if (s >= 85) return "bg-[rgba(45,212,167,.12)]";
-  if (s >= 70) return "bg-[rgba(79,143,247,.12)]";
-  if (s >= 50) return "bg-[rgba(232,163,61,.12)]";
-  return "bg-[rgba(125,139,160,.08)]";
+  if (s >= 85) return "#2dd4a7";
+  if (s >= 70) return "#4f8ff7";
+  if (s >= 50) return "#e8a33d";
+  return "#7d8ba0";
 };
 
 const regimeColors: Record<MarketRegime, string> = {
@@ -33,120 +26,297 @@ const regimeColors: Record<MarketRegime, string> = {
   normal: "bg-[rgba(125,139,160,.12)] text-[#7d8ba0] border-[#7d8ba0]/30",
 };
 
-// ─── Score Bar ────────────────────────────────────────────────────
+const regimeIcons: Record<MarketRegime, string> = {
+  expiry: "⚡",
+  lowVol: "📉",
+  highIV: "🔥",
+  normal: "⚖️",
+};
 
-function ScoreBar({ label, score, max = 100 }: { label: string; score: number; max?: number }) {
-  const pct = Math.min(100, (score / max) * 100);
+// ─── Score Ring ───────────────────────────────────────────────────
+
+function ScoreRing({ score, size = 36 }: { score: number; size?: number }) {
+  const color = scoreColor(score);
+  const pct = Math.min(100, score);
+  const r = (size - 6) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[9px] text-[#7d8ba0] w-16 text-right font-mono">{label}</span>
-      <div className="flex-1 h-1.5 bg-[#151b25] rounded-full overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{
-            width: `${pct}%`,
-            background: pct >= 85 ? "#2dd4a7" : pct >= 70 ? "#4f8ff7" : pct >= 50 ? "#e8a33d" : "#7d8ba0",
-          }}
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1f2733" strokeWidth={3} />
+        <circle
+          cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke={color} strokeWidth={3} strokeDasharray={circ} strokeDashoffset={offset}
+          strokeLinecap="round" className="transition-all duration-700"
         />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-[10px] font-mono font-bold" style={{ color }}>{fmt(score)}</span>
       </div>
-      <span className={`text-[9px] font-mono w-8 ${scoreColor(score)}`}>{fmt(score)}</span>
     </div>
   );
 }
 
-// ─── Strike Row ───────────────────────────────────────────────────
+// ─── TP/SL Visual Bar ─────────────────────────────────────────────
 
-function StrikeRow({
+function TPSLBar({ entry, tp, sl }: { entry: number; tp: number; sl: number }) {
+  if (!entry || !tp || !sl) return null;
+
+  const range = Math.max(tp - sl, 1);
+  const entryPct = ((entry - sl) / range) * 100;
+  const tpPct = 100;
+  const slPct = 0;
+
+  return (
+    <div className="relative h-6 w-full my-1">
+      {/* Background bar */}
+      <div className="absolute inset-0 rounded-full bg-[#151b25] overflow-hidden">
+        {/* Loss zone (red) */}
+        <div
+          className="absolute left-0 top-0 h-full bg-[rgba(242,73,92,.15)]"
+          style={{ width: `${entryPct}%` }}
+        />
+        {/* Profit zone (green) */}
+        <div
+          className="absolute right-0 top-0 h-full bg-[rgba(45,212,167,.15)]"
+          style={{ width: `${100 - entryPct}%` }}
+        />
+      </div>
+      {/* Entry marker */}
+      <div
+        className="absolute top-0 h-full w-0.5 bg-[#dfe6ee]"
+        style={{ left: `${entryPct}%` }}
+      />
+      {/* TP marker */}
+      <div
+        className="absolute top-0 h-full w-0.5 bg-[#2dd4a7]"
+        style={{ left: `${tpPct}%` }}
+      />
+      {/* SL marker */}
+      <div
+        className="absolute top-0 h-full w-0.5 bg-[#f2495c]"
+        style={{ left: `${slPct}%` }}
+      />
+      {/* Labels */}
+      <div className="absolute -bottom-3 text-[8px] font-mono text-[#f2495c]" style={{ left: `${slPct}%`, transform: "translateX(-50%)" }}>
+        ₹{fmt(sl)}
+      </div>
+      <div className="absolute -bottom-3 text-[8px] font-mono text-[#dfe6ee]" style={{ left: `${entryPct}%`, transform: "translateX(-50%)" }}>
+        ₹{fmt(entry)}
+      </div>
+      <div className="absolute -bottom-3 text-[8px] font-mono text-[#2dd4a7]" style={{ left: `${tpPct}%`, transform: "translateX(-100%)" }}>
+        ₹{fmt(tp)}
+      </div>
+    </div>
+  );
+}
+
+// ─── Score Bar (compact) ──────────────────────────────────────────
+
+function ScoreBar({ label, score }: { label: string; score: number }) {
+  const pct = Math.min(100, score);
+  const color = scoreColor(score);
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[8px] text-[#7d8ba0] w-12 text-right font-mono shrink-0">{label}</span>
+      <div className="flex-1 h-1 bg-[#151b25] rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, background: color }}
+        />
+      </div>
+      <span className="text-[8px] font-mono w-6 shrink-0" style={{ color }}>{fmt(score)}</span>
+    </div>
+  );
+}
+
+// ─── Strike Card ──────────────────────────────────────────────────
+
+function StrikeCard({
   s,
   rank,
   onTrade,
+  spot,
 }: {
   s: StrikeScore;
   rank: number;
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
+  spot: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const rrColor = s.rr >= 2 ? "text-[#2dd4a7]" : s.rr >= 1.5 ? "text-[#4f8ff7]" : "text-[#e8a33d]";
+  const rrColor = s.rr >= 2 ? "#2dd4a7" : s.rr >= 1.5 ? "#4f8ff7" : "#e8a33d";
+  const distFromATM = Math.abs(s.strike - spot);
+  const distPct = ((distFromATM / spot) * 100).toFixed(1);
+  const isCE = s.type === "CE";
 
   return (
-    <>
+    <div className="border-b border-[#1f2733] last:border-b-0">
+      {/* Main row */}
       <div
-        className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-2 px-2 border-b border-[#1f2733] font-mono text-[11px] cursor-pointer hover:bg-[#151b25] transition-colors"
+        className="grid grid-cols-[28px_1fr_44px_60px_56px_56px_50px_48px_48px] gap-1 items-center py-2 px-2 cursor-pointer hover:bg-[#151b25]/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="text-[#7d8ba0] font-bold">#{rank}</div>
-        <div className="font-bold text-[#dfe6ee]">{fmtInt(s.strike)}</div>
-        <div className={`${scoreColor(s.institutionalScore)} font-bold`}>{fmt(s.institutionalScore)}</div>
-        <div className="text-[#2dd4a7]">₹{fmt(s.raw.ltp)}</div>
-        <div className="text-[#dfe6ee]">{fmt(s.raw.gamma, 4)}</div>
-        <div className="text-[#dfe6ee]">{fmt(s.raw.delta, 2)}</div>
-        <div className="text-[#f2495c]">{fmt(s.raw.theta)}</div>
-        <div className="text-[#dfe6ee]">{fmt(s.raw.vega)}</div>
-        <div className="text-[#dfe6ee]">{fmtInt(s.raw.oi)}</div>
-        <div className={s.raw.oiChg >= 0 ? "text-[#2dd4a7]" : "text-[#f2495c]"}>{s.raw.oiChg >= 0 ? "+" : ""}{fmtInt(s.raw.oiChg)}</div>
-        <div className="text-[#dfe6ee]">{fmtInt(s.raw.volume)}</div>
-        <div className="text-[#e8a33d]">{fmt(s.raw.iv)}%</div>
-        <div className="text-[#2dd4a7]">₹{fmt(s.tp)}</div>
-        <div className={`flex gap-0.5 items-center ${rrColor}`}>
-          <span>₹{fmt(s.sl)}</span>
+        {/* Rank */}
+        <div className="text-[10px] text-[#7d8ba0] font-bold">#{rank}</div>
+
+        {/* Strike + direction + distance */}
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono font-bold text-[#dfe6ee] text-[12px]">{fmtInt(s.strike)}</span>
+            <span className="text-[8px] text-[#7d8ba0] font-mono">{distPct}%OTM</span>
+          </div>
+          <div className="flex items-center gap-1 mt-0.5">
+            <span className={`text-[8px] font-bold px-1 py-px rounded ${isCE ? "bg-[rgba(45,212,167,.12)] text-[#2dd4a7]" : "bg-[rgba(242,73,92,.12)] text-[#f2495c]"}`}>
+              {s.type}
+            </span>
+          </div>
+        </div>
+
+        {/* Score ring */}
+        <div className="flex justify-center">
+          <ScoreRing score={s.institutionalScore} size={34} />
+        </div>
+
+        {/* Premium */}
+        <div className="text-right">
+          <div className="text-[11px] font-mono font-bold text-[#2dd4a7]">₹{fmt(s.raw.ltp)}</div>
+        </div>
+
+        {/* Greeks compact */}
+        <div className="flex gap-2 text-[9px] font-mono">
+          <span title="Gamma" className="text-[#dfe6ee]">Γ{s.raw.gamma.toFixed(4)}</span>
+          <span title="Delta" className="text-[#dfe6ee]">Δ{s.raw.delta.toFixed(2)}</span>
+        </div>
+
+        {/* Theta + IV */}
+        <div className="flex gap-2 text-[9px] font-mono">
+          <span title="Theta" className="text-[#f2495c]">Θ{fmt(s.raw.theta)}</span>
+          <span title="IV" className="text-[#e8a33d]">{fmt(s.raw.iv)}%</span>
+        </div>
+
+        {/* TP */}
+        <div className="text-right">
+          <span className="text-[10px] font-mono font-bold text-[#2dd4a7]">₹{fmt(s.tp)}</span>
+        </div>
+
+        {/* SL */}
+        <div className="text-right">
+          <span className="text-[10px] font-mono font-bold text-[#f2495c]">₹{fmt(s.sl)}</span>
+        </div>
+
+        {/* R:R */}
+        <div className="text-right">
+          <span className="text-[10px] font-mono font-bold" style={{ color: rrColor }}>{fmt(s.rr)}x</span>
         </div>
       </div>
+
+      {/* Expanded details */}
       {expanded && (
-        <div className="px-3 py-2 bg-[#0a1018] border-b border-[#1f2733] grid grid-cols-4 gap-2">
-          <div className="space-y-1">
-            <ScoreBar label="Gamma" score={s.gammaScore} />
-            <ScoreBar label="Delta" score={s.deltaScore} />
-            <ScoreBar label="Theta" score={s.thetaScore} />
-            <ScoreBar label="Vega" score={s.vegaScore} />
-          </div>
-          <div className="space-y-1">
-            <ScoreBar label="OI" score={s.oiScore} />
-            <ScoreBar label="OI Chg" score={s.oiChangeScore} />
-            <ScoreBar label="Volume" score={s.volumeScore} />
-            <ScoreBar label="Liquidity" score={s.liquidityScore} />
-          </div>
-          <div className="space-y-1">
-            <ScoreBar label="PCR" score={s.pcrScore} />
-            <ScoreBar label="IV" score={s.ivScore} />
-            <div className="flex gap-3 mt-2 text-[9px] text-[#7d8ba0]">
-              <span>Bid: ₹{fmt(s.raw.bid)}</span>
-              <span>Ask: ₹{fmt(s.raw.ask)}</span>
+        <div className="px-3 pb-3 bg-[#0a1018]">
+          {/* TP/SL Visual */}
+          <div className="mb-3">
+            <div className="flex items-center gap-4 text-[9px] text-[#7d8ba0] mb-1">
+              <span className="flex items-center gap-1"><Target className="h-2.5 w-2.5 text-[#2dd4a7]" /> TP ₹{fmt(s.tp)} <span className="text-[#2dd4a7]">(+{fmt(((s.tp - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
+              <span className="flex items-center gap-1"><ShieldAlert className="h-2.5 w-2.5 text-[#f2495c]" /> SL ₹{fmt(s.sl)} <span className="text-[#f2495c]">({fmt(((s.sl - s.raw.ltp) / s.raw.ltp) * 100)}%)</span></span>
+              <span className="font-bold" style={{ color: rrColor }}>R:R {fmt(s.rr)}x</span>
             </div>
-            <div className="flex gap-3 mt-1 text-[9px] text-[#7d8ba0]">
-              <span>PCR: {fmt(s.raw.pcr)}</span>
-              <span>Spread: ₹{fmt(s.raw.spread)}</span>
+            <TPSLBar entry={s.raw.ltp} tp={s.tp} sl={s.sl} />
+            <div className="h-3" />
+          </div>
+
+          {/* Score breakdown + details */}
+          <div className="grid grid-cols-3 gap-3">
+            {/* Greeks scores */}
+            <div className="space-y-1">
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Greeks</div>
+              <ScoreBar label="Gamma" score={s.gammaScore} />
+              <ScoreBar label="Delta" score={s.deltaScore} />
+              <ScoreBar label="Theta" score={s.thetaScore} />
+              <ScoreBar label="Vega" score={s.vegaScore} />
+            </div>
+
+            {/* Flow scores */}
+            <div className="space-y-1">
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Flow</div>
+              <ScoreBar label="OI" score={s.oiScore} />
+              <ScoreBar label="OI Chg" score={s.oiChangeScore} />
+              <ScoreBar label="Volume" score={s.volumeScore} />
+              <ScoreBar label="PCR" score={s.pcrScore} />
+            </div>
+
+            {/* Market + trade */}
+            <div className="space-y-1">
+              <div className="text-[8px] text-[#7d8ba0] uppercase font-bold mb-1">Market</div>
+              <ScoreBar label="IV" score={s.ivScore} />
+              <ScoreBar label="Liquidity" score={s.liquidityScore} />
+              <div className="flex gap-2 text-[8px] text-[#7d8ba0] font-mono mt-1">
+                <span>Bid ₹{fmt(s.raw.bid)}</span>
+                <span>Ask ₹{fmt(s.raw.ask)}</span>
+              </div>
+              <div className="flex gap-2 text-[8px] text-[#7d8ba0] font-mono">
+                <span>OI {fmtInt(s.raw.oi)}</span>
+                <span>Vol {fmtInt(s.raw.volume)}</span>
+              </div>
+              <div className="flex gap-2 text-[8px] font-mono">
+                <span className={s.raw.oiChg >= 0 ? "text-[#2dd4a7]" : "text-[#f2495c]"}>
+                  OIΔ {s.raw.oiChg >= 0 ? "+" : ""}{fmtInt(s.raw.oiChg)}
+                </span>
+              </div>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <div className="bg-[#10151d] rounded-[8px] p-2 border border-[#1f2733]">
-              <div className="text-[9px] text-[#7d8ba0] mb-1 uppercase font-bold">Trade Plan</div>
-              <div className="flex justify-between text-[10px] mb-1">
-                <span className="text-[#7d8ba0]">Entry</span>
-                <span className="text-[#dfe6ee] font-bold">₹{fmt(s.raw.ltp)}</span>
-              </div>
-              <div className="flex justify-between text-[10px] mb-1">
-                <span className="text-[#7d8ba0]">TP</span>
-                <span className="text-[#2dd4a7] font-bold">₹{fmt(s.tp)}</span>
-              </div>
-              <div className="flex justify-between text-[10px] mb-1">
-                <span className="text-[#7d8ba0]">SL</span>
-                <span className="text-[#f2495c] font-bold">₹{fmt(s.sl)}</span>
-              </div>
-              <div className="flex justify-between text-[10px]">
-                <span className="text-[#7d8ba0]">R:R</span>
-                <span className={`font-bold ${rrColor}`}>{fmt(s.rr)}x</span>
-              </div>
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); onTrade(s.strike, s.type, s.raw.ltp); }}
-              className="w-full px-3 py-1 rounded bg-[#2dd4a7]/15 text-[#2dd4a7] text-[10px] font-bold hover:bg-[#2dd4a7]/25 transition-colors"
-            >
-              Trade {s.type}
-            </button>
-          </div>
+
+          {/* Trade button */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onTrade(s.strike, s.type, s.raw.ltp); }}
+            className="mt-2 w-full py-1.5 rounded-lg bg-[#2dd4a7]/10 text-[#2dd4a7] text-[11px] font-bold hover:bg-[#2dd4a7]/20 transition-colors border border-[#2dd4a7]/20"
+          >
+            Trade {s.type} @ ₹{fmt(s.raw.ltp)}
+          </button>
         </div>
       )}
-    </>
+    </div>
+  );
+}
+
+// ─── Dynamic Weights Bar ──────────────────────────────────────────
+
+function WeightsDisplay({ weights, regime }: { weights: WeightSet; regime: MarketRegime }) {
+  const labels: Record<string, string> = {
+    gamma: "Γ", delta: "Δ", theta: "Θ", vega: "V",
+    oi: "OI", oiChange: "ΔOI", volume: "Vol", liquidity: "Liq",
+  };
+  const sorted = Object.entries(weights).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[9px] text-[#7d8ba0] font-bold uppercase">Dynamic Weights</span>
+        <span className={`px-1.5 py-px rounded text-[8px] font-bold border ${regimeColors[regime]}`}>
+          {regimeIcons[regime]} {regime}
+        </span>
+      </div>
+      <div className="flex gap-1 items-end h-5">
+        {sorted.map(([key, val]) => {
+          const pct = Math.round(val * 100);
+          const isTop = sorted[0][0] === key;
+          return (
+            <div key={key} className="flex flex-col items-center gap-0.5 flex-1">
+              <div
+                className="w-full rounded-t transition-all duration-500"
+                style={{
+                  height: `${Math.max(4, pct * 0.8)}px`,
+                  background: isTop ? scoreColor(pct) : "#1f2733",
+                }}
+              />
+              <span className="text-[7px] text-[#7d8ba0] font-mono">{labels[key]}</span>
+              <span className="text-[8px] font-mono font-bold" style={{ color: isTop ? scoreColor(pct) : "#7d8ba0" }}>{pct}%</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -189,29 +359,37 @@ export function InstitutionalGreeksPanel({
     return () => clearInterval(id);
   }, [fetchData]);
 
+  const tableHeader = (
+    <div className="grid grid-cols-[28px_1fr_44px_60px_56px_56px_50px_48px_48px] gap-1 items-center py-1 px-2 border-b border-[#1f2733] text-[8px] text-[#7d8ba0] uppercase font-bold">
+      <div>#</div>
+      <div>Strike</div>
+      <div className="text-center">Score</div>
+      <div className="text-right">Premium</div>
+      <div>Γ Δ</div>
+      <div>Θ IV</div>
+      <div className="text-right">TP</div>
+      <div className="text-right">SL</div>
+      <div className="text-right">R:R</div>
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-2 h-full">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-[#2dd4a7]" />
-          <span className="text-sm font-bold">Institutional Greeks Engine</span>
-          {data && (
-            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${regimeColors[data.regime]}`}>
-              {data.regimeLabel}
-            </span>
-          )}
+          <span className="text-sm font-bold">Institutional Greeks</span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
-          <span>Index:</span>
           {(["NIFTY", "SENSEX"] as const).map((s) => (
             <button
               key={s}
               onClick={() => setSymbol(s)}
-              className={`px-2 py-0.5 rounded font-bold ${
+              className={`px-2 py-0.5 rounded font-bold transition-colors ${
                 symbol === s
                   ? "bg-[#2dd4a7]/20 text-[#2dd4a7] border border-[#2dd4a7]/40"
-                  : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"
+                  : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0] hover:bg-[#1f2733]"
               }`}
             >
               {s}
@@ -219,171 +397,121 @@ export function InstitutionalGreeksPanel({
           ))}
           {loading && <Activity className="h-3 w-3 animate-spin" />}
           {updatedAt > 0 && (
-            <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>
+            <span className="text-[9px]">{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>
           )}
-          <button
-            onClick={fetchData}
-            className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold"
-          >
-            ↻
-          </button>
         </div>
       </div>
 
-      {/* Dynamic Weights */}
+      {/* Stats + Weights row */}
       {data && (
-        <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] p-3">
-          <div className="text-[10px] text-[#7d8ba0] mb-2 font-bold uppercase">Dynamic Weights — {data.regimeLabel}</div>
-          <div className="grid grid-cols-8 gap-3">
-            {Object.entries(data.weights).map(([key, val]) => (
-              <div key={key} className="text-center">
-                <div className="text-[9px] text-[#7d8ba0] capitalize">{key}</div>
-                <div className="text-[11px] font-mono font-bold text-[#dfe6ee]">{Math.round(val * 100)}%</div>
+        <div className="grid grid-cols-[1fr_280px] gap-2">
+          {/* Stats */}
+          <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] px-3 py-2 flex items-center gap-4">
+            <div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase">Spot</div>
+              <div className="text-[13px] font-mono font-bold text-[#dfe6ee]">{fmtInt(data.spot)}</div>
+            </div>
+            <div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase">ATM</div>
+              <div className="text-[13px] font-mono font-bold text-[#e8a33d]">{fmtInt(data.atmStrike)}</div>
+            </div>
+            <div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase">Qualified</div>
+              <div className="text-[13px] font-mono font-bold text-[#2dd4a7]">{data.qualifiedStrikes}<span className="text-[9px] text-[#7d8ba0]">/{data.totalStrikes}</span></div>
+            </div>
+            <div>
+              <div className="text-[8px] text-[#7d8ba0] uppercase">Regime</div>
+              <div className={`text-[11px] font-bold ${regimeColors[data.regime].split(' ')[1]}`}>
+                {regimeIcons[data.regime]} {data.regimeLabel}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
-      )}
-
-      {/* Stats Bar */}
-      {data && (
-        <div className="flex gap-3 text-[10px] text-[#7d8ba0]">
-          <span>Spot <b className="text-[#dfe6ee]">{fmtInt(data.spot)}</b></span>
-          <span>ATM <b className="text-[#e8a33d]">{fmtInt(data.atmStrike)}</b></span>
-          <span>Strikes <b className="text-[#dfe6ee]">{data.totalStrikes}</b></span>
-          <span>Qualified <b className="text-[#2dd4a7]">{data.qualifiedStrikes}</b></span>
+          <WeightsDisplay weights={data.weights} regime={data.regime} />
         </div>
       )}
 
       {/* Error */}
       {error && (
-        <div className="bg-[#10151d] border border-[#f2495c]/30 rounded-[10px] p-4 text-center text-[#f2495c] text-sm">
+        <div className="bg-[#10151d] border border-[#f2495c]/30 rounded-[10px] p-3 text-center text-[#f2495c] text-xs">
           {error}
         </div>
       )}
 
       {/* Content */}
       {!error && data && (
-        <div className="flex-1 overflow-y-auto space-y-3">
-          {/* Top 5 Calls */}
+        <div className="flex-1 overflow-y-auto space-y-2">
+          {/* Top Calls */}
           <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-            <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
-              <TrendingUp className="h-3.5 w-3.5 text-[#2dd4a7]" />
-              <span className="font-bold text-[13px] text-[#2dd4a7]">Top 5 Calls</span>
-              <span className="text-[10px] text-[#7d8ba0]">— Best institutional scores</span>
+            <div className="px-3 py-1.5 border-b border-[#1f2733] flex items-center gap-2">
+              <TrendingUp className="h-3 w-3 text-[#2dd4a7]" />
+              <span className="font-bold text-[12px] text-[#2dd4a7]">Top 5 Calls</span>
+              <span className="text-[9px] text-[#7d8ba0]">— Best scores</span>
             </div>
-            {/* Header */}
-            <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
-              <div>#</div>
-              <div>Strike</div>
-              <div>Score</div>
-              <div>Premium</div>
-              <div>Γ</div>
-              <div>Δ</div>
-              <div>Θ</div>
-              <div>V</div>
-              <div>OI</div>
-              <div>Chg</div>
-              <div>Vol</div>
-              <div>IV</div>
-              <div>TP</div>
-              <div>SL</div>
-            </div>
+            {tableHeader}
             {data.topCalls.length === 0 ? (
-              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified calls</div>
+              <div className="p-3 text-center text-[#7d8ba0] text-[11px]">No qualified calls</div>
             ) : (
               data.topCalls.map((s, i) => (
-                <StrikeRow key={`c-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} />
+                <StrikeCard key={`c-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
               ))
             )}
           </div>
 
-          {/* Top 5 Puts */}
+          {/* Top Puts */}
           <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-            <div className="px-3 py-2 border-b border-[#1f2733] flex items-center gap-2">
-              <TrendingDown className="h-3.5 w-3.5 text-[#f2495c]" />
-              <span className="font-bold text-[13px] text-[#f2495c]">Top 5 Puts</span>
-              <span className="text-[10px] text-[#7d8ba0]">— Best institutional scores</span>
+            <div className="px-3 py-1.5 border-b border-[#1f2733] flex items-center gap-2">
+              <TrendingDown className="h-3 w-3 text-[#f2495c]" />
+              <span className="font-bold text-[12px] text-[#f2495c]">Top 5 Puts</span>
+              <span className="text-[9px] text-[#7d8ba0]">— Best scores</span>
             </div>
-            <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
-              <div>#</div>
-              <div>Strike</div>
-              <div>Score</div>
-              <div>Premium</div>
-              <div>Γ</div>
-              <div>Δ</div>
-              <div>Θ</div>
-              <div>V</div>
-              <div>OI</div>
-              <div>Chg</div>
-              <div>Vol</div>
-              <div>IV</div>
-              <div>TP</div>
-              <div>SL</div>
-            </div>
+            {tableHeader}
             {data.topPuts.length === 0 ? (
-              <div className="p-4 text-center text-[#7d8ba0] text-xs">No qualified puts</div>
+              <div className="p-3 text-center text-[#7d8ba0] text-[11px]">No qualified puts</div>
             ) : (
               data.topPuts.map((s, i) => (
-                <StrikeRow key={`p-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} />
+                <StrikeCard key={`p-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={data.spot} />
               ))
             )}
           </div>
 
-          {/* All Ranked Strikes (collapsible) */}
-          <RankedStrikesAll strikes={data.strikes} onTrade={onTrade} />
+          {/* All Ranked */}
+          <RankedStrikesAll strikes={data.strikes} onTrade={onTrade} spot={data.spot} />
         </div>
       )}
     </div>
   );
 }
 
-// ─── All Ranked Strikes (collapsed by default) ────────────────────
+// ─── All Ranked Strikes ───────────────────────────────────────────
 
 function RankedStrikesAll({
   strikes,
   onTrade,
+  spot,
 }: {
   strikes: StrikeScore[];
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
+  spot: number;
 }) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div
-        className="px-3 py-2 border-b border-[#1f2733] flex items-center justify-between cursor-pointer hover:bg-[#151b25] transition-colors"
+        className="px-3 py-1.5 border-b border-[#1f2733] flex items-center justify-between cursor-pointer hover:bg-[#151b25] transition-colors"
         onClick={() => setOpen(!open)}
       >
-        <span className="font-bold text-[13px]">
-          All Ranked Strikes <span className="text-[#7d8ba0] font-mono text-[11px]">({strikes.length})</span>
+        <span className="font-bold text-[12px]">
+          All Ranked Strikes <span className="text-[#7d8ba0] font-mono text-[10px]">({strikes.length})</span>
         </span>
-        <span className="text-[10px] text-[#7d8ba0]">{open ? "▾ Collapse" : "▸ Expand"}</span>
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-[#7d8ba0]" /> : <ChevronRight className="h-3.5 w-3.5 text-[#7d8ba0]" />}
       </div>
       {open && (
-        <>
-          <div className="grid grid-cols-[28px_62px_48px_52px_44px_44px_44px_44px_48px_36px_42px_52px_52px_44px] gap-0.5 items-center py-1.5 px-2 border-b border-[#1f2733] text-[9px] text-[#7d8ba0] uppercase font-bold">
-            <div>#</div>
-            <div>Strike</div>
-            <div>Score</div>
-            <div>Premium</div>
-            <div>Γ</div>
-            <div>Δ</div>
-            <div>Θ</div>
-            <div>V</div>
-            <div>OI</div>
-            <div>Chg</div>
-            <div>Vol</div>
-            <div>IV</div>
-            <div>TP</div>
-            <div>SL</div>
-          </div>
-          <div className="max-h-[400px] overflow-y-auto">
-            {strikes.map((s, i) => (
-              <StrikeRow key={`a-${s.type}-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} />
-            ))}
-          </div>
-        </>
+        <div className="max-h-[400px] overflow-y-auto">
+          {strikes.map((s, i) => (
+            <StrikeCard key={`a-${s.type}-${s.strike}`} s={s} rank={i + 1} onTrade={onTrade} spot={spot} />
+          ))}
+        </div>
       )}
     </div>
   );
