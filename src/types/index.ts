@@ -295,6 +295,14 @@ export interface MarketSummary {
   totalCallVolume: number;
   totalPutVolume: number;
   atmStrike: number;
+  callOiChange?: number;
+  putOiChange?: number;
+  futuresPrice?: number;
+  iv?: number;
+  pcrVolume?: number;
+  vwapDistance?: number;
+  atr?: number;
+  breadth?: number;
 }
 
 export interface OptionChainResponse {

@@ -308,13 +308,13 @@ export default function TradingDashboard() {
   const summary: MarketSummary | null = (() => {
     if (!data) return null;
     const raw = data as any;
-    const analysis = raw.analysis || {};
-    const inner = raw.data || {};
-    const chainSummary = inner.summary || {};
-    const chain = inner.data || [];
-    const spot = analysis.spotPrice ?? inner.spotPrice ?? 0;
+    // data = json.data = { summary: {...}, data: [...strikes], expiries: [...] }
+    // analysis is at json.analysis (stored separately via setAnalysis)
+    const chainSummary = raw.summary || {};
+    const chain = raw.data || [];
+    const spot = chainSummary.spotPrice ?? 0;
     const atmStrike =
-      analysis.atmStrike ??
+      chainSummary.atmStrike ??
       (Array.isArray(chain) && chain.length
         ? chain.reduce((b: any, r: any) =>
             Math.abs(r.strike - spot) < Math.abs(b.strike - spot) ? r : b
@@ -328,11 +328,14 @@ export default function TradingDashboard() {
       prevClose: (typeof chainSummary.prevClose === 'number' ? chainSummary.prevClose : null),
       vixLive: chainSummary.vixLive ?? false,
       prevCloseLive: chainSummary.prevCloseLive ?? false,
-      pcr: analysis.pcr ?? 1,
-      maxPain: analysis.maxPain ?? 0,
-      totalCallOI: analysis.totalCallOI ?? 0,
-      totalPutOI: analysis.totalPutOI ?? 0,
+      pcr: chainSummary.pcr ?? 1,
+      maxPain: chainSummary.maxPain ?? 0,
+      totalCallOI: chainSummary.totalCallOI ?? 0,
+      totalPutOI: chainSummary.totalPutOI ?? 0,
       atmStrike,
+      callOiChange: chainSummary.callOiChange ?? null,
+      putOiChange: chainSummary.putOiChange ?? null,
+      futuresPrice: chainSummary.futuresPrice ?? null,
     };
   })();
 

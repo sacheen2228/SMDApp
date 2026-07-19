@@ -377,6 +377,7 @@ export function MarketStatusBar() {
   const [error, setError] = useState(false);
   const [countdown, setCountdown] = useState("00:00:00");
   const [now, setNow] = useState("");
+  const [fiiDii, setFiiDii] = useState<{ fiiNet: number; diiNet: number } | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -427,6 +428,12 @@ export function MarketStatusBar() {
         timeToClose: getTimeToClose(),
         lastUpdate: new Date().toISOString(),
       });
+
+      // Fetch FII/DII in parallel (non-blocking)
+      fetch("/api/fii-dii").then(r => r.json()).then(d => {
+        if (d.success) setFiiDii({ fiiNet: d.fiiNet, diiNet: d.diiNet });
+      }).catch(() => {});
+
       setError(false);
     } catch {
       setError(true);
@@ -531,6 +538,26 @@ export function MarketStatusBar() {
       </div>
 
       <div className="w-px h-4 bg-white/5 shrink-0" />
+
+      {/* FII/DII Flows */}
+      {fiiDii && (
+        <>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[9px] text-zinc-500 font-semibold">FII</span>
+            <span className={`font-semibold tabular-nums ${fiiDii.fiiNet >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+              {fiiDii.fiiNet >= 0 ? "+" : ""}{(fiiDii.fiiNet / 100).toFixed(0)}K
+            </span>
+          </div>
+          <div className="w-px h-4 bg-white/5 shrink-0" />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[9px] text-zinc-500 font-semibold">DII</span>
+            <span className={`font-semibold tabular-nums ${fiiDii.diiNet >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+              {fiiDii.diiNet >= 0 ? "+" : ""}{(fiiDii.diiNet / 100).toFixed(0)}K
+            </span>
+          </div>
+          <div className="w-px h-4 bg-white/5 shrink-0" />
+        </>
+      )}
 
       {/* Index Ticker — all indices */}
       {displayIndices.map((idx) => (

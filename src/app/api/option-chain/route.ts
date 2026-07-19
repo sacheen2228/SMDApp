@@ -511,6 +511,22 @@ export async function GET(request: NextRequest) {
     chainData.summary.totalCallOI = analysis?.totalCallOI ?? chainData.summary.totalCallOI ?? 0;
     chainData.summary.totalPutOI = analysis?.totalPutOI ?? chainData.summary.totalPutOI ?? 0;
     chainData.summary.atmStrike = analysis?.atmStrike ?? chainData.summary.atmStrike ?? 0;
+    chainData.summary.spotPrice = spotPrice;
+
+    // Compute aggregated OI changes from per-strike data (needed by GapAnalysis)
+    if (optionChainStrikes.length > 0) {
+      chainData.summary.callOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.ce?.oiChg || 0), 0);
+      chainData.summary.putOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.pe?.oiChg || 0), 0);
+    }
+    // Get NIFTY futures price from Yahoo (NIFTY 50 futures)
+    try {
+      const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
+      const futuresData = await fetchYahooIndexData('NIFTY');
+      if (futuresData?.regularMarketPrice) {
+        chainData.summary.futuresPrice = futuresData.regularMarketPrice;
+      }
+    } catch {}
+
     if (analysis?.greeks && typeof analysis.greeks === 'object') {
       analysis.greeks.vix = liveVix != null ? liveVix : analysis.greeks.vix;
     }

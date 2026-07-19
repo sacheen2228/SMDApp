@@ -27,7 +27,7 @@ const YAHOO_SYMBOL_MAP: Record<string, string> = {
   'SENSEX': '^BSESN',
   'BANKEX': '^BSEBANK',
   'INDIAVIX': '^INDIAVIX',
-  'GIFTNIFTY': 'SGXNIFTY.NS',
+  'GIFTNIFTY': '^NSEI', // SGXNIFTY.NS is dead (SGX→GIFTC merger). Use NIFTY 50 spot as proxy
 };
 
 // Cache for Yahoo data (2 minutes)
