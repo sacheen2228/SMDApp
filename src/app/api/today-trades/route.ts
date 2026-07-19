@@ -84,12 +84,11 @@ export async function GET(req: NextRequest) {
     const daysToExpiry = parseExpiryDays(d?.selectedExpiry || d?.expiries?.[0]?.date);
     const ranked = rankStrikes(strikes, ctx, { daysToExpiry });
 
-    // Top-1 only, plus a 2nd if its probability is within TIE_MARGIN of #1.
-    const chosen = ranked.slice(0, 1);
-    if (ranked.length > 1 && ranked[0].probability - ranked[1].probability <= 4) {
-      chosen.push(ranked[1]);
-    }
-    const top = chosen.map((c, i) => ({ rank: i + 1, ...c }));
+    // Return top 5 candidates (filter confidence >= 50 for quality)
+    const top = ranked
+      .filter((c) => c.probability >= 50)
+      .slice(0, 5)
+      .map((c, i) => ({ rank: i + 1, ...c }));
 
     // ── Paper-record the ranked candidates into the Trade Audit sidecar so the
     // IDE signals get backtest-verified (MFE/MAE, win rate, R-multiple). Each
