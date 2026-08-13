@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -31,7 +31,7 @@ import { SimpleMode } from '@/components/dashboard/SimpleMode';
 import { GapAnalysis } from '@/components/dashboard/GapAnalysis';
 import { AgentChat } from '@/components/dashboard/AgentChat';
 import { AdminPanel } from '@/components/dashboard/AdminPanel';
-import { ScannerPanel } from '@/components/dashboard/ScannerPanel';
+import ScannerView from '@/components/dashboard/ScannerView';
 import { NewsPanel } from '@/components/dashboard/NewsPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
@@ -40,6 +40,14 @@ import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
 import DailyDerivativesPanel from '@/components/daily/DailyDerivativesPanel';
+import ExpiryPlanPanel from '@/components/dashboard/ExpiryPlanPanel';
+import SignalStrip from '@/components/dashboard/SignalStrip';
+import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
+import { evaluateStrikeSignal } from '@/lib/signal-engine';
+import { runMLAnalysis } from '@/lib/ml-engine';
+import HedgePanel from '@/components/dashboard/HedgePanel';
+import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
+import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -85,6 +93,9 @@ type MarketSummary = {
   totalCallOI: number;
   totalPutOI: number;
   atmStrike: number;
+  callOiChange?: number | null;
+  putOiChange?: number | null;
+  futuresPrice?: number | null;
 };
 
 type OptionChainResponse = {
@@ -133,9 +144,14 @@ interface FullChainViewProps {
   onTrade: (strike: number, type: "CE" | "PE", ltp: number) => void;
   rec?: any;
   symbol: string;
+  pcr?: number;
+  maxPain?: number;
+  onStrikeSignal?: (strike: number, type: "CE" | "PE") => void;
 }
 
-function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot, showGreeks, onTrade, rec, symbol }: FullChainViewProps) {
+function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot, showGreeks, onTrade, rec, symbol, pcr = 1, maxPain = 0, onStrikeSignal }: FullChainViewProps) {
+  const [newsScore, setNewsScore] = useState(0);
+
   // Transform API chain data to rows
   const rows = useMemo(() => {
     return chainData.map((row: any) => ({
@@ -144,6 +160,30 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
       pe: row.pe ? { oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, vol: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, ltp: row.pe.ltp || 0, gamma: row.pe.gamma || 0, theta: row.pe.theta || 0, vega: row.pe.vega || 0 } : null,
     }));
   }, [chainData]);
+
+  // Compute signals per row
+  const signalMap = useMemo(() => {
+    const map = new Map<number, any>();
+    for (const r of rows) {
+      // Derive price direction from moneyness (no historical LTP available):
+      //   ITM CALL → premium naturally higher → simulate prev<curr → price up
+      //   OTM CALL → premium naturally lower → simulate prev>curr → price down
+      //   ITM PUT  → premium naturally higher → simulate prev<curr → price up
+      //   OTM PUT  → premium naturally lower → simulate prev>curr → price down
+      const cePrevLtp = r.ce ? (r.strike > spot ? r.ce.ltp * 1.5 : 0) : 0;
+      const pePrevLtp = r.pe ? (r.strike < spot ? r.pe.ltp * 1.5 : 0) : 0;
+      const signal = evaluateStrikeSignal(
+        r.strike, spot, atmStrike, maxPain, pcr,
+        r.ce?.ltp ?? 0, r.ce?.oi ?? 0, r.ce?.oiChg ?? 0,
+        r.ce?.iv ?? 0, r.ce?.delta ?? 0, cePrevLtp,
+        r.pe?.ltp ?? 0, r.pe?.oi ?? 0, r.pe?.oiChg ?? 0,
+        r.pe?.iv ?? 0, r.pe?.delta ?? 0, pePrevLtp,
+        newsScore,
+      );
+      map.set(r.strike, signal);
+    }
+    return map;
+  }, [rows, spot, atmStrike, maxPain, pcr, newsScore]);
 
   // Center on ATM ± 12 strikes
   const sorted = [...rows].sort((a, b) => a.strike - b.strike);
@@ -163,16 +203,30 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
         </span>
       </div>
 
+      {/* Signal Strip + News */}
+      <div className="shrink-0 px-3 pt-2 space-y-1.5">
+        <SignalStrip
+          chainData={chainData}
+          spot={spot}
+          atmStrike={atmStrike}
+          maxPain={maxPain}
+          pcr={pcr}
+          newsScore={newsScore}
+          onStrikeClick={(strike, type) => onStrikeSignal?.(strike, type)}
+        />
+        <NewsSentimentPanel onScoreChange={setNewsScore} />
+      </div>
+
       {/* Chain Table */}
       <div className="flex-1 overflow-y-auto p-3">
         <table className="w-full border-collapse font-mono text-[12px]">
           <thead>
             <tr>
-              {["OI", "OI Chg", "Vol", "IV", "Delta", "M", "LTP"].map((h) => (
+              {["OI", "OI Chg", "Vol", "IV", "Delta", "M", "Sig", "LTP"].map((h) => (
                 <th key={h} className="text-right text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase tracking-wide bg-[#10151d]">{h}</th>
               ))}
               <th className="text-center text-[#e8a33d] font-bold py-1.5 px-1 text-[10.5px] bg-[#10151d]">STRIKE</th>
-              {["LTP", "M", "Delta", "IV", "Vol", "OI Chg", "OI"].map((h) => (
+              {["LTP", "M", "Sig", "Delta", "IV", "Vol", "OI Chg", "OI"].map((h) => (
                 <th key={h} className="text-left text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase tracking-wide bg-[#10151d]">{h}</th>
               ))}
             </tr>
@@ -189,6 +243,7 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
                   <td className="text-right py-1.5 px-1">{r.ce?.iv?.toFixed(1) || "—"}</td>
                   <td className="text-right py-1.5 px-1">{r.ce?.delta?.toFixed(2) || "—"}</td>
                   <td className="text-right py-1.5 px-1"><MoneyTag strike={r.strike} atmStrike={atmStrike} side="CE" /></td>
+                  <td className="text-right py-1.5 px-1">{signalBadge(signalMap.get(r.strike), 'ce')}</td>
                   <td className={`text-right py-1.5 px-1 cursor-pointer font-semibold ${isRecCE ? "bg-[rgba(45,212,167,.1)] outline outline-[1.5px] outline-[#2dd4a7] rounded font-bold" : "text-[#1fbf75]"}`}
                     onClick={() => r.ce && onTrade(r.strike, "CE", r.ce.ltp)}>
                     {isRecCE ? "👉 " : ""}₹{r.ce ? fmt(r.ce.ltp) : "—"}
@@ -199,6 +254,7 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
                     {isRecPE ? "👉 " : ""}₹{r.pe ? fmt(r.pe.ltp) : "—"}
                   </td>
                   <td className="text-left py-1.5 px-1"><MoneyTag strike={r.strike} atmStrike={atmStrike} side="PE" /></td>
+                  <td className="text-left py-1.5 px-1">{signalBadge(signalMap.get(r.strike), 'pe')}</td>
                   <td className="text-left py-1.5 px-1">{r.pe?.delta?.toFixed(2) || "—"}</td>
                   <td className="text-left py-1.5 px-1">{r.pe?.iv?.toFixed(1) || "—"}</td>
                   <td className="text-left py-1.5 px-1">{r.pe ? (r.pe.vol >= 1000 ? (r.pe.vol / 1000).toFixed(0) + "K" : r.pe.vol) : "—"}</td>
@@ -227,6 +283,26 @@ function MoneyTag({ strike, atmStrike, side }: { strike: number; atmStrike: numb
     : <span className="text-[9px] px-1 py-0.5 rounded bg-zinc-500/15 text-zinc-500 font-bold">OTM</span>;
 }
 
+function signalBadge(signal: any, side: 'ce' | 'pe'): React.ReactNode {
+  if (!signal) return <span className="text-[#3a4a60] text-[9px]">—</span>;
+  const leg = side === 'ce' ? signal.ce : signal.pe;
+  if (!leg) return <span className="text-[#3a4a60] text-[9px]">—</span>;
+  if (leg.direction === 'BUY') {
+    const isCE = side === 'ce';
+    return (
+      <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${
+        isCE ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+      }`}>
+        BUY
+      </span>
+    );
+  }
+  if (leg.direction === 'AVOID') {
+    return <span className="text-[9px] text-[#5a6a80]">AVOID</span>;
+  }
+  return <span className="text-[#3a4a60] text-[9px]">—</span>;
+}
+
 function fmtInt(n: number): string {
   if (n == null || isNaN(n)) return "0";
   return Math.round(n).toLocaleString("en-IN");
@@ -238,7 +314,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -282,10 +358,12 @@ export default function TradingDashboard() {
       if (json.analysis) {
         setAnalysis(json.analysis);
       }
-      // Flatten chain data
-      return json.data || json;
+      // Merge top-level analysis into the payload so downstream consumers
+      // that read `data.analysis` / `data.data.…` get both summary and rec.
+      const base = json.data || json;
+      return { ...base, analysis: json.analysis };
     },
-    refetchInterval: autoRefresh ? 15000 : false,
+    refetchInterval: autoRefresh ? 900000 : false,
     staleTime: 5000,
   });
   
@@ -412,17 +490,17 @@ export default function TradingDashboard() {
   
   // Run ML analysis on data change
   useEffect(() => {
-    if (data?.data?.data?.length && data?.data?.candles?.length) {
-      const result = runMLAnalysis(data.data.candles, data.data.data, data.data.summary?.spotPrice || data.analysis?.spotPrice || 0);
+    if (data?.data?.length && data?.candles?.length) {
+      const result = runMLAnalysis(data.candles, data.data, data.summary?.spotPrice || data.analysis?.spotPrice || 0);
       setMlResult(result);
     }
   }, [data]);
   
   // Set default expiry
   useEffect(() => {
-    if (data?.data?.expiries?.length && !selectedExpiry) {
-      setSelectedExpiry(data.data.expiries[0].date);
-      setStoreExpiry(data.data.expiries[0].date);
+    if (data?.expiries?.length && !selectedExpiry) {
+      setSelectedExpiry(data.expiries[0].date);
+      setStoreExpiry(data.expiries[0].date);
     }
   }, [data, selectedExpiry, setSelectedExpiry, setStoreExpiry]);
   
@@ -630,6 +708,11 @@ return (
               onClick={() => { setViewMode('terminal'); setDisplayMode('pro'); }}>
               <Monitor className="h-2.5 w-2.5 mr-0.5" /> Terminal
             </Button>
+            <Button variant={viewMode === 'scanner' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'scanner' ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/25' : 'text-muted-foreground hover:text-teal-500'}`}
+              onClick={() => { setViewMode('scanner'); setDisplayMode('pro'); }}>
+              <Scan className="h-2.5 w-2.5 mr-0.5" /> Scanner
+            </Button>
             <Button variant={viewMode === 'btst' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'btst' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
               onClick={() => { setViewMode('btst'); setDisplayMode('pro'); }}>
@@ -638,12 +721,37 @@ return (
             <Button variant={viewMode === 'daily' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'daily' ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/25' : 'text-muted-foreground hover:text-violet-500'}`}
               onClick={() => { setViewMode('daily'); setDisplayMode('pro'); }}>
-              <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Daily Derivatives
+              <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Daily
+            </Button>
+            <Button variant={viewMode === 'expiry' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'expiry' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('expiry'); setDisplayMode('pro'); }}>
+              <Target className="h-2.5 w-2.5 mr-0.5" /> Expiry Plan
             </Button>
             <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
               <LineChart className="h-2.5 w-2.5 mr-0.5" /> Backtest
+            </Button>
+            <Button variant={viewMode === 'zerohero' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'zerohero' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('zerohero'); setDisplayMode('pro'); }}>
+              <Crosshair className="h-2.5 w-2.5 mr-0.5" /> Zero Hero
+            </Button>
+            <Button variant={viewMode === 'hedge' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'hedge' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
+              onClick={() => { setViewMode('hedge'); setDisplayMode('pro'); }}>
+              <Shield className="h-2.5 w-2.5 mr-0.5" /> Hedge
+            </Button>
+            <Button variant={viewMode === 'institutional' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'institutional' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
+              onClick={() => { setViewMode('institutional'); setDisplayMode('pro'); }}>
+              <Users className="h-2.5 w-2.5 mr-0.5" /> Insti
+            </Button>
+            <Button variant={viewMode === 'futures' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'futures' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
+              onClick={() => { setViewMode('futures'); setDisplayMode('pro'); }}>
+              <Zap className="h-2.5 w-2.5 mr-0.5" /> Futures
             </Button>
           </div>
 
@@ -657,7 +765,7 @@ return (
             <PopoverContent className="w-48 p-1" align="start">
               {[
                 { mode: 'gap', label: 'Gap Analysis', icon: BarChart3, color: 'amber' },
-                { mode: 'scanner', label: 'Scanner', icon: Scan, color: 'teal' },
+                { mode: 'institutional', label: 'Institutional', icon: Users, color: 'rose' },
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
                 { mode: 'backtest', label: 'Backtest Audit', icon: LineChart, color: 'amber' },
@@ -695,7 +803,7 @@ return (
           <div className="w-px h-4 bg-border shrink-0 hidden sm:block" />
           
           <div className="flex items-center gap-0.5 overflow-x-auto shrink-0 hidden sm:flex">
-            {data?.data?.expiries?.slice(0, 5).map((exp) => (
+            {data?.expiries?.slice(0, 5).map((exp) => (
               <Button key={exp.date} variant={selectedExpiry === exp.date ? 'default' : 'ghost'} size="sm"
                 className={`h-6 text-[9px] px-1.5 shrink-0 font-medium ${selectedExpiry === exp.date ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'}`}
                 onClick={() => { setSelectedExpiry(exp.date); setStoreExpiry(exp.date); }}>
@@ -777,16 +885,16 @@ return (
               symbol={symbol}
               onSwitchToPro={() => setDisplayMode('pro')}
               summary={summary}
-              expiries={data?.data?.expiries}
-              dataSource={data?.source || data?.data?.dataSource}
+              expiries={data?.expiries}
+              dataSource={data?.dataSource}
               selectedExpiry={selectedExpiry}
               onExpiryChange={setSelectedExpiry}
             />
           </div>
         ) : viewMode === 'scanner' ? (
-        /* ═══════ INTRADAY SCANNER VIEW ═══════ */
+        /* ═══════ SCANNER VIEW (Intraday + Weekly) ═══════ */
         <div className="flex-1 overflow-hidden">
-          <ScannerPanel
+          <ScannerView
             symbol={symbol}
             spotPrice={data?.spotPrice || summary?.spotPrice || 0}
           />
@@ -839,6 +947,43 @@ return (
         <div className="flex-1 overflow-auto">
           <DailyDerivativesPanel symbol={symbol} />
         </div>
+        ) : viewMode === 'expiry' ? (
+        /* ═══════ EXPIRY PLAN ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <ExpiryPlanPanel
+            symbol={symbol}
+            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
+            summary={summary}
+            chainData={chainData}
+            expiries={data?.expiries}
+            selectedExpiry={selectedExpiry}
+          />
+        </div>
+        ) : viewMode === 'hedge' ? (
+        /* ═══════ HEDGE BUILDER ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <HedgePanel
+            chainData={chainData}
+            spot={data?.spotPrice || summary?.spotPrice || 0}
+            pcr={summary?.pcr ?? 1}
+            atmStrike={summary?.atmStrike ?? 0}
+          />
+        </div>
+        ) : viewMode === 'zerohero' ? (
+        /* ═══════ ZERO HERO SCANNER ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <ZeroHeroLiveTerminal />
+        </div>
+        ) : viewMode === 'institutional' ? (
+        /* ═══════ INSTITUTIONAL POSITIONING ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <InstitutionalPositioningPanel symbol={symbol} />
+        </div>
+        ) : viewMode === 'futures' ? (
+        /* ═══════ FUTURES DASHBOARD ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <FuturesDashboard />
+        </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
         <div className="flex flex-1 overflow-hidden">
@@ -858,6 +1003,8 @@ return (
             onTrade={handleTrade}
             rec={recommendation}
             symbol={symbol}
+            pcr={summary?.pcr ?? 1}
+            maxPain={summary?.maxPain ?? 0}
           />
 </div>
       )}

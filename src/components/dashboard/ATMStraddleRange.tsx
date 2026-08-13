@@ -54,7 +54,7 @@ export function ATMStraddleRange({ symbol, autoRefresh = true }: { symbol: strin
     setLoading(true);
     fetchRange();
     if (!autoRefresh) return;
-    const id = setInterval(fetchRange, 15000);
+    const id = setInterval(fetchRange, 900000);
     return () => clearInterval(id);
   }, [fetchRange, autoRefresh]);
 

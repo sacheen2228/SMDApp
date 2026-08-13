@@ -108,18 +108,16 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "zerohero" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "history" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
+type Tab = "overview" | "options" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
   { id: "options", icon: <Link2 size={19} />, label: "Option Chain" },
-  { id: "zerohero", icon: <Target size={19} />, label: "Zero Hero" },
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
-  { id: "history", icon: <Clock size={19} />, label: "Trade History" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
   { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
   { id: "straddle", icon: <Crosshair size={19} />, label: "Straddle Range v2" },
@@ -170,6 +168,7 @@ interface ZHCandidate {
   prob: number;
   conf: number;
   stars: number;
+  daysToExpiry: number;
 }
 
 interface TradeRec {
@@ -246,7 +245,7 @@ function InstitutionalDerivativesView() {
   useEffect(() => {
     setLoading(true);
     fetchSig();
-    const id = setInterval(fetchSig, 15000);
+    const id = setInterval(fetchSig, 900000);
     return () => clearInterval(id);
   }, [fetchSig]);
 
@@ -429,7 +428,7 @@ function DailyDerivativesView() {
   useEffect(() => {
     setLoading(true);
     fetchRec();
-    const id = setInterval(fetchRec, 15000);
+    const id = setInterval(fetchRec, 900000);
     return () => clearInterval(id);
   }, [fetchRec]);
 
@@ -537,6 +536,7 @@ function TodaysTradeView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
+  const [frozen, setFrozen] = useState(false);
 
   const fetchTop = useCallback(async () => {
     try {
@@ -556,10 +556,10 @@ function TodaysTradeView() {
 
   useEffect(() => {
     setLoading(true);
-    fetchTop();
-    const id = setInterval(fetchTop, 15000);
+    if (!frozen) fetchTop();
+    const id = setInterval(() => { if (!frozen) fetchTop(); }, 900000);
     return () => clearInterval(id);
-  }, [fetchTop]);
+  }, [fetchTop, frozen]);
 
   const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(2)) : "--");
   const stars = (n: number) => "★".repeat(Math.max(0, Math.min(5, n))) + "☆".repeat(Math.max(0, 5 - Math.min(5, n)));
@@ -580,11 +580,17 @@ function TodaysTradeView() {
           ))}
           {loading && <Activity className="h-3 w-3 animate-spin" />}
           {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          <button onClick={() => setFrozen(!frozen)}
+            className={`px-2 py-0.5 rounded font-bold text-[9px] ${frozen ? "bg-red-500/20 text-red-400 border border-red-500/40" : "bg-[#1f2733] hover:bg-[#2a3441] text-[#dfe6ee]"}`}>
+            {frozen ? "🔒 FROZEN" : "❄️ Freeze"}
+          </button>
           <button onClick={fetchTop} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
         </div>
       </div>
 
       {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
+
+      {frozen && <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1 mb-1">🔒 Prices frozen — click "❄️ Freeze" to unfreeze for live updates</div>}
 
       <div className="flex-1 overflow-auto">
         {top5.length === 0 && !loading && !error && (
@@ -898,31 +904,12 @@ export function ZeroHeroTerminal() {
           maxPositionSize: 10,
           context: ctx,
         });
-        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars });
+        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars, daysToExpiry: ctx.expiry?.days_to_expiry ?? 1 });
       }
     }
     list.sort((a, b) => b.conf - a.conf);
     return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
   }, [chain, spot, isEligible, vix, symbol]);
-
-  // ─── Record Zero Hero candidates into the Trade Audit (backtest) engine ─
-  useEffect(() => {
-    if (activeTab !== "zerohero" || !isEligible) return;
-    const toRecord = zhCandidates
-      .filter((z) => z.conf >= 60)
-      .map((z) => ({
-        strike: z.strike,
-        type: z.type as "CE" | "PE",
-        entry: z.entry,
-        sl: z.sl,
-        tp1: z.tp1,
-        tp2: z.tp2,
-        price: z.entry,
-      }));
-    if (toRecord.length) registerTrades("ZERO_HERO_AI", symbol, toRecord).catch(() => {});
-    // M5: record the full scanner cycle as an AI-training row (every cycle).
-    recordScannerCycle(symbol, "ZERO_HERO", zhCandidates).catch(() => {});
-  }, [activeTab, isEligible, zhCandidates, symbol]);
 
   // ─── FII/DII flow from OI ───────────────────────────────────────
   const flowData = useMemo(() => {
@@ -933,7 +920,8 @@ export function ZeroHeroTerminal() {
     }
     const totalOIChg = Math.abs(totalCallOIChg) + Math.abs(totalPutOIChg);
     const ratio = totalOIChg > 0 ? (totalCallOIChg - totalPutOIChg) / totalOIChg : 0;
-    const bias = ratio > 0.1 ? "BULLISH" : ratio < -0.1 ? "BEARISH" : "NEUTRAL";
+    // Call OI ↑ = writers selling calls = bearish | Put OI ↑ = writers selling puts = bullish
+    const bias = ratio < -0.1 ? "BULLISH" : ratio > 0.1 ? "BEARISH" : "NEUTRAL";
     const strength = Math.round(50 + Math.abs(ratio) * 50);
     return { totalCallOIChg, totalPutOIChg, totalCallVol, totalPutVol, bias, strength, pcr };
   }, [chain, pcr]);
@@ -1109,9 +1097,6 @@ export function ZeroHeroTerminal() {
           {activeTab === "options" && (
             <EnhancedOptionChain chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain} openTrade={openTrade} />
           )}
-          {activeTab === "zerohero" && (
-            <FullZeroHero candidates={zhCandidates} isEligible={isEligible} symbol={symbol} expiryType={expiryType} openTrade={openTrade} />
-          )}
           {activeTab === "smartmoney" && (
             <SmartMoneyTab flowData={flowData} chain={chain} spot={spot} vix={vix} pcr={pcr} maxPain={maxPain} candles={candles} openTrade={openTrade} symbol={symbol} setSymbol={setSymbol} />
           )}
@@ -1123,9 +1108,6 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "dom" && (
             <DOMTab symbol={symbol} />
-          )}
-          {activeTab === "history" && (
-            <TradeHistoryTab trades={trades} />
           )}
           {activeTab === "watchlist" && (
             <WatchlistTab watchlist={watchlist} setWatchlist={setWatchlist} setSymbol={setSymbol} symbol={symbol} />
@@ -1327,51 +1309,6 @@ function FullOptionChain({ chain, spot, atmStrike, openTrade }: any) {
 }
 
 // ─── Full Zero Hero ────────────────────────────────────────────────
-function FullZeroHero({ candidates, isEligible, symbol, expiryType, openTrade }: any) {
-  if (!isEligible) return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🎯 Zero Hero Scanner — Full</div>
-      <div className="p-4 text-[#7d8ba0] text-center py-10">Zero Hero covers all F&O instruments (weekly/monthly expiry) + BTST for all stocks. Switch instrument to view.</div>
-    </div>
-  );
-
-  const exp = getStandardizedExpiry(symbol);
-  return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
-        <span>🎯 Zero Hero Scanner — Full</span>
-        <span className="text-[#7d8ba0] font-mono text-[11px]">
-          {symbol} · {expiryType} · sorted by confidence
-          {exp && (
-            <span className="ml-2 text-[#e8a33d]">
-              {exp.expiry_mode} · {exp.expiry_date} ({exp.expiry_type}) · L{exp.lot_size}
-            </span>
-          )}
-        </span>
-      </div>
-      <div className="p-2.5">
-        <div className="grid grid-cols-[.5fr_1.2fr_.6fr_1fr_1fr_1fr_.8fr_.6fr] gap-1.5 items-center py-2 border-b border-[#1f2733] text-[10px] text-[#7d8ba0] uppercase font-bold">
-          <div>#</div><div>Strike / Type</div><div>Entry</div><div>TP1 / TP2</div><div>SL</div><div>Target</div><div>R:R</div><div>Conf</div>
-        </div>
-        {candidates.map((z: ZHCandidate, idx: number) => (
-          <div key={idx}
-            className="grid grid-cols-[.5fr_1.2fr_.6fr_1fr_1fr_1fr_.8fr_.6fr] gap-1.5 items-center py-2 border-b border-[#1f2733] font-mono text-[11.5px] cursor-pointer hover:bg-[#151b25]"
-            onClick={() => openTrade(z.strike, z.type, z.entry, z.rr)}>
-            <div>{idx + 1}</div>
-            <div>{fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span></div>
-            <div className="text-[#1fbf75]">₹{fmt(z.entry)}</div>
-            <div>₹{fmt(z.tp1)} / ₹{fmt(z.tp2)}</div>
-            <div className="text-[#f2495c]">₹{fmt(z.sl)}</div>
-            <div>{z.prob}%</div>
-            <div><span className={`px-1.5 py-0.5 rounded font-bold text-[10.5px] ${z.rr >= 3 ? "bg-[rgba(45,212,167,.18)] text-[#2dd4a7]" : z.rr >= 2 ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>1:{z.rr}</span></div>
-            <div><StarRating count={z.stars} /></div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ─── FII Flow Panel ────────────────────────────────────────────────
 function FIIFlowPanel({ flowData }: { flowData: any }) {
   const { totalCallOIChg, totalPutOIChg, bias, strength } = flowData;
@@ -1766,9 +1703,9 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
         </div>
         <div className="p-2.5 overflow-x-auto">
           {!smcCandidates.length ? (
-            <div className="text-center py-6 text-[#7d8ba0] text-[12px]">
+              <div className="text-center py-6 text-[#7d8ba0] text-[12px]">
               <div className="font-bold text-[#e8a33d] mb-1">No SMC Candidates</div>
-              <div>Insufficient data to generate SMC signals. Ensure option chain, candles, and spot price are available.</div>
+              <div>Market structure is ranging — no strong directional signals detected. Candidates require OI confirmation + favorable risk:reward.</div>
             </div>
           ) : (
             <>
@@ -1783,45 +1720,6 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
 }
 
 // ─── Trade History Tab ─────────────────────────────────────────────
-function TradeHistoryTab({ trades }: { trades: Trade[] }) {
-  if (trades.length === 0) return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Trade History</div>
-      <div className="p-4 text-[#7d8ba0] text-center py-10">No trades recorded yet.</div>
-    </div>
-  );
-  return (
-    <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Trade History</div>
-      <div className="p-2.5 overflow-x-auto">
-        <table className="w-full border-collapse font-mono text-[12px]">
-          <thead>
-            <tr>
-              {["Date", "Sym", "Stk", "Type", "Entry", "Exit", "P&L", "St"].map((h) => (
-                <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Date" || h === "Sym" ? "text-left" : "text-right"}`}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t) => (
-              <tr key={t.tradeId} className="border-b border-[#1f2733] text-[11px]">
-                <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{new Date(t.entryTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</td>
-                <td className="text-left py-1.5 px-1 font-bold">{t.symbol?.slice(0, 4)}</td>
-                <td className="text-right py-1.5 px-1">{t.strike ? fmtInt(t.strike) : "—"}</td>
-                <td className="text-right py-1.5 px-1"><span className={`text-[10.5px] font-bold px-1 py-0.5 rounded ${(t.optionType || t.direction)?.includes("CE") || t.direction?.includes("CALL") ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{t.optionType || t.direction?.slice(-2) || "?"}</span></td>
-                <td className="text-right py-1.5 px-1">₹{t.entryPrice?.toFixed(1) || "—"}</td>
-                <td className="text-right py-1.5 px-1">{t.exitPrice ? "₹" + t.exitPrice.toFixed(1) : "—"}</td>
-                <td className={`text-right py-1.5 px-1 font-bold ${(t.pnl ?? 0) > 0 ? "text-[#1fbf75]" : (t.pnl ?? 0) < 0 ? "text-[#f2495c]" : "text-[#7d8ba0]"}`}>{t.pnl != null ? (t.pnl > 0 ? "+" : "") + "₹" + t.pnl.toFixed(0) : "—"}</td>
-                <td className="text-right py-1.5 px-1">{t.status}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 // ─── Watchlist Tab ─────────────────────────────────────────────────
 function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlist: Set<string>; setWatchlist: (s: Set<string>) => void; setSymbol: (s: string) => void; symbol: string }) {
   const toggle = (sym: string) => {

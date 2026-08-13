@@ -79,7 +79,15 @@ async function fetchYahooCandles(sym: string, range = "3mo", interval = "1d"): P
   }
 }
 
-async function buildIndexETFBTST(): Promise<BTSTAnalysis[]> {
+async function buildIndexETFBTST(institutionalData?: {
+  fiiDirection: string; fiiScore: number;
+  proDirection: string; proScore: number;
+  smartMoneyBias: string;
+  retailTrap: boolean; retailTrapType: string | null;
+  alignment: number;
+  predictionDirection: string; predictionConfidence: number;
+  filterVerdict: string;
+} | null): Promise<BTSTAnalysis[]> {
   const out: BTSTAnalysis[] = [];
   for (const etf of INDEX_ETFS) {
     const d = await fetchYahooCandles(etf.sym);
@@ -123,6 +131,7 @@ async function buildIndexETFBTST(): Promise<BTSTAnalysis[]> {
       breadth: 0.6,
       atr,
       isFNO: false,
+      institutional: institutionalData ?? undefined,
     });
 
     if (analysis.grade !== "SKIP") out.push(analysis);
@@ -142,6 +151,38 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
     totalCallOI: 0,
     totalPutOI: 0,
   });
+
+  // Fetch NSE Participant-wise OI institutional positioning
+  let institutionalData: {
+    fiiDirection: string; fiiScore: number;
+    proDirection: string; proScore: number;
+    smartMoneyBias: string;
+    retailTrap: boolean; retailTrapType: string | null;
+    alignment: number;
+    predictionDirection: string; predictionConfidence: number;
+    filterVerdict: string;
+  } | null = null;
+  try {
+    const res = await fetch(`${process.env.INTERNAL_API_BASE || "http://localhost:3000"}/api/institutional-positioning`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const d = await res.json();
+      const fii = (d.strengthScores || []).find((s: any) => s.participant === 'FII');
+      const pro = (d.strengthScores || []).find((s: any) => s.participant === 'Pro');
+      institutionalData = {
+        fiiDirection: fii?.direction ?? 'neutral',
+        fiiScore: fii?.score ?? 50,
+        proDirection: pro?.direction ?? 'neutral',
+        proScore: pro?.score ?? 50,
+        smartMoneyBias: d.bias?.dominantDirection ?? 'neutral',
+        retailTrap: d.retailTrap?.detected ?? false,
+        retailTrapType: d.retailTrap?.type ?? null,
+        alignment: d.alignment?.overall ?? 50,
+        predictionDirection: d.prediction?.tomorrowBias ?? 'neutral',
+        predictionConfidence: d.prediction?.confidence ?? 10,
+        filterVerdict: d.institutionalFilter?.verdict ?? 'proceed',
+      };
+    }
+  } catch { /* best-effort */ }
 
   const candidates: BTSTAnalysis[] = [];
 
@@ -179,13 +220,14 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
       breadth: 0.55,
       atr: c.atr,
       isFNO,
+      institutional: institutionalData ?? undefined,
     });
 
     if (analysis.grade !== "SKIP") candidates.push(analysis);
   }
 
   // Add index ETFs (NIFTY / SENSEX) as BTST candidates
-  const indexCandidates = await buildIndexETFBTST();
+  const indexCandidates = await buildIndexETFBTST(institutionalData);
   candidates.push(...indexCandidates);
 
   candidates.sort((a, b) => b.total - a.total);

@@ -44,11 +44,13 @@ const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm windo
                                                  //  precise 9:15-15:30 market-hours boundary)
 const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
+const INST_SCHEDULE = "30 16 * * 1-5";          // 4:30pm, Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
 
 console.log(`[dailyScanCron] daily digest scheduled for "${DAILY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] institutional positioning scheduled for "${INST_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
   DAILY_SCHEDULE,
@@ -112,6 +114,27 @@ cron.schedule(
       console.log(`[dailyScanCron] BTST close done — closed=${result.closed}`);
     } catch (err) {
       console.error("[dailyScanCron] BTST close failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  INST_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] fetching institutional positioning data...");
+    try {
+      const secret = process.env.DAILY_SCAN_SECRET;
+      const base = process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 3000}`;
+      const res = await fetch(`${base}/api/cron/institutional-positioning?secret=${secret}`, { cache: "no-store" });
+      const json = await res.json();
+      if (json.success) {
+        console.log(`[dailyScanCron] institutional positioning done — bias=${json.summary.bias} filter=${json.summary.filter} trap=${json.summary.trapDetected}`);
+      } else {
+        console.error("[dailyScanCron] institutional positioning error:", json.error);
+      }
+    } catch (err) {
+      console.error("[dailyScanCron] institutional positioning fetch failed", err);
     }
   },
   { timezone: TIMEZONE }

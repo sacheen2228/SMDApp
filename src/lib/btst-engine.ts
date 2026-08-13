@@ -40,6 +40,20 @@ export interface BTSTStockInput {
   breadth: number;      // sector advance-decline ratio 0..1
   atr: number;
   isFNO: boolean;
+  // Institutional positioning (NSE Participant-wise OI)
+  institutional?: {
+    fiiDirection: string;
+    fiiScore: number;
+    proDirection: string;
+    proScore: number;
+    smartMoneyBias: string;
+    retailTrap: boolean;
+    retailTrapType: string | null;
+    alignment: number;
+    predictionDirection: string;
+    predictionConfidence: number;
+    filterVerdict: string;
+  };
 }
 
 export interface BTSTAnalysis {
@@ -72,6 +86,18 @@ export interface BTSTAnalysis {
   tp3: number;
   positionSize: { qty: number; capital: number; riskPerTrade: number };
   reasons: string[];
+  // Institutional positioning (for UI display)
+  institutionalDisplay?: {
+    fiiDirection: string;
+    fiiScore: number;
+    proDirection: string;
+    proScore: number;
+    smartMoneyBias: string;
+    retailTrap: string;
+    alignment: number;
+    prediction: string;
+    filterVerdict: string;
+  };
 }
 
 function clamp(n: number, lo = 0, hi = 100): number {
@@ -112,25 +138,44 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   trend = clamp(trend, 0, 25);
   if (trend >= 20) reasons.push("Trend: strong bullish stack (EMA9>21>50, ADX " + inp.adx.toFixed(0) + ")");
 
-  // 2. SMART MONEY (/20): delivery + FII proxy (relative strength) + OI buildup
+  // 2. SMART MONEY (/20): delivery + institutional positioning + relative strength
   let smartMoney = 0;
   // Delivery volume (institutional conviction)
-  if (inp.deliveryPct >= 60) smartMoney += 8;
-  else if (inp.deliveryPct >= 45) smartMoney += 5;
-  else if (inp.deliveryPct >= 30) smartMoney += 3;
+  if (inp.deliveryPct >= 60) smartMoney += 6;
+  else if (inp.deliveryPct >= 45) smartMoney += 4;
+  else if (inp.deliveryPct >= 30) smartMoney += 2;
   else smartMoney += 1;
   // Relative strength vs NIFTY (smart money rotates into leaders)
-  if (inp.relativeStrength >= 1.5) smartMoney += 7;
-  else if (inp.relativeStrength >= 0.5) smartMoney += 5;
-  else if (inp.relativeStrength >= 0) smartMoney += 3;
+  if (inp.relativeStrength >= 1.5) smartMoney += 5;
+  else if (inp.relativeStrength >= 0.5) smartMoney += 3;
+  else if (inp.relativeStrength >= 0) smartMoney += 2;
   else smartMoney += 0;
-  // OI buildup for F&O (bullish if OI rising with price)
-  if (inp.isFNO) {
-    if (inp.oiChangePct >= 5) smartMoney += 5;
-    else if (inp.oiChangePct >= 0) smartMoney += 3;
-    else smartMoney += 1;
+  // Institutional positioning (NSE Participant-wise OI)
+  if (inp.institutional) {
+    const inst = inp.institutional;
+    // FII alignment
+    if (inst.fiiDirection === 'bullish' && inst.fiiScore > 55) smartMoney += 3;
+    else if (inst.fiiDirection === 'bearish' && inst.fiiScore > 55) smartMoney -= 2;
+    // Pro/Pro alignment
+    if (inst.proDirection === 'bullish' && inst.proScore > 55) smartMoney += 2;
+    else if (inst.proDirection === 'bearish' && inst.proScore > 55) smartMoney -= 1;
+    // Smart money bias alignment
+    if (inst.smartMoneyBias === 'bullish') smartMoney += 2;
+    // Retail trap penalty
+    if (inst.retailTrap) smartMoney -= 4;
+    // Prediction alignment
+    if (inst.predictionDirection === 'bullish' && inst.predictionConfidence > 60) smartMoney += 1;
+    // Institutional alignment (FII + Pro + Option chain agree)
+    if (inst.alignment >= 70) smartMoney += 1;
   } else {
-    smartMoney += 5; // equity delivery counts as smart money proxy
+    // Fallback: OI buildup for F&O (legacy path when institutional data unavailable)
+    if (inp.isFNO) {
+      if (inp.oiChangePct >= 5) smartMoney += 3;
+      else if (inp.oiChangePct >= 0) smartMoney += 2;
+      else smartMoney += 0;
+    } else {
+      smartMoney += 2; // equity delivery counts as smart money proxy
+    }
   }
   smartMoney = clamp(smartMoney, 0, 20);
 
@@ -216,6 +261,10 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   if (sector < 5) gapRiskScore += 1;
   if (vrm < 1.0) gapRiskScore += 1;
   if (inp.changePct < -0.5) gapRiskScore += 1;
+  // Institutional retail trap increases gap risk
+  if (inp.institutional?.retailTrap) gapRiskScore += 2;
+  // Institutional filter reject increases gap risk
+  if (inp.institutional?.filterVerdict === 'reject') gapRiskScore += 2;
   const gapRisk: "Low" | "Medium" | "High" = gapRiskScore === 0 ? "Low" : gapRiskScore <= 2 ? "Medium" : "High";
   const expectedGapPct = gapRisk === "Low" ? 0.8 : gapRisk === "Medium" ? 0.3 : -0.5;
 
@@ -233,6 +282,20 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   const oiLabel = !inp.isFNO ? "N/A" : inp.pcr < 1.2 && inp.oiChangePct >= 0 ? "Bullish" : inp.pcr < 1.4 ? "Neutral" : "Bearish";
   const smartMoneyLabel: "Active" | "Building" | "Absent" =
     factors.smartMoney >= 15 ? "Active" : factors.smartMoney >= 9 ? "Building" : "Absent";
+
+  // Institutional reasoning
+  if (inp.institutional) {
+    const inst = inp.institutional;
+    const parts: string[] = [];
+    parts.push(`FII ${inst.fiiDirection}(${inst.fiiScore})`);
+    parts.push(`Pro ${inst.proDirection}(${inst.proScore})`);
+    parts.push(`Smart ${inst.smartMoneyBias}`);
+    if (inst.retailTrap) parts.push(`⚠ ${inst.retailTrapType}_trap`);
+    if (inst.alignment >= 60) parts.push(`align ${inst.alignment}%`);
+    else parts.push(`conflict`);
+    if (inst.filterVerdict !== 'proceed') parts.push(`filter:${inst.filterVerdict}`);
+    reasons.push(`Institutional: ${parts.join(' | ')}.`);
+  }
 
   return {
     symbol: inp.symbol,
@@ -264,10 +327,27 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
     tp3: Math.round(tp3 * 100) / 100,
     positionSize: { qty, capital: Math.round(capital), riskPerTrade: Math.round(riskPerTrade) },
     reasons,
+    institutionalDisplay: inp.institutional ? {
+      fiiDirection: inp.institutional.fiiDirection,
+      fiiScore: inp.institutional.fiiScore,
+      proDirection: inp.institutional.proDirection,
+      proScore: inp.institutional.proScore,
+      smartMoneyBias: inp.institutional.smartMoneyBias,
+      retailTrap: inp.institutional.retailTrap ? `${inp.institutional.retailTrapType}_trap` : 'none',
+      alignment: inp.institutional.alignment,
+      prediction: `${inp.institutional.predictionDirection}(${inp.institutional.predictionConfidence}%)`,
+      filterVerdict: inp.institutional.filterVerdict,
+    } : undefined,
   };
 }
 
 // ─── Should this stock be alerted? ────────────────────────────────
 export function shouldAlertBTST(a: BTSTAnalysis): boolean {
-  return a.total >= 85 && a.gapRisk !== "High";
+  if (a.total >= 85 && a.gapRisk !== "High") {
+    // Also skip alerts when institutional filter rejects or retail trap detected
+    if (a.institutionalDisplay?.filterVerdict === 'reject') return false;
+    if (a.institutionalDisplay?.retailTrap && a.institutionalDisplay.retailTrap !== 'none') return false;
+    return true;
+  }
+  return false;
 }

@@ -1,0 +1,2884 @@
+{
+  "pullTimestamp": "2026-07-20T14:35:08.898Z",
+  "marketDate": "20 Jul 2026 (Sunday — market closed)",
+  "analysisFor": "21 Jul 2026 (Monday)",
+  "indices": {
+    "NIFTY": {
+      "symbol": "NIFTY",
+      "spot": 24238.5,
+      "atmStrike": 24250,
+      "vix": 12.98,
+      "pcr": 1.3567952661255824,
+      "maxPain": 24150,
+      "futuresPrice": 24238.5,
+      "oiAnalysis": {
+        "totalCE_OI": 2066468,
+        "totalPE_OI": 2803774,
+        "totalCE_Vol": 68872957,
+        "totalPE_Vol": 63139277,
+        "totalCE_OIChg": 225988,
+        "totalPE_OIChg": -164280,
+        "pcr_OI": 1.3567952661255824,
+        "pcr_Vol": 0.9167499080952776,
+        "callBias": "BEARISH",
+        "topCallWalls": [
+          {
+            "strike": 24500,
+            "oi": 181916,
+            "oiChg": 80069,
+            "ltp": 5.55
+          },
+          {
+            "strike": 24300,
+            "oi": 141594,
+            "oiChg": 47527,
+            "ltp": 49.3
+          },
+          {
+            "strike": 25000,
+            "oi": 128858,
+            "oiChg": -29025,
+            "ltp": 0.65
+          },
+          {
+            "strike": 24400,
+            "oi": 114975,
+            "oiChg": 29892,
+            "ltp": 18.2
+          },
+          {
+            "strike": 24700,
+            "oi": 113065,
+            "oiChg": -14581,
+            "ltp": 1.1
+          }
+        ],
+        "topPutWalls": [
+          {
+            "strike": 24200,
+            "oi": 208852,
+            "oiChg": 17153,
+            "ltp": 45.65
+          },
+          {
+            "strike": 24000,
+            "oi": 202912,
+            "oiChg": 9324,
+            "ltp": 11.2
+          },
+          {
+            "strike": 24100,
+            "oi": 176412,
+            "oiChg": 18854,
+            "ltp": 22.15
+          },
+          {
+            "strike": 24150,
+            "oi": 162392,
+            "oiChg": 36211,
+            "ltp": 31.5
+          },
+          {
+            "strike": 23800,
+            "oi": 152061,
+            "oiChg": 21630,
+            "ltp": 4.55
+          }
+        ]
+      },
+      "nearATM": {
+        "nearATMCount": 19,
+        "avgIV": 17.42815789473685,
+        "maxPainCalc": 24200,
+        "atmStrikes": [
+          {
+            "strike": 23800,
+            "ce": {
+              "ltp": 463,
+              "oi": 4042,
+              "oiChg": -1422,
+              "vol": 48424,
+              "iv": 28.31,
+              "delta": 0.89,
+              "gamma": 0.0005
+            },
+            "pe": {
+              "ltp": 4.55,
+              "oi": 152061,
+              "oiChg": 21630,
+              "vol": 2014337,
+              "iv": 20.62,
+              "delta": -0.04,
+              "gamma": 0.0004
+            }
+          },
+          {
+            "strike": 23850,
+            "ce": {
+              "ltp": 412.35,
+              "oi": 1082,
+              "oiChg": -420,
+              "vol": 20813,
+              "iv": 25.68,
+              "delta": 0.89,
+              "gamma": 0.0006
+            },
+            "pe": {
+              "ltp": 5.2,
+              "oi": 69884,
+              "oiChg": 23611,
+              "vol": 1486410,
+              "iv": 19.22,
+              "delta": -0.05,
+              "gamma": 0.0004
+            }
+          },
+          {
+            "strike": 23900,
+            "ce": {
+              "ltp": 365.05,
+              "oi": 3991,
+              "oiChg": -1258,
+              "vol": 114500,
+              "iv": 24.34,
+              "delta": 0.87,
+              "gamma": 0.0007
+            },
+            "pe": {
+              "ltp": 6.3,
+              "oi": 125934,
+              "oiChg": 46396,
+              "vol": 2560334,
+              "iv": 17.99,
+              "delta": -0.06,
+              "gamma": 0.0006
+            }
+          },
+          {
+            "strike": 23950,
+            "ce": {
+              "ltp": 315.25,
+              "oi": 2358,
+              "oiChg": -1606,
+              "vol": 112428,
+              "iv": 21.91,
+              "delta": 0.86,
+              "gamma": 0.0008
+            },
+            "pe": {
+              "ltp": 8.25,
+              "oi": 93838,
+              "oiChg": 39866,
+              "vol": 1998962,
+              "iv": 16.99,
+              "delta": -0.08,
+              "gamma": 0.0007
+            }
+          },
+          {
+            "strike": 24000,
+            "ce": {
+              "ltp": 269.4,
+              "oi": 25175,
+              "oiChg": -6218,
+              "vol": 989924,
+              "iv": 20.66,
+              "delta": 0.83,
+              "gamma": 0.001
+            },
+            "pe": {
+              "ltp": 11.2,
+              "oi": 202912,
+              "oiChg": 9324,
+              "vol": 5236474,
+              "iv": 16.07,
+              "delta": -0.11,
+              "gamma": 0.0009
+            }
+          },
+          {
+            "strike": 24050,
+            "ce": {
+              "ltp": 223.7,
+              "oi": 7237,
+              "oiChg": -5215,
+              "vol": 628793,
+              "iv": 19.11,
+              "delta": 0.79,
+              "gamma": 0.0012
+            },
+            "pe": {
+              "ltp": 15.6,
+              "oi": 79522,
+              "oiChg": 6168,
+              "vol": 3083179,
+              "iv": 15.22,
+              "delta": -0.16,
+              "gamma": 0.0012
+            }
+          },
+          {
+            "strike": 24100,
+            "ce": {
+              "ltp": 179.8,
+              "oi": 36410,
+              "oiChg": -8295,
+              "vol": 2911407,
+              "iv": 17.65,
+              "delta": 0.74,
+              "gamma": 0.0014
+            },
+            "pe": {
+              "ltp": 22.15,
+              "oi": 176412,
+              "oiChg": 18854,
+              "vol": 5960640,
+              "iv": 14.43,
+              "delta": -0.22,
+              "gamma": 0.0016
+            }
+          },
+          {
+            "strike": 24150,
+            "ce": {
+              "ltp": 139.45,
+              "oi": 31098,
+              "oiChg": -134,
+              "vol": 4169408,
+              "iv": 16.51,
+              "delta": 0.67,
+              "gamma": 0.0017
+            },
+            "pe": {
+              "ltp": 31.5,
+              "oi": 162392,
+              "oiChg": 36211,
+              "vol": 6502080,
+              "iv": 13.63,
+              "delta": -0.29,
+              "gamma": 0.002
+            }
+          }
+        ]
+      },
+      "premiumSnap": [
+        {
+          "strike": 23900,
+          "distance": -350,
+          "ce_ltp": 365.05,
+          "ce_oi": 3991,
+          "ce_vol": 114500,
+          "ce_iv": 24.34,
+          "pe_ltp": 6.3,
+          "pe_oi": 125934,
+          "pe_vol": 2560334,
+          "pe_iv": 17.99,
+          "straddle": 371.35
+        },
+        {
+          "strike": 23950,
+          "distance": -300,
+          "ce_ltp": 315.25,
+          "ce_oi": 2358,
+          "ce_vol": 112428,
+          "ce_iv": 21.91,
+          "pe_ltp": 8.25,
+          "pe_oi": 93838,
+          "pe_vol": 1998962,
+          "pe_iv": 16.99,
+          "straddle": 323.5
+        },
+        {
+          "strike": 24000,
+          "distance": -250,
+          "ce_ltp": 269.4,
+          "ce_oi": 25175,
+          "ce_vol": 989924,
+          "ce_iv": 20.66,
+          "pe_ltp": 11.2,
+          "pe_oi": 202912,
+          "pe_vol": 5236474,
+          "pe_iv": 16.07,
+          "straddle": 280.59999999999997
+        },
+        {
+          "strike": 24050,
+          "distance": -200,
+          "ce_ltp": 223.7,
+          "ce_oi": 7237,
+          "ce_vol": 628793,
+          "ce_iv": 19.11,
+          "pe_ltp": 15.6,
+          "pe_oi": 79522,
+          "pe_vol": 3083179,
+          "pe_iv": 15.22,
+          "straddle": 239.29999999999998
+        },
+        {
+          "strike": 24100,
+          "distance": -150,
+          "ce_ltp": 179.8,
+          "ce_oi": 36410,
+          "ce_vol": 2911407,
+          "ce_iv": 17.65,
+          "pe_ltp": 22.15,
+          "pe_oi": 176412,
+          "pe_vol": 5960640,
+          "pe_iv": 14.43,
+          "straddle": 201.95000000000002
+        },
+        {
+          "strike": 24150,
+          "distance": -100,
+          "ce_ltp": 139.45,
+          "ce_oi": 31098,
+          "ce_vol": 4169408,
+          "ce_iv": 16.51,
+          "pe_ltp": 31.5,
+          "pe_oi": 162392,
+          "pe_vol": 6502080,
+          "pe_iv": 13.63,
+          "straddle": 170.95
+        },
+        {
+          "strike": 24200,
+          "distance": -50,
+          "ce_ltp": 104.2,
+          "ce_oi": 109684,
+          "ce_vol": 10728547,
+          "ce_iv": 15.74,
+          "pe_ltp": 45.65,
+          "pe_oi": 208852,
+          "pe_vol": 10410708,
+          "pe_iv": 13.01,
+          "straddle": 149.85
+        },
+        {
+          "strike": 24250,
+          "distance": 0,
+          "ce_ltp": 74.4,
+          "ce_oi": 102807,
+          "ce_vol": 7827291,
+          "ce_iv": 15.17,
+          "pe_ltp": 65.65,
+          "pe_oi": 89679,
+          "pe_vol": 4809212,
+          "pe_iv": 12.48,
+          "straddle": 140.05
+        },
+        {
+          "strike": 24300,
+          "distance": 50,
+          "ce_ltp": 49.3,
+          "ce_oi": 141594,
+          "ce_vol": 7616350,
+          "ce_iv": 14.5,
+          "pe_ltp": 90.9,
+          "pe_oi": 64326,
+          "pe_vol": 3343049,
+          "pe_iv": 11.74,
+          "straddle": 140.2
+        },
+        {
+          "strike": 24350,
+          "distance": 100,
+          "ce_ltp": 31,
+          "ce_oi": 76380,
+          "ce_vol": 4144703,
+          "ce_iv": 14.1,
+          "pe_ltp": 122.2,
+          "pe_oi": 15692,
+          "pe_vol": 795563,
+          "pe_iv": 10.74,
+          "straddle": 153.2
+        },
+        {
+          "strike": 24400,
+          "distance": 150,
+          "ce_ltp": 18.2,
+          "ce_oi": 114975,
+          "ce_vol": 4801575,
+          "ce_iv": 13.79,
+          "pe_ltp": 160,
+          "pe_oi": 15695,
+          "pe_vol": 662676,
+          "pe_iv": 9.25,
+          "straddle": 178.2
+        },
+        {
+          "strike": 24450,
+          "distance": 200,
+          "ce_ltp": 9.9,
+          "ce_oi": 74412,
+          "ce_vol": 2754114,
+          "ce_iv": 13.53,
+          "pe_ltp": 200.7,
+          "pe_oi": 3201,
+          "pe_vol": 242674,
+          "pe_iv": 21.75,
+          "straddle": 210.6
+        },
+        {
+          "strike": 24500,
+          "distance": 250,
+          "ce_ltp": 5.55,
+          "ce_oi": 181916,
+          "ce_vol": 5076940,
+          "ce_iv": 13.66,
+          "pe_ltp": 246.2,
+          "pe_oi": 11647,
+          "pe_vol": 255542,
+          "pe_iv": 22.16,
+          "straddle": 251.75
+        },
+        {
+          "strike": 24550,
+          "distance": 300,
+          "ce_ltp": 3,
+          "ce_oi": 76615,
+          "ce_vol": 2321789,
+          "ce_iv": 13.8,
+          "pe_ltp": 294.9,
+          "pe_oi": 958,
+          "pe_vol": 29160,
+          "pe_iv": 22.57,
+          "straddle": 297.9
+        },
+        {
+          "strike": 24600,
+          "distance": 350,
+          "ce_ltp": 1.85,
+          "ce_oi": 105222,
+          "ce_vol": 2694132,
+          "ce_iv": 14.35,
+          "pe_ltp": 342.05,
+          "pe_oi": 2221,
+          "pe_vol": 41263,
+          "pe_iv": 22.98,
+          "straddle": 343.90000000000003
+        }
+      ],
+      "candleInfo": {
+        "count": 121,
+        "dateRange": "2026-01-20 to 2026-07-20",
+        "latestClose": 24238.5,
+        "latestVolume": 0,
+        "high52w": 26341.19921875,
+        "low52w": 22182.55078125,
+        "avgVolume20": 351215
+      },
+      "totalStrikes": 93,
+      "dataQuality": "LIVE"
+    },
+    "BANKNIFTY": {
+      "symbol": "BANKNIFTY",
+      "spot": 57945,
+      "atmStrike": 57900,
+      "vix": 12.98,
+      "pcr": 0.9266757816060524,
+      "maxPain": 58100,
+      "futuresPrice": 24238.5,
+      "oiAnalysis": {
+        "totalCE_OI": 548550,
+        "totalPE_OI": 508328,
+        "totalCE_Vol": 1990873,
+        "totalPE_Vol": 1644960,
+        "totalCE_OIChg": 31051,
+        "totalPE_OIChg": -15872,
+        "pcr_OI": 0.9266757816060524,
+        "pcr_Vol": 0.8262505945884042,
+        "callBias": "BEARISH",
+        "topCallWalls": [
+          {
+            "strike": 59000,
+            "oi": 73019,
+            "oiChg": 1342,
+            "ltp": 166.05
+          },
+          {
+            "strike": 60000,
+            "oi": 65577,
+            "oiChg": 6442,
+            "ltp": 36.2
+          }
+        ],
+        "topPutWalls": []
+      },
+      "nearATM": {
+        "nearATMCount": 23,
+        "avgIV": 15.17086956521739,
+        "maxPainCalc": 58000,
+        "atmStrikes": [
+          {
+            "strike": 56800,
+            "ce": {
+              "ltp": 1463.6,
+              "oi": 2444,
+              "oiChg": -65,
+              "vol": 538,
+              "iv": 18.84,
+              "delta": 0.78,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 127.9,
+              "oi": 4240,
+              "oiChg": 510,
+              "vol": 12989,
+              "iv": 16.01,
+              "delta": -0.18,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 56900,
+            "ce": {
+              "ltp": 1385.1,
+              "oi": 1248,
+              "oiChg": -6,
+              "vol": 160,
+              "iv": 18.79,
+              "delta": 0.77,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 142.2,
+              "oi": 2645,
+              "oiChg": 257,
+              "vol": 8866,
+              "iv": 15.81,
+              "delta": -0.2,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 57000,
+            "ce": {
+              "ltp": 1291,
+              "oi": 13104,
+              "oiChg": 975,
+              "vol": 21646,
+              "iv": 18.09,
+              "delta": 0.75,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 157,
+              "oi": 25315,
+              "oiChg": -7109,
+              "vol": 103451,
+              "iv": 15.58,
+              "delta": -0.21,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 57100,
+            "ce": {
+              "ltp": 1214.85,
+              "oi": 710,
+              "oiChg": -41,
+              "vol": 1994,
+              "iv": 18.01,
+              "delta": 0.73,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 175.1,
+              "oi": 2717,
+              "oiChg": 326,
+              "vol": 13391,
+              "iv": 15.42,
+              "delta": -0.24,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 57200,
+            "ce": {
+              "ltp": 1131,
+              "oi": 1219,
+              "oiChg": 112,
+              "vol": 3500,
+              "iv": 17.6,
+              "delta": 0.72,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 198.8,
+              "oi": 3893,
+              "oiChg": -200,
+              "vol": 25247,
+              "iv": 15.39,
+              "delta": -0.26,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 57300,
+            "ce": {
+              "ltp": 1047.7,
+              "oi": 1666,
+              "oiChg": -172,
+              "vol": 5236,
+              "iv": 17.16,
+              "delta": 0.7,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 215.8,
+              "oi": 3552,
+              "oiChg": 575,
+              "vol": 18981,
+              "iv": 15.04,
+              "delta": -0.28,
+              "gamma": 0.0003
+            }
+          },
+          {
+            "strike": 57400,
+            "ce": {
+              "ltp": 979,
+              "oi": 2524,
+              "oiChg": 34,
+              "vol": 8062,
+              "iv": 17.15,
+              "delta": 0.67,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 240,
+              "oi": 5429,
+              "oiChg": 1324,
+              "vol": 32261,
+              "iv": 14.88,
+              "delta": -0.31,
+              "gamma": 0.0003
+            }
+          },
+          {
+            "strike": 57500,
+            "ce": {
+              "ltp": 900,
+              "oi": 12877,
+              "oiChg": 1070,
+              "vol": 79053,
+              "iv": 16.73,
+              "delta": 0.65,
+              "gamma": 0.0003
+            },
+            "pe": {
+              "ltp": 267.55,
+              "oi": 23621,
+              "oiChg": 1563,
+              "vol": 132239,
+              "iv": 14.75,
+              "delta": -0.33,
+              "gamma": 0.0003
+            }
+          }
+        ]
+      },
+      "premiumSnap": [
+        {
+          "strike": 57100,
+          "distance": -800,
+          "ce_ltp": 1214.85,
+          "ce_oi": 710,
+          "ce_vol": 1994,
+          "ce_iv": 18.01,
+          "pe_ltp": 175.1,
+          "pe_oi": 2717,
+          "pe_vol": 13391,
+          "pe_iv": 15.42,
+          "straddle": 1389.9499999999998
+        },
+        {
+          "strike": 57200,
+          "distance": -700,
+          "ce_ltp": 1131,
+          "ce_oi": 1219,
+          "ce_vol": 3500,
+          "ce_iv": 17.6,
+          "pe_ltp": 198.8,
+          "pe_oi": 3893,
+          "pe_vol": 25247,
+          "pe_iv": 15.39,
+          "straddle": 1329.8
+        },
+        {
+          "strike": 57300,
+          "distance": -600,
+          "ce_ltp": 1047.7,
+          "ce_oi": 1666,
+          "ce_vol": 5236,
+          "ce_iv": 17.16,
+          "pe_ltp": 215.8,
+          "pe_oi": 3552,
+          "pe_vol": 18981,
+          "pe_iv": 15.04,
+          "straddle": 1263.5
+        },
+        {
+          "strike": 57400,
+          "distance": -500,
+          "ce_ltp": 979,
+          "ce_oi": 2524,
+          "ce_vol": 8062,
+          "ce_iv": 17.15,
+          "pe_ltp": 240,
+          "pe_oi": 5429,
+          "pe_vol": 32261,
+          "pe_iv": 14.88,
+          "straddle": 1219
+        },
+        {
+          "strike": 57500,
+          "distance": -400,
+          "ce_ltp": 900,
+          "ce_oi": 12877,
+          "ce_vol": 79053,
+          "ce_iv": 16.73,
+          "pe_ltp": 267.55,
+          "pe_oi": 23621,
+          "pe_vol": 132239,
+          "pe_iv": 14.75,
+          "straddle": 1167.55
+        },
+        {
+          "strike": 57600,
+          "distance": -300,
+          "ce_ltp": 826.2,
+          "ce_oi": 2975,
+          "ce_vol": 62224,
+          "ce_iv": 16.41,
+          "pe_ltp": 295.2,
+          "pe_oi": 5900,
+          "pe_vol": 79416,
+          "pe_iv": 14.54,
+          "straddle": 1121.4
+        },
+        {
+          "strike": 57700,
+          "distance": -200,
+          "ce_ltp": 760,
+          "ce_oi": 6983,
+          "ce_vol": 96805,
+          "ce_iv": 16.26,
+          "pe_ltp": 330.35,
+          "pe_oi": 9846,
+          "pe_vol": 108978,
+          "pe_iv": 14.48,
+          "straddle": 1090.35
+        },
+        {
+          "strike": 57800,
+          "distance": -100,
+          "ce_ltp": 692,
+          "ce_oi": 7778,
+          "ce_vol": 113303,
+          "ce_iv": 15.98,
+          "pe_ltp": 365,
+          "pe_oi": 9805,
+          "pe_vol": 97552,
+          "pe_iv": 14.32,
+          "straddle": 1057
+        },
+        {
+          "strike": 57900,
+          "distance": 0,
+          "ce_ltp": 636.05,
+          "ce_oi": 6743,
+          "ce_vol": 72105,
+          "ce_iv": 15.97,
+          "pe_ltp": 405.95,
+          "pe_oi": 7073,
+          "pe_vol": 59811,
+          "pe_iv": 14.25,
+          "straddle": 1042
+        },
+        {
+          "strike": 58000,
+          "distance": 100,
+          "ce_ltp": 577,
+          "ce_oi": 47311,
+          "ce_vol": 253803,
+          "ce_iv": 15.8,
+          "pe_ltp": 441,
+          "pe_oi": 39642,
+          "pe_vol": 177164,
+          "pe_iv": 13.92,
+          "straddle": 1018
+        },
+        {
+          "strike": 58100,
+          "distance": 200,
+          "ce_ltp": 522,
+          "ce_oi": 8966,
+          "ce_vol": 47465,
+          "ce_iv": 15.65,
+          "pe_ltp": 487.95,
+          "pe_oi": 5068,
+          "pe_vol": 36239,
+          "pe_iv": 13.84,
+          "straddle": 1009.95
+        },
+        {
+          "strike": 58200,
+          "distance": 300,
+          "ce_ltp": 473,
+          "ce_oi": 10500,
+          "ce_vol": 48464,
+          "ce_iv": 15.6,
+          "pe_ltp": 532,
+          "pe_oi": 6581,
+          "pe_vol": 30436,
+          "pe_iv": 13.59,
+          "straddle": 1005
+        },
+        {
+          "strike": 58300,
+          "distance": 400,
+          "ce_ltp": 422.7,
+          "ce_oi": 8280,
+          "ce_vol": 37514,
+          "ce_iv": 15.42,
+          "pe_ltp": 580.8,
+          "pe_oi": 3885,
+          "pe_vol": 13436,
+          "pe_iv": 13.36,
+          "straddle": 1003.5
+        },
+        {
+          "strike": 58400,
+          "distance": 500,
+          "ce_ltp": 379.4,
+          "ce_oi": 7053,
+          "ce_vol": 34036,
+          "ce_iv": 15.35,
+          "pe_ltp": 642,
+          "pe_oi": 4590,
+          "pe_vol": 12183,
+          "pe_iv": 13.4,
+          "straddle": 1021.4
+        },
+        {
+          "strike": 58500,
+          "distance": 600,
+          "ce_ltp": 334,
+          "ce_oi": 34481,
+          "ce_vol": 128753,
+          "ce_iv": 15.13,
+          "pe_ltp": 696.05,
+          "pe_oi": 15134,
+          "pe_vol": 40814,
+          "pe_iv": 13.12,
+          "straddle": 1030.05
+        },
+        {
+          "strike": 58600,
+          "distance": 700,
+          "ce_ltp": 291.35,
+          "ce_oi": 9290,
+          "ce_vol": 26154,
+          "ce_iv": 14.9,
+          "pe_ltp": 766.65,
+          "pe_oi": 2499,
+          "pe_vol": 5816,
+          "pe_iv": 13.26,
+          "straddle": 1058
+        },
+        {
+          "strike": 58700,
+          "distance": 800,
+          "ce_ltp": 260,
+          "ce_oi": 7609,
+          "ce_vol": 34268,
+          "ce_iv": 14.93,
+          "pe_ltp": 820.8,
+          "pe_oi": 1849,
+          "pe_vol": 2763,
+          "pe_iv": 12.73,
+          "straddle": 1080.8
+        }
+      ],
+      "candleInfo": {
+        "count": 121,
+        "dateRange": "2026-01-20 to 2026-07-20",
+        "latestClose": 24238.5,
+        "latestVolume": 0,
+        "high52w": 26341.19921875,
+        "low52w": 22182.55078125,
+        "avgVolume20": 351215
+      },
+      "totalStrikes": 175,
+      "dataQuality": "LIVE"
+    },
+    "FINNIFTY": {
+      "symbol": "FINNIFTY",
+      "spot": 26574.65,
+      "atmStrike": 26550,
+      "vix": 12.98,
+      "pcr": 0.539,
+      "maxPain": 27000,
+      "futuresPrice": 24238.5,
+      "oiAnalysis": {
+        "totalCE_OI": 11000,
+        "totalPE_OI": 5929,
+        "totalCE_Vol": 29875,
+        "totalPE_Vol": 17188,
+        "totalCE_OIChg": 5319,
+        "totalPE_OIChg": 843,
+        "pcr_OI": 0.539,
+        "pcr_Vol": 0.5753305439330544,
+        "callBias": "BEARISH",
+        "topCallWalls": [],
+        "topPutWalls": []
+      },
+      "nearATM": {
+        "nearATMCount": 21,
+        "avgIV": 16.313095238095244,
+        "maxPainCalc": 26600,
+        "atmStrikes": [
+          {
+            "strike": 26100,
+            "ce": {
+              "ltp": 598.9,
+              "oi": 44,
+              "oiChg": -2,
+              "vol": 10,
+              "iv": 15.91,
+              "delta": 0.8,
+              "gamma": 0.0004
+            },
+            "pe": {
+              "ltp": 76.7,
+              "oi": 94,
+              "oiChg": 39,
+              "vol": 492,
+              "iv": 16.78,
+              "delta": -0.21,
+              "gamma": 0.0004
+            }
+          },
+          {
+            "strike": 26150,
+            "ce": {
+              "ltp": 474.95,
+              "oi": 6,
+              "oiChg": 4,
+              "vol": 5,
+              "iv": 18.2,
+              "delta": 0.75,
+              "gamma": 0.0004
+            },
+            "pe": {
+              "ltp": 87.25,
+              "oi": 22,
+              "oiChg": 9,
+              "vol": 49,
+              "iv": 16.73,
+              "delta": -0.23,
+              "gamma": 0.0005
+            }
+          },
+          {
+            "strike": 26200,
+            "ce": {
+              "ltp": 571.65,
+              "oi": 48,
+              "oiChg": 20,
+              "vol": 91,
+              "iv": 19.83,
+              "delta": 0.71,
+              "gamma": 0.0004
+            },
+            "pe": {
+              "ltp": 98.35,
+              "oi": 231,
+              "oiChg": -286,
+              "vol": 1365,
+              "iv": 16.64,
+              "delta": -0.26,
+              "gamma": 0.0005
+            }
+          },
+          {
+            "strike": 26250,
+            "ce": {
+              "ltp": 520,
+              "oi": 18,
+              "oiChg": 16,
+              "vol": 18,
+              "iv": 18.59,
+              "delta": 0.7,
+              "gamma": 0.0005
+            },
+            "pe": {
+              "ltp": 106.5,
+              "oi": 39,
+              "oiChg": 12,
+              "vol": 93,
+              "iv": 16.23,
+              "delta": -0.28,
+              "gamma": 0.0005
+            }
+          },
+          {
+            "strike": 26300,
+            "ce": {
+              "ltp": 473.95,
+              "oi": 96,
+              "oiChg": 48,
+              "vol": 227,
+              "iv": 17.74,
+              "delta": 0.68,
+              "gamma": 0.0005
+            },
+            "pe": {
+              "ltp": 121.5,
+              "oi": 300,
+              "oiChg": 169,
+              "vol": 1204,
+              "iv": 16.27,
+              "delta": -0.31,
+              "gamma": 0.0005
+            }
+          },
+          {
+            "strike": 26350,
+            "ce": {
+              "ltp": 442.6,
+              "oi": 21,
+              "oiChg": 17,
+              "vol": 48,
+              "iv": 17.87,
+              "delta": 0.65,
+              "gamma": 0.0005
+            },
+            "pe": {
+              "ltp": 130.75,
+              "oi": 38,
+              "oiChg": 16,
+              "vol": 156,
+              "iv": 15.8,
+              "delta": -0.33,
+              "gamma": 0.0006
+            }
+          },
+          {
+            "strike": 26400,
+            "ce": {
+              "ltp": 420.1,
+              "oi": 300,
+              "oiChg": 276,
+              "vol": 1734,
+              "iv": 18.5,
+              "delta": 0.62,
+              "gamma": 0.0005
+            },
+            "pe": {
+              "ltp": 140,
+              "oi": 463,
+              "oiChg": 401,
+              "vol": 2742,
+              "iv": 15.26,
+              "delta": -0.36,
+              "gamma": 0.0006
+            }
+          },
+          {
+            "strike": 26450,
+            "ce": {
+              "ltp": 375.85,
+              "oi": 50,
+              "oiChg": 42,
+              "vol": 277,
+              "iv": 17.58,
+              "delta": 0.6,
+              "gamma": 0.0006
+            },
+            "pe": {
+              "ltp": 162.4,
+              "oi": 32,
+              "oiChg": 8,
+              "vol": 19,
+              "iv": 15.53,
+              "delta": -0.39,
+              "gamma": 0.0006
+            }
+          }
+        ]
+      },
+      "premiumSnap": [
+        {
+          "strike": 26200,
+          "distance": -350,
+          "ce_ltp": 571.65,
+          "ce_oi": 48,
+          "ce_vol": 91,
+          "ce_iv": 19.83,
+          "pe_ltp": 98.35,
+          "pe_oi": 231,
+          "pe_vol": 1365,
+          "pe_iv": 16.64,
+          "straddle": 670
+        },
+        {
+          "strike": 26250,
+          "distance": -300,
+          "ce_ltp": 520,
+          "ce_oi": 18,
+          "ce_vol": 18,
+          "ce_iv": 18.59,
+          "pe_ltp": 106.5,
+          "pe_oi": 39,
+          "pe_vol": 93,
+          "pe_iv": 16.23,
+          "straddle": 626.5
+        },
+        {
+          "strike": 26300,
+          "distance": -250,
+          "ce_ltp": 473.95,
+          "ce_oi": 96,
+          "ce_vol": 227,
+          "ce_iv": 17.74,
+          "pe_ltp": 121.5,
+          "pe_oi": 300,
+          "pe_vol": 1204,
+          "pe_iv": 16.27,
+          "straddle": 595.45
+        },
+        {
+          "strike": 26350,
+          "distance": -200,
+          "ce_ltp": 442.6,
+          "ce_oi": 21,
+          "ce_vol": 48,
+          "ce_iv": 17.87,
+          "pe_ltp": 130.75,
+          "pe_oi": 38,
+          "pe_vol": 156,
+          "pe_iv": 15.8,
+          "straddle": 573.35
+        },
+        {
+          "strike": 26400,
+          "distance": -150,
+          "ce_ltp": 420.1,
+          "ce_oi": 300,
+          "ce_vol": 1734,
+          "ce_iv": 18.5,
+          "pe_ltp": 140,
+          "pe_oi": 463,
+          "pe_vol": 2742,
+          "pe_iv": 15.26,
+          "straddle": 560.1
+        },
+        {
+          "strike": 26450,
+          "distance": -100,
+          "ce_ltp": 375.85,
+          "ce_oi": 50,
+          "ce_vol": 277,
+          "ce_iv": 17.58,
+          "pe_ltp": 162.4,
+          "pe_oi": 32,
+          "pe_vol": 19,
+          "pe_iv": 15.53,
+          "straddle": 538.25
+        },
+        {
+          "strike": 26500,
+          "distance": -50,
+          "ce_ltp": 338.95,
+          "ce_oi": 587,
+          "ce_vol": 3310,
+          "ce_iv": 17.08,
+          "pe_ltp": 170.65,
+          "pe_oi": 698,
+          "pe_vol": 3443,
+          "pe_iv": 14.75,
+          "straddle": 509.6
+        },
+        {
+          "strike": 26550,
+          "distance": 0,
+          "ce_ltp": 313.6,
+          "ce_oi": 31,
+          "ce_vol": 214,
+          "ce_iv": 17.24,
+          "pe_ltp": 203.25,
+          "pe_oi": 29,
+          "pe_vol": 261,
+          "pe_iv": 15.47,
+          "straddle": 516.85
+        },
+        {
+          "strike": 26600,
+          "distance": 50,
+          "ce_ltp": 284.1,
+          "ce_oi": 332,
+          "ce_vol": 1682,
+          "ce_iv": 17.04,
+          "pe_ltp": 217.8,
+          "pe_oi": 200,
+          "pe_vol": 932,
+          "pe_iv": 14.91,
+          "straddle": 501.90000000000003
+        },
+        {
+          "strike": 26650,
+          "distance": 100,
+          "ce_ltp": 256.15,
+          "ce_oi": 36,
+          "ce_vol": 141,
+          "ce_iv": 16.85,
+          "pe_ltp": 242.3,
+          "pe_oi": 22,
+          "pe_vol": 53,
+          "pe_iv": 14.89,
+          "straddle": 498.45
+        },
+        {
+          "strike": 26700,
+          "distance": 150,
+          "ce_ltp": 227.55,
+          "ce_oi": 245,
+          "ce_vol": 902,
+          "ce_iv": 16.52,
+          "pe_ltp": 264.15,
+          "pe_oi": 124,
+          "pe_vol": 598,
+          "pe_iv": 14.58,
+          "straddle": 491.7
+        },
+        {
+          "strike": 26750,
+          "distance": 200,
+          "ce_ltp": 204.85,
+          "ce_oi": 118,
+          "ce_vol": 458,
+          "ce_iv": 16.47,
+          "pe_ltp": 293.2,
+          "pe_oi": 45,
+          "pe_vol": 61,
+          "pe_iv": 14.63,
+          "straddle": 498.04999999999995
+        },
+        {
+          "strike": 26800,
+          "distance": 250,
+          "ce_ltp": 190,
+          "ce_oi": 401,
+          "ce_vol": 769,
+          "ce_iv": 16.83,
+          "pe_ltp": 320.45,
+          "pe_oi": 304,
+          "pe_vol": 249,
+          "pe_iv": 14.45,
+          "straddle": 510.45
+        },
+        {
+          "strike": 26850,
+          "distance": 300,
+          "ce_ltp": 159.15,
+          "ce_oi": 28,
+          "ce_vol": 104,
+          "ce_iv": 16.04,
+          "pe_ltp": 346.85,
+          "pe_oi": 38,
+          "pe_vol": 21,
+          "pe_iv": 14.08,
+          "straddle": 506
+        },
+        {
+          "strike": 26900,
+          "distance": 350,
+          "ce_ltp": 135.4,
+          "ce_oi": 323,
+          "ce_vol": 1194,
+          "ce_iv": 15.6,
+          "pe_ltp": 380.3,
+          "pe_oi": 172,
+          "pe_vol": 212,
+          "pe_iv": 14.08,
+          "straddle": 515.7
+        }
+      ],
+      "candleInfo": {
+        "count": 121,
+        "dateRange": "2026-01-20 to 2026-07-20",
+        "latestClose": 24238.5,
+        "latestVolume": 0,
+        "high52w": 26341.19921875,
+        "low52w": 22182.55078125,
+        "avgVolume20": 351215
+      },
+      "totalStrikes": 132,
+      "dataQuality": "LIVE"
+    },
+    "MIDCPNIFTY": {
+      "symbol": "MIDCPNIFTY",
+      "spot": 14779.7,
+      "atmStrike": 14775,
+      "vix": 12.98,
+      "pcr": 1.0672223197052115,
+      "maxPain": 14700,
+      "futuresPrice": 24238.5,
+      "oiAnalysis": {
+        "totalCE_OI": 56990,
+        "totalPE_OI": 60821,
+        "totalCE_Vol": 132384,
+        "totalPE_Vol": 146181,
+        "totalCE_OIChg": 1079,
+        "totalPE_OIChg": 7265,
+        "pcr_OI": 1.0672223197052115,
+        "pcr_Vol": 1.1042195431472082,
+        "callBias": "BULLISH",
+        "topCallWalls": [],
+        "topPutWalls": []
+      },
+      "nearATM": {
+        "nearATMCount": 23,
+        "avgIV": 16.415869565217395,
+        "maxPainCalc": 14700,
+        "atmStrikes": [
+          {
+            "strike": 14500,
+            "ce": {
+              "ltp": 377.05,
+              "oi": 3096,
+              "oiChg": 45,
+              "vol": 1682,
+              "iv": 20.85,
+              "delta": 0.75,
+              "gamma": 0.0007
+            },
+            "pe": {
+              "ltp": 38,
+              "oi": 5474,
+              "oiChg": 1404,
+              "vol": 24720,
+              "iv": 16.54,
+              "delta": -0.2,
+              "gamma": 0.0008
+            }
+          },
+          {
+            "strike": 14525,
+            "ce": {
+              "ltp": 346,
+              "oi": 102,
+              "oiChg": -2,
+              "vol": 31,
+              "iv": 19.04,
+              "delta": 0.75,
+              "gamma": 0.0008
+            },
+            "pe": {
+              "ltp": 41.25,
+              "oi": 129,
+              "oiChg": -19,
+              "vol": 631,
+              "iv": 16.24,
+              "delta": -0.21,
+              "gamma": 0.0008
+            }
+          },
+          {
+            "strike": 14550,
+            "ce": {
+              "ltp": 316.15,
+              "oi": 289,
+              "oiChg": -9,
+              "vol": 47,
+              "iv": 17.41,
+              "delta": 0.75,
+              "gamma": 0.0008
+            },
+            "pe": {
+              "ltp": 45.8,
+              "oi": 462,
+              "oiChg": 73,
+              "vol": 1021,
+              "iv": 16.09,
+              "delta": -0.23,
+              "gamma": 0.0009
+            }
+          },
+          {
+            "strike": 14575,
+            "ce": {
+              "ltp": 296,
+              "oi": 124,
+              "oiChg": -3,
+              "vol": 33,
+              "iv": 17.17,
+              "delta": 0.73,
+              "gamma": 0.0009
+            },
+            "pe": {
+              "ltp": 51.85,
+              "oi": 173,
+              "oiChg": 3,
+              "vol": 726,
+              "iv": 16.09,
+              "delta": -0.25,
+              "gamma": 0.0009
+            }
+          },
+          {
+            "strike": 14600,
+            "ce": {
+              "ltp": 293,
+              "oi": 1471,
+              "oiChg": -673,
+              "vol": 3047,
+              "iv": 19.17,
+              "delta": 0.69,
+              "gamma": 0.0008
+            },
+            "pe": {
+              "ltp": 54.15,
+              "oi": 3658,
+              "oiChg": 737,
+              "vol": 14785,
+              "iv": 15.49,
+              "delta": -0.27,
+              "gamma": 0.001
+            }
+          },
+          {
+            "strike": 14625,
+            "ce": {
+              "ltp": 257.55,
+              "oi": 177,
+              "oiChg": -5,
+              "vol": 153,
+              "iv": 16.78,
+              "delta": 0.69,
+              "gamma": 0.001
+            },
+            "pe": {
+              "ltp": 61.35,
+              "oi": 217,
+              "oiChg": 39,
+              "vol": 1052,
+              "iv": 15.52,
+              "delta": -0.3,
+              "gamma": 0.001
+            }
+          },
+          {
+            "strike": 14650,
+            "ce": {
+              "ltp": 253.45,
+              "oi": 513,
+              "oiChg": -17,
+              "vol": 744,
+              "iv": 18.4,
+              "delta": 0.65,
+              "gamma": 0.0009
+            },
+            "pe": {
+              "ltp": 67.8,
+              "oi": 613,
+              "oiChg": 147,
+              "vol": 3009,
+              "iv": 15.36,
+              "delta": -0.32,
+              "gamma": 0.0011
+            }
+          },
+          {
+            "strike": 14675,
+            "ce": {
+              "ltp": 239.65,
+              "oi": 178,
+              "oiChg": -37,
+              "vol": 1469,
+              "iv": 18.66,
+              "delta": 0.63,
+              "gamma": 0.0009
+            },
+            "pe": {
+              "ltp": 74.5,
+              "oi": 439,
+              "oiChg": 160,
+              "vol": 2544,
+              "iv": 15.17,
+              "delta": -0.35,
+              "gamma": 0.0011
+            }
+          }
+        ]
+      },
+      "premiumSnap": [
+        {
+          "strike": 14575,
+          "distance": -200,
+          "ce_ltp": 296,
+          "ce_oi": 124,
+          "ce_vol": 33,
+          "ce_iv": 17.17,
+          "pe_ltp": 51.85,
+          "pe_oi": 173,
+          "pe_vol": 726,
+          "pe_iv": 16.09,
+          "straddle": 347.85
+        },
+        {
+          "strike": 14600,
+          "distance": -175,
+          "ce_ltp": 293,
+          "ce_oi": 1471,
+          "ce_vol": 3047,
+          "ce_iv": 19.17,
+          "pe_ltp": 54.15,
+          "pe_oi": 3658,
+          "pe_vol": 14785,
+          "pe_iv": 15.49,
+          "straddle": 347.15
+        },
+        {
+          "strike": 14625,
+          "distance": -150,
+          "ce_ltp": 257.55,
+          "ce_oi": 177,
+          "ce_vol": 153,
+          "ce_iv": 16.78,
+          "pe_ltp": 61.35,
+          "pe_oi": 217,
+          "pe_vol": 1052,
+          "pe_iv": 15.52,
+          "straddle": 318.90000000000003
+        },
+        {
+          "strike": 14650,
+          "distance": -125,
+          "ce_ltp": 253.45,
+          "ce_oi": 513,
+          "ce_vol": 744,
+          "ce_iv": 18.4,
+          "pe_ltp": 67.8,
+          "pe_oi": 613,
+          "pe_vol": 3009,
+          "pe_iv": 15.36,
+          "straddle": 321.25
+        },
+        {
+          "strike": 14675,
+          "distance": -100,
+          "ce_ltp": 239.65,
+          "ce_oi": 178,
+          "ce_vol": 1469,
+          "ce_iv": 18.66,
+          "pe_ltp": 74.5,
+          "pe_oi": 439,
+          "pe_vol": 2544,
+          "pe_iv": 15.17,
+          "straddle": 314.15
+        },
+        {
+          "strike": 14700,
+          "distance": -75,
+          "ce_ltp": 219,
+          "ce_oi": 4252,
+          "ce_vol": 16755,
+          "ce_iv": 18.03,
+          "pe_ltp": 82,
+          "pe_oi": 5706,
+          "pe_vol": 19580,
+          "pe_iv": 14.99,
+          "straddle": 301
+        },
+        {
+          "strike": 14725,
+          "distance": -50,
+          "ce_ltp": 207.35,
+          "ce_oi": 187,
+          "ce_vol": 2264,
+          "ce_iv": 18.4,
+          "pe_ltp": 90,
+          "pe_oi": 484,
+          "pe_vol": 3513,
+          "pe_iv": 14.8,
+          "straddle": 297.35
+        },
+        {
+          "strike": 14750,
+          "distance": -25,
+          "ce_ltp": 185.85,
+          "ce_oi": 786,
+          "ce_vol": 6090,
+          "ce_iv": 17.55,
+          "pe_ltp": 100,
+          "pe_oi": 1304,
+          "pe_vol": 6310,
+          "pe_iv": 14.77,
+          "straddle": 285.85
+        },
+        {
+          "strike": 14775,
+          "distance": 0,
+          "ce_ltp": 175.8,
+          "ce_oi": 245,
+          "ce_vol": 2057,
+          "ce_iv": 17.96,
+          "pe_ltp": 108.15,
+          "pe_oi": 396,
+          "pe_vol": 2557,
+          "pe_iv": 14.43,
+          "straddle": 283.95000000000005
+        },
+        {
+          "strike": 14800,
+          "distance": 25,
+          "ce_ltp": 157.05,
+          "ce_oi": 4961,
+          "ce_vol": 28967,
+          "ce_iv": 17.3,
+          "pe_ltp": 118.5,
+          "pe_oi": 4900,
+          "pe_vol": 12887,
+          "pe_iv": 14.26,
+          "straddle": 275.55
+        },
+        {
+          "strike": 14825,
+          "distance": 50,
+          "ce_ltp": 143.9,
+          "ce_oi": 251,
+          "ce_vol": 1246,
+          "ce_iv": 17.2,
+          "pe_ltp": 128,
+          "pe_oi": 237,
+          "pe_vol": 557,
+          "pe_iv": 13.91,
+          "straddle": 271.9
+        },
+        {
+          "strike": 14850,
+          "distance": 75,
+          "ce_ltp": 130.95,
+          "ce_oi": 269,
+          "ce_vol": 1900,
+          "ce_iv": 17.06,
+          "pe_ltp": 142,
+          "pe_oi": 362,
+          "pe_vol": 489,
+          "pe_iv": 13.98,
+          "straddle": 272.95
+        },
+        {
+          "strike": 14875,
+          "distance": 100,
+          "ce_ltp": 115.75,
+          "ce_oi": 141,
+          "ce_vol": 944,
+          "ce_iv": 16.57,
+          "pe_ltp": 150.7,
+          "pe_oi": 106,
+          "pe_vol": 193,
+          "pe_iv": 13.34,
+          "straddle": 266.45
+        },
+        {
+          "strike": 14900,
+          "distance": 125,
+          "ce_ltp": 107,
+          "ce_oi": 3814,
+          "ce_vol": 10471,
+          "ce_iv": 16.76,
+          "pe_ltp": 166.7,
+          "pe_oi": 679,
+          "pe_vol": 2395,
+          "pe_iv": 13.44,
+          "straddle": 273.7
+        },
+        {
+          "strike": 14925,
+          "distance": 150,
+          "ce_ltp": 96.95,
+          "ce_oi": 128,
+          "ce_vol": 587,
+          "ce_iv": 16.71,
+          "pe_ltp": 191.5,
+          "pe_oi": 37,
+          "pe_vol": 10,
+          "pe_iv": 14.53,
+          "straddle": 288.45
+        },
+        {
+          "strike": 14950,
+          "distance": 175,
+          "ce_ltp": 85.7,
+          "ce_oi": 199,
+          "ce_vol": 896,
+          "ce_iv": 16.44,
+          "pe_ltp": 193,
+          "pe_oi": 39,
+          "pe_vol": 26,
+          "pe_iv": 12.65,
+          "straddle": 278.7
+        },
+        {
+          "strike": 14975,
+          "distance": 200,
+          "ce_ltp": 75,
+          "ce_oi": 139,
+          "ce_vol": 532,
+          "ce_iv": 16.14,
+          "pe_ltp": 271.5,
+          "pe_oi": 20,
+          "pe_vol": 8,
+          "pe_iv": 20.35,
+          "straddle": 346.5
+        }
+      ],
+      "candleInfo": {
+        "count": 121,
+        "dateRange": "2026-01-20 to 2026-07-20",
+        "latestClose": 24238.5,
+        "latestVolume": 0,
+        "high52w": 26341.19921875,
+        "low52w": 22182.55078125,
+        "avgVolume20": 351215
+      },
+      "totalStrikes": 154,
+      "dataQuality": "LIVE"
+    },
+    "SENSEX": {
+      "symbol": "SENSEX",
+      "spot": 77708.52,
+      "atmStrike": 77700,
+      "vix": 12.98,
+      "pcr": 1.2040277269856046,
+      "maxPain": 77600,
+      "futuresPrice": 24238.5,
+      "oiAnalysis": {
+        "totalCE_OI": 601580,
+        "totalPE_OI": 724319,
+        "totalCE_Vol": 12069398,
+        "totalPE_Vol": 10940781,
+        "totalCE_OIChg": 0,
+        "totalPE_OIChg": 0,
+        "pcr_OI": 1.2040277269856046,
+        "pcr_Vol": 0.906489370886601,
+        "callBias": "NEUTRAL",
+        "topCallWalls": [
+          {
+            "strike": 80000,
+            "oi": 59593,
+            "oiChg": 0,
+            "ltp": 10.95
+          },
+          {
+            "strike": 79500,
+            "oi": 50254,
+            "oiChg": 0,
+            "ltp": 20
+          }
+        ],
+        "topPutWalls": []
+      },
+      "nearATM": {
+        "nearATMCount": 31,
+        "avgIV": 15.347158749577357,
+        "maxPainCalc": 77700,
+        "atmStrikes": [
+          {
+            "strike": 76200,
+            "ce": {
+              "ltp": 1653.45,
+              "oi": 87,
+              "oiChg": 0,
+              "vol": 189,
+              "iv": 21.0240093335057,
+              "delta": 0.86,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 51.3,
+              "oi": 7762,
+              "oiChg": 0,
+              "vol": 133326,
+              "iv": 16.7854205084233,
+              "delta": -0.09,
+              "gamma": 0.0001
+            }
+          },
+          {
+            "strike": 76300,
+            "ce": {
+              "ltp": 1552.45,
+              "oi": 88,
+              "oiChg": 0,
+              "vol": 256,
+              "iv": 20.027086357529498,
+              "delta": 0.85,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 59.45,
+              "oi": 6591,
+              "oiChg": 0,
+              "vol": 128469,
+              "iv": 16.689528013337,
+              "delta": -0.1,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76400,
+            "ce": {
+              "ltp": 1463.2,
+              "oi": 166,
+              "oiChg": 0,
+              "vol": 508,
+              "iv": 19.713465191809,
+              "delta": 0.84,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 70.3,
+              "oi": 5376,
+              "oiChg": 0,
+              "vol": 128074,
+              "iv": 16.566565242695898,
+              "delta": -0.12,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76500,
+            "ce": {
+              "ltp": 1381.75,
+              "oi": 1250,
+              "oiChg": 0,
+              "vol": 5779,
+              "iv": 19.761273794294,
+              "delta": 0.82,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 83,
+              "oi": 21532,
+              "oiChg": 0,
+              "vol": 323869,
+              "iv": 16.524556872594,
+              "delta": -0.14,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76600,
+            "ce": {
+              "ltp": 1286.65,
+              "oi": 242,
+              "oiChg": 0,
+              "vol": 1695,
+              "iv": 18.6592275260755,
+              "delta": 0.81,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 92.85,
+              "oi": 9386,
+              "oiChg": 0,
+              "vol": 172048,
+              "iv": 16.2051397900186,
+              "delta": -0.15,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76700,
+            "ce": {
+              "ltp": 1201,
+              "oi": 326,
+              "oiChg": 0,
+              "vol": 2581,
+              "iv": 18.6876610028158,
+              "delta": 0.79,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 101.15,
+              "oi": 8928,
+              "oiChg": 0,
+              "vol": 155088,
+              "iv": 15.727090826253102,
+              "delta": -0.17,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76800,
+            "ce": {
+              "ltp": 1116,
+              "oi": 557,
+              "oiChg": 0,
+              "vol": 5511,
+              "iv": 18.329358824789498,
+              "delta": 0.77,
+              "gamma": 0.0002
+            },
+            "pe": {
+              "ltp": 115.4,
+              "oi": 9352,
+              "oiChg": 0,
+              "vol": 201435,
+              "iv": 15.5044325267822,
+              "delta": -0.19,
+              "gamma": 0.0002
+            }
+          },
+          {
+            "strike": 76900,
+            "ce": {
+              "ltp": 1026.95,
+              "oi": 532,
+              "oiChg": 0,
+              "vol": 9475,
+              "iv": 17.717704095845,
+              "delta": 0.76,
+              "gamma": 0.0003
+            },
+            "pe": {
+              "ltp": 130,
+              "oi": 7248,
+              "oiChg": 0,
+              "vol": 198879,
+              "iv": 15.290443836345199,
+              "delta": -0.21,
+              "gamma": 0.0003
+            }
+          }
+        ]
+      },
+      "premiumSnap": [
+        {
+          "strike": 76600,
+          "distance": -1100,
+          "ce_ltp": 1286.65,
+          "ce_oi": 242,
+          "ce_vol": 1695,
+          "ce_iv": 18.6592275260755,
+          "pe_ltp": 92.85,
+          "pe_oi": 9386,
+          "pe_vol": 172048,
+          "pe_iv": 16.2051397900186,
+          "straddle": 1379.5
+        },
+        {
+          "strike": 76700,
+          "distance": -1000,
+          "ce_ltp": 1201,
+          "ce_oi": 326,
+          "ce_vol": 2581,
+          "ce_iv": 18.6876610028158,
+          "pe_ltp": 101.15,
+          "pe_oi": 8928,
+          "pe_vol": 155088,
+          "pe_iv": 15.727090826253102,
+          "straddle": 1302.15
+        },
+        {
+          "strike": 76800,
+          "distance": -900,
+          "ce_ltp": 1116,
+          "ce_oi": 557,
+          "ce_vol": 5511,
+          "ce_iv": 18.329358824789498,
+          "pe_ltp": 115.4,
+          "pe_oi": 9352,
+          "pe_vol": 201435,
+          "pe_iv": 15.5044325267822,
+          "straddle": 1231.4
+        },
+        {
+          "strike": 76900,
+          "distance": -800,
+          "ce_ltp": 1026.95,
+          "ce_oi": 532,
+          "ce_vol": 9475,
+          "ce_iv": 17.717704095845,
+          "pe_ltp": 130,
+          "pe_oi": 7248,
+          "pe_vol": 198879,
+          "pe_iv": 15.290443836345199,
+          "straddle": 1156.95
+        },
+        {
+          "strike": 77000,
+          "distance": -700,
+          "ce_ltp": 949,
+          "ce_oi": 4585,
+          "ce_vol": 79628,
+          "ce_iv": 17.5292672040409,
+          "pe_ltp": 154.9,
+          "pe_oi": 28914,
+          "pe_vol": 655493,
+          "pe_iv": 15.380062221499799,
+          "straddle": 1103.9
+        },
+        {
+          "strike": 77100,
+          "distance": -600,
+          "ce_ltp": 873,
+          "ce_oi": 1512,
+          "ce_vol": 29858,
+          "ce_iv": 17.3262472964003,
+          "pe_ltp": 176.1,
+          "pe_oi": 10048,
+          "pe_vol": 327899,
+          "pe_iv": 15.173897948489602,
+          "straddle": 1049.1
+        },
+        {
+          "strike": 77200,
+          "distance": -500,
+          "ce_ltp": 790,
+          "ce_oi": 2185,
+          "ce_vol": 66359,
+          "ce_iv": 16.5267069601496,
+          "pe_ltp": 197.6,
+          "pe_oi": 12275,
+          "pe_vol": 419107,
+          "pe_iv": 14.7742463112316,
+          "straddle": 987.6
+        },
+        {
+          "strike": 77300,
+          "distance": -400,
+          "ce_ltp": 716.3,
+          "ce_oi": 2584,
+          "ce_vol": 116736,
+          "ce_iv": 16.2458321425341,
+          "pe_ltp": 223.35,
+          "pe_oi": 14231,
+          "pe_vol": 447248,
+          "pe_iv": 14.636685908046301,
+          "straddle": 939.65
+        },
+        {
+          "strike": 77400,
+          "distance": -300,
+          "ce_ltp": 645,
+          "ce_oi": 9497,
+          "ce_vol": 287600,
+          "ce_iv": 16.1418417346401,
+          "pe_ltp": 255,
+          "pe_oi": 20205,
+          "pe_vol": 560369,
+          "pe_iv": 14.508299527962201,
+          "straddle": 900
+        },
+        {
+          "strike": 77500,
+          "distance": -200,
+          "ce_ltp": 572.5,
+          "ce_oi": 30070,
+          "ce_vol": 903032,
+          "ce_iv": 15.6817236052659,
+          "pe_ltp": 288.5,
+          "pe_oi": 48559,
+          "pe_vol": 1192914,
+          "pe_iv": 14.2006980765122,
+          "straddle": 861
+        },
+        {
+          "strike": 77600,
+          "distance": -100,
+          "ce_ltp": 513.75,
+          "ce_oi": 20790,
+          "ce_vol": 863237,
+          "ce_iv": 15.6065136480638,
+          "pe_ltp": 322.15,
+          "pe_oi": 28866,
+          "pe_vol": 803213,
+          "pe_iv": 13.8801969455126,
+          "straddle": 835.9
+        },
+        {
+          "strike": 77700,
+          "distance": 0,
+          "ce_ltp": 456.3,
+          "ce_oi": 21869,
+          "ce_vol": 896661,
+          "ce_iv": 15.4510987476438,
+          "pe_ltp": 363.1,
+          "pe_oi": 32812,
+          "pe_vol": 728245,
+          "pe_iv": 13.685459343902101,
+          "straddle": 819.4000000000001
+        },
+        {
+          "strike": 77800,
+          "distance": 100,
+          "ce_ltp": 401.9,
+          "ce_oi": 24548,
+          "ce_vol": 800745,
+          "ce_iv": 15.275387188043199,
+          "pe_ltp": 407.6,
+          "pe_oi": 19730,
+          "pe_vol": 440731,
+          "pe_iv": 13.472169074200698,
+          "straddle": 809.5
+        },
+        {
+          "strike": 77900,
+          "distance": 200,
+          "ce_ltp": 350.55,
+          "ce_oi": 18086,
+          "ce_vol": 492947,
+          "ce_iv": 14.944728550832101,
+          "pe_ltp": 462.6,
+          "pe_oi": 10908,
+          "pe_vol": 183828,
+          "pe_iv": 13.4840762559557,
+          "straddle": 813.1500000000001
+        },
+        {
+          "strike": 78000,
+          "distance": 300,
+          "ce_ltp": 303.8,
+          "ce_oi": 30713,
+          "ce_vol": 909320,
+          "ce_iv": 14.9023638147699,
+          "pe_ltp": 511.8,
+          "pe_oi": 18729,
+          "pe_vol": 268164,
+          "pe_iv": 13.311881143916901,
+          "straddle": 815.6
+        },
+        {
+          "strike": 78100,
+          "distance": 400,
+          "ce_ltp": 260.05,
+          "ce_oi": 9572,
+          "ce_vol": 336860,
+          "ce_iv": 14.6964812753669,
+          "pe_ltp": 565.25,
+          "pe_oi": 6383,
+          "pe_vol": 72035,
+          "pe_iv": 12.7595465947684,
+          "straddle": 825.3
+        },
+        {
+          "strike": 78200,
+          "distance": 500,
+          "ce_ltp": 222.1,
+          "ce_oi": 12479,
+          "ce_vol": 404887,
+          "ce_iv": 14.5625049022512,
+          "pe_ltp": 619.3,
+          "pe_oi": 4212,
+          "pe_vol": 61787,
+          "pe_iv": 12.211771676838,
+          "straddle": 841.4
+        },
+        {
+          "strike": 78300,
+          "distance": 600,
+          "ce_ltp": 190,
+          "ce_oi": 8335,
+          "ce_vol": 299974,
+          "ce_iv": 14.5134881730039,
+          "pe_ltp": 695,
+          "pe_oi": 1496,
+          "pe_vol": 27619,
+          "pe_iv": 12.3614513775633,
+          "straddle": 885
+        },
+        {
+          "strike": 78400,
+          "distance": 700,
+          "ce_ltp": 160.05,
+          "ce_oi": 6643,
+          "ce_vol": 264930,
+          "ce_iv": 14.4077434777414,
+          "pe_ltp": 759,
+          "pe_oi": 777,
+          "pe_vol": 10003,
+          "pe_iv": 12.1062239597302,
+          "straddle": 919.05
+        },
+        {
+          "strike": 78500,
+          "distance": 800,
+          "ce_ltp": 135.5,
+          "ce_oi": 20712,
+          "ce_vol": 507977,
+          "ce_iv": 14.3047729626083,
+          "pe_ltp": 838.6,
+          "pe_oi": 2045,
+          "pe_vol": 25234,
+          "pe_iv": 11.771910686042201,
+          "straddle": 974.1
+        },
+        {
+          "strike": 78600,
+          "distance": 900,
+          "ce_ltp": 113,
+          "ce_oi": 6459,
+          "ce_vol": 285852,
+          "ce_iv": 14.3303108727003,
+          "pe_ltp": 919.95,
+          "pe_oi": 297,
+          "pe_vol": 4196,
+          "pe_iv": 12.0555115051662,
+          "straddle": 1032.95
+        },
+        {
+          "strike": 78700,
+          "distance": 1000,
+          "ce_ltp": 92,
+          "ce_oi": 6775,
+          "ce_vol": 242438,
+          "ce_iv": 14.1889076107376,
+          "pe_ltp": 991.15,
+          "pe_oi": 231,
+          "pe_vol": 2631,
+          "pe_iv": 10.5171327979986,
+          "straddle": 1083.15
+        },
+        {
+          "strike": 78800,
+          "distance": 1100,
+          "ce_ltp": 78.45,
+          "ce_oi": 8614,
+          "ce_vol": 228323,
+          "ce_iv": 14.321044114671,
+          "pe_ltp": 1092.05,
+          "pe_oi": 278,
+          "pe_vol": 1559,
+          "pe_iv": 11.385602263672,
+          "straddle": 1170.5
+        }
+      ],
+      "candleInfo": {
+        "count": 121,
+        "dateRange": "2026-01-20 to 2026-07-20",
+        "latestClose": 77708.5234375,
+        "latestVolume": 0,
+        "high52w": 85871.7265625,
+        "low52w": 71545.8125,
+        "avgVolume20": 19085
+      },
+      "totalStrikes": 181,
+      "dataQuality": "LIVE"
+    }
+  },
+  "fiiDii": {
+    "latest": {
+      "date": "20-Jul-2026",
+      "fiiNet": -1121.04,
+      "diiNet": 1312.03,
+      "fiiBuy": 13312.67,
+      "fiiSell": 14433.71,
+      "diiBuy": 16187.84,
+      "diiSell": 14875.81
+    },
+    "history": [
+      {
+        "date": "20-Jul-2026",
+        "fiiNet": -1121.04,
+        "diiNet": 1312.03,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "17-Jul-2026",
+        "fiiNet": -376.41,
+        "diiNet": 1017.89,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "16-Jul-2026",
+        "fiiNet": -4205.56,
+        "diiNet": 2986.41,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "15-Jul-2026",
+        "fiiNet": -735.83,
+        "diiNet": 704.93,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "14-Jul-2026",
+        "fiiNet": -739.69,
+        "diiNet": 2927.71,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "13-Jul-2026",
+        "fiiNet": -3062.27,
+        "diiNet": 2171.7,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "10-Jul-2026",
+        "fiiNet": 2603.72,
+        "diiNet": 2019.68,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "09-Jul-2026",
+        "fiiNet": -532.86,
+        "diiNet": 2057.79,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "08-Jul-2026",
+        "fiiNet": 1962.8,
+        "diiNet": 790.16,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "07-Jul-2026",
+        "fiiNet": 393.19,
+        "diiNet": -383.43,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "06-Jul-2026",
+        "fiiNet": 243.03,
+        "diiNet": 3791.42,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "03-Jul-2026",
+        "fiiNet": 1355.33,
+        "diiNet": -1953.89,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "02-Jul-2026",
+        "fiiNet": -311.82,
+        "diiNet": 1784.4,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "01-Jul-2026",
+        "fiiNet": -1140.5,
+        "diiNet": 3159.24,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "30-Jun-2026",
+        "fiiNet": -2556.75,
+        "diiNet": 6842.34,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "29-Jun-2026",
+        "fiiNet": -1350.1,
+        "diiNet": 2801.45,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "25-Jun-2026",
+        "fiiNet": 383.76,
+        "diiNet": 5747.75,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "24-Jun-2026",
+        "fiiNet": -1843.4,
+        "diiNet": 3637.26,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "23-Jun-2026",
+        "fiiNet": 17.86,
+        "diiNet": 680.21,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "22-Jun-2026",
+        "fiiNet": -635.91,
+        "diiNet": 1035.72,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "19-Jun-2026",
+        "fiiNet": 4859.07,
+        "diiNet": -1159.64,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "18-Jun-2026",
+        "fiiNet": -1025.2,
+        "diiNet": 3516.81,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "17-Jun-2026",
+        "fiiNet": 101.59,
+        "diiNet": 1561.4,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "16-Jun-2026",
+        "fiiNet": -749.18,
+        "diiNet": 0.06,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "15-Jun-2026",
+        "fiiNet": 200.05,
+        "diiNet": 3189.26,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "12-Jun-2026",
+        "fiiNet": -1082.18,
+        "diiNet": 5341.29,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "11-Jun-2026",
+        "fiiNet": -1987.09,
+        "diiNet": 4224.51,
+        "fiiIdxFutLong": 0,
+        "fiiIdxFutShort": 0,
+        "diiIdxFutLong": 0,
+        "diiIdxFutShort": 0
+      },
+      {
+        "date": "10-Jun-2026",
+        "fiiNet": -2124.98,
+        "diiNet": 3123.95,
+        "fiiIdxFutLong": 32698,
+        "fiiIdxFutShort": 304677,
+        "diiIdxFutLong": 68620,
+        "diiIdxFutShort": 15031
+      },
+      {
+        "date": "09-Jun-2026",
+        "fiiNet": -4566.03,
+        "diiNet": 6159.48,
+        "fiiIdxFutLong": 31170,
+        "fiiIdxFutShort": 308171,
+        "diiIdxFutLong": 65697,
+        "diiIdxFutShort": 15637
+      },
+      {
+        "date": "08-Jun-2026",
+        "fiiNet": -5555.67,
+        "diiNet": 5165.24,
+        "fiiIdxFutLong": 24810,
+        "fiiIdxFutShort": 302424,
+        "diiIdxFutLong": 64282,
+        "diiIdxFutShort": 20337
+      }
+    ],
+    "fiiNetSum7d": -7637.080000000002,
+    "diiNetSum7d": 13140.350000000002,
+    "fiiNetSum30d": -23582.07,
+    "diiNetSum30d": 74253.13
+  },
+  "accelerationEngine": {
+    "regime": "Reversal",
+    "expectedMove": 164.68,
+    "topCalls": [
+      {
+        "strike": 24200,
+        "ltp": 104.2,
+        "tp1": 109.41,
+        "tp2": 112.02,
+        "tp3": 117.23,
+        "sl": 72.94,
+        "rr": 0.17,
+        "confidence": 61,
+        "velocity": 0.35,
+        "accel": 75.4,
+        "delta": 0.59,
+        "gamma": 0.0019,
+        "theta": -41.59,
+        "vega": 4.94,
+        "iv": 15.74,
+        "oi": 109684,
+        "volume": 10728547,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24250,
+        "ltp": 74.4,
+        "tp1": 78.12,
+        "tp2": 79.98,
+        "tp3": 83.7,
+        "sl": 52.08,
+        "rr": 0.17,
+        "confidence": 61,
+        "velocity": 0.25,
+        "accel": 75.4,
+        "delta": 0.49,
+        "gamma": 0.0021,
+        "theta": -40.62,
+        "vega": 5.06,
+        "iv": 15.17,
+        "oi": 102807,
+        "volume": 7827291,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24300,
+        "ltp": 49.3,
+        "tp1": 51.77,
+        "tp2": 53,
+        "tp3": 55.46,
+        "sl": 34.51,
+        "rr": 0.17,
+        "confidence": 51,
+        "velocity": 0.16,
+        "accel": 74,
+        "delta": 0.38,
+        "gamma": 0.0021,
+        "theta": -36.79,
+        "vega": 4.83,
+        "iv": 14.5,
+        "oi": 141594,
+        "volume": 7616350,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24350,
+        "ltp": 31,
+        "tp1": 32.55,
+        "tp2": 33.33,
+        "tp3": 34.88,
+        "sl": 21.7,
+        "rr": 0.17,
+        "confidence": 35,
+        "velocity": 0.1,
+        "accel": 71.9,
+        "delta": 0.28,
+        "gamma": 0.0019,
+        "theta": -31.22,
+        "vega": 4.25,
+        "iv": 14.1,
+        "oi": 76380,
+        "volume": 4144703,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24400,
+        "ltp": 18.2,
+        "tp1": 19.11,
+        "tp2": 19.56,
+        "tp3": 20.47,
+        "sl": 12.74,
+        "rr": 0.17,
+        "confidence": 35,
+        "velocity": 0.06,
+        "accel": 71.5,
+        "delta": 0.19,
+        "gamma": 0.0015,
+        "theta": -24.35,
+        "vega": 3.41,
+        "iv": 13.79,
+        "oi": 114975,
+        "volume": 4801575,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      }
+    ],
+    "topPuts": [
+      {
+        "strike": 24150,
+        "ltp": 31.5,
+        "tp1": 33.08,
+        "tp2": 33.86,
+        "tp3": 35.44,
+        "sl": 22.05,
+        "rr": 0.17,
+        "confidence": 51,
+        "velocity": 0.11,
+        "accel": 73.9,
+        "delta": -0.29,
+        "gamma": 0.002,
+        "theta": -28.39,
+        "vega": 4.37,
+        "iv": 13.63,
+        "oi": 162392,
+        "volume": 6502080,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24300,
+        "ltp": 90.9,
+        "tp1": 95.45,
+        "tp2": 97.72,
+        "tp3": 102.26,
+        "sl": 63.63,
+        "rr": 0.17,
+        "confidence": 51,
+        "velocity": 0.28,
+        "accel": 71.6,
+        "delta": -0.65,
+        "gamma": 0.0025,
+        "theta": -24.63,
+        "vega": 4.71,
+        "iv": 11.74,
+        "oi": 64326,
+        "volume": 3343049,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 23900,
+        "ltp": 6.3,
+        "tp1": 6.62,
+        "tp2": 6.77,
+        "tp3": 7.09,
+        "sl": 4.41,
+        "rr": 0.17,
+        "confidence": 35,
+        "velocity": 0.02,
+        "accel": 71.5,
+        "delta": -0.06,
+        "gamma": 0.0006,
+        "theta": -14.07,
+        "vega": 1.6,
+        "iv": 17.99,
+        "oi": 125934,
+        "volume": 2560334,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 23950,
+        "ltp": 8.25,
+        "tp1": 8.66,
+        "tp2": 8.87,
+        "tp3": 9.28,
+        "sl": 5.78,
+        "rr": 0.17,
+        "confidence": 35,
+        "velocity": 0.03,
+        "accel": 71.5,
+        "delta": -0.08,
+        "gamma": 0.0007,
+        "theta": -16.37,
+        "vega": 1.97,
+        "iv": 16.99,
+        "oi": 93838,
+        "volume": 1998962,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      },
+      {
+        "strike": 24100,
+        "ltp": 22.15,
+        "tp1": 23.26,
+        "tp2": 23.81,
+        "tp3": 24.92,
+        "sl": 15.51,
+        "rr": 0.17,
+        "confidence": 35,
+        "velocity": 0.07,
+        "accel": 71.5,
+        "delta": -0.22,
+        "gamma": 0.0016,
+        "theta": -25.77,
+        "vega": 3.71,
+        "iv": 14.43,
+        "oi": 176412,
+        "volume": 5960640,
+        "signal": "WATCH",
+        "speed": "INSTANT",
+        "reasons": [
+          "Volume Spike",
+          "Dealer Unwind",
+          "Institutional Buying",
+          "Reversal Alignment",
+          "High Delta Reaction",
+          "Hidden Accumulation"
+        ]
+      }
+    ]
+  },
+  "crossMarket": {
+    "marketBreadth": {
+      "niftyPCR": 1.3567952661255824,
+      "bankniftyPCR": 0.9266757816060524,
+      "finniftyPCR": 0.539,
+      "midcpPCR": 1.0672223197052115,
+      "sensexPCR": 1.2040277269856046
+    },
+    "oiShift": {
+      "niftyCallChg": 225988,
+      "niftyPutChg": -164280,
+      "bankniftyCallChg": 31051,
+      "bankniftyPutChg": -15872
+    },
+    "fiiDiiBias": {
+      "date": "20-Jul-2026",
+      "fiiNet": -1121.04,
+      "diiNet": 1312.03,
+      "fiiBuy": 13312.67,
+      "fiiSell": 14433.71,
+      "diiBuy": 16187.84,
+      "diiSell": 14875.81
+    },
+    "vixLevel": 12.98,
+    "niftyFuturesBasis": "0.000%",
+    "bankniftyFuturesBasis": "-58.170%"
+  }
+}

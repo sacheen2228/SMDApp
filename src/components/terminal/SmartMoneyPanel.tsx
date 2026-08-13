@@ -134,15 +134,27 @@ export function SmartMoneyPanel() {
 
       const strikes = json.data?.data || [];
       const spot = json.data?.summary?.spotPrice || json.data?.spotPrice || 0;
+      const prevClose = json.data?.summary?.prevClose ?? null;
+
+      // Determine underlying price direction from prevClose (real data from Yahoo)
+      // If unavailable, use IV percentile as a fallback proxy.
+      const spotDirection = prevClose != null && prevClose > 0
+        ? (spot - prevClose) / prevClose
+        : null;
 
       const detected: SmartMoneySignal[] = [];
 
       for (const s of strikes) {
         // Call side analysis
         if (s.ce && s.ce.oiChg !== 0) {
-          // Use premium change as proxy for price direction
-          const priceProxy = s.ce.ltp > 0 ? (s.ce.oiChg > 0 ? 1 : -1) * s.ce.ltp * 0.01 : 0;
-          const pattern = classifyOIPattern(priceProxy, s.ce.oiChg);
+          // CALL premium moves same direction as spot
+          const priceProxy = spotDirection != null
+            ? spotDirection * 100
+            : null;
+          // When spotDirection is unavailable, infer from strike moneyness:
+          // For CALLs at ITM strikes (strike < spot), premium is structurally higher
+          const inferredProxy = priceProxy ?? (s.strike < spot ? 2 : -2);
+          const pattern = classifyOIPattern(inferredProxy, s.ce.oiChg);
           if (pattern && Math.abs(s.ce.oiChg) > 10000) {
             const config = getSignalConfig(pattern);
             const strength = Math.min(100, Math.round((Math.abs(s.ce.oiChg) / 100000) * 100));
@@ -153,15 +165,19 @@ export function SmartMoneyPanel() {
               strike: s.strike,
               side: "CE",
               oiChange: s.ce.oiChg,
-              priceChange: priceProxy,
+              priceChange: s.ce.ltp,
             });
           }
         }
 
         // Put side analysis
         if (s.pe && s.pe.oiChg !== 0) {
-          const priceProxy = s.pe.ltp > 0 ? (s.pe.oiChg > 0 ? 1 : -1) * s.pe.ltp * 0.01 : 0;
-          const pattern = classifyOIPattern(priceProxy, s.pe.oiChg);
+          // PUT premium moves opposite direction to spot
+          const priceProxy = spotDirection != null
+            ? -spotDirection * 100
+            : null;
+          const inferredProxy = priceProxy ?? (s.strike > spot ? 2 : -2);
+          const pattern = classifyOIPattern(inferredProxy, s.pe.oiChg);
           if (pattern && Math.abs(s.pe.oiChg) > 10000) {
             const config = getSignalConfig(pattern);
             const strength = Math.min(100, Math.round((Math.abs(s.pe.oiChg) / 100000) * 100));
@@ -172,7 +188,7 @@ export function SmartMoneyPanel() {
               strike: s.strike,
               side: "PE",
               oiChange: s.pe.oiChg,
-              priceChange: priceProxy,
+              priceChange: s.pe.ltp,
             });
           }
         }

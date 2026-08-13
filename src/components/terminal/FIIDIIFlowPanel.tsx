@@ -172,9 +172,9 @@ export function FIIDIIFlowPanel() {
 
       const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
 
-      // FII bias derivation:
-      // FIs sell puts (bullish) when call OI increases more than put OI
-      // FIs sell calls (bearish) when put OI increases more than call OI
+      // OI-based bias derivation:
+      // Call OI building = call writers selling = bearish (resistance building)
+      // Put OI building = put writers selling = bullish (support building)
       const netCallOIDelta = totalCallOIChg;
       const netPutOIDelta = totalPutOIChg;
       const oiDeltaDiff = netCallOIDelta - netPutOIDelta;
@@ -186,18 +186,18 @@ export function FIIDIIFlowPanel() {
 
       if (totalOIDelta > 0) {
         const ratio = oiDeltaDiff / totalOIDelta;
-        if (ratio > 0.1) {
+        if (ratio < -0.1) {
           fiiBias = "BULLISH";
-          fiiBiasStrength = Math.round(50 + ratio * 50);
-          fiiReason = `Call OI building (+${(
-            netCallOIDelta / 100000
-          ).toFixed(1)}L) — FIs selling puts, bullish`;
-        } else if (ratio < -0.1) {
-          fiiBias = "BEARISH";
           fiiBiasStrength = Math.round(50 + Math.abs(ratio) * 50);
           fiiReason = `Put OI building (+${(
             netPutOIDelta / 100000
-          ).toFixed(1)}L) — FIs selling calls, bearish`;
+          ).toFixed(1)}L) — support building, bullish`;
+        } else if (ratio > 0.1) {
+          fiiBias = "BEARISH";
+          fiiBiasStrength = Math.round(50 + ratio * 50);
+          fiiReason = `Call OI building (+${(
+            netCallOIDelta / 100000
+          ).toFixed(1)}L) — resistance building, bearish`;
         } else {
           fiiBias = "NEUTRAL";
           fiiBiasStrength = 50;
@@ -287,7 +287,7 @@ export function FIIDIIFlowPanel() {
   useEffect(() => {
     setLoading(true);
     fetchData();
-    const interval = setInterval(fetchData, 15000);
+    const interval = setInterval(fetchData, 900000);
     return () => clearInterval(interval);
   }, [fetchData]);
 

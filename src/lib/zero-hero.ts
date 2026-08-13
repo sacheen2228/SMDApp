@@ -440,7 +440,8 @@ export function analyzeZeroHeroChain(
   return { oiAnalysis, gammaBlastBoost, expiry, vix };
 }
 
-// Evaluate a single CE/PE candidate (reuses greeks + risk-management + expiry-calculator)
+// Evaluate a single CE/PE candidate — expiry-aware
+// On expiry day, premium decays to zero for OTM strikes, SL must be tight, TP must be realistic.
 export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHeroCandidateResult {
   const { strike, type, ltp, delta, iv, oiChg, volume, spot, lotSize, capital, riskPerTradePercent, maxPositionSize, context } = input;
   const reasons: string[] = [];
@@ -449,13 +450,42 @@ export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHe
   const daysToExpiry = context.expiry?.days_to_expiry ?? 1;
   const tte = Math.max(1 / 365, daysToExpiry / 365);
   const ivDecimal = iv > 0 ? iv / 100 : 0.15;
+  const isExpiryDay = daysToExpiry < 1;
+  const isExpiryEve = daysToExpiry <= 1;
 
   // ── Greeks (reuse greeks.ts) ──
   const g = calculateGreeks(spot, strike, tte, ivDecimal, type === 'CE');
   reasons.push(`Γ=${g.gamma.toFixed(4)} Θ=${g.theta.toFixed(1)} Δ=${g.delta.toFixed(2)}`);
 
+  // ── Expiry day premium survival checks ──
+  const distFromSpot = Math.abs(strike - spot);
+  const isOTM = type === "CE" ? strike > spot : strike < spot;
+  const strikesAway = Math.round(distFromSpot / 50); // NIFTY 50pt increments
+
+  if (isExpiryDay || isExpiryEve) {
+    reasons.push(`EXPIRY: ${daysToExpiry}d — premium decay extreme`);
+
+    // OTM > 3 strikes on expiry day: premium already near zero, skip
+    if (isOTM && strikesAway > 3) {
+      return {
+        score: 0, confidence: 0, direction: "NONE", reasons: [`OTM ${strikesAway} strikes away — premium will go to ZERO on expiry`],
+        conf: 0, prob: 0, rr: 0, sl: ltp * 0.5, tp1: ltp, tp2: ltp, stars: 0, lots: 0,
+      };
+    }
+
+    // Premium < ₹20 and OTM on expiry day: essentially zero
+    if (isOTM && ltp < 20) {
+      return {
+        score: 0, confidence: 0, direction: "NONE", reasons: [`OTM premium ₹${ltp} — already near zero, further decay to ₹0`],
+        conf: 0, prob: 0, rr: 0, sl: ltp * 0.5, tp1: ltp, tp2: ltp, stars: 0, lots: 0,
+      };
+    }
+  }
+
   // ── Position sizing (reuse risk-management.ts) ──
-  const slPremium = ltp * 0.5;
+  // Expiry day: tighter SL for buyers
+  const slPct = isExpiryDay ? 0.25 : isExpiryEve ? 0.35 : 0.50;
+  const slPremium = ltp * slPct;
   const pos = calculatePositionSize({
     capital,
     riskPerTradePercent,
@@ -469,53 +499,127 @@ export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHe
   // ── Confidence from existing engines (0-100) ──
   let conf = 0;
 
-  // Delta near ATM (0.40-0.60) is ideal for Zero Hero
+  // Delta proximity — on expiry day, only ATM/ITM have premium survival
   const absDelta = Math.abs(g.delta);
-  if (absDelta >= 0.40 && absDelta <= 0.60) conf += 25;
-  else if (absDelta >= 0.30 && absDelta <= 0.70) conf += 15;
-  else conf += 5;
+  if (isExpiryDay || isExpiryEve) {
+    if (absDelta >= 0.45) conf += 25;      // Near ITM/ITM — premium survives
+    else if (absDelta >= 0.30) conf += 12; // ATM-ish — partial survival
+    else conf += 2;                         // OTM — premium going to zero
+    reasons.push(absDelta >= 0.45 ? "Delta safe (ITM/ATM — premium survives)" : "Low delta — premium at risk");
+  } else {
+    if (absDelta >= 0.40 && absDelta <= 0.60) conf += 25;
+    else if (absDelta >= 0.30 && absDelta <= 0.70) conf += 15;
+    else conf += 5;
+  }
 
-  // OI change momentum
-  const oiScore = Math.min(25, (Math.abs(oiChg) / 50000) * 25);
-  conf += oiScore;
-  if (Math.abs(oiChg) > 20000) reasons.push('Strong OI change');
+  // ═══════════════════════════════════════════════════════════════
+  // CORRECTED: OI change momentum — uses SIGNED direction, not abs()
+  // CE: positive oiChg = buildup (bullish) → +points
+  // CE: negative oiChg = unwinding (bearish) → -penalty
+  // PE: positive oiChg = buildup (bearish for puts, actually negative) → -points
+  // PE: negative oiChg = unwinding (bullish for puts) → +points
+  // ═══════════════════════════════════════════════════════════════
+  const isOiBullish = (type === "CE" && oiChg > 0) || (type === "PE" && oiChg < 0);
+  const isOiBearish = (type === "CE" && oiChg < 0) || (type === "PE" && oiChg > 0);
 
-  // Volume confirmation
-  const volScore = Math.min(15, (volume / 100000) * 15);
-  conf += volScore;
+  if (isOiBullish) {
+    // OI buildup in the direction of the trade = strong conviction
+    const oiBullScore = Math.min(25, (Math.abs(oiChg) / 50000) * 25);
+    conf += oiBullScore;
+    reasons.push(`OI +${Math.round(oiBullScore)} (${type==="CE"?"call":"put"} buildup +${Math.round(oiChg)})`);
+  } else if (isOiBearish) {
+    // OI unwinding or counter-directional = penalize
+    const oiBearPenalty = Math.min(20, (Math.abs(oiChg) / 60000) * 20);
+    conf -= oiBearPenalty;
+    reasons.push(`OI -${Math.round(oiBearPenalty)} (counter-directional OI ${Math.round(oiChg)})`);
+  } else {
+    // Minimal / no OI change
+    if (Math.abs(oiChg) < 500) {
+      reasons.push("OI flat — no conviction");
+    }
+  }
 
-  // IV rank context (lower IV rank favours directionally)
+  // PCR context adjustment: use the chain-wide PCR to bias direction
+  const pcr = context.oiAnalysis.pcrOI;
+  if (pcr > 0) {
+    if (type === "CE" && pcr < 0.8) {
+      conf += 8; reasons.push(`PCR ${pcr.toFixed(2)} (low — bullish, calls favored)`);
+    } else if (type === "CE" && pcr > 1.3) {
+      conf -= 8; reasons.push(`PCR ${pcr.toFixed(2)} (high — bearish, calls penalized)`);
+    } else if (type === "PE" && pcr > 1.3) {
+      conf += 8; reasons.push(`PCR ${pcr.toFixed(2)} (high — bearish, puts favored)`);
+    } else if (type === "PE" && pcr < 0.8) {
+      conf -= 8; reasons.push(`PCR ${pcr.toFixed(2)} (low — bullish, puts penalized)`);
+    }
+  }
+
+  // Max pain alignment: if max pain is above spot, pinning up favors PE; below spot favors CE
+  const maxPain = context.oiAnalysis.maxPain;
+  if (maxPain > 0) {
+    const mpDist = (maxPain - spot) / spot;
+    if (type === "CE" && mpDist < -0.005) {
+      conf += 5; reasons.push(`Max Pain ${maxPain} below spot — calls aligned`);
+    } else if (type === "PE" && mpDist > 0.005) {
+      conf += 5; reasons.push(`Max Pain ${maxPain} above spot — puts aligned`);
+    } else if (type === "CE" && mpDist > 0.01) {
+      conf -= 5; reasons.push(`Max Pain ${maxPain} far above — calls fighting pin`);
+    } else if (type === "PE" && mpDist < -0.01) {
+      conf -= 5; reasons.push(`Max Pain ${maxPain} far below — puts fighting pin`);
+    }
+  }
+
+  // Volume confirmation — volume > 5000 confirms liquidity, not direction
+  if (volume >= 5000) conf += 8;
+  else if (volume >= 2000) conf += 4;
+  else if (volume > 0) conf += 2;
+
+  // IV rank context
   if (iv > 0 && iv < 60) conf += 10;
 
-  // Gamma blast boost (reuse gamma-blast.ts)
+  // Gamma blast boost
   if (context.gammaBlastBoost > 0) {
     conf += context.gammaBlastBoost;
     reasons.push(`Gamma Blast +${context.gammaBlastBoost}`);
   }
 
-  // SMC bias (optional, when candles wired via market-structure.ts)
+  // SMC bias (optional)
   if (input.smcBias === 'BULLISH' && type === 'CE') { conf += 10; reasons.push('SMC bullish'); }
   if (input.smcBias === 'BEARISH' && type === 'PE') { conf += 10; reasons.push('SMC bearish'); }
 
-  // Volume profile (optional, when candles wired via volume-analysis.ts)
+  // Volume profile (optional)
   if (input.pocDistancePct !== undefined) {
     if (Math.abs(input.pocDistancePct) < 0.005) { conf += 5; reasons.push('Near POC'); }
   }
 
+  // ── Theta penalty on expiry day ──
+  // Theta burns 60-80% of remaining premium on expiry day
+  // Higher theta = faster premium decay = lower confidence for buyers
+  if (isExpiryDay || isExpiryEve) {
+    const thetaPenalty = Math.min(30, Math.abs(g.theta) * 2);
+    conf -= thetaPenalty;
+    reasons.push(`Theta burn -${Math.round(thetaPenalty)} (₹${Math.abs(g.theta).toFixed(1)}/day decay)`);
+  }
+
   conf = Math.max(0, Math.min(100, Math.round(conf)));
 
-  // Probability of profit (rough, from delta + gamma blast)
+  // Probability of profit
   const prob = Math.min(95, Math.round(conf * 0.85 + absDelta * 10));
 
-  // Risk:Reward
-  const slPct = 0.5;
+  // Risk:Reward — compute from actual SL and TP levels
   const sl = ltp * (1 - slPct);
-  const rr = conf > 60 ? 3 : conf > 40 ? 2 : 1;
-  const tp1 = ltp * (1 + slPct);
-  const tp2 = ltp * (1 + slPct * rr);
+  const tp1Mult = isExpiryDay ? 0.20 : isExpiryEve ? 0.30 : 0.50;
+  const tp1 = ltp * (1 + tp1Mult);
+  const tp2 = isExpiryDay ? ltp * (1 + 0.35) : isExpiryEve ? ltp * (1 + 0.50) : ltp * (1 + slPct * 3);
+  const rr = Math.round((tp1 - ltp) / (ltp - sl) * 10) / 10;
 
   const stars = Math.max(1, Math.min(5, Math.round(conf / 20)));
   const direction: 'CALL' | 'PUT' | 'NONE' = type === 'CE' ? 'CALL' : 'PUT';
+
+  // ── Expiry day special notes in reasons ──
+  if (isExpiryDay) {
+    reasons.push("⚠️ Expiry day: close by 2:30 PM, theta accelerates");
+    reasons.push(`SL ${Math.round(slPct * 100)}% · TP +${Math.round(tp1Mult * 100)}% (tight expiry targets)`);
+  }
 
   return {
     score: conf,

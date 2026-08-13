@@ -128,10 +128,10 @@ export function confidenceLabel(score: number): ConfidenceLabel {
 }
 
 export function qualityGrade(confidence: number, rr: number): QualityGrade {
-  if (confidence >= 95) return "A+";
-  if (confidence >= 90) return "A";
-  if (confidence >= 80) return "B";
-  if (confidence >= 70) return "C";
+  if (confidence >= 85) return "A+";
+  if (confidence >= 75) return "A";
+  if (confidence >= 65) return "B";
+  if (confidence >= 50) return "C";
   return "D";
 }
 
@@ -159,9 +159,9 @@ function computeMinConfidence(
   vix?: number,
   daysToExpiry?: number
 ): number {
-  if (vix != null && vix > 30) return 80;
-  if (ms.trend === "NEUTRAL" || (!ms.bos && !ms.choch)) return 80;
-  if (daysToExpiry != null && daysToExpiry >= 7) return 75;
+  if (vix != null && vix > 30) return 75;
+  if (ms.trend === "NEUTRAL" || (!ms.bos && !ms.choch)) return 40;
+  if (daysToExpiry != null && daysToExpiry >= 7) return 70;
   if (ms.bos && ms.choch) return 70;
   if (daysToExpiry != null && daysToExpiry <= 1) return 70;
   if (vix != null && vix < 12) return 70;
@@ -323,12 +323,14 @@ function volumeProfileCheck(candles: CandleData[], spot: number): { poc: number;
 // ─── Factor Scoring (each 0-100) ────────────────────────────────
 
 function scoreStructure(ms: SMCMarketStructure): number {
-  let s = 0;
-  if (ms.trend !== "NEUTRAL") s += 20;
-  if (ms.bos) s += 20;
-  if (ms.choch) s += 20;
-  if (ms.swingHigh > 0 && ms.swingLow > 0) s += 20;
-  if (ms.supportLevels.length > 0 || ms.resistanceLevels.length > 0) s += 20;
+  let s = 20;
+  if (ms.trend !== "NEUTRAL") s += 15;
+  if (ms.bos) s += 15;
+  if (ms.choch) s += 15;
+  if (ms.swingHigh > 0 && ms.swingLow > 0) s += 15;
+  if (ms.supportLevels.length > 0 || ms.resistanceLevels.length > 0) s += 15;
+  const srCount = ms.supportLevels.length + ms.resistanceLevels.length;
+  if (srCount >= 4) s += 5;
   return Math.min(100, s);
 }
 
@@ -595,8 +597,6 @@ function applyFilters(
 
   if (confidence < minConf) rejected.push(`Confidence ${confidence} < ${minConf}`);
 
-  if (!ms.bos && !ms.choch) rejected.push("No BOS or CHoCH detected");
-
   if (atr > 0 && spot > 0) {
     const atrPct = atr / spot;
     if (atrPct < 0.002) rejected.push(`ATR ${(atrPct * 100).toFixed(2)}% too low`);
@@ -621,14 +621,16 @@ function applyFilters(
 
   // Call side checks
   if (type === "CE") {
-    if (ms.trend === "BEARISH") rejected.push("Buying calls in downtrend");
+    const isRanging = !ms.bos && !ms.choch;
+    if (ms.trend === "BEARISH" && !isRanging) rejected.push("Buying calls in downtrend");
     const otmPct = (strike - spot) / spot;
     if (otmPct > 0.04) rejected.push(`CE ${(otmPct * 100).toFixed(1)}% OTM — too far`);
   }
 
   // Put side checks
   if (type === "PE") {
-    if (ms.trend === "BULLISH") rejected.push("Buying puts in uptrend");
+    const isRanging = !ms.bos && !ms.choch;
+    if (ms.trend === "BULLISH" && !isRanging) rejected.push("Buying puts in uptrend");
     const otmPct = (spot - strike) / spot;
     if (otmPct > 0.04) rejected.push(`PE ${(otmPct * 100).toFixed(1)}% OTM — too far`);
   }
@@ -644,19 +646,6 @@ function applyFilters(
     if (Math.abs(g.delta) < 0.10) rejected.push(`Delta ${g.delta.toFixed(3)} too low — deep OTM`);
     if (g.theta < 0 && Math.abs(g.theta) > entry * 0.4) rejected.push(`Theta ${g.theta.toFixed(1)} > 40% of premium`);
     if (g.gamma > 0.1) rejected.push(`Gamma ${g.gamma.toFixed(4)} too high`);
-  }
-
-  // Order block OR FVG (relaxed from AND to OR)
-  const hasAlignedOB = ms.orderBlocks.some(ob =>
-    (type === "CE" && ob.direction === "BULLISH") ||
-    (type === "PE" && ob.direction === "BEARISH")
-  );
-  const hasAlignedFVG = ms.fvgs.some(f =>
-    (type === "CE" && f.direction === "BULLISH") ||
-    (type === "PE" && f.direction === "BEARISH")
-  );
-  if (!hasAlignedOB && !hasAlignedFVG) {
-    rejected.push("No aligned order block or FVG");
   }
 
   if (rejected.length === 0) {
@@ -686,27 +675,14 @@ function computeSL(
   })();
 
   if (isOption) {
-    const atrBasedSL = type === "CE"
-      ? entry - Math.max(atr * 0.5 * atrMult, entry * 0.10)
-      : entry + Math.max(atr * 0.5 * atrMult, entry * 0.10);
+    // Premium-based SL — both CE and PE buyers lose when premium drops
+    const stopPct = regime === "RANGE" ? 0.18 :
+                    regime === "WEEKLY_EXPIRY" ? 0.22 :
+                    regime === "MONTHLY_EXPIRY" ? 0.25 : 0.20;
 
-    const swingSL = type === "CE"
-      ? (ms.swingLow > 0 ? entry - (spot - ms.swingLow) * 0.25 : atrBasedSL)
-      : (ms.swingHigh > 0 ? entry + (ms.swingHigh - spot) * 0.25 : atrBasedSL);
+    const sl = entry * (1 - stopPct);
 
-    const obSL = (() => {
-      const ob = type === "CE"
-        ? ms.orderBlocks.filter(o => o.direction === "BULLISH").pop()
-        : ms.orderBlocks.filter(o => o.direction === "BEARISH").pop();
-      if (!ob || ob.price <= 0) return swingSL;
-      return type === "CE"
-        ? Math.min(swingSL, entry - Math.abs(spot - ob.price) * 0.25)
-        : Math.max(swingSL, entry + Math.abs(spot - ob.price) * 0.25);
-    })();
-
-    const minSL = entry * 0.08;
-    const maxSL = Math.max(entry * 0.45, atr * atrMult * 0.8);
-    return Math.round(Math.min(maxSL, Math.max(minSL, obSL)) * 100) / 100;
+    return Math.round(Math.max(entry * 0.08, Math.min(entry * 1.50, sl)) * 100) / 100;
   }
 
   if (type === "CE") {
@@ -733,12 +709,13 @@ function computeTP(
     return [2, 3, 5] as const;
   })();
 
-  const tp1 = type === "CE" ? entry + risk * r1 : entry - risk * r1;
-  const tp2 = type === "CE" ? entry + risk * r2 : entry - risk * r2;
+  // Option buyers profit when premium rises — TP always above entry for both CE and PE
+  const tp1 = isOption ? entry + risk * r1 : type === "CE" ? entry + risk * r1 : entry - risk * r1;
+  const tp2 = isOption ? entry + risk * r2 : type === "CE" ? entry + risk * r2 : entry - risk * r2;
 
   let tp3: number | undefined;
   if (isOption) {
-    tp3 = type === "CE" ? entry + risk * r3 : entry - risk * r3;
+    tp3 = entry + risk * r3;
   } else {
     if (type === "CE" && ms.resistanceLevels.length > 0) {
       tp3 = ms.resistanceLevels[0];
@@ -774,14 +751,10 @@ function computePositionSize(
     return { lots: 0, quantity: 0, capitalUsed: 0, maxLoss: 0, maxGain: 0, riskPercent: 0 };
   }
 
-  const confidenceMod = confidence >= 95 ? 1.0 : confidence >= 90 ? 0.90 : confidence >= 85 ? 0.75 : confidence >= 80 ? 0.50 : 0;
+  const confidenceMod = confidence >= 95 ? 1.0 : confidence >= 90 ? 0.90 : confidence >= 85 ? 0.75 : confidence >= 80 ? 0.50 : confidence >= 60 ? 0.35 : confidence >= 40 ? 0.20 : 0.10;
   const vixMod = vixMultiplier > 2 ? 0.50 : vixMultiplier > 1.4 ? 0.75 : vixMultiplier < 0.9 ? 1.0 : 0.85;
   const expiryMod = daysToExpiry <= 1 ? 0.75 : daysToExpiry >= 7 ? 0.90 : 1.0;
   const kellyPct = riskPercent * confidenceMod * vixMod * expiryMod;
-
-  if (confidenceMod === 0) {
-    return { lots: 0, quantity: 0, capitalUsed: 0, maxLoss: 0, maxGain: 0, riskPercent: 0 };
-  }
 
   const capitalRisk = capital * (kellyPct / 100);
   const maxLots = maxPositionSize > 0 ? maxPositionSize : 100;
@@ -915,10 +888,10 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
 
   // Early rejection if basic structure missing
   if (!ms.bos && !ms.choch) {
-    rejectionReasons.push("No BOS or CHoCH — insufficient structure");
+    rejectionReasons.push("No BOS/CHoCH detected — ranging market");
   }
   if (ms.trend === "NEUTRAL") {
-    rejectionReasons.push("Neutral trend — no clear direction");
+    rejectionReasons.push("Neutral trend — reduced confidence");
   }
 
   // Build candidates from near-ATM strikes
@@ -940,7 +913,7 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
 
       const strikeGreeksScore = scoreGreeks(
         st.strike, spot, type, daysToExpiry,
-        avgIv > 0 ? avgIv : 0.15
+        avgIv > 0 ? avgIv / 100 : 0.15
       );
 
       // Per-strike confidence with per-strike Greeks

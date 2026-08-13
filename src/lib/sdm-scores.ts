@@ -539,22 +539,33 @@ function scoreGammaExposure(input: QualityScoreInput): QualityScoreFactor {
 
   const regime = gexResult.dealerRegime;
   const isCall = tradeDirection === 'CALL';
+  const gammaFlip = gexResult.gammaFlip;
 
-  // LONG_GAMMA + CALL → 75 (mean reversion favors)
-  // SHORT_GAMMA + PUT → 75 (trending favors)
-  // Opposite → 30
   let score: number;
   let direction: 'CALL' | 'PUT' | 'NEUTRAL';
 
-  if (
-    (regime === 'LONG_GAMMA' && isCall) ||
-    (regime === 'SHORT_GAMMA' && !isCall)
-  ) {
-    score = 75;
-    direction = isCall ? 'CALL' : 'PUT';
+  if (regime === 'LONG_GAMMA') {
+    // Dealers long gamma → mean reversion environment.
+    // Directional breakouts likely stall, fade at extremes works.
+    // Score neutral for directional bets.
+    score = 50;
+    direction = 'NEUTRAL';
   } else {
-    score = 30;
-    direction = isCall ? 'PUT' : 'CALL';
+    // SHORT_GAMMA → trend acceleration environment.
+    // Momentum trades aligned with the dominant gamma wall succeed.
+    // Spot above gamma flip → upside acceleration → favor calls.
+    // Spot below gamma flip → downside acceleration → favor puts.
+    const favoursCalls = gexResult.gexProfile.some(g => g.callGEX > Math.abs(g.putGEX));
+    if (favoursCalls && isCall) {
+      score = 75;
+      direction = 'CALL';
+    } else if (!favoursCalls && !isCall) {
+      score = 75;
+      direction = 'PUT';
+    } else {
+      score = 30;
+      direction = isCall ? 'PUT' : 'CALL';
+    }
   }
 
   return {
@@ -562,7 +573,7 @@ function scoreGammaExposure(input: QualityScoreInput): QualityScoreFactor {
     score,
     weight: w,
     weightedScore: score * w,
-    detail: `${regime} regime — ${score >= 60 ? 'favors' : 'opposes'} ${tradeDirection} (gamma flip at ${gexResult.gammaFlip.toFixed(0)})`,
+    detail: `${regime} regime — ${score >= 60 ? 'favors' : score === 50 ? 'neutral vs' : 'opposes'} ${tradeDirection} (gamma flip at ${gammaFlip.toFixed(0)})`,
     source: 'GEX Engine',
     direction,
   };

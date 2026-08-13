@@ -59,9 +59,10 @@ bun run dev        # starts on :3000
 | `src/stores/useTradingStore.ts` | Zustand store for trading state |
 | `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 13 tools |
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode — calls `/api/agent` |
-| `src/lib/greek-flow-engine.ts` | Institutional Greek Flow scoring engine (10 factors, history tracking, TP/SL) |
-| `src/app/api/greek-flow/route.ts` | Greek Flow API endpoint |
-| `src/components/terminal/GreekFlowHeatmap.tsx` | Greek Flow Heatmap UI (heat colors, top panel, top 5 calls/puts) |
+| `src/lib/option-acceleration-engine.ts` | Option Acceleration Engine (10 sub-engines: delta accel, gamma explosion, OI absorption, volume momentum, institutional flow, premium elasticity, historical memory, time decay, regime + premium velocity + TP1/TP2/TP3) |
+| `src/lib/greek-flow-engine.ts` | **@deprecated** — old Greek Flow scoring engine, replaced by option-acceleration-engine.ts |
+| `src/app/api/greek-flow/route.ts` | Greek Flow API endpoint → runs acceleration engine |
+| `src/components/terminal/GreekFlowHeatmap.tsx` | Option Acceleration UI (12 dashboard cards, premium race table, top 5 calls/puts, full heatmap) |
 | `src/components/terminal/EnhancedOptionChain.tsx` | Enhanced Option Chain (Greeks, IV skew, OI bars, click-to-trade, sorting) |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
 | `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |

@@ -158,14 +158,14 @@ function factorBreadth(breadth: number | null): { score: number; explanation: st
 }
 
 function factorGlobalCues(
-  usMarket: number | null,
-  asianMarket: number | null
+  usMarket: number | null | undefined,
+  asianMarket: number | null | undefined
 ): { score: number; explanation: string; dataStatus: DataAvailability } {
   const parts: string[] = [];
   let score = 0;
   let dataStatus: DataAvailability = "MISSING";
 
-  if (usMarket !== null) {
+  if (usMarket != null && isFinite(usMarket)) {
     const usScore = Math.max(-50, Math.min(50, usMarket * 200));
     score += usScore * 0.6;
     parts.push(`US ${usMarket >= 0 ? "+" : ""}${usMarket.toFixed(2)}%`);
@@ -174,7 +174,7 @@ function factorGlobalCues(
     parts.push("US N/A");
   }
 
-  if (asianMarket !== null) {
+  if (asianMarket != null && isFinite(asianMarket)) {
     const asScore = Math.max(-50, Math.min(50, asianMarket * 200));
     score += asScore * 0.4;
     parts.push(`Asia ${asianMarket >= 0 ? "+" : ""}${asianMarket.toFixed(2)}%`);
@@ -223,6 +223,77 @@ function factorHistoricalStats(
   return {
     score,
     explanation: `Historical: ${(hist.gapUpProb * 100).toFixed(0)}% up / ${(hist.gapDownProb * 100).toFixed(0)}% down (${hist.totalSamples} sessions, last20 acc ${hist.last20Accuracy.toFixed(0)}%) → ${dir}`,
+    dataStatus: "AVAILABLE",
+  };
+}
+
+function factorInstitutional(
+  input: GapInput
+): { score: number; explanation: string; dataStatus: DataAvailability } {
+  const parts: string[] = [];
+  let score = 0;
+  const hasFii = input.institutionalFiiDirection && input.institutionalFiiScore !== undefined;
+  const hasPro = input.institutionalProDirection && input.institutionalProScore !== undefined;
+
+  if (!hasFii && !hasPro) {
+    return { score: 0, explanation: "NSE Participant OI data unavailable", dataStatus: "MISSING" };
+  }
+
+  // FII directional score (score > 55 = significant)
+  if (hasFii) {
+    const fiiDir = input.institutionalFiiDirection;
+    const fiiSc = input.institutionalFiiScore!;
+    if (fiiDir === 'bullish' && fiiSc > 55) { score += 40; parts.push(`FII bullish(${fiiSc})`); }
+    else if (fiiDir === 'bearish' && fiiSc > 55) { score -= 40; parts.push(`FII bearish(${fiiSc})`); }
+    else if (fiiDir === 'bullish') { score += 15; parts.push(`FII mildly bullish(${fiiSc})`); }
+    else if (fiiDir === 'bearish') { score -= 15; parts.push(`FII mildly bearish(${fiiSc})`); }
+    else { parts.push(`FII neutral(${fiiSc})`); }
+  }
+
+  // Pro directional score
+  if (hasPro) {
+    const proDir = input.institutionalProDirection;
+    const proSc = input.institutionalProScore!;
+    if (proDir === 'bullish' && proSc > 55) { score += 25; parts.push(`Pro bullish(${proSc})`); }
+    else if (proDir === 'bearish' && proSc > 55) { score -= 25; parts.push(`Pro bearish(${proSc})`); }
+    else if (proDir === 'bullish') { score += 10; parts.push(`Pro mildly bullish(${proSc})`); }
+    else if (proDir === 'bearish') { score -= 10; parts.push(`Pro mildly bearish(${proSc})`); }
+    else { parts.push(`Pro neutral(${proSc})`); }
+  }
+
+  // Smart money bias alignment
+  if (input.institutionalSmartMoneyBias === 'bullish') { score += 20; parts.push('Smart bullish'); }
+  else if (input.institutionalSmartMoneyBias === 'bearish') { score -= 20; parts.push('Smart bearish'); }
+  else { parts.push('Smart neutral'); }
+
+  // Retail trap penalty
+  if (input.institutionalRetailTrap) {
+    score -= 30;
+    parts.push('⚠️ retail_trap');
+  }
+
+  // Institutional alignment multiplier
+  if (input.institutionalAlignment !== undefined && input.institutionalAlignment !== null) {
+    // Strong alignment amplifies score, weak alignment dampens
+    const alignFactor = (input.institutionalAlignment - 50) / 50; // -1 to +1
+    score = Math.round(score * (0.7 + 0.3 * Math.max(0, alignFactor)));
+    parts.push(`align ${input.institutionalAlignment}%`);
+  }
+
+  // Prediction alignment — if engine predicts same direction, amplify
+  if (input.institutionalPredictionDirection && input.institutionalPredictionConfidence) {
+    const predDir = input.institutionalPredictionDirection;
+    const predConf = input.institutionalPredictionConfidence;
+    if (predDir === 'bullish' && predConf > 60) { score += 15; parts.push(`pred up(${predConf}%)`); }
+    else if (predDir === 'bearish' && predConf > 60) { score -= 15; parts.push(`pred down(${predConf}%)`); }
+    else if (predDir === 'range' && predConf > 40) { score = Math.round(score * 0.6); parts.push(`pred range(${predConf}%)`); }
+  }
+
+  const clamped = Math.max(-100, Math.min(100, score));
+  const dir = clamped > 15 ? "institutional bullish" : clamped < -15 ? "institutional bearish" : "institutional neutral";
+  return {
+    score: clamped,
+    explanation: `NSE Participants: ${parts.join(", ")} → ${dir}`,
     dataStatus: "AVAILABLE",
   };
 }
@@ -279,7 +350,7 @@ export function predictGap(input: GapInput, weights: GapWeights = DEFAULT_WEIGHT
   factors.push({ ...f9, name: "Breadth", weight: weights.breadth, weightedScore: f9.score * weights.breadth });
 
   // 10. Global Cues
-  const f10 = factorGlobalCues(input.usMarketChange, input.asianMarketChange);
+  const f10 = factorGlobalCues(input.usMarketChange ?? null, input.asianMarketChange ?? null);
   factors.push({ ...f10, name: "Global Cues", weight: weights.globalCues, weightedScore: f10.score * weights.globalCues });
 
   // 11. Expected Move
@@ -289,6 +360,11 @@ export function predictGap(input: GapInput, weights: GapWeights = DEFAULT_WEIGHT
   // 12. Historical Stats
   const f12 = factorHistoricalStats(input.historicalGapStats);
   factors.push({ ...f12, name: "Historical Stats", weight: weights.historicalStats, weightedScore: f12.score * weights.historicalStats });
+
+  // 13. Institutional Positioning (NSE Participant-wise OI)
+  const f13 = factorInstitutional(input);
+  if (f13.dataStatus === "MISSING") missingFields.push("InstitutionalOI");
+  factors.push({ ...f13, name: "Institutional OI", weight: weights.institutionalBias, weightedScore: f13.score * weights.institutionalBias });
 
   // ─── Check for INSUFFICIENT DATA ─────────────────────────────
   const essentialMissing = ["PreviousClose", "GiftNifty"].filter(f => missingFields.includes(f));

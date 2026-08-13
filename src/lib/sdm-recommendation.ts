@@ -45,6 +45,7 @@ import { determineSmartEntry } from './smart-entry';
 import { evaluateExit } from './smart-exit';
 import { evaluateDataHealth, type DataHealthReport } from './data-health';
 import { validateTrade } from './validation-gate';
+import { runInstitutionalPositioning, getInstitutionalFilter } from './institutional-positioning-engine';
 import {
   getCurrentSession,
   adjustConfidenceForSession,
@@ -95,13 +96,19 @@ function getISTMinutes(): number {
 
 function computeATR(candles: CandleData[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
-  let atr = 0;
-  for (let i = 1; i <= period; i++) {
-    atr += candles[i].high - candles[i].low;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const high = candles[i].high;
+    const low = candles[i].low;
+    const prevClose = candles[i - 1].close;
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    trs.push(tr);
   }
-  atr /= period;
-  for (let i = period + 1; i < candles.length; i++) {
-    atr = (atr * (period - 1) + (candles[i].high - candles[i].low)) / period;
+  if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / trs.length;
+  const firstPeriod = trs.slice(0, period);
+  let atr = firstPeriod.reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trs.length; i++) {
+    atr = (atr * (period - 1) + trs[i]) / period;
   }
   return atr;
 }
@@ -157,13 +164,21 @@ function computePremiumFairValue(
     };
   }
 
-  // Simple theoretical estimate using Black-Scholes proxy:
-  // intrinsic + time value approximation
-  const intrinsic = tradeDirection === 'CALL'
-    ? Math.max(0, spot - atm.strike)
-    : Math.max(0, atm.strike - spot);
-  const timeValue = leg.iv > 0 ? entry * (leg.iv / 100) * 0.3 : entry * 0.15;
-  const theoreticalPrice = intrinsic + timeValue;
+  // Black-Scholes ATM fair value approximation:
+  // ATM premium ≈ 0.4 × spot × σ × √(T/365)
+  // Estimate √T from the ATM straddle width (which equals 2 × ATM premium)
+  const straddle = (atm.ce?.ltp || 0) + (atm.pe?.ltp || 0);
+  const ivDec = leg.iv > 0 ? (leg.iv > 1 ? leg.iv / 100 : leg.iv) : 0.15;
+  let sqrtT = 0.2;
+  if (straddle > 0 && ivDec > 0 && spot > 0) {
+    sqrtT = Math.min(straddle / (0.8 * spot * ivDec), 1);
+  }
+  const atmFairPremium = Math.round(0.4 * spot * ivDec * sqrtT * 100) / 100;
+  // Scale the ATM fair value to the selected strike using premium ratio
+  const atmEntry = tradeDirection === 'CALL' ? (atm.ce?.ltp || entry) : (atm.pe?.ltp || entry);
+  const theoreticalPrice = atmEntry > 0 && atmFairPremium > 0
+    ? Math.round(atmFairPremium * (entry / atmEntry) * 100) / 100
+    : entry;
   const difference = entry - theoreticalPrice;
   const differencePercent = entry > 0 ? (difference / entry) * 100 : 0;
 
@@ -181,7 +196,11 @@ function computePremiumFairValue(
   };
 }
 
-// ─── Simplified Inline: Live Probabilities ────────────────────────
+// ─── Live Probabilities ───────────────────────────────────────────
+// Uses first-passage time (gambler's ruin) for TP/SL probabilities,
+// with VIX drift adjustment for directional bias.
+// P(TP hit before SL) = SL_dist / (TP_dist + SL_dist) in driftless case.
+// With drift: adjusted using expected daily directional move.
 
 function computeLiveProbabilities(
   entry: number,
@@ -190,6 +209,7 @@ function computeLiveProbabilities(
   tp3: number,
   sl: number,
   spot: number,
+  strike: number,
   vix: number,
   daysToExpiry: number,
   tradeDirection: 'CALL' | 'PUT'
@@ -198,44 +218,38 @@ function computeLiveProbabilities(
     return { tp1: 0, tp2: 0, tp3: 0, sl: 0, expiryITM: 0, expiryOTM: 0 };
   }
 
-  // VIX-based daily vol
-  const dailyVol = vix / 100 / Math.sqrt(252);
-  const expectedDailyMove = spot * dailyVol;
+  const dailyVol = spot * (vix / 100) / Math.sqrt(252);
+  const tp1Dist = Math.max(0.01, Math.abs(tp1 - entry));
+  const tp2Dist = Math.max(0.01, Math.abs(tp2 - entry));
+  const tp3Dist = Math.max(0.01, Math.abs(tp3 - entry));
+  const slDist = Math.max(0.01, Math.abs(entry - sl));
 
-  // Probability of hitting TP (approximation using normal dist)
-  const tp1Dist = Math.abs(tp1 - entry);
-  const tp2Dist = Math.abs(tp2 - entry);
-  const tp3Dist = Math.abs(tp3 - entry);
-  const slDist = Math.abs(entry - sl);
+  // Gambler's ruin: P(TP hit before SL) = SL_dist / (TP_dist + SL_dist)
+  // Correct for driftless random walk (unbiased estimate)
+  const baseProb = (d: number) => slDist / (d + slDist);
 
-  const z1 = expectedDailyMove > 0 ? tp1Dist / expectedDailyMove : 0;
-  const z2 = expectedDailyMove > 0 ? tp2Dist / expectedDailyMove : 0;
-  const z3 = expectedDailyMove > 0 ? tp3Dist / expectedDailyMove : 0;
-  const zSL = expectedDailyMove > 0 ? slDist / expectedDailyMove : 0;
+  // Adjust for VIX-implied drift: higher VIX → more directional days → higher TP prob
+  // when trade is with VIX regime (calls in rising vol, puts in falling)
+  const vixLevel = vix / 100;
+  const driftFactor = vixLevel > 0.25 ? 1.15 : vixLevel > 0.20 ? 1.08 : vixLevel > 0.12 ? 1.0 : 0.92;
 
-  // P(hitting target) ≈ Φ(z) using approximation
-  const phi = (z: number): number => {
-    const t = 1 / (1 + 0.2316419 * Math.abs(z));
-    const d = 0.3989422804014327 * Math.exp(-z * z / 2);
-    const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.3302744))));
-    return z > 0 ? 1 - p : p;
-  };
+  const pTp1 = baseProb(tp1Dist) * driftFactor;
+  const pTp2 = baseProb(tp2Dist) * driftFactor;
+  const pTp3 = baseProb(tp3Dist) * driftFactor;
+  const pSl = 1 - baseProb(tp1Dist) * driftFactor;
 
-  const tpProb = (z: number): number => Math.round(clamp(phi(z * 0.6) * 100, 0, 95));
-  const slProb = (z: number): number => Math.round(clamp(phi(z * 0.5) * 100, 0, 95));
-
-  // Expiry ITM probability (simplified: based on distance from ATM in vol units)
-  const atmDist = Math.abs(spot - (tradeDirection === 'CALL' ? spot : spot));
+  // Expiry ITM: probability option expires in-the-money using distance in vol units
   const expiryMoves = daysToExpiry * dailyVol;
+  const itmZ = expiryMoves > 0 ? Math.abs(spot - strike) / (spot * expiryMoves) : 2;
   const expiryITM = expiryMoves > 0
-    ? Math.round(clamp(phi(atmDist / (spot * expiryMoves)) * 100, 10, 90))
+    ? Math.round(clamp((1 - Math.min(itmZ / 3, 1)) * 100, 10, 90))
     : 50;
 
   return {
-    tp1: tpProb(z1),
-    tp2: tpProb(z2),
-    tp3: tpProb(z3),
-    sl: slProb(zSL),
+    tp1: Math.round(clamp(Math.round(pTp1 * 100), 1, 95)),
+    tp2: Math.round(clamp(Math.round(pTp2 * 100), 1, 95)),
+    tp3: Math.round(clamp(Math.round(pTp3 * 100), 1, 95)),
+    sl: Math.round(clamp(Math.round(pSl * 100), 1, 95)),
     expiryITM,
     expiryOTM: 100 - expiryITM,
   };
@@ -272,33 +286,34 @@ function determineDirection(
   oiAnalysis: OIAnalysis,
   gexResult: GEXResult,
   marketStructure: MarketStructure,
-  spot: number
+  spot: number,
+  institutionalFilter?: { passed: boolean; action: string; reason: string; confidence: number }
 ): { direction: 'CALL' | 'PUT' | 'NEUTRAL'; confidence: number; reasons: string[] } {
   let callVotes = 0;
   let putVotes = 0;
   const reasons: string[] = [];
 
-  // Multi-TF consensus (weight: 0.35)
+  // Multi-TF consensus (weight: 0.30)
   if (consensus.status === 'OK') {
     if (consensus.consensus > 0.15) {
-      callVotes += 0.35;
+      callVotes += 0.30;
       reasons.push(`Multi-TF bias ${consensus.overallBias} (${consensus.bullishCount}B/${consensus.bearishCount}Br)`);
     } else if (consensus.consensus < -0.15) {
-      putVotes += 0.35;
+      putVotes += 0.30;
       reasons.push(`Multi-TF bias ${consensus.overallBias} (${consensus.bearishCount}Br/${consensus.bullishCount}B)`);
     } else {
       reasons.push(`Multi-TF neutral (${consensus.consensus.toFixed(2)})`);
     }
   }
 
-  // OI bias (weight: 0.25)
+  // OI bias (weight: 0.20)
   if (oiAnalysis.status === 'OK') {
     const pcrOI = oiAnalysis.pcrOI;
     if (pcrOI > 1.2) {
-      callVotes += 0.25;
+      callVotes += 0.20;
       reasons.push(`PCR-OI ${pcrOI.toFixed(2)} bullish (put writing dominates)`);
     } else if (pcrOI < 0.8) {
-      putVotes += 0.25;
+      putVotes += 0.20;
       reasons.push(`PCR-OI ${pcrOI.toFixed(2)} bearish (call writing dominates)`);
     } else {
       reasons.push(`PCR-OI ${pcrOI.toFixed(2)} neutral`);
@@ -318,16 +333,38 @@ function determineDirection(
     }
   }
 
-  // Market structure (weight: 0.20)
+  // Market structure (weight: 0.15)
   if (marketStructure.status === 'OK') {
     if (marketStructure.trend === 'UPTREND') {
-      callVotes += 0.20;
+      callVotes += 0.15;
       reasons.push(`Structure UPTREND (last swing high ${marketStructure.lastSwingHigh.toFixed(0)})`);
     } else if (marketStructure.trend === 'DOWNTREND') {
-      putVotes += 0.20;
+      putVotes += 0.15;
       reasons.push(`Structure DOWNTREND (last swing low ${marketStructure.lastSwingLow.toFixed(0)})`);
     } else {
       reasons.push('Structure RANGING');
+    }
+  }
+
+  // Institutional positioning (weight: 0.15) — NEW
+  if (institutionalFilter && institutionalFilter.confidence >= 40) {
+    if (institutionalFilter.action === 'proceed') {
+      // Vote aligns with the institutional filter's passed direction
+      // The direction is inferred from the confidence (if > 50 → bullish, < 50 → bearish)
+      if (institutionalFilter.confidence >= 55) {
+        callVotes += 0.15;
+        reasons.push(`Institutional filter PASS (conf ${institutionalFilter.confidence})`);
+      } else if (institutionalFilter.confidence <= 45) {
+        putVotes += 0.15;
+        reasons.push(`Institutional filter PASS with bearish lean (conf ${institutionalFilter.confidence})`);
+      } else {
+        reasons.push(`Institutional filter neutral (conf ${institutionalFilter.confidence})`);
+      }
+    } else if (institutionalFilter.action === 'reject') {
+      putVotes += 0.15;
+      reasons.push(`⚠ Institutional REJECT: ${institutionalFilter.reason}`);
+    } else if (institutionalFilter.action === 'caution') {
+      reasons.push(`Institutional caution: ${institutionalFilter.reason}`);
     }
   }
 
@@ -779,6 +816,13 @@ export async function generateTradeRecommendation(
   const oiAnalysis = analyzeOptionChain(optionChain, spot);
   const atr = computeATR(primaryCandles, 14);
 
+  // ── Institutional Positioning Check ───────────────────────────
+  let institutionalFilter = { passed: true, action: 'caution' as const, reason: '', confidence: 50 };
+  try {
+    const instData = await runInstitutionalPositioning();
+    institutionalFilter = getInstitutionalFilter(instData);
+  } catch { /* non-fatal */ }
+
   // ── Step 3: Validation Gate ────────────────────────────────────
   // Run quality score first (needed for validation)
   const tempDirection: 'CALL' | 'PUT' = overrideDirection || 'CALL';
@@ -835,8 +879,11 @@ export async function generateTradeRecommendation(
 
   // ── Step 4: Quality Score ──────────────────────────────────────
   // Determine preliminary direction for quality scoring
-  const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot);
-  const preliminaryDirection: 'CALL' | 'PUT' = overrideDirection || (dirResult.direction === 'NEUTRAL' ? 'CALL' : dirResult.direction);
+  const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot, institutionalFilter);
+  // Use the first non-NEUTRAL direction from consensus for preliminary strike selection.
+  // If all are NEUTRAL, default to CALL (preliminary only — final direction overrides below).
+  const consensusDir = dirResult.direction === 'NEUTRAL' ? 'CALL' : dirResult.direction;
+  const preliminaryDirection: 'CALL' | 'PUT' = overrideDirection || consensusDir;
 
   const sellerSLResult = findSellerSLLevels(optionChain, spot, gexResult, marketStructure, volumeAnalysis, oiAnalysis);
   const { strike: selectedStrike, strikeType } = selectStrike(
@@ -948,21 +995,33 @@ export async function generateTradeRecommendation(
     status: gexResult.status === 'OK' && marketStructure.status === 'OK' ? 'OK' : 'DEGRADED',
   };
 
-  // ── Step 11: Position Sizing (session-adjusted) ─────────────────
+  // ── Step 11: Position Sizing (session-adjusted + vega-aware) ─────
   const session = getCurrentSession();
   const capital = 100000;  // TODO: make configurable from user settings
   const riskPercent = 0.01; // 1% risk per trade
-  const riskAmount = capital * riskPercent;
+  let riskAmount = capital * riskPercent;
   const sessionMultiplier = getPositionSizeMultiplier(session);
-  const adjustedRisk = riskAmount * sessionMultiplier;
+  riskAmount *= sessionMultiplier;
+
+  // Vega-aware reduction: when VIX > 20 (elevated IV), cut size by 40%
+  // because options are expensive and IV crush risk is higher
+  if (vix > 20) {
+    const vixRatio = Math.min(vix / 14, 3); // 14 = long-term VIX median
+    riskAmount *= Math.max(1 - (vixRatio - 1) * 0.4, 0.4);
+  }
+
   const riskPerLot = finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lotSize : 0;
-  const lots = riskPerLot > 0 ? Math.floor(adjustedRisk / riskPerLot) : 0;
-  const clampedLots = Math.min(lots, 10);
+  const lots = riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
+
+  // Notional-aware position cap: max 5% of capital in notional exposure
+  const notionalPerLot = finalEntry * lotSize;
+  const notionalCapLots = notionalPerLot > 0 ? Math.floor(capital * 0.05 / notionalPerLot) : 10;
+  const clampedLots = Math.min(lots, notionalCapLots, 10);
 
   const positionSizing: PositionSizing = {
     lots: clampedLots,
     quantity: clampedLots * lotSize,
-    riskAmount: adjustedRisk,
+    riskAmount: riskAmount,
     positionValue: finalEntry * clampedLots * lotSize,
     maxLoss: riskPerLot * clampedLots,
   };
@@ -1004,7 +1063,7 @@ export async function generateTradeRecommendation(
   // Probabilities
   const probabilities = computeLiveProbabilities(
     finalEntry, finalLevels.tp1, finalLevels.tp2, finalLevels.tp3,
-    finalLevels.sl, spot, vix, daysToExpiry,
+    finalLevels.sl, spot, finalSelectedStrike, vix, daysToExpiry,
     finalIsCall ? 'CALL' : 'PUT'
   );
 
@@ -1346,14 +1405,18 @@ function generateRecommendationSync(
 
   const primaryCandles = syntheticCandles;
   const gexResult = calculateGEX(optionChain, spot);
-  const marketStructure = analyzeMarketStructure(primaryCandles);
-  const consensus = analyzeMultiTimeframe(candles);
-  const volumeAnalysis = analyzeVolume(primaryCandles);
+  // Structure, volume, and ATR from synthetic candles are unreliable —
+  // use neutral defaults when real candles aren't available.
+  const marketStructure = syntheticCandles.length > 5
+    ? { ...analyzeMarketStructure(primaryCandles), confidence: Math.min(analyzeMarketStructure(primaryCandles).confidence || 0, 30) }
+    : { trend: 'NEUTRAL' as const, bias: 'NEUTRAL' as const, structure: 'RANGE' as const, confidence: 0, support: spot * 0.99, resistance: spot * 1.01, swingHighs: [], swingLows: [] };
+  const consensus = { direction: 'NEUTRAL' as const, confidence: 0, timeframeSummary: [] };
+  const volumeAnalysis = { status: 'LOW_DATA' as const, totalVolume: 0, avgVolume: 0, volumeRatio: 0, vwap: spot, absorption: false, exhaustion: false, unusualActivity: [] };
   const oiAnalysis = analyzeOptionChain(optionChain, spot);
-  const atr = computeATR(primaryCandles, 14);
+  const atr = spot * 0.005; // Default 0.5% ATR when no real candles
 
   // Direction
-  const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot);
+  const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot, institutionalFilter);
   const isCallDir = dirResult.direction !== 'PUT';
 
   let direction: TradeDirection;
@@ -1452,7 +1515,7 @@ function generateRecommendationSync(
   const premiumFairValue = computePremiumFairValue(optionChain, spot, finalEntry, finalIsCall ? 'CALL' : 'PUT');
   const probabilities = computeLiveProbabilities(
     finalEntry, finalLevels.tp1, finalLevels.tp2, finalLevels.tp3,
-    finalLevels.sl, spot, vix, daysToExpiry, finalIsCall ? 'CALL' : 'PUT'
+    finalLevels.sl, spot, finalStrike, vix, daysToExpiry, finalIsCall ? 'CALL' : 'PUT'
   );
 
   const dataHealth: DataHealth = {

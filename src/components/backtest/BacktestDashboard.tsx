@@ -131,6 +131,8 @@ export default function BacktestDashboard() {
   const [status, setStatus] = useState<"" | "open" | "closed">("");
   const [outcome, setOutcome] = useState<"" | "win" | "loss">("");
   const [symbol, setSymbol] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [sort, setSort] = useState<"newest" | "pnl" | "r" | "conf">("newest");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -173,10 +175,12 @@ export default function BacktestDashboard() {
       status: status || undefined,
       outcome: outcome || undefined,
       symbol: symbol || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
       pageSize: 50,
       page,
     }),
-    [strategyId, status, outcome, symbol, page]
+    [strategyId, status, outcome, symbol, dateFrom, dateTo, page]
   );
 
   const fetchData = useCallback(async () => {
@@ -322,6 +326,16 @@ export default function BacktestDashboard() {
                 TRADE LEDGER ({stats.closedTrades} closed / {stats.openTrades} open)
               </div>
               <div className="flex gap-1.5 items-center flex-wrap">
+                <input type="date" value={dateFrom} onChange={(e) => onFilter(() => setDateFrom(e.target.value))}
+                  className={`${selCls} w-[130px]`} title="From date" />
+                <input type="date" value={dateTo} onChange={(e) => onFilter(() => setDateTo(e.target.value))}
+                  className={`${selCls} w-[130px]`} title="To date" />
+                <button onClick={() => {
+                  const today = new Date().toISOString().split("T")[0];
+                  onFilter(() => { setDateFrom(today); setDateTo(today); });
+                }} className={btnCls}>Today</button>
+                <button onClick={() => { setDateFrom(""); setDateTo(""); setPage(1); }} className={btnCls}
+                  title="Clear date filter">All Dates</button>
                 <select value={strategyId} onChange={(e) => onFilter(() => setStrategyId(e.target.value))} className={selCls} title="Strategy">
                   <option value="">All Strategies</option>
                   {strategyOptions.map((s) => (
@@ -350,7 +364,7 @@ export default function BacktestDashboard() {
                   <option value="r">R ↓</option>
                   <option value="conf">Conf ↓</option>
                 </select>
-                <button onClick={() => onFilter(() => { setSymbol(""); setStrategyId(""); setStatus(""); setOutcome(""); setSort("newest"); })} className={btnCls}>
+                <button onClick={() => onFilter(() => { setSymbol(""); setStrategyId(""); setStatus(""); setOutcome(""); setSort("newest"); setDateFrom(""); setDateTo(""); })} className={btnCls}>
                   Clear
                 </button>
               </div>

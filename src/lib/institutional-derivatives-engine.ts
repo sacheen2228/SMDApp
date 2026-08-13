@@ -38,6 +38,23 @@ export interface DerivativeInput {
   diiSell: number;
   highestCallOI: number;
   highestPutOI: number;
+  // Institutional positioning bias (from NSE Participant-wise OI engine)
+  institutional?: {
+    fiiScore: number;
+    fiiDirection: string;
+    proScore: number;
+    proDirection: string;
+    clientScore: number;
+    clientDirection: string;
+    retailTrap: boolean;
+    retailTrapType: string | null;
+    alignment: number; // 0-100 (FII vs Pro vs Option Chain agreement)
+    smartMoneyBias: 'bullish' | 'bearish' | 'neutral';
+    conflictDetected: boolean;
+    filterVerdict: 'proceed' | 'caution' | 'reject';
+    predictionDirection: string;
+    predictionConfidence: number;
+  };
   // Normalized (percentile 0-100) context for adaptive scoring:
   gammaPct?: number;
   oiChgPct?: number;
@@ -161,6 +178,7 @@ export function runInstitutionalDerivativesEngine(
   const resistance = inp.atm + expectedMove;
 
   // ── Directional probabilities (CALL vs PUT) from chain structure ──
+  // Also incorporates NSE Participant-wise OI (institutional positioning).
   // Symmetric: PCR<1 favours CALL, PCR>1 favours PUT (India is put-heavy, so
   // PCR is usually <1 and CALL gets the structural edge by default).
   let call = 0;
@@ -177,6 +195,23 @@ export function runInstitutionalDerivativesEngine(
   if (gammaPct >= 60) { call += 4; }
   if (volumePct >= 60) { call += 4; }
 
+  // Institutional positioning factors
+  if (inp.institutional) {
+    const inst = inp.institutional;
+    // FII directional score (0-100, >55 is bullish)
+    if (inst.fiiDirection === 'bullish' && inst.fiiScore > 55) { call += 8; callReasons.push(`FII positioning bullish (score ${inst.fiiScore})`); }
+    // Pro directional score (0-100)
+    if (inst.proDirection === 'bullish' && inst.proScore > 55) { call += 6; callReasons.push(`Pro/Pro positioning bullish (score ${inst.proScore})`); }
+    // Smart money bias
+    if (inst.smartMoneyBias === 'bullish') { call += 8; callReasons.push("Smart money bias bullish"); }
+    // Alignment — FII + Pro + Option chain all agree
+    if (inst.alignment >= 70) { call += 6; callReasons.push(`Institutional alignment strong (${inst.alignment}%)`); }
+    // Retail trap — retail long + FII short = trap for bulls
+    if (inst.retailTrap && inst.retailTrapType === 'bull_trap') { call -= 12; callReasons.push("⚠ Bull trap detected (retail long, FII short)"); }
+    // Prediction alignment
+    if (inst.predictionDirection === 'bullish' && inst.predictionConfidence > 60) { call += 5; callReasons.push(`Market prediction bullish (conf ${inst.predictionConfidence}%)`); }
+  }
+
   if (inp.putUnwind) { put += 18; putReasons.push("Put OI unwinding (shorts covering)"); }
   if (inp.callWriting) { put += 14; putReasons.push("Call writing (resistance to upside)"); }
   if (inp.pcr > 1) { put += 10; putReasons.push(`PCR ${inp.pcr.toFixed(2)} > 1 (puts relatively cheap)`); }
@@ -185,6 +220,17 @@ export function runInstitutionalDerivativesEngine(
   if (inp.diiSell > inp.diiBuy) { put += 6; putReasons.push("DII net sellers"); }
   if (gammaPct >= 60) { put += 4; }
   if (volumePct >= 60) { put += 4; }
+
+  // Institutional positioning factors (PUT side)
+  if (inp.institutional) {
+    const inst = inp.institutional;
+    if (inst.fiiDirection === 'bearish' && inst.fiiScore > 55) { put += 8; putReasons.push(`FII positioning bearish (score ${inst.fiiScore})`); }
+    if (inst.proDirection === 'bearish' && inst.proScore > 55) { put += 6; putReasons.push(`Pro/Pro positioning bearish (score ${inst.proScore})`); }
+    if (inst.smartMoneyBias === 'bearish') { put += 8; putReasons.push("Smart money bias bearish"); }
+    if (inst.alignment >= 70) { put += 6; putReasons.push(`Institutional alignment strong (${inst.alignment}%)`); }
+    if (inst.retailTrap && inst.retailTrapType === 'bear_trap') { put -= 12; putReasons.push("⚠ Bear trap detected (retail short, FII long)"); }
+    if (inst.predictionDirection === 'bearish' && inst.predictionConfidence > 60) { put += 5; putReasons.push(`Market prediction bearish (conf ${inst.predictionConfidence}%)`); }
+  }
 
   // ── If a full strike set is supplied, use the ranked best trade ──
   let best: StrikeRank | null = null;
@@ -199,9 +245,25 @@ export function runInstitutionalDerivativesEngine(
   }
 
   const probSpread = Math.abs(call - put);
-  const decision: IDESignal["decision"] =
+  let decision: IDESignal["decision"] =
     call >= MIN_CONFIDENCE && call >= put ? "BUY_CALL" :
     put >= MIN_CONFIDENCE && put > call ? "BUY_PUT" : "NO_TRADE";
+
+  // Institutional filter override
+  if (inp.institutional) {
+    if (inp.institutional.filterVerdict === 'reject') {
+      decision = "NO_TRADE";
+      reasons.push("Institutional filter: REJECT — overriding decision to NO_TRADE");
+    } else if (inp.institutional.filterVerdict === 'caution' && decision !== "NO_TRADE") {
+      // Raise effective threshold by 10 pts when filter says caution
+      if (call >= MIN_CONFIDENCE + 10 && call >= put) decision = "BUY_CALL";
+      else if (put >= MIN_CONFIDENCE + 10 && put > call) decision = "BUY_PUT";
+      else {
+        decision = "NO_TRADE";
+        reasons.push("Institutional filter: CAUTION — raising threshold, no clear signal at elevated bar");
+      }
+    }
+  }
 
   if (decision === "NO_TRADE") {
     if (inp.spot >= support && inp.spot <= resistance) reasons.push("Price inside Support/Resistance band");
@@ -294,6 +356,16 @@ export interface ChainContext {
   diiBuy: number;
   diiSell: number;
   expectedMove: number;
+  institutional?: {
+    fiiScore: number;
+    fiiDirection: string;
+    proScore: number;
+    proDirection: string;
+    retailTrap: boolean;
+    alignment: number;
+    smartMoneyBias: string;
+    filterVerdict: string;
+  };
 }
 
 export interface StrikeRank {
@@ -434,9 +506,39 @@ export function scoreStrike(
   const emPct = ctx.spot > 0 ? expectedMove / ctx.spot : 0;
   const fEM = clamp(emPct * 100 * 3, 20, 100);
 
+  // 14. Institutional positioning alignment (smart money congruence).
+  let fInst = 50;
+  if (ctx.institutional) {
+    const inst = ctx.institutional;
+    const fiiBullish = inst.fiiDirection === 'bullish' && inst.fiiScore > 55;
+    const fiiBearish = inst.fiiDirection === 'bearish' && inst.fiiScore > 55;
+    const proBullish = inst.proDirection === 'bullish' && inst.proScore > 55;
+    const proBearish = inst.proDirection === 'bearish' && inst.proScore > 55;
+    const smartBullish = inst.smartMoneyBias === 'bullish';
+    const smartBearish = inst.smartMoneyBias === 'bearish';
+    const baseAlign = inst.alignment / 100; // 0-1
+
+    if (isCall) {
+      // Count how many institutional signals agree with CALL direction
+      const agreeing = (fiiBullish ? 1 : 0) + (proBullish ? 1 : 0) + (smartBullish ? 1 : 0);
+      const disagreeing = (fiiBearish ? 1 : 0) + (proBearish ? 1 : 0) + (smartBearish ? 1 : 0);
+      const netScore = (agreeing - disagreeing) * 15 + 50;
+      fInst = clamp(netScore * (0.5 + 0.5 * baseAlign), 15, 100);
+      // Retail trap penalty
+      if (isCall && inst.retailTrap && inst.smartMoneyBias === 'bearish') fInst *= 0.6;
+    } else {
+      const agreeing = (fiiBearish ? 1 : 0) + (proBearish ? 1 : 0) + (smartBearish ? 1 : 0);
+      const disagreeing = (fiiBullish ? 1 : 0) + (proBullish ? 1 : 0) + (smartBullish ? 1 : 0);
+      const netScore = (agreeing - disagreeing) * 15 + 50;
+      fInst = clamp(netScore * (0.5 + 0.5 * baseAlign), 15, 100);
+      // Retail trap penalty
+      if (!isCall && inst.retailTrap && inst.smartMoneyBias === 'bullish') fInst *= 0.6;
+    }
+  }
+
   // ── Directional probability (does the market structure favour this side?) ─
   const directionalProb = clamp(
-    0.18 * fPcr + 0.16 * fOiChg + 0.16 * fFii + 0.14 * fDelta + 0.12 * fDist + 0.12 * fEM + 0.12 * (isCall ? Math.max(0, d) * 100 : Math.max(0, -d) * 100),
+    0.15 * fPcr + 0.14 * fOiChg + 0.12 * fFii + 0.12 * fInst + 0.12 * fDelta + 0.11 * fDist + 0.10 * fEM + 0.08 * (isCall ? Math.max(0, d) * 100 : Math.max(0, -d) * 100) + 0.06 * Math.max(fOI * 0.1, 0),
     0,
     100,
   );
@@ -490,9 +592,18 @@ export function rankStrikes(
   opt?: { daysToExpiry?: number },
 ): StrikeRank[] {
   const minPremium = Math.max(1.5, (ctx.spot * 0.003) || 1.5);
+  // Cap premium — skip deep ITM options with premium > 2× expected move (poor leverage)
+  const maxPremium = ctx.expectedMove * 2;
   const out = strikes
-    .filter((s) => s.leg.ltp >= minPremium)
-    .map((s) => scoreStrike(s.strike, s.type, s.leg, ctx, { daysToExpiry: opt?.daysToExpiry }));
+    .filter((s) => s.leg.ltp >= minPremium && s.leg.ltp <= maxPremium)
+    .map((s) => {
+      const rank = scoreStrike(s.strike, s.type, s.leg, ctx, { daysToExpiry: opt?.daysToExpiry });
+      // Penalise poor R:R — score drops proportionally below 1.0
+      if (rank.rr < 1.0) rank.probability = Math.round(rank.probability * (0.5 + rank.rr * 0.5));
+      if (rank.rr < 0.5) rank.probability = Math.round(rank.probability * 0.5);
+      return rank;
+    })
+    .filter((r) => r.probability >= 30);
   out.sort((a, b) => b.probability - a.probability);
   return out;
 }

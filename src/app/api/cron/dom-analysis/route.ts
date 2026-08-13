@@ -12,7 +12,7 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 const client = new NSEClient('./downloads', { timeout: 20000 });
 
-const SECRET = process.env.DAILY_SCAN_SECRET || 'sdm-cron-9f3a2b';
+const SECRET = process.env.DAILY_SCAN_SECRET;
 
 interface DOMResult {
   symbol: string;
@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${SECRET}` && searchParams.get('secret') !== SECRET) {
+    if (!SECRET || (authHeader !== `Bearer ${SECRET}` && searchParams.get('secret') !== SECRET)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

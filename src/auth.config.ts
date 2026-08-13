@@ -157,6 +157,7 @@ export const authConfig = {
       const isPublic =
         pathname === "/" ||
         pathname === "/login" ||
+        pathname === "/futures" ||
         pathname.startsWith("/api/");
       if (isPublic) return true;
 

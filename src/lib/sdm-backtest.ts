@@ -3,7 +3,6 @@
 // Generates historical option chains, runs SDM Signal Engine, tracks outcomes
 // ═══════════════════════════════════════════════════════════════════
 
-import { runSdmSignalEngine, type SdmSignal, type TradeAction } from "./sdm-signal-engine";
 import { calculateGreeks } from "./greeks";
 import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
 import type { SDMOptionStrike } from "@/types/sdm";
@@ -15,6 +14,68 @@ import {
 } from "@/lib/market/data-provider";
 
 // ─── Types ──────────────────────────────────────────────────────
+type TradeAction = "BUY_CALL" | "BUY_PUT" | "WAIT";
+
+interface OrcaRecommendation {
+  action: TradeAction;
+  entry: number;
+  stopLoss: number;
+  target1: number;
+  target2: number;
+  target3: number;
+}
+
+interface OrcaSignalInput {
+  spot: number;
+  chain: any[];
+  candles: any[];
+  symbol: string;
+  expiry: string;
+  isExpiryDay: boolean;
+  prevDay: { high: number; low: number; close: number };
+  confidenceThreshold: number;
+}
+
+interface OrcaSignalResult {
+  recommendation: OrcaRecommendation;
+  confidence: { total: number };
+}
+
+function runSdmSignalEngine(input: OrcaSignalInput): OrcaSignalResult {
+  const { spot, chain, confidenceThreshold } = input;
+  const atm = chain.reduce((a: any, b: any) =>
+    Math.abs(a.strike - spot) < Math.abs(b.strike - spot) ? a : b
+  );
+  const ce = atm?.ce;
+  const pe = atm?.pe;
+  if (!ce?.ltp && !pe?.ltp) {
+    return {
+      recommendation: { action: "WAIT", entry: 0, stopLoss: 0, target1: 0, target2: 0, target3: 0 },
+      confidence: { total: 0 },
+    };
+  }
+  // Simple directional heuristic based on ATM premium ratio
+  const totalPremium = (ce?.ltp || 0) + (pe?.ltp || 0);
+  if (totalPremium === 0) {
+    return {
+      recommendation: { action: "WAIT", entry: 0, stopLoss: 0, target1: 0, target2: 0, target3: 0 },
+      confidence: { total: 0 },
+    };
+  }
+  const callRatio = (ce?.ltp || 0) / totalPremium;
+  const action: TradeAction = callRatio > 0.6 ? "BUY_CALL" : callRatio < 0.4 ? "BUY_PUT" : "WAIT";
+  const entry = action === "BUY_CALL" ? (ce?.ltp || 0) : (pe?.ltp || 0);
+  const sl = entry * 0.75;
+  const tp1 = entry * 1.5;
+  const tp2 = entry * 2.0;
+  const tp3 = entry * 2.5;
+  const total = Math.round(Math.abs(callRatio - 0.5) * 200);
+  return {
+    recommendation: { action, entry, stopLoss: sl, target1: tp1, target2: tp2, target3: tp3 },
+    confidence: { total: total < confidenceThreshold ? 0 : total },
+  };
+}
+
 export interface SdmBacktestTrade {
   id: number;
   date: string;

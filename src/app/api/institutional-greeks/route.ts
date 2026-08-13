@@ -1,18 +1,18 @@
 /**
- * API Route — Institutional Greeks Engine
+ * API Route — Institutional Greeks Engine (Acceleration-powered)
  *
- * Fetches live option chain data, runs the institutional scoring engine,
- * and returns ranked strikes with Top 5 Calls/Puts.
+ * Fetches live option chain data, runs the 10-engine Option Acceleration
+ * scoring system, and returns ranked strikes with dashboard data.
  *
  * GET /api/institutional-greeks?symbol=NIFTY&expiry=...
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  runInstitutionalEngine,
-  type StrikeData,
-  type ChainSummary,
-} from "@/lib/institutional-greeks-engine";
+  runAccelerationEngine,
+  type StrikeInput,
+  type MarketContext,
+} from "@/lib/option-acceleration-engine";
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,7 +20,6 @@ export async function GET(request: NextRequest) {
     const symbol = searchParams.get("symbol") || "NIFTY";
     const expiry = searchParams.get("expiry") || undefined;
 
-    // Fetch option chain from existing route (server-side call)
     const params = new URLSearchParams({ symbol });
     if (expiry) params.set("expiry", expiry);
 
@@ -48,12 +47,13 @@ export async function GET(request: NextRequest) {
     const rawStrikes = data.data || [];
     const summary = data.summary || {};
 
-    // Parse into engine format
-    const strikes: StrikeData[] = rawStrikes.map((row: any) => ({
+    const strikes: StrikeInput[] = rawStrikes.map((row: any) => ({
       strike: row.strike,
       ce: row.ce
         ? {
             ltp: row.ce.ltp || 0,
+            bid: row.ce.bid || 0,
+            ask: row.ce.ask || 0,
             oi: row.ce.oi || 0,
             oiChg: row.ce.oiChg || 0,
             volume: row.ce.volume || 0,
@@ -62,13 +62,13 @@ export async function GET(request: NextRequest) {
             gamma: row.ce.gamma || 0,
             theta: row.ce.theta || 0,
             vega: row.ce.vega || 0,
-            bid: row.ce.bid || 0,
-            ask: row.ce.ask || 0,
           }
-        : null,
+        : { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 },
       pe: row.pe
         ? {
             ltp: row.pe.ltp || 0,
+            bid: row.pe.bid || 0,
+            ask: row.pe.ask || 0,
             oi: row.pe.oi || 0,
             oiChg: row.pe.oiChg || 0,
             volume: row.pe.volume || 0,
@@ -77,81 +77,64 @@ export async function GET(request: NextRequest) {
             gamma: row.pe.gamma || 0,
             theta: row.pe.theta || 0,
             vega: row.pe.vega || 0,
-            bid: row.pe.bid || 0,
-            ask: row.pe.ask || 0,
           }
-        : null,
+        : { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 },
     }));
 
-    // Compute summary fields if missing
-    const spotPrice =
-      summary.spotPrice || data.spotPrice || data.summary?.spotPrice || 0;
-    const totalCallOI = strikes.reduce(
-      (sum: number, s: StrikeData) => sum + (s.ce?.oi || 0),
-      0
-    );
-    const totalPutOI = strikes.reduce(
-      (sum: number, s: StrikeData) => sum + (s.pe?.oi || 0),
-      0
-    );
-    const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+    const spot = summary.spotPrice || 0;
+    const vix = summary.indiaVIX || 0;
+    const pcr = summary.pcr || 0;
+    const maxPain = summary.maxPain || 0;
+    const atmStrike = summary.atmStrike || 0;
 
-    // Max pain
-    let maxPain = spotPrice;
-    let maxTotalOI = 0;
-    for (const s of strikes) {
-      const total = (s.ce?.oi || 0) + (s.pe?.oi || 0);
-      if (total > maxTotalOI) {
-        maxTotalOI = total;
-        maxPain = s.strike;
-      }
-    }
+    const callOI = strikes.reduce((s: number, x: StrikeInput) => s + (x.ce?.oi || 0), 0);
+    const putOI = strikes.reduce((s: number, x: StrikeInput) => s + (x.pe?.oi || 0), 0);
 
-    // ATM strike (closest to spot)
-    let atmStrike = spotPrice;
-    let minDiff = Infinity;
-    for (const s of strikes) {
-      const diff = Math.abs(s.strike - spotPrice);
-      if (diff < minDiff) {
-        minDiff = diff;
-        atmStrike = s.strike;
-      }
-    }
+    const callOiChg = strikes.reduce((s: number, x: StrikeInput) => s + (x.ce?.oiChg || 0), 0);
+    const putOiChg = strikes.reduce((s: number, x: StrikeInput) => s + (x.pe?.oiChg || 0), 0);
 
-    // Days to expiry
-    const selectedExpiry =
-      data.selectedExpiry ||
-      data.expiries?.[0]?.date ||
-      data.expiries?.[0] ||
-      "";
-    let daysToExpiry = 1;
-    if (selectedExpiry) {
-      const expDate = new Date(selectedExpiry);
-      const now = new Date();
-      daysToExpiry = Math.max(
-        1,
-        Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-      );
-    }
+    const expectedMove = spot * (vix / 100) * Math.sqrt(1 / 365);
 
-    const chainSummary: ChainSummary = {
-      spotPrice,
-      indiaVIX: summary.indiaVIX ?? null,
+    const now = new Date();
+    const marketOpen = new Date(now);
+    marketOpen.setHours(9, 15, 0, 0);
+    const totalSession = 375;
+    const elapsed = Math.max(0, Math.min(totalSession, (now.getTime() - marketOpen.getTime()) / 60000));
+    const sessionMinutes = Math.max(0, totalSession - elapsed);
+
+    const Thursday = 4;
+    const daysToThu = (Thursday - now.getDay() + 7) % 7 || 7;
+    const minutesToExpiry = daysToThu * totalSession + sessionMinutes;
+    const isExpiryDay = now.getDay() === Thursday;
+
+    let trend: "bullish" | "bearish" | "neutral" = "neutral";
+    if (pcr < 0.85 && spot >= atmStrike) trend = "bullish";
+    else if (pcr > 1.2 && spot <= atmStrike) trend = "bearish";
+
+    // ATR: realistic intraday range — fraction of VIX expected move
+    const sessionPct = elapsed / totalSession;
+    const intradayRange = expectedMove * (0.4 + sessionPct * 0.2);
+
+    const ctx: MarketContext = {
+      spot,
+      vix,
       pcr,
-      maxPain: summary.maxPain || maxPain,
-      atmStrike: summary.atmStrike || atmStrike,
-      selectedExpiry,
-      totalCallOI,
-      totalPutOI,
+      maxPain,
+      atmStrike,
+      totalOICE: callOI,
+      totalOIPE: putOI,
+      callOiChg,
+      putOiChg,
+      expectedMove: Math.round(expectedMove * 100) / 100,
+      sessionMinutes: Math.round(sessionMinutes),
+      minutesToExpiry,
+      isExpiryDay,
+      atr: Math.round(intradayRange * 100) / 100,
+      trend,
     };
 
-    // Run engine
-    const result = runInstitutionalEngine(
-      strikes,
-      chainSummary,
-      symbol,
-      daysToExpiry
-    );
+    const result = runAccelerationEngine(strikes, ctx);
+    result.symbol = symbol;
 
     return NextResponse.json({
       success: true,

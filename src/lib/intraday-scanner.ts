@@ -127,7 +127,7 @@ export interface ScanResult {
 }
 
 // ─── NIFTY 50 + F&O Universe ──────────────────────────────────────
-const NIFTY50_STOCKS: { symbol: string; name: string; sector: string }[] = [
+export const NIFTY50_STOCKS: { symbol: string; name: string; sector: string }[] = [
   { symbol: "RELIANCE", name: "Reliance Industries", sector: "Energy" },
   { symbol: "TCS", name: "Tata Consultancy Services", sector: "IT" },
   { symbol: "HDFCBANK", name: "HDFC Bank", sector: "Banking" },

@@ -52,7 +52,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const t = setInterval(load, 15000);
+    const t = setInterval(load, 900000);
     return () => clearInterval(t);
   }, [load]);
 

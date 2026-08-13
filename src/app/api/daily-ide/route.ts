@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildDailyDerivativesRecommendation } from "@/lib/daily-derivatives-recommendation";
 import { recordSignal, updatePrice } from "@/lib/trade-audit-client";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
-import { type StrikeLeg, type ChainContext } from "@/lib/institutional-derivatives-engine";
+import { type StrikeLeg, type ChainContext, type DerivativeInput } from "@/lib/institutional-derivatives-engine";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
@@ -25,9 +25,10 @@ export async function GET(req: NextRequest) {
   const shouldRecord = req.nextUrl.searchParams.get("record") === "true";
 
   try {
-    const [chainRes, fiiRes] = await Promise.all([
+    const [chainRes, fiiRes, instRes] = await Promise.all([
       fetch(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
       fetch(`${BASE}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
+      fetch(`${BASE}/api/institutional-positioning`, { cache: "no-store" }).catch(() => null),
     ]);
     if (!chainRes.ok) return NextResponse.json({ error: "option-chain unavailable", status: chainRes.status }, { status: 502 });
     const json = await chainRes.json();
@@ -89,12 +90,56 @@ export async function GET(req: NextRequest) {
       diiSell = 100 - diiBuy;
     }
 
+    // ── NSE Participant-wise OI (institutional positioning) ──
+    let institutional: DerivativeInput['institutional'] = undefined;
+    if (instRes && instRes.ok) {
+      try {
+        const inst = await instRes.json();
+        const scores = (inst.strengthScores || []) as any[];
+        const fiiScore = scores.find((s: any) => s.participant === 'FII');
+        const proScore = scores.find((s: any) => s.participant === 'Pro');
+        const clientScore = scores.find((s: any) => s.participant === 'Client');
+        const bias = inst.bias || {};
+        const retailTrap = inst.retailTrap || {};
+        const prediction = inst.prediction || {};
+        const alignment = inst.alignment || {};
+        const filterVerdict = inst.institutionalFilter?.verdict || 'proceed';
+
+        institutional = {
+          fiiScore: fiiScore?.score ?? 50,
+          fiiDirection: fiiScore?.direction ?? 'neutral',
+          proScore: proScore?.score ?? 50,
+          proDirection: proScore?.direction ?? 'neutral',
+          clientScore: clientScore?.score ?? 50,
+          clientDirection: clientScore?.direction ?? 'neutral',
+          retailTrap: retailTrap.detected ?? false,
+          retailTrapType: retailTrap.type ?? null,
+          alignment: alignment.overall ?? 50,
+          smartMoneyBias: (bias.dominantDirection || 'neutral') as 'bullish' | 'bearish' | 'neutral',
+          conflictDetected: (alignment.conflicts ?? []).length > 0,
+          filterVerdict: filterVerdict as 'proceed' | 'caution' | 'reject',
+          predictionDirection: prediction.tomorrowBias || 'neutral',
+          predictionConfidence: prediction.confidence ?? 10,
+        };
+      } catch { /* best-effort */ }
+    }
+
     // ── Build the full near-ATM strike set for the ranking model ──
     const expectedMove = (atmCE + atmPE) * (iv > 22 ? 1.2 : iv > 18 ? 1.1 : 1) * (atmGamma > 0.03 ? 1.05 : 1);
     const ctx: ChainContext = {
       spot, atmStrike: atm.strike || atmStrike, pcr, iv,
       highestCallOI, highestPutOI, totalVolume: totalVol, chainLen: chain.length,
       fiiLong, fiiShort, diiBuy, diiSell, expectedMove,
+      institutional: institutional ? {
+        fiiScore: institutional.fiiScore,
+        fiiDirection: institutional.fiiDirection,
+        proScore: institutional.proScore,
+        proDirection: institutional.proDirection,
+        retailTrap: institutional.retailTrap,
+        alignment: institutional.alignment,
+        smartMoneyBias: institutional.smartMoneyBias,
+        filterVerdict: institutional.filterVerdict,
+      } : undefined,
     };
     const strikes: { strike: number; type: "CE" | "PE"; leg: StrikeLeg }[] = [];
     const scanThreshold = spot * 0.03;
@@ -127,6 +172,7 @@ export async function GET(req: NextRequest) {
       diiSell,
       highestCallOI,
       highestPutOI,
+      institutional,
     }, { strikes, ctx, daysToExpiry });
 
     // Persist confirmed trades into the audit sidecar (same workflow as scanners).

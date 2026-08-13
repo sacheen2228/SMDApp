@@ -60,6 +60,22 @@ export function buildDailyDerivativesRecommendation(
     `Flows: ${sig.raw.callWriting ? "Call writing" : sig.raw.callUnwind ? "Call OI unwinding" : "Call OI steady"}, ${sig.raw.putWriting ? "Put writing" : sig.raw.putUnwind ? "Put OI unwinding" : "Put OI steady"}; FII long ${sig.raw.fiiLong}% / short ${sig.raw.fiiShort}%, DII buy ${sig.raw.diiBuy}% / sell ${sig.raw.diiSell}%.`,
   );
 
+  // Institutional positioning reasoning.
+  if (sig.raw.institutional) {
+    const inst = sig.raw.institutional;
+    const parts: string[] = [];
+    parts.push(`NSE Participants: FII ${inst.fiiDirection}(${inst.fiiScore})`);
+    parts.push(`Pro ${inst.proDirection}(${inst.proScore})`);
+    parts.push(`Client ${inst.clientDirection}(${inst.clientScore})`);
+    parts.push(`Smart Money: ${inst.smartMoneyBias}`);
+    if (inst.retailTrap) parts.push(`⚠ Retail trap detected: ${inst.retailTrapType}`);
+    if (inst.alignment >= 60) parts.push(`Alignment ${inst.alignment}%`);
+    else parts.push(`Conflict detected`);
+    parts.push(`Prediction: ${inst.predictionDirection}(${inst.predictionConfidence}%)`);
+    parts.push(`Filter: ${inst.filterVerdict}`);
+    reasoning.push(`Institutional: ${parts.join(' | ')}.`);
+  }
+
   if (sig.decision === "BUY_CALL") {
     reasoning.push(`CALL setup confirmed: spot ${sig.raw.spot > sig.resistance ? "above resistance" : "at/near resistance"}, call OI unwinding, put writing increasing, PCR ${sig.raw.pcr > 1 ? "rising" : " supportive"}, delta positive, gamma & vega expanding, volume ${sig.raw.volumeRatio > 1.5 ? ">1.5× (confirmed)" : "low"}. CE probability ${sig.callProbability}%.`);
     reasoning.push(`Plan: BUY ${sig.recommendedType} @ strike ${sig.recommendedStrike}, entry ₹${sig.entry}, SL ₹${sig.stopLoss}, TP1 ₹${sig.target1} / TP2 ₹${sig.target2} / TP3 ₹${sig.target3}.`);

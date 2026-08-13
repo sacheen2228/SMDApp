@@ -55,13 +55,18 @@ const factorColors: Record<string, string> = {
   "Global Cues": "text-sky-400",
   "Expected Move": "text-teal-400",
   "Historical Stats": "text-gray-400",
+  "Institutional OI": "text-purple-400",
 };
 
 function buildGapInput(
   analysis: any, summary: any | undefined,
   spotPrice: number, giftNifty: any, fiiDii: any,
+  instData?: any,
 ): GapInput {
   const pcr = analysis?.pcr ?? summary?.pcr ?? null;
+  const instScores = instData?.strengthScores || [];
+  const fiiScore = instScores.find((s: any) => s.participant === 'FII');
+  const proScore = instScores.find((s: any) => s.participant === 'Pro');
   return {
     prevClose: typeof summary?.prevClose === "number" ? summary.prevClose : null,
     currentSpot: spotPrice || null,
@@ -90,6 +95,17 @@ function buildGapInput(
     historicalGapUpPct: null,
     historicalGapDownPct: null,
     historicalGapStats: null,
+    // Institutional positioning
+    institutionalFiiDirection: fiiScore?.direction,
+    institutionalFiiScore: fiiScore?.score,
+    institutionalProDirection: proScore?.direction,
+    institutionalProScore: proScore?.score,
+    institutionalSmartMoneyBias: instData?.bias?.dominantDirection,
+    institutionalRetailTrap: instData?.retailTrap?.detected || false,
+    institutionalAlignment: instData?.alignment?.overall ?? null,
+    institutionalPredictionDirection: instData?.prediction?.tomorrowBias,
+    institutionalPredictionConfidence: instData?.prediction?.confidence,
+    institutionalFilterVerdict: instData?.institutionalFilter?.verdict,
     timestamp: new Date().toISOString(),
     symbol: "NIFTY",
   };
@@ -100,6 +116,7 @@ export const GapAnalysis = memo(function GapAnalysis({
 }: GapAnalysisProps) {
   const [giftNifty, setGiftNifty] = useState<any>(null);
   const [fiiDii, setFiiDii] = useState<any>(null);
+  const [instData, setInstData] = useState<any>(null);
   const [showFactors, setShowFactors] = useState(true);
 
   useEffect(() => {
@@ -111,11 +128,15 @@ export const GapAnalysis = memo(function GapAnalysis({
       .then(r => r.json())
       .then(d => { if (d.success) setFiiDii(d); })
       .catch(() => {});
+    fetch(`/api/institutional-positioning`)
+      .then(r => r.json())
+      .then(d => { if (d.success) setInstData(d); })
+      .catch(() => {});
   }, [spotPrice]);
 
   const gapInput = useMemo(
-    () => buildGapInput(analysis, summary, spotPrice, giftNifty, fiiDii),
-    [analysis, summary, spotPrice, giftNifty, fiiDii],
+    () => buildGapInput(analysis, summary, spotPrice, giftNifty, fiiDii, instData),
+    [analysis, summary, spotPrice, giftNifty, fiiDii, instData],
   );
 
   const gapResult: GapPrediction = useMemo(
@@ -609,6 +630,56 @@ export const GapAnalysis = memo(function GapAnalysis({
                       </div>
                     )}
                     <p className="text-[9px] text-muted-foreground text-center">Source: {fiiDii.source === "nse" ? "NSE India" : "MrChartist"} | {fiiDii.date}</p>
+
+                    {/* NSE Participant OI */}
+                    {instData && (() => {
+                      const scores = instData.strengthScores || [];
+                      const fii = scores.find((s: any) => s.participant === 'FII');
+                      const pro = scores.find((s: any) => s.participant === 'Pro');
+                      const client = scores.find((s: any) => s.participant === 'Client');
+                      const trap = instData.retailTrap?.detected;
+                      return (
+                        <>
+                          <Separator className="bg-border/30" />
+                          <div>
+                            <p className="text-[9px] font-bold text-purple-400 uppercase tracking-wide mb-2">NSE Participant OI</p>
+                            <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                              <div className="bg-purple-500/5 border border-purple-500/10 rounded p-1.5 text-center">
+                                <p className="text-muted-foreground text-[8px]">FII</p>
+                                <p className={`font-bold ${fii?.direction === 'bullish' ? 'text-emerald-400' : fii?.direction === 'bearish' ? 'text-red-400' : 'text-zinc-400'}`}>
+                                  {fii?.direction || 'neutral'}({fii?.score || 50})
+                                </p>
+                              </div>
+                              <div className="bg-purple-500/5 border border-purple-500/10 rounded p-1.5 text-center">
+                                <p className="text-muted-foreground text-[8px]">Pro</p>
+                                <p className={`font-bold ${pro?.direction === 'bullish' ? 'text-emerald-400' : pro?.direction === 'bearish' ? 'text-red-400' : 'text-zinc-400'}`}>
+                                  {pro?.direction || 'neutral'}({pro?.score || 50})
+                                </p>
+                              </div>
+                              <div className="bg-purple-500/5 border border-purple-500/10 rounded p-1.5 text-center">
+                                <p className="text-muted-foreground text-[8px]">Client</p>
+                                <p className={`font-bold ${client?.direction === 'bullish' ? 'text-emerald-400' : client?.direction === 'bearish' ? 'text-red-400' : 'text-zinc-400'}`}>
+                                  {client?.direction || 'neutral'}({client?.score || 50})
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1.5 text-[9px] text-muted-foreground">
+                              <span>Smart: <span className={`font-bold ${instData.bias?.dominantDirection === 'bullish' ? 'text-emerald-400' : instData.bias?.dominantDirection === 'bearish' ? 'text-red-400' : 'text-zinc-400'}`}>
+                                {instData.bias?.dominantDirection || 'neutral'}
+                              </span></span>
+                              <span>·</span>
+                              <span>AI: <span className="font-bold text-purple-400">{instData.confidence?.overall || 0}%</span></span>
+                              {instData.alignment?.overall != null && (
+                                <><span>·</span><span>Align: <span className="font-bold">{instData.alignment.overall}%</span></span></>
+                              )}
+                              {trap && (
+                                <><span>·</span><span className="text-red-400 font-bold">⚠️ {instData.retailTrap.type}_trap</span></>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </>
                 ) : (
                   <p className="text-xs text-muted-foreground text-center py-4">Loading FII/DII data...</p>

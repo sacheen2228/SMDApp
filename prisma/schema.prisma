@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -29,7 +23,6 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  // Auth.js relations
   accounts Account[]
   sessions Session[]
 }
@@ -86,29 +79,29 @@ model Trade {
   symbol           String
   strike           Float
   type             String
-  side             String   @default("BUY")        // "BUY" | "SELL"
+  side             String   @default("BUY")
   entryTime        DateTime
   entryPrice       Float
   exitTime         DateTime?
   exitPrice        Float?
   pnl              Float?
-  pnlPercent       Float?                          // P&L as percentage of entry
+  pnlPercent       Float?
   holdingTimeMin   Float?
   confidence       Float
   qualityScore     Float
   qualityGrade     String
   aiReasonSnapshot String
-  exitReason       String?                         // "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "MANUAL" | null
-  status           String   @default("OPEN")       // "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "SL_HIT" | "CLOSED"
+  exitReason       String?
+  status           String   @default("OPEN")
   riskPerTrade     Float
   positionSize     Float
   stopLoss         Float
   target1          Float?
   target2          Float?
   target3          Float?
-  tpHitLevel       String?                         // "TP1" | "TP2" | "TP3" | "TRAILING_SL" | null
-  strategy         String   @default("intraday-scan") // source: "intraday-scan" | "option-chain-api" | "manual"
-  tradedAt         DateTime @default(now())         // date used for daily grouping
+  tpHitLevel       String?
+  strategy         String   @default("intraday-scan")
+  tradedAt         DateTime @default(now())
   createdAt        DateTime @default(now())
 }
 
@@ -129,4 +122,29 @@ model DomAnalysis {
   createdAt         DateTime @default(now())
 
   @@unique([symbol, date], name: "symbol_date")
+}
+
+model ParticipantOI {
+  id                  Int      @id @default(autoincrement())
+  date                String
+  participant         String
+  futureIndexLong     Int
+  futureIndexShort    Int
+  futureStockLong     Int
+  futureStockShort    Int
+  optionIndexCallLong  Int
+  optionIndexCallShort Int
+  optionIndexPutLong   Int
+  optionIndexPutShort  Int
+  optionStockCallLong  Int
+  optionStockCallShort Int
+  optionStockPutLong   Int
+  optionStockPutShort  Int
+  totalLong           Int
+  totalShort          Int
+  createdAt           DateTime @default(now())
+
+  @@unique([date, participant])
+  @@index([date])
+  @@index([participant])
 }

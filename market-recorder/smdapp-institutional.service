@@ -1,0 +1,8 @@
+[Unit]
+Description=SMDApp Institutional Positioning fetch
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/sachin/Desktop/SMDApp
+Environment=INSTITUTIONAL_BASE=http://localhost:3000
+ExecStart=/home/sachin/Desktop/SMDApp/market-recorder/fetch-institutional.sh

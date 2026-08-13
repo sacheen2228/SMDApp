@@ -8,6 +8,9 @@ export default function ConnectionManager() {
   const [testing, setTesting] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [apiSession, setApiSession] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectResult, setConnectResult] = useState<{ status: string; msg: string } | null>(null);
 
   const testBreeze = async () => {
     setTesting(true);
@@ -62,6 +65,33 @@ export default function ConnectionManager() {
     }
   };
 
+  const connectBreeze = async () => {
+    const token = apiSession.trim();
+    if (!token) {
+      setConnectResult({ status: "error", msg: "Paste your API session token first" });
+      return;
+    }
+    setConnecting(true);
+    setConnectResult(null);
+    try {
+      const res = await fetch("/api/breeze-connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiSession: token }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setConnectResult({ status: "success", msg: "Connected ✓ Session stored. Refresh to load Breeze data." });
+        setApiSession("");
+      } else {
+        setConnectResult({ status: "error", msg: json.error || "Connection failed" });
+      }
+    } catch (e: any) {
+      setConnectResult({ status: "error", msg: e.message || "Connection failed" });
+    }
+    setConnecting(false);
+  };
+
   return (
     <div className="space-y-4">
       <div className="text-[11px] font-bold text-muted-foreground">CONNECTION & DATA MANAGEMENT</div>
@@ -92,6 +122,44 @@ export default function ConnectionManager() {
             Session valid. Data source will use Breeze API before falling back to NSE.
           </div>
         )}
+
+        {/* Token input + connect */}
+        <div className="mt-3 pt-3 border-t border-[#2a2e39]">
+          <div className="text-[10px] font-bold mb-1">Update Breeze Session Token</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={apiSession}
+              onChange={(e) => setApiSession(e.target.value)}
+              placeholder="Paste new API session token..."
+              className="flex-1 h-7 text-[10px] font-mono bg-[#131722] border border-[#2a2e39] rounded px-2 text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-cyan-500/50"
+            />
+            <button
+              onClick={connectBreeze}
+              disabled={connecting}
+              className="h-7 text-[10px] bg-emerald-500/20 text-emerald-400 px-3 rounded font-bold border border-emerald-500/30 disabled:opacity-50 whitespace-nowrap"
+            >
+              {connecting ? "Connecting..." : "Connect"}
+            </button>
+          </div>
+          {connectResult && (
+            <div className={`mt-1.5 text-[10px] font-bold ${connectResult.status === "success" ? "text-emerald-400" : "text-red-400"}`}>
+              {connectResult.msg}
+            </div>
+          )}
+          <div className="mt-1.5 text-[9px] text-muted-foreground">
+            Get a fresh token from{" "}
+            <a
+              href="https://api.icicidirect.com/apiuser/login?api_key=B%23!n4073MR1X273Wr79t6447Kc3C1995"
+              target="_blank"
+              rel="noreferrer"
+              className="text-cyan-400 underline"
+            >
+              ICICI Breeze login
+            </a>{" "}
+            then paste it here. No server restart needed.
+          </div>
+        </div>
       </div>
 
       {/* Telegram Connection */}

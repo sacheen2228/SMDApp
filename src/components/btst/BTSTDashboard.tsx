@@ -46,6 +46,17 @@ interface BTSTCandidate {
   tp3: number;
   positionSize: { qty: number; capital: number; riskPerTrade: number };
   reasons: string[];
+  institutionalDisplay?: {
+    fiiDirection: string;
+    fiiScore: number;
+    proDirection: string;
+    proScore: number;
+    smartMoneyBias: string;
+    retailTrap: string;
+    alignment: number;
+    prediction: string;
+    filterVerdict: string;
+  };
 }
 
 interface BTSTScan {
@@ -301,6 +312,39 @@ function BTSTDetail({ candidate: c }: { candidate: BTSTCandidate }) {
           <Metric label="Expected Gap" value={`${c.expectedGapPct >= 0 ? "▲" : "▼"} ${Math.abs(c.expectedGapPct)}%`} tone={c.expectedGapPct >= 0 ? "good" : "bad"} />
         </div>
 
+        {/* Institutional positioning (NSE Participant-wise OI) */}
+        {c.institutionalDisplay && (
+          <Card className="bg-[#0d1117] border-white/5">
+            <CardHeader className="py-2 px-3 border-b border-white/5">
+              <CardTitle className="text-[11px] font-semibold text-zinc-300 flex items-center gap-1.5">
+                <Zap className="size-3 text-purple-400" />
+                Institutional Positioning — NSE Participant-wise OI
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-3">
+              <div className="grid grid-cols-3 gap-2 mb-2">
+                <MiniMetric label="FII" value={`${c.institutionalDisplay.fiiDirection} (${c.institutionalDisplay.fiiScore})`}
+                  tone={c.institutionalDisplay.fiiDirection === 'bullish' ? "good" : c.institutionalDisplay.fiiDirection === 'bearish' ? "bad" : "mid"} />
+                <MiniMetric label="Pro" value={`${c.institutionalDisplay.proDirection} (${c.institutionalDisplay.proScore})`}
+                  tone={c.institutionalDisplay.proDirection === 'bullish' ? "good" : c.institutionalDisplay.proDirection === 'bearish' ? "bad" : "mid"} />
+                <MiniMetric label="Smart Money" value={c.institutionalDisplay.smartMoneyBias}
+                  tone={c.institutionalDisplay.smartMoneyBias === 'bullish' ? "good" : c.institutionalDisplay.smartMoneyBias === 'bearish' ? "bad" : "mid"} />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <MiniMetric label="Trap" value={c.institutionalDisplay.retailTrap !== 'none' ? c.institutionalDisplay.retailTrap : 'none'}
+                  tone={c.institutionalDisplay.retailTrap === 'none' ? "good" : "bad"} />
+                <MiniMetric label="Alignment" value={`${c.institutionalDisplay.alignment}%`}
+                  tone={c.institutionalDisplay.alignment >= 70 ? "good" : c.institutionalDisplay.alignment >= 50 ? "mid" : "bad"} />
+                <MiniMetric label="Filter" value={c.institutionalDisplay.filterVerdict}
+                  tone={c.institutionalDisplay.filterVerdict === 'proceed' ? "good" : c.institutionalDisplay.filterVerdict === 'caution' ? "mid" : "bad"} />
+              </div>
+              <div className="mt-2 text-[9px] text-zinc-500">
+                Prediction: {c.institutionalDisplay.prediction}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Trade levels */}
         <Card className="bg-[#0d1117] border-white/5">
           <CardHeader className="py-2 px-3 border-b border-white/5">
@@ -346,6 +390,17 @@ function Metric({ label, value, tone }: { label: string; value: string; tone: "g
     <div className="bg-[#0d1117] border border-white/5 rounded-lg px-3 py-2">
       <div className="text-[9px] text-zinc-500">{label}</div>
       <div className={`text-[12px] font-semibold ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, tone }: { label: string; value: string; tone: "good" | "mid" | "bad" }) {
+  const color = tone === "good" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-zinc-300";
+  const bg = tone === "good" ? "bg-emerald-500/5" : tone === "bad" ? "bg-red-500/5" : "bg-zinc-800/30";
+  return (
+    <div className={`border border-white/5 rounded px-2 py-1 ${bg}`}>
+      <div className="text-[8px] text-zinc-500">{label}</div>
+      <div className={`text-[10px] font-semibold ${color}`}>{value}</div>
     </div>
   );
 }

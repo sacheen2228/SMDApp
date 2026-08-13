@@ -106,10 +106,35 @@ export function calculateGEX(
   const dealerRegime = spot > gammaFlip ? 'LONG_GAMMA' : 'SHORT_GAMMA';
 
   let dealerBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-  if (totalGEX > 0) {
-    dealerBias = 'BULLISH';
-  } else if (totalGEX < 0) {
-    dealerBias = 'BEARISH';
+
+  // Derive dealer bias from gamma wall proximity (institutional method):
+  // The nearest gamma wall reveals where dealer hedging pressure concentrates.
+  // CE wall closer → dealers hedge upside risk → they SELL rallies → bearish
+  // PE wall closer → dealers hedge downside risk → they BUY dips → bullish
+  if (gammaWalls.length >= 2) {
+    const ceDist = Math.min(
+      ...gammaWalls.filter(w => w.type === 'CE').map(w => Math.abs(w.strike - spot)),
+      Infinity
+    );
+    const peDist = Math.min(
+      ...gammaWalls.filter(w => w.type === 'PE').map(w => Math.abs(w.strike - spot)),
+      Infinity
+    );
+    const threshold = spot * 0.03; // within 3% of spot
+    if (ceDist < peDist && ceDist < threshold) {
+      dealerBias = 'BEARISH';
+    } else if (peDist < ceDist && peDist < threshold) {
+      dealerBias = 'BULLISH';
+    }
+  }
+
+  // When no clear dealer bias from walls, use regime-level heuristic
+  if (dealerBias === 'NEUTRAL') {
+    if (totalGEX > 0) {
+      dealerBias = 'BULLISH';  // Long gamma = dealers provide liquidity
+    } else if (totalGEX < 0) {
+      dealerBias = 'BEARISH';  // Short gamma = dealers remove liquidity
+    }
   }
 
   const status = validStrikes >= 3 ? 'OK' : 'DEGRADED';

@@ -42,6 +42,18 @@ export interface GapInput {
   historicalGapDownPct: number | null;
   historicalGapStats: HistoricalGapStats | null;
 
+  // Institutional positioning (NSE Participant-wise OI)
+  institutionalFiiDirection?: string;
+  institutionalFiiScore?: number;
+  institutionalProDirection?: string;
+  institutionalProScore?: number;
+  institutionalSmartMoneyBias?: string;
+  institutionalRetailTrap?: boolean;
+  institutionalAlignment?: number;
+  institutionalPredictionDirection?: string;
+  institutionalPredictionConfidence?: number;
+  institutionalFilterVerdict?: string;
+
   timestamp: string;
   symbol: string;
 }
@@ -70,6 +82,7 @@ export interface GapWeights {
   globalCues: number;
   expectedMove: number;
   historicalStats: number;
+  institutionalBias: number;
 }
 
 export const DEFAULT_WEIGHTS: GapWeights = {
@@ -78,13 +91,14 @@ export const DEFAULT_WEIGHTS: GapWeights = {
   pcrOI: 0.10,
   oiBuildup: 0.10,
   maxPainDistance: 0.08,
-  vwapDistance: 0.06,
-  atr: 0.05,
+  vwapDistance: 0.05,
+  atr: 0.04,
   vix: 0.07,
-  breadth: 0.05,
-  globalCues: 0.07,
+  breadth: 0.04,
+  globalCues: 0.05,
   expectedMove: 0.06,
-  historicalStats: 0.06,
+  historicalStats: 0.05,
+  institutionalBias: 0.06,
 };
 
 export interface GapPrediction {

@@ -1,0 +1,10 @@
+[Unit]
+Description=SMDApp Institutional Positioning daily fetch
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 16:30:00
+Persistent=true
+Unit=smdapp-institutional.service
+
+[Install]
+WantedBy=timers.target
