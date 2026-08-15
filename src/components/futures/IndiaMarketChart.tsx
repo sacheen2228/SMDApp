@@ -10,12 +10,16 @@ interface Props {
   symbol?: string; // NIFTY, BANKNIFTY, etc.
 }
 
-const TFS = ['1m', '5m', '15m', '30m', '1h'];
+const TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d', '1w', '1M'];
 
 const SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX'];
 
 function tfMs(tf: string): number {
-  const m = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 } as Record<string, number>;
+  const m = {
+    '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
+    '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600,
+    '1d': 86400, '1w': 604800, '1M': 2592000,
+  } as Record<string, number>;
   return (m[tf] || 300) * 1000;
 }
 
