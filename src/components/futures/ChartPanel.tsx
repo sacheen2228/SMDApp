@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
+import { ChartToolbar } from './ChartToolbar';
 
 type IChartApi = ReturnType<typeof createChart>;
 type ICandleSeries = ReturnType<ReturnType<typeof createChart>['addSeries']>;
@@ -33,6 +34,8 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
   const changeRef = useRef<HTMLSpanElement>(null);
   // Last candle known to the chart (for live-forming animation).
   const lastCandleRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
+  // Raw bars (for the indicator toolbar).
+  const [bars, setBars] = useState<Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>([]);
 
   // Live price header — wired to the ticker feed.
   const lp = ticker ? parseFloat(ticker.last_price || ticker.lastPrice || '0') : 0;
@@ -96,6 +99,7 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
         if (candles.length > 0) {
           seriesRef.current?.setData(candles);
           lastCandleRef.current = candles[candles.length - 1];
+          setBars(candles);
         }
       }
     } catch {}
@@ -184,6 +188,7 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
           ))}
         </div>
       </div>
+      <ChartToolbar chart={chartRef.current} candleSeries={seriesRef.current} bars={bars} />
       <div className="flex-1 relative" style={{ minHeight: 280 }}>
         <div ref={containerRef} className="w-full h-full" />
         {activeSession && (

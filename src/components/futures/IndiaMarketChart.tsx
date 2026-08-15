@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
+import { ChartToolbar } from './ChartToolbar';
 
 type IChartApi = ReturnType<typeof createChart>;
 type ICandleSeries = ReturnType<ReturnType<typeof createChart>['addSeries']>;
@@ -37,6 +38,7 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
   const [live, setLive] = useState(false);
   const [spot, setSpot] = useState(0);
   const [dayOpen, setDayOpen] = useState(0);
+  const [bars, setBars] = useState<Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>([]);
   const liveRef = useRef(live);
 
   useEffect(() => { liveRef.current = live; }, [live]);
@@ -61,6 +63,7 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
           seriesRef.current?.setData(candles);
           lastCandleRef.current = candles[candles.length - 1];
           if (candles.length > 0) setDayOpen(candles[0].open);
+          setBars(candles);
         }
       }
     } catch {}
@@ -208,6 +211,7 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
           ))}
         </div>
       </div>
+      <ChartToolbar chart={chartRef.current} candleSeries={seriesRef.current} bars={bars} />
       <div className="flex-1 relative" style={{ minHeight: 280 }}>
         <div ref={containerRef} className="w-full h-full" />
       </div>

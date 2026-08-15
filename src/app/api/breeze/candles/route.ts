@@ -28,10 +28,11 @@ const STOCK_CODE: Record<string, string> = {
   BANKEX: "BSESEN",
 };
 
+// Breeze intraday works for 1minute and 5minute. 15minute returns 0 rows for
+// indices, so everything ≥15m is aggregated from 5minute bars instead.
 const BREEZE_INTERVAL: Record<string, string> = {
   '1m': '1minute',
   '5m': '5minute',
-  '15m': '15minute',
 };
 
 const YAHOO_SYMBOL: Record<string, string> = {
@@ -67,9 +68,8 @@ export async function GET(request: Request) {
       '1h': 60, '2h': 120, '4h': 240, '6h': 360,
     };
     const dailyLike = ['1d', '1w', '1M'].includes(interval);
-    // 3m/30m/1h/2h/4h/6h must be aggregated from a smaller native interval.
-    // 3m from 1m; everything ≥30m from 5m (Breeze 15m only exists, but 5m is
-    // fine and gives tighter alignment for 30m/1h+).
+    // 3m aggregates from 1m; everything else (15m+) aggregates from 5m
+    // because Breeze's 15minute interval returns 0 rows for indices.
     const needsAgg = !dailyLike && AGG_MIN[interval] && !BREEZE_INTERVAL[interval];
     const aggMin = AGG_MIN[interval];
     const sourceInterval = interval === '3m' ? '1minute' : (needsAgg ? '5minute' : (BREEZE_INTERVAL[interval] || '5minute'));
@@ -229,10 +229,11 @@ export async function GET(request: Request) {
                 volume: q.volume?.[i] || 0,
               });
             }
-            if (dailyLike) {
-              // Daily/weekly/monthly: pass daily through (weekly/monthly already
-              // aggregated below if Breeze had data; here Yahoo gives daily, so
-              // rebuild the bucket for w/M too).
+            if (dailyLike || interval === '15m' || interval === '30m' || interval === '1h' || interval === '2h' || interval === '4h' || interval === '6h') {
+              // Daily/weekly/monthly pass daily through; weekly/monthly bucketed.
+              // For aggregated intraday timeframes (15m+) we return the real daily
+              // bars rather than fabricating flat synthetic candles — the chart
+              // renders them truthfully when Breeze has no intraday data.
               let bucket = daily.sort((a, b) => a.time - b.time);
               if (interval === '1w' || interval === '1M') {
                 const grouped = new Map<string, any>();
@@ -253,17 +254,9 @@ export async function GET(request: Request) {
               }
               out = bucket.slice(-limit);
             } else {
-              // Intraday: split each daily bar across the session at the step size.
-              const stepMs = (aggMin || 5) * 60000;
-              const synth: any[] = [];
-              for (const d of daily) {
-                const openTime = d.time + 5.5 * 3600 * 1000; // 09:15 IST
-                for (let t = openTime; t < openTime + 6 * 3600 * 1000 && synth.length < limit; t += stepMs) {
-                  synth.push({ time: t, open: d.open, high: d.high, low: d.low, close: d.close, volume: 0 });
-                }
-                if (synth.length >= limit) break;
-              }
-              out = synth.sort((a, b) => a.time - b.time).slice(-limit);
+              // Raw intraday (1m/3m/5m) with no Breeze data: also return the real
+              // daily bars — no fabricated flat candles.
+              out = daily.sort((a, b) => a.time - b.time).slice(-limit);
             }
             source = 'unavailable';
           }

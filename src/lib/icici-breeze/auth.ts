@@ -45,17 +45,20 @@ export async function validateSession(): Promise<boolean> {
 // ─── Initialize Session ───────────────────────────────────────────
 export async function initSession(): Promise<boolean> {
   try {
-    // Try cached session first
-    if (currentApiSession) {
-      return true;
-    }
-
     // Try loading cached session from disk
     try {
       const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
       const cached: CachedSession = JSON.parse(raw);
       if (cached.expiresAt > Date.now()) {
         currentApiSession = cached.apiSession;
+        // Ensure the singleton client is actually authenticated — the cached
+        // fast-path only records the token; without generateSession() the SDK
+        // client has empty sessionKey/userId and API calls fail.
+        const breeze = getBreezeClient();
+        if (!breeze.sessionKey || !breeze.userId) {
+          const config = getConfig();
+          await breeze.generateSession(config.secretKey, cached.apiSession);
+        }
         return true;
       }
     } catch {
