@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { TerminalHeader } from './TerminalHeader';
 import { ChartPanel } from './ChartPanel';
-import { ImieDashboard } from './ImieDashboard';
+import { useCoinDCXLivePrice } from '@/hooks/useCoinDCXLive';
 import type { Candle, Trade, OrderBookLevel, AiFinalScore, Recommendation, OpenInterestData } from '@/types/engine';
 import { analyzeMarket, computeGrade } from '@/engines/ai/ai-engine';
 import type { MarketPlaybook } from '@/engines/imie/types';
@@ -17,8 +17,10 @@ async function fetchOpenInterest(symbol: string): Promise<any> {
 }
 
 function toPair(m: string) {
-  const base = m.replace(/USDT$/, '').replace(/INR$/, '').replace(/BTC$/, '');
+  if (!m) return '';
   const q = m.endsWith('INR') ? 'INR' : m.endsWith('BTC') ? 'BTC' : 'USDT';
+  const base = q === 'INR' ? m.slice(0, -3) : q === 'BTC' ? m.slice(0, -3) : m.slice(0, -4);
+  if (!base) return '';
   return `B-${base}_${q}`;
 }
 
@@ -74,6 +76,9 @@ export function FuturesDashboard() {
   const intRef = useRef<ReturnType<typeof setInterval>>();
   const candleIntRef = useRef<ReturnType<typeof setInterval>>();
 
+  // CoinDCX WebSocket live price (tick-by-tick)
+  const { livePrice, connected: wsConnected } = useCoinDCXLivePrice(selected);
+
   // Derived state (must be before hooks that reference them)
   const baseAsset = getBase(selected);
   const lp = parseFloat(ticker?.last_price || '0');
@@ -108,7 +113,12 @@ export function FuturesDashboard() {
 
         allMarkets.sort();
         setMarketList(allMarkets);
-        setSelected(allMarkets[0] || '');
+        // Default to a major, liquid pair instead of the first alphabetically
+        // (previously "0GUSDT" — an obscure microcap with thin order books).
+        const PREFERRED = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+        const preferred = PREFERRED.find(p => allMarkets.includes(p));
+        const fallback = allMarkets.find(m => m.endsWith('USDT') && !m.includes('1000') && !m.includes('BABY'));
+        setSelected(preferred || fallback || allMarkets[0] || '');
       } catch {}
     };
     fetchMarketList();
@@ -189,7 +199,7 @@ export function FuturesDashboard() {
   // Fetch ticker + orderbook + trades every 10s
   const fetchAll = useCallback(async () => {
     if (!selected || !pair) return;
-    try {
+    if (pair.includes('_USDT') && pair.startsWith('B-_')) return;    try {
       const [tr, obr, trr] = await Promise.all([
         fetch(`/api/coindcx/market?action=ticker&market=${encodeURIComponent(selected)}`),
         fetch(`/api/coindcx/market?action=orderbook&pair=${pair}`),
@@ -348,7 +358,7 @@ export function FuturesDashboard() {
 
         {/* Center: Chart */}
         <div className="h-full" style={{ minHeight: 350 }}>
-          <ChartPanel market={selected} timeframe={timeframe} onTimeframeChange={setTimeframe} />
+          <ChartPanel market={selected} timeframe={timeframe} onTimeframeChange={setTimeframe} ticker={ticker} livePrice={livePrice} liveConnected={wsConnected} />
         </div>
 
         {/* Right: Recommendation + Order Book */}

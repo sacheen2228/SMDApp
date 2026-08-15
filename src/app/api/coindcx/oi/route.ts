@@ -42,8 +42,18 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     let symbol = (searchParams.get('symbol') || 'BTCUSDT').toUpperCase();
-    // Normalize: remove USDT suffix if needed, Binance needs standard format
-    if (!symbol.endsWith('USDT') && !symbol.endsWith('BTC') && !symbol.endsWith('ETH')) {
+    // Map CoinDCX spot symbol -> Binance USDT-M futures symbol.
+    // "BTCINR" -> "BTCUSDT", "ETHINR" -> "ETHUSDT", "DOGEUSDT" -> "DOGEUSDT".
+    // Pure-BTC pairs (e.g. "DOTBTC") don't exist on Binance USDT-M futures, so
+    // they're skipped by the caller (OI simply reports unavailable).
+    if (symbol.endsWith('INR')) {
+      symbol = symbol.replace(/INR$/, '') + 'USDT';
+    } else if (symbol.endsWith('BTC') && symbol.length > 3) {
+      symbol = symbol + 'USDT';
+    } else if (symbol.endsWith('ETH') && symbol.length > 3) {
+      symbol = symbol + 'USDT';
+    }
+    if (!symbol.endsWith('USDT')) {
       symbol = symbol + 'USDT';
     }
 

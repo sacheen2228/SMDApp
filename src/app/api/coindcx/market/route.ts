@@ -53,6 +53,24 @@ export async function GET(request: Request) {
 
       case 'candles':
         if (!pair) return NextResponse.json({ error: 'pair required' }, { status: 400 });
+        // CoinDCX only supports [1m, 15m, 1h, 1d]. Aggregate the standard
+        // TradingView timeframes that aren't native:
+        //   5m   <- 1m  (5x)
+        //   30m  <- 15m (2x)
+        //   4h   <- 1h  (4x)
+        //   1w   <- 1d  (7x)
+        const aggMap: Record<string, { src: string; n: number }> = {
+          '5m': { src: '1m', n: 5 },
+          '30m': { src: '15m', n: 2 },
+          '4h': { src: '1h', n: 4 },
+          '1w': { src: '1d', n: 7 },
+        };
+        const spec = aggMap[interval];
+        if (spec) {
+          const srcBars = await getCandles(pair, spec.src, limit * spec.n + 40);
+          const aggregated = aggregateCandles(srcBars, spec.src, spec.n);
+          return NextResponse.json({ success: true, data: aggregated });
+        }
         const candles = await getCandles(pair, interval, limit);
         return NextResponse.json({ success: true, data: candles });
 
@@ -73,4 +91,33 @@ export async function GET(request: Request) {
     console.error('[CoinDCX Market API] Error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
+}
+
+// Combine source candles into larger bars by bucketing on epoch minutes.
+// srcMin = duration (minutes) of each source bar; n = bars per target bucket.
+function aggregateCandles(bars: any[], srcMin: string, n: number) {
+  const srcMs = { '1m': 60000, '15m': 900000, '1h': 3600000, '1d': 86400000 } as Record<string, number>;
+  const bucketMs = (srcMs[srcMin] || 60000) * n;
+  const buckets = new Map<number, any>();
+  for (const b of bars) {
+    const ms = b.time; // CoinDCX returns epoch ms
+    const bucketStart = Math.floor(ms / bucketMs) * bucketMs;
+    const existing = buckets.get(bucketStart);
+    if (!existing) {
+      buckets.set(bucketStart, {
+        time: bucketStart,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume || 0,
+      });
+    } else {
+      existing.high = Math.max(existing.high, b.high);
+      existing.low = Math.min(existing.low, b.low);
+      existing.close = b.close;
+      existing.volume += b.volume || 0;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time).slice(-(Math.floor(bars.length / n)));
 }
