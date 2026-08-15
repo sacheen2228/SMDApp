@@ -49,6 +49,7 @@ import HedgePanel from '@/components/dashboard/HedgePanel';
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
+import { IndexComparison } from '@/components/dashboard/IndexComparison';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -315,7 +316,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -759,6 +760,11 @@ return (
               onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
               <CandlestickChart className="h-2.5 w-2.5 mr-0.5" /> India Chart
             </Button>
+            <Button variant={viewMode === 'indexcomp' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'indexcomp' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
+              onClick={() => { setViewMode('indexcomp'); setDisplayMode('pro'); }}>
+              <Activity className="h-2.5 w-2.5 mr-0.5" /> Idx Comp
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -994,6 +1000,11 @@ return (
         /* ═══════ INDIA MARKET CHART ═══════ */
         <div className="flex-1 overflow-hidden p-2">
           <IndiaMarketChart symbol="NIFTY" />
+        </div>
+        ) : viewMode === 'indexcomp' ? (
+        /* ═══════ INDEX COMPARISON ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <IndexComparison />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
