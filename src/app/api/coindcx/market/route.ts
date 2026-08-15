@@ -55,15 +55,23 @@ export async function GET(request: Request) {
         if (!pair) return NextResponse.json({ error: 'pair required' }, { status: 400 });
         // CoinDCX only supports [1m, 15m, 1h, 1d]. Aggregate the standard
         // TradingView timeframes that aren't native:
-        //   5m   <- 1m  (5x)
-        //   30m  <- 15m (2x)
-        //   4h   <- 1h  (4x)
-        //   1w   <- 1d  (7x)
+        //   3m  <- 1m  (3x)
+        //   5m  <- 1m  (5x)
+        //   30m <- 15m (2x)
+        //   2h  <- 1h  (2x)
+        //   4h  <- 1h  (4x)
+        //   6h  <- 1h  (6x)
+        //   1w  <- 1d  (7x)
+        //   1M  <- 1d  (30x)
         const aggMap: Record<string, { src: string; n: number }> = {
+          '3m': { src: '1m', n: 3 },
           '5m': { src: '1m', n: 5 },
           '30m': { src: '15m', n: 2 },
+          '2h': { src: '1h', n: 2 },
           '4h': { src: '1h', n: 4 },
+          '6h': { src: '1h', n: 6 },
           '1w': { src: '1d', n: 7 },
+          '1M': { src: '1d', n: 30 },
         };
         const spec = aggMap[interval];
         if (spec) {
