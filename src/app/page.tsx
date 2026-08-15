@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -48,6 +48,7 @@ import { runMLAnalysis } from '@/lib/ml-engine';
 import HedgePanel from '@/components/dashboard/HedgePanel';
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
+import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -314,7 +315,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -753,6 +754,11 @@ return (
               onClick={() => { setViewMode('futures'); setDisplayMode('pro'); }}>
               <Zap className="h-2.5 w-2.5 mr-0.5" /> Futures
             </Button>
+            <Button variant={viewMode === 'india' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'india' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
+              onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
+              <CandlestickChart className="h-2.5 w-2.5 mr-0.5" /> India Chart
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -983,6 +989,11 @@ return (
         /* ═══════ FUTURES DASHBOARD ═══════ */
         <div className="flex-1 overflow-hidden">
           <FuturesDashboard />
+        </div>
+        ) : viewMode === 'india' ? (
+        /* ═══════ INDIA MARKET CHART ═══════ */
+        <div className="flex-1 overflow-hidden p-2">
+          <IndiaMarketChart symbol="NIFTY" />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
