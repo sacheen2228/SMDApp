@@ -2,6 +2,7 @@
 
 import { getHistoricalCandles } from '@/lib/historical-data';
 import { IndexSymbol, INDEX_META, INDEX_UNIVERSE, FuturesContractMeta, OptionsContractMeta } from '@/lib/index-universe';
+import { fetchOptionChainSnapshot, fetchFuturesData } from '@/lib/breeze-fno-data';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -27,9 +28,14 @@ export async function GET(request: Request) {
 
     const spot = candles[candles.length - 1].close;
 
-    // Build dynamic contract metadata (in production, fetch from exchange instrument master)
-    const futures = buildFuturesContractMeta(symbol, spot);
-    const options = buildOptionsContractMeta(symbol, spot);
+    // Build dynamic contract metadata (futures + option chain from real Breeze data)
+    const [futures, optionChain] = await Promise.all([
+      fetchFuturesData(symbol, spot),
+      fetchOptionChainSnapshot(symbol, spot),
+    ]);
+
+    const futuresContract = buildFuturesContractMeta(symbol, spot, futures);
+    const options = buildOptionsContractMeta(symbol, spot, optionChain);
 
     return NextResponse.json({
       success: true,
@@ -42,8 +48,12 @@ export async function GET(request: Request) {
         lotSize: meta.lotSize,
         tickSize: meta.tickSize,
         strikeInterval: meta.strikeInterval,
-        futures,
+        futures: futuresContract,
         options,
+        dataSource: {
+          futures: futures ? 'live-breeze' : 'unavailable',
+          optionChain: optionChain ? 'live-breeze' : 'unavailable',
+        },
         lastUpdated: Date.now(),
       },
     });
@@ -53,9 +63,7 @@ export async function GET(request: Request) {
   }
 }
 
-function buildFuturesContractMeta(symbol: IndexSymbol, spot: number): any {
-  // In production, fetch from exchange instrument master
-  // This is a mock implementation showing the structure
+function buildFuturesContractMeta(symbol: IndexSymbol, spot: number, futures: any): any {
   const now = new Date();
   const currentExpiry = getCurrentMonthlyExpiry();
   const nextExpiry = getNextMonthlyExpiry();
@@ -72,22 +80,22 @@ function buildFuturesContractMeta(symbol: IndexSymbol, spot: number): any {
     currentContract: `${symbol}${formatExpiryForContract(currentExpiry)}`,
     nextContract: `${symbol}${formatExpiryForContract(nextExpiry)}`,
     spotPrice: spot,
-    futuresPrice: spot * 1.002, // approximate
-    basis: spot * 0.002,
-    basisPct: 0.2,
-    volume: 100000,
-    oi: 50000,
-    oiChange: 5000,
-    priceChange: spot * 0.01,
-    priceChangePct: 1,
-    oiState: 'LONG_BUILDUP',
+    futuresPrice: futures?.futures ?? null,
+    basis: futures?.basis ?? null,
+    basisPct: futures?.basisPct ?? null,
+    volume: futures?.volume ?? null,
+    oi: futures?.oi ?? null,
+    oiChange: futures?.oiChange ?? null,
+    priceChange: futures?.priceChange ?? null,
+    priceChangePct: futures?.priceChangePct ?? null,
+    oiState: futures?.oiState || 'NEUTRAL',
   };
 }
 
-function buildOptionsContractMeta(symbol: IndexSymbol, spot: number): any {
+function buildOptionsContractMeta(symbol: IndexSymbol, spot: number, chain: any): any {
   const meta = INDEX_META[symbol];
   const strikeInterval = meta.strikeInterval;
-  const atmStrike = Math.round(spot / strikeInterval) * strikeInterval;
+  const atmStrike = chain?.atmStrike || Math.round(spot / strikeInterval) * strikeInterval;
 
   // Build strikes around ATM
   const strikes: number[] = [];
@@ -105,6 +113,20 @@ function buildOptionsContractMeta(symbol: IndexSymbol, spot: number): any {
   const currentExpiry = getCurrentMonthlyExpiry();
   const nextExpiry = getNextMonthlyExpiry();
 
+  const chainStrikes = chain?.strikes || [];
+  const strikesData = strikes.map(strike => {
+    const live = chainStrikes.find((s: any) => s.strike === strike);
+    const ce = live?.ce || mockOptionMetrics(strike < spot ? 'ITM' : strike > spot ? 'OTM' : 'ATM', spot, strike);
+    const pe = live?.pe || mockOptionMetrics(strike > spot ? 'ITM' : strike < spot ? 'OTM' : 'ATM', spot, strike);
+    return {
+      strike,
+      expiry: chain?.expiry || currentExpiry,
+      ce,
+      pe,
+      dataSource: live ? 'live-breeze' : 'unavailable',
+    };
+  });
+
   return {
     symbol,
     exchange: meta.exchange,
@@ -119,25 +141,20 @@ function buildOptionsContractMeta(symbol: IndexSymbol, spot: number): any {
     strikes,
     itmStrikes: { ce: itmCe, pe: itmPe },
     otmStrikes: { ce: otmCe, pe: otmPe },
-    // Mock option chain data
-    strikesData: strikes.map(strike => ({
-      strike,
-      expiry: currentExpiry,
-      ce: mockOptionMetrics(strike < spot ? 'ITM' : strike > spot ? 'OTM' : 'ATM', spot, strike),
-      pe: mockOptionMetrics(strike > spot ? 'ITM' : strike < spot ? 'OTM' : 'ATM', spot, strike),
-    })),
-    callOiMap: new Map(strikes.map(s => [s, Math.floor(Math.random() * 100000)])),
-    putOiMap: new Map(strikes.map(s => [s, Math.floor(Math.random() * 100000)])),
-    callOiChangeMap: new Map(),
-    putOiChangeMap: new Map(),
-    callVolumeMap: new Map(),
-    putVolumeMap: new Map(),
-    maxPain: atmStrike,
-    pcr: 1.0,
-    ivRank: 50,
-    ivPercentile: 50,
-    atmIV: 15,
-    ivSkew: 0,
+    strikesData,
+    callOiMap: chain?.callOiMap || new Map(strikes.map(s => [s, 0])),
+    putOiMap: chain?.putOiMap || new Map(strikes.map(s => [s, 0])),
+    callOiChangeMap: chain?.callOiChangeMap || new Map(),
+    putOiChangeMap: chain?.putOiChangeMap || new Map(),
+    callVolumeMap: chain?.callVolumeMap || new Map(),
+    putVolumeMap: chain?.putVolumeMap || new Map(),
+    maxPain: chain?.maxPain || atmStrike,
+    pcr: chain?.pcr ?? null,
+    ivRank: chain?.ivRank ?? null,
+    ivPercentile: chain?.ivPercentile ?? null,
+    atmIV: chain?.atmIV ?? null,
+    ivSkew: chain?.ivSkew ?? null,
+    dataSource: chain ? 'live-breeze' : 'unavailable',
   };
 }
 

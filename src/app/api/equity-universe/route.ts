@@ -23,9 +23,6 @@ const EQUITY_UNIVERSE = [
   'TATACHEM', 'GODREJCP', 'COLPAL', 'EMAMILTD', 'JUBLFOOD',
 ];
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -44,7 +41,7 @@ export async function GET(request: Request) {
     const dailyResults = await Promise.all(dailyPromises);
     const dailyMap = new Map(dailyResults.map(r => [r.symbol, r.daily]));
 
-    const results = [];
+    const results: any[] = [];
 
     for (const symbol of symbols) {
       try {
@@ -64,20 +61,21 @@ export async function GET(request: Request) {
 
         const analysis = analyzeEquityCash(symbol, candles, prevDayHigh, prevDayLow, prevWeekHigh, prevWeekLow);
 
-        if (analysis.bestLong?.signalScore.total >= minSignal || analysis.bestShort?.signalScore.total >= minSignal) {
-          const best = analysis.bestLong?.signalScore.total >= analysis.bestShort?.signalScore.total
-            ? analysis.bestLong
-            : analysis.bestShort;
+        const longScore = analysis.bestLong?.signalScore?.total ?? 0;
+        const shortScore = analysis.bestShort?.signalScore?.total ?? 0;
 
-          if (best && best.signalScore.total >= minSignal) {
+        if (longScore >= minSignal || shortScore >= minSignal) {
+          const best = longScore >= shortScore ? analysis.bestLong : analysis.bestShort;
+
+          if (best && (best.signalScore?.total ?? 0) >= minSignal) {
             results.push({
               symbol,
               name: symbol,
               price: spot,
               changePct: ((candles[candles.length - 1].close - candles[candles.length - 2]?.close) / (candles[candles.length - 2]?.close || 1)) * 100,
               regime: analysis.data.regime,
-              signalStrength: best.signalScore.total,
-              signalLabel: best.signalScore.strength,
+              signalStrength: best.signalScore?.total ?? 0,
+              signalLabel: best.signalScore?.strength ?? 'NO_TRADE',
               setup: best.setup,
               direction: best.direction,
               entry: best.entry.aggressive,

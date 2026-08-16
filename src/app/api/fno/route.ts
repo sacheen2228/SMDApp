@@ -2,6 +2,7 @@
 
 import { analyzeFno } from '@/lib/fno-engine';
 import { getHistoricalCandles } from '@/lib/historical-data';
+import { fetchOptionChainSnapshot, fetchFuturesData } from '@/lib/breeze-fno-data';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -32,15 +33,16 @@ export async function GET(request: Request) {
     const prevWeekHigh = Math.max(...dailyCandles.slice(-5).map(c => c.high));
     const prevWeekLow = Math.min(...dailyCandles.slice(-5).map(c => c.low));
 
-    // Get futures data (mock for now - would come from Breeze)
-    const futures = getMockFuturesData(symbol, spotCandles[spotCandles.length - 1]?.close || 0);
+    // Get futures data (real Breeze data - null when unavailable)
+    const spotPrice = spotCandles[spotCandles.length - 1]?.close || 0;
+    const futures = await fetchFuturesData(symbol, spotPrice);
 
-    // Get option chain (mock for now - would come from Breeze)
-    const optionChain = getMockOptionChain(symbol, spotCandles[spotCandles.length - 1]?.close || 0);
+    // Get option chain (real Breeze data - null when unavailable)
+    const optionChain = await fetchOptionChainSnapshot(symbol, spotPrice);
 
     const analysis = analyzeFno(
       symbol,
-      spotCandles[spotCandles.length - 1]?.close || 0,
+      spotPrice,
       spotCandles,
       futures,
       optionChain,
@@ -98,92 +100,6 @@ export async function GET(request: Request) {
     console.error('[F&O API] Error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
-}
-
-function getMockFuturesData(symbol: string, spot: number) {
-  // Mock futures data - replace with real Breeze data
-  return {
-    symbol,
-    spot,
-    futures: spot * 1.002,
-    basis: spot * 0.002,
-    basisPct: 0.2,
-    volume: 100000,
-    oi: 50000,
-    oiChange: 5000,
-    oiChangePct: 10,
-    priceChange: spot * 0.01,
-    priceChangePct: 1,
-    oiState: 'LONG_BUILDUP' as const,
-  };
-}
-
-function getMockOptionChain(symbol: string, spot: number) {
-  // Mock option chain - replace with real Breeze data
-  const atmStrike = Math.round(spot / 50) * 50;
-  const strikes: number[] = [];
-  for (let i = -10; i <= 10; i++) {
-    strikes.push(atmStrike + i * 50);
-  }
-
-  const chainStrikes = strikes.map(strike => ({
-    strike,
-    expiry: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    ce: mockOptionMetrics(strike < spot ? 'ITM' : strike > spot ? 'OTM' : 'ATM'),
-    pe: mockOptionMetrics(strike > spot ? 'ITM' : strike < spot ? 'OTM' : 'ATM'),
-  }));
-
-  let callOITotal = 0, putOITotal = 0;
-  const callOiMap = new Map<number, number>();
-  const putOiMap = new Map<number, number>();
-
-  for (const s of chainStrikes) {
-    callOiMap.set(s.strike, s.ce.oi);
-    putOiMap.set(s.strike, s.pe.oi);
-    callOITotal += s.ce.oi;
-    putOITotal += s.pe.oi;
-  }
-
-  return {
-    symbol,
-    spot,
-    atmStrike,
-    expiry: chainStrikes[0]?.expiry || '',
-    strikes: chainStrikes,
-    callOiMap,
-    putOiMap,
-    callOiChangeMap: new Map(),
-    putOiChangeMap: new Map(),
-    callVolumeMap: new Map(),
-    putVolumeMap: new Map(),
-    maxPain: atmStrike,
-    pcr: putOITotal / Math.max(1, callOITotal),
-    ivRank: 50,
-    ivPercentile: 50,
-    atmIV: 15,
-    ivSkew: 0,
-  };
-}
-
-function mockOptionMetrics(moneyness: string) {
-  const base = moneyness === 'ITM' ? 100 : moneyness === 'ATM' ? 50 : 10;
-  return {
-    ltp: base + Math.random() * 20,
-    volume: Math.floor(Math.random() * 50000),
-    oi: Math.floor(Math.random() * 100000),
-    oiChange: Math.floor(Math.random() * 10000) - 5000,
-    iv: 15 + Math.random() * 10,
-    bid: base - 2,
-    ask: base + 2,
-    bidQty: Math.floor(Math.random() * 1000),
-    askQty: Math.floor(Math.random() * 1000),
-    delta: moneyness === 'ITM' ? 0.7 : moneyness === 'ATM' ? 0.5 : 0.3,
-    gamma: 0.01,
-    theta: -5,
-    vega: 10,
-    spread: 4,
-    spreadPct: 4,
-  };
 }
 
 function getRegimeCharacteristics(regime: string): any {

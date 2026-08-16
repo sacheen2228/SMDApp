@@ -8,7 +8,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScannerPanel } from "@/components/dashboard/ScannerPanel";
 import { WeeklyEquityScannerPanel } from "@/components/dashboard/WeeklyEquityScannerPanel";
-import { Zap, Clock } from "lucide-react";
+import EquityUniversePanel from "@/components/dashboard/EquityUniversePanel";
+import { Zap, Clock, Filter } from "lucide-react";
 
 interface ScannerViewProps {
   symbol: string;
@@ -16,7 +17,7 @@ interface ScannerViewProps {
 }
 
 export default function ScannerView({ symbol, spotPrice }: ScannerViewProps) {
-  const [mode, setMode] = useState<"intraday" | "weekly">("intraday");
+  const [mode, setMode] = useState<"intraday" | "weekly" | "universe">("intraday");
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -38,14 +39,24 @@ export default function ScannerView({ symbol, spotPrice }: ScannerViewProps) {
         >
           <Clock className="h-3 w-3 mr-1" /> Weekly Swing
         </Button>
+        <Button
+          variant={mode === 'universe' ? 'default' : 'ghost'}
+          size="sm"
+          className={`h-6 text-[10px] px-2 font-bold ${mode === 'universe' ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
+          onClick={() => setMode('universe')}
+        >
+          <Filter className="h-3 w-3 mr-1" /> Equity Universe
+        </Button>
       </div>
 
       {/* Panel */}
       <div className="flex-1 overflow-hidden">
         {mode === 'intraday' ? (
           <ScannerPanel symbol={symbol} spotPrice={spotPrice} />
-        ) : (
+        ) : mode === 'weekly' ? (
           <WeeklyEquityScannerPanel />
+        ) : (
+          <EquityUniversePanel />
         )}
       </div>
     </div>
