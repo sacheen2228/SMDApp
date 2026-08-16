@@ -41,6 +41,9 @@ function sessionEmoji(s: string): string {
   const map: Record<string, string> = {
     pre_open: "🔔", opening: "⚡", trend_form: "📈", primary: "✅",
     low_liq: "⚠️", afternoon: "🕐", closing: "🏁", closed: "🔴",
+    cas_reference: "🧮", cas_transition: "⏸️", cas_order_entry: "📥",
+    cas_limit_only: "🔒", cas_matching: "⚖️", derivatives_open: "📈",
+    post_close: "🌙",
   };
   return map[s] || "📊";
 }
@@ -279,7 +282,14 @@ const intents: Intent[] = [
       else if (s.session === "trend_form") advice = "📈 **TREND FORMING** — Direction emerging. Good entries possible.";
       else if (s.session === "low_liq") advice = "⚠️ **LOW LIQUIDITY** — Lunch hour. Wide spreads. Reduce position size.";
       else if (s.session === "afternoon") advice = "🕐 **AFTERNOON** — Second wind. Look for continuation moves.";
-      else if (s.session === "closing") advice = "🏁 **CLOSING** — Last 30 min. Don't enter new trades. Manage exits.";
+      else if (s.session === "closing") advice = "🏁 **CLOSING** — Index/derivatives open till 15:40. Manage exits. No new entries.";
+      else if (s.session === "cas_reference") advice = "🧮 **CAS REFERENCE** — Cash F&O stocks: last trading window before the auction. Reference price forming (15:00-15:15 VWAP). No new entries.";
+      else if (s.session === "cas_transition") advice = "⏸️ **CAS TRANSITION** — Continuous trading ended. No orders accepted (15:15-15:20).";
+      else if (s.session === "cas_order_entry") advice = "📥 **CAS ORDER ENTRY** — Auction order entry open (market + limit). Indicative equilibrium price published. ±3% band vs reference.";
+      else if (s.session === "cas_limit_only") advice = "🔒 **CAS LIMIT ONLY** — Limit orders only. Window closes randomly 15:28-15:30.";
+      else if (s.session === "cas_matching") advice = "⚖️ **CAS MATCHING** — Auction matching. Equilibrium price becomes the official closing price (15:30-15:35).";
+      else if (s.session === "derivatives_open") advice = "📈 **DERIVATIVES OPEN** — Cash CAS done; index + stock derivatives still trade until 15:40.";
+      else if (s.session === "post_close") advice = "🌙 **POST-CLOSE** — Cash trades at closing price (15:50-16:00). No new F&O positions.";
       else if (s.session === "closed") advice = "🔴 **MARKET CLOSED** — Next session starts at 9:15 AM IST.";
       else advice = "🔔 **PRE-OPEN** — Market opens in a few minutes. Get ready.";
 
