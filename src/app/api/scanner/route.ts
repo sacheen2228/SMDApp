@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { runIntradayScan, recordIntradayScannerResults, type ScannerConfig } from "@/lib/intraday-scanner";
+import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 
 // NIFTY 50 stock symbols for scanning
@@ -226,8 +227,13 @@ export async function GET(request: NextRequest) {
       }, { status: 504 });
     }
 
+    // Fetch real per-stock Breeze option chains (probe-first + cached) so the
+    // scanner's options score + monthly option trades use REAL premium/IV/PCR
+    // when Breeze is up. Returns nulls quickly when Breeze is down.
+    const optionChains = await fetchAllOptionChains(NIFTY50_SYMBOLS, new Map());
+
     // Run the scan
-    const result = await runIntradayScan(config);
+    const result = await runIntradayScan(config, optionChains);
 
     // Apply real news scores to candidates
     if (marketNews && marketNews.articles.length > 0) {

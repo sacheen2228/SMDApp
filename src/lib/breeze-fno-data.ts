@@ -186,6 +186,59 @@ export async function fetchOptionChainSnapshot(
   }
 }
 
+// Concurrent batch fetch of per-stock option chains with a module-level cache
+// + failure cooldown. All NIFTY50 names are F&O-eligible, so a null probe
+// means Breeze is unavailable for everything — we back off and skip the rest
+// instead of hammering Breeze 50x in a single scan.
+const optionChainCache = new Map<string, { data: OptionChainSnapshot | null; ts: number }>();
+const OPTION_CHAIN_TTL = 5 * 60 * 1000;
+const OPTION_CHAIN_COOLDOWN = 5 * 60 * 1000;
+let breezeOptionsCooldownUntil = 0;
+
+export async function fetchStockOptionChain(
+  symbol: string,
+  spot: number
+): Promise<OptionChainSnapshot | null> {
+  if (Date.now() < breezeOptionsCooldownUntil) return null;
+
+  const cached = optionChainCache.get(symbol);
+  if (cached && Date.now() - cached.ts < OPTION_CHAIN_TTL) return cached.data;
+
+  const data = await fetchOptionChainSnapshot(symbol, spot);
+  optionChainCache.set(symbol, { data, ts: Date.now() });
+  if (!data) breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN;
+  else breezeOptionsCooldownUntil = 0;
+  return data;
+}
+
+export async function fetchAllOptionChains(
+  symbols: string[],
+  spotBySymbol: Map<string, number>
+): Promise<Map<string, OptionChainSnapshot | null>> {
+  const chains = new Map<string, OptionChainSnapshot | null>();
+  if (symbols.length === 0) return chains;
+
+  const probe = await fetchStockOptionChain(symbols[0], spotBySymbol.get(symbols[0]) || 0);
+  chains.set(symbols[0], probe);
+  if (!probe) {
+    for (const sym of symbols.slice(1)) chains.set(sym, null);
+    return chains;
+  }
+
+  const DEADLINE = Date.now() + 12_000;
+  const CONCURRENCY = 5;
+  for (let i = 1; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
+    const batch = symbols.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(sym => fetchStockOptionChain(sym, spotBySymbol.get(sym) || 0))
+    );
+    results.forEach((r, j) => {
+      chains.set(batch[j], r.status === "fulfilled" ? r.value : null);
+    });
+  }
+  return chains;
+}
+
 // ─── Futures Quotes → FuturesData ─────────────────────────────────
 export async function fetchFuturesData(symbol: string, spot: number): Promise<FuturesData | null> {
   try {

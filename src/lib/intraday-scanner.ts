@@ -7,6 +7,8 @@ import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engin
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import { recordScannerResult, type ScannerResultInput } from "./market/record-scanner";
 import { recordSignal } from "./trade-audit-client";
+import { analyzeEquityCash } from "./equity-cash-engine";
+import type { OptionChainSnapshot, TradePlan } from "./auction-types";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -59,6 +61,13 @@ export interface StockCandidate {
   iv: number;
   // Monthly option trade
   monthlyOptionTrade?: MonthlyOptionTrade;
+  // Real signal engine (Auction Theory + Volume Profile + Liquidity +
+  // Market Structure + VWAP + Volume + Regime) per-stock breakdown
+  engineScore: number;
+  engineDirection: "LONG" | "SHORT" | "NO_TRADE";
+  engineSetup: string;
+  engineAuctionState: string;
+  engineRegime: string;
   // Scores
   marketScore: number;
   sectorScore: number;
@@ -199,20 +208,52 @@ function getStrikeStep(price: number): number {
 function generateMonthlyOptionTrade(
   symbol: string,
   price: number,
-  direction: "BULLISH" | "BEARISH" | "NEUTRAL"
+  direction: "BULLISH" | "BEARISH" | "NEUTRAL",
+  chain?: OptionChainSnapshot | null
 ): MonthlyOptionTrade | undefined {
   if (direction === "NEUTRAL") return undefined;
 
   const monthly = getNextMonthlyExpiry(symbol);
   if (!monthly) return undefined;
 
+  const optionType: "CE" | "PE" = direction === "BULLISH" ? "CE" : "PE";
+
+  // Real Breeze chain available → use the real ATM premium, real strike and
+  // real IV instead of guessing.
+  if (chain && chain.strikes.length > 0 && chain.atmStrike > 0) {
+    const atmRow = chain.strikes.find(s => s.strike === chain.atmStrike);
+    const leg = atmRow ? (optionType === "CE" ? atmRow.ce : atmRow.pe) : null;
+    const premium = leg && leg.ltp > 0 ? leg.ltp : 0;
+    if (premium <= 0) return undefined;
+
+    const sl = Math.round(premium * 0.85 * 100) / 100;
+    const target1 = Math.round(premium * 1.15 * 100) / 100;
+    const target2 = Math.round(premium * 1.25 * 100) / 100;
+    const target3 = Math.round(premium * 1.35 * 100) / 100;
+
+    const label = chain.expiry || monthly.label || monthly.date;
+    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
+
+    return {
+      strike: chain.atmStrike,
+      optionType,
+      expiry: chain.expiry || monthly.date,
+      expiryLabel: label,
+      premium,
+      stopLoss: sl,
+      targets: [target1, target2, target3],
+      direction: "BUY",
+      summary,
+    };
+  }
+
+  // No real chain (Breeze unavailable) — use a conservative estimate so the
+  // UI still renders, but clearly label it as an estimate.
   const step = getStrikeStep(price);
   let atmStrike = Math.round(price / step) * step;
-  // Ensure strike is above 0
   if (atmStrike <= 0) atmStrike = step;
 
-  const optionType: "CE" | "PE" = direction === "BULLISH" ? "CE" : "PE";
-  const iv = 0.25; // 25% estimated IV for stock options
+  const iv = 0.25; // estimated IV for stock options
   const daysToExpiry = monthly.daysToExpiry || 14;
   const annualFactor = Math.sqrt(daysToExpiry / 365);
   const premium = Math.round(price * iv * annualFactor * 100) / 100;
@@ -224,7 +265,7 @@ function generateMonthlyOptionTrade(
   const target3 = Math.round(premium * 1.35 * 100) / 100;
 
   const label = monthly.label || monthly.date;
-  const summary = `${direction === "BULLISH" ? "Buy" : "Buy"} ${symbol} ${atmStrike} ${optionType} (${label}) @ ₹${premium} | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
+  const summary = `Buy ${symbol} ${atmStrike} ${optionType} (${label}) EST @ ₹${premium} | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
 
   return {
     strike: atmStrike,
@@ -372,6 +413,11 @@ interface YahooData {
 const yahooCache = new Map<string, { data: YahooData; ts: number }>();
 const YAHOO_CACHE_TTL = 30_000;
 
+// Real per-stock Breeze option chains are fetched by the server-only API
+// route (see /api/scanner/route.ts) and passed in — this module is also
+// imported by client components for its types, so it must never statically
+// depend on the Breeze client (Node-only `path`, etc.).
+
 async function fetchYahooData(symbols: string[]): Promise<YahooData> {
   const cacheKey = symbols.join(",");
   const cached = yahooCache.get(cacheKey);
@@ -465,12 +511,11 @@ export interface GeneratedCandidates {
 export async function generateCandidates(
   config: ScannerConfig,
   marketDirection: MarketDirection,
-  sectors: SectorStrength[]
+  sectors: SectorStrength[],
+  optionChains?: Map<string, OptionChainSnapshot | null>
 ): Promise<GeneratedCandidates> {
   const candidates: StockCandidate[] = [];
   let liveCount = 0;
-  const isBullish = marketDirection.trend.includes("BULLISH");
-  const isBearish = marketDirection.trend.includes("BEARISH");
 
   // Fetch real prices + 3mo daily OHLC candles from Yahoo Finance
   const { quotes: realQuotes, candles: realCandles } = await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol));
@@ -531,13 +576,57 @@ export async function generateCandidates(
       macdSignal = calculateEMA(macdSeries, 9).at(-1) ?? 0;
     }
 
+    // ─── Real Signal Engine (Auction + Volume Profile + Liquidity +
+    //      Market Structure + VWAP + Volume + Regime) ──────────────────
+    // Run the same production engine used by EquityUniverse on the REAL
+    // daily candles. Gives a 0-100 structural score + a LONG/SHORT call
+    // independent of the simple EMA/RSI/MACD vote.
+    const reasons: string[] = [];
+    let engineScore = 0;
+    let engineDirection: "LONG" | "SHORT" | "NO_TRADE" = "NO_TRADE";
+    let engineSetup = "";
+    let engineAuctionState = "";
+    let engineRegime = "";
+    let engineBest: TradePlan | null | undefined = null;
+    if (stockCandles && stockCandles.length >= 35) {
+      const prev = stockCandles[stockCandles.length - 2];
+      const week = stockCandles.slice(-6, -1); // last 5 completed sessions
+      const prevDayHigh = prev?.high || basePrice;
+      const prevDayLow = prev?.low || basePrice;
+      const prevWeekHigh = week.length ? Math.max(...week.map(c => c.high)) : prevDayHigh;
+      const prevWeekLow = week.length ? Math.min(...week.map(c => c.low)) : prevDayLow;
+      const analysis = analyzeEquityCash(
+        stock.symbol, stockCandles,
+        prevDayHigh, prevDayLow, prevWeekHigh, prevWeekLow
+      );
+      engineAuctionState = analysis.data.auctionState;
+      engineRegime = analysis.data.regime;
+      engineDirection = analysis.finalDecision;
+      engineBest =
+        analysis.finalDecision === "LONG" ? analysis.bestLong :
+        analysis.finalDecision === "SHORT" ? analysis.bestShort : null;
+      engineScore = engineBest?.signalScore.total ?? 0;
+      engineSetup = engineBest?.setup || "";
+      if (engineScore >= 60) {
+        reasons.push(`Engine ${engineScore}/100 — ${engineSetup || engineAuctionState} @ ${engineRegime}`);
+      }
+    }
+
+    // Direction: the real engine's LONG/SHORT decision takes precedence when
+    // it is confident (>= 70). Otherwise fall back to the technical vote.
+    const bullSignals = (ema9 > ema21 ? 1 : 0) + (rsi > 50 ? 1 : 0) + (macd > macdSignal ? 1 : 0);
+    const bearSignals = (ema9 < ema21 ? 1 : 0) + (rsi < 50 ? 1 : 0) + (macd < macdSignal ? 1 : 0);
+    const direction: "BULLISH" | "BEARISH" | "NEUTRAL" =
+      engineDirection === "LONG" ? "BULLISH" :
+      engineDirection === "SHORT" ? "BEARISH" :
+      bullSignals >= 2 ? "BULLISH" : bearSignals >= 2 ? "BEARISH" : "NEUTRAL";
+
     // Score calculation
     let technicalScore = 0;
     let optionsScore = 0;
     let volumeScore = 0;
     let fundamentalScore = 50;
     let newsScore = 50;
-    const reasons: string[] = [];
 
     // Technical scoring — driven by PER-STOCK indicators, NOT the market-wide
     // trend (which is SIDEWAYS today while individual stocks still trend).
@@ -581,14 +670,24 @@ export async function generateCandidates(
     else if (rvol > 1.2) { volumeScore = 60; reasons.push(`RVOL ${rvol.toFixed(1)}x — above average`); }
     else { volumeScore = 30; }
 
-    // Options scoring — neutral defaults (real data needs Breeze per-stock options)
-    const stockPCR = 1.0;
-    const stockOI = 0;
-    const stockOIChange = 0;
-    const stockIV = 20;
+    // Options scoring — REAL per-stock Breeze chain when available
+    const chain = optionChains.get(stock.symbol) || null;
+    let stockPCR = 1.0;
+    let stockOI = 0;
+    let stockOIChange = 0;
+    let stockIV = 20;
+    if (chain) {
+      stockPCR = chain.pcr || 1.0;
+      stockIV = chain.atmIV || 0;
+      for (const v of chain.callOiMap.values()) stockOI += v;
+      for (const v of chain.putOiMap.values()) stockOI += v;
+      for (const v of chain.callOiChangeMap.values()) stockOIChange += v;
+      for (const v of chain.putOiChangeMap.values()) stockOIChange += v;
+      reasons.push(`Real PCR ${stockPCR.toFixed(2)} | ATM IV ${stockIV.toFixed(1)}% | MaxPain ${chain.maxPain}`);
+    }
 
-    if (isBullish && stockPCR > 1.1) { optionsScore = 70; reasons.push("PCR > 1.1 — put writing (bullish)"); }
-    else if (isBearish && stockPCR < 0.9) { optionsScore = 70; reasons.push("PCR < 0.9 — call writing (bearish)"); }
+    if (chain && direction === "BULLISH" && stockPCR > 1.1) { optionsScore = 70; reasons.push("PCR > 1.1 — put writing (bullish)"); }
+    else if (chain && direction === "BEARISH" && stockPCR < 0.9) { optionsScore = 70; reasons.push("PCR < 0.9 — call writing (bearish)"); }
     else { optionsScore = 50; }
 
     // Fundamental score (simplified)
@@ -607,39 +706,45 @@ export async function generateCandidates(
     const marketScore = marketDirection.score;
 
     // Total score calculation
-    // Weights normalised to 1.00. Real, per-stock signals (technical,
-    // volume, sector) dominate; market context + coarse fundamental add
-    // modulation; options/news are neutral placeholders (no per-stock
-    // options/PCR or news feed) at minimal weight so they don't flatten
-    // the score for every stock.
+    // Weights normalised to 1.00. The real signal engine (Auction Theory +
+    // Volume Profile + Liquidity + Market Structure + VWAP + Volume +
+    // Regime) is the dominant component; technicals + volume + sector add
+    // modulation; market context, options (real PCR when available), coarse
+    // fundamental and news are smaller contributors.
     const totalScore = Math.round(
-      (marketScore * 0.10) +
-      (sectorScore * 0.15) +
-      (technicalScore * 0.40) +
+      (marketScore * 0.05) +
+      (sectorScore * 0.10) +
+      (technicalScore * 0.25) +
+      (engineScore * 0.35) +
       (optionsScore * 0.05) +
-      (volumeScore * 0.20) +
+      (volumeScore * 0.10) +
       (fundamentalScore * 0.05) +
       (newsScore * 0.05)
     );
 
-    // Direction from technical indicators (not totalScore threshold)
-    const bullSignals = (ema9 > ema21 ? 1 : 0) + (rsi > 50 ? 1 : 0) + (macd > macdSignal ? 1 : 0);
-    const bearSignals = (ema9 < ema21 ? 1 : 0) + (rsi < 50 ? 1 : 0) + (macd < macdSignal ? 1 : 0);
-    const direction = bullSignals >= 2 ? "BULLISH" : bearSignals >= 2 ? "BEARISH" : "NEUTRAL";
-
-    // Trade setup using ATR (stock-specific volatility, minimum 1% of price floor)
+    // Trade setup — use the real engine's structural levels (VAH/VAL/POC,
+    // swing-based SL, profile targets) when it produced a confident plan;
+    // otherwise fall back to ATR-based levels.
     const atrFloor = Math.max(atr, basePrice * 0.01);
     let entry: number, stopLoss: number, target1: number, target2: number, riskReward: number;
-    if (direction === "BULLISH") {
+    if (engineBest && engineDirection !== "NO_TRADE") {
+      entry = engineBest.entry.aggressive || basePrice;
+      stopLoss = engineBest.stopLoss.price || (direction === "BULLISH" ? entry - atrFloor * 1.5 : entry + atrFloor * 1.5);
+      target1 = engineBest.targets[0]?.price || (direction === "BULLISH" ? entry + atrFloor * 2 : entry - atrFloor * 2);
+      target2 = engineBest.targets[1]?.price || (direction === "BULLISH" ? entry + atrFloor * 3 : entry - atrFloor * 3);
+      riskReward = engineBest.riskReward > 0 ? engineBest.riskReward : Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
+    } else if (direction === "BULLISH") {
       entry = basePrice;
       stopLoss = basePrice - atrFloor * 1.5;
       target1 = basePrice + atrFloor * 2;
       target2 = basePrice + atrFloor * 3;
+      riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     } else if (direction === "BEARISH") {
       entry = basePrice;
       stopLoss = basePrice + atrFloor * 1.5;
       target1 = basePrice - atrFloor * 2;
       target2 = basePrice - atrFloor * 3;
+      riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     } else {
       // NEUTRAL: ATR-based bands with mild RSI bias so levels never collapse
       entry = basePrice;
@@ -649,8 +754,8 @@ export async function generateCandidates(
       stopLoss = basePrice - slDist;
       target1 = basePrice + t1Dist;
       target2 = basePrice + t2Dist;
+      riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     }
-    riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
 
     // Grade
     let grade: StockCandidate["grade"] = "C";
@@ -674,8 +779,9 @@ export async function generateCandidates(
     // Options summary
     const optionsSummary = `PCR ${stockPCR.toFixed(2)} | OI ${formatOI(stockOI)} | OI Chg ${stockOIChange >= 0 ? "+" : ""}${formatOI(stockOIChange)} | IV ${stockIV.toFixed(1)}%`;
 
-    // Monthly option trade recommendation
-    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction);
+    // Monthly option trade recommendation — uses the REAL Breeze chain (real
+    // ATM premium/strike/IV) when available, else a clearly-labelled estimate.
+    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction, chain);
 
     // Volume summary
     const volumeSummary = `Vol ${formatOI(volume)} | Avg ${formatOI(avgVolume)} | RVOL ${rvol.toFixed(1)}x`;
@@ -711,6 +817,11 @@ export async function generateCandidates(
       oiChange: stockOIChange,
       iv: Math.round(stockIV * 10) / 10,
       monthlyOptionTrade,
+      engineScore: Math.round(engineScore),
+      engineDirection,
+      engineSetup,
+      engineAuctionState,
+      engineRegime,
       marketScore,
       sectorScore,
       technicalScore,
@@ -750,7 +861,10 @@ export async function generateCandidates(
 }
 
 // ─── Main Scan Function ───────────────────────────────────────────
-export async function runIntradayScan(config: ScannerConfig): Promise<ScanResult> {
+export async function runIntradayScan(
+  config: ScannerConfig,
+  optionChains?: Map<string, OptionChainSnapshot | null>
+): Promise<ScanResult> {
   // Step 1: Market Direction
   const marketDirection = analyzeMarketDirection(config);
 
@@ -758,7 +872,7 @@ export async function runIntradayScan(config: ScannerConfig): Promise<ScanResult
   const sectors = analyzeSectors(marketDirection);
 
   // Step 3-8: Generate and score candidates (live Yahoo data only)
-  const { candidates, liveCount, total } = await generateCandidates(config, marketDirection, sectors);
+  const { candidates, liveCount, total } = await generateCandidates(config, marketDirection, sectors, optionChains);
 
   // Filter — show all candidates, sector filter applied in UI
   const highProbCandidates = candidates.filter(c => c.totalScore >= 20);

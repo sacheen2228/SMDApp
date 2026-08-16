@@ -313,6 +313,12 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
             <div>
               <span className="font-semibold text-muted-foreground">Score Breakdown:</span>
               <div className="mt-1 space-y-1">
+                {stock.engineScore > 0 && (
+                  <div className="flex justify-between font-semibold text-primary">
+                    <span>Signal Engine (Auction/VP/Liq/Struct/VWAP/Vol/Regime)</span>
+                    <span>{stock.engineScore}/100</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>Market</span>
                   <span>{stock.marketScore}/100</span>
