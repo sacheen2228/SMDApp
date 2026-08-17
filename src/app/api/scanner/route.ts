@@ -3,7 +3,7 @@
 // Uses Yahoo Finance API for real stock data + News sentiment
 
 import { NextRequest, NextResponse } from "next/server";
-import { runIntradayScan, recordIntradayScannerResults, type ScannerConfig } from "@/lib/intraday-scanner";
+import { runIntradayScan, recordIntradayScannerResults, recordIntradayScannerSignals, type ScannerConfig } from "@/lib/intraday-scanner";
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 
@@ -301,6 +301,14 @@ export async function GET(request: NextRequest) {
       await recordIntradayScannerResults(result.candidates, config);
     } catch (recErr) {
       console.warn("[Scanner] Scanner Results recording skipped:", recErr);
+    }
+
+    // Record top candidates into the Trade Audit sidecar (:4001) as trackable
+    // EQUITY signals so the scanner's live win rate / avg R is measurable.
+    try {
+      await recordIntradayScannerSignals(result.candidates, 8);
+    } catch (recErr) {
+      console.warn("[Scanner] Trade Audit signal recording skipped:", recErr);
     }
 
     return NextResponse.json({

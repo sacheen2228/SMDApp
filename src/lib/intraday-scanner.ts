@@ -402,7 +402,8 @@ export function analyzeSectors(marketDirection: MarketDirection): SectorStrength
 // ─── Yahoo Finance Price + Candle Fetcher ─────────────────────────
 interface YahooData {
   quotes: Map<string, any>;
-  candles: Map<string, Candle[]>;
+  candles: Map<string, Candle[]>;        // 3mo daily bars (trend + prev levels)
+  intradayCandles: Map<string, Candle[]>; // last trading day's 5m bars (engine input)
 }
 
 // One chart call returns BOTH the live quote (meta) and 3 months of daily
@@ -425,17 +426,46 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
 
   const quotes = new Map<string, any>();
   const candles = new Map<string, Candle[]>();
+  const intradayCandles = new Map<string, Candle[]>();
   const CONCURRENCY = 10;
   const DEADLINE = Date.now() + 25_000;
 
+  // Group 5m bars into their IST trading day and return the most recent
+  // session's bars (real intraday data — the engine's native timeframe).
+  const pickLatestIntradayDay = (bars: Candle[]): Candle[] | null => {
+    const byDay = new Map<string, Candle[]>();
+    for (const b of bars) {
+      const ist = new Date(b.time * 1000 + 5.5 * 60 * 60 * 1000);
+      const day = ist.toISOString().slice(0, 10);
+      const arr = byDay.get(day) || [];
+      arr.push(b);
+      byDay.set(day, arr);
+    }
+    const days = [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+    for (const [day, arr] of days) {
+      if (arr.length >= 5) return arr; // prefer the latest full-ish session
+    }
+    return null;
+  };
+
   const fetchOne = async (sym: string) => {
     const yahooSym = `${sym}.NS`;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
+    // 3mo daily bars for trend/technical context + the last trading day's real
+    // 5m bars for the intraday signal engine. Both come from the same free
+    // Yahoo chart endpoint (no auth).
+    const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
+    const intradayUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-      if (!res.ok) return;
-      const data = await res.json();
-      const result = data?.chart?.result?.[0];
+      const [dailyRes, intradayRes] = await Promise.all([
+        fetch(dailyUrl, { signal: AbortSignal.timeout(4000) }),
+        fetch(intradayUrl, { signal: AbortSignal.timeout(4000) }),
+      ]);
+      if (!dailyRes.ok) return;
+      const [dailyData, intradayData] = await Promise.all([
+        dailyRes.json(),
+        intradayRes.ok ? intradayRes.json() : Promise.resolve(null),
+      ]);
+      const result = dailyData?.chart?.result?.[0];
       if (!result) return;
       const meta = result.meta;
       const ts = result.timestamp;
@@ -467,6 +497,28 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
         }
         if (cs.length >= 2) candles.set(sym, cs);
       }
+
+      // Real 5m bars → keep the latest trading day for the engine.
+      const iResult = intradayData?.chart?.result?.[0];
+      if (iResult?.timestamp && iResult?.indicators?.quote?.[0]?.close) {
+        const iTs = iResult.timestamp;
+        const iQ = iResult.indicators.quote[0];
+        const ics: Candle[] = [];
+        for (let i = 0; i < iTs.length; i++) {
+          const close = iQ.close[i];
+          if (close == null) continue;
+          ics.push({
+            time: iTs[i],
+            open: iQ.open?.[i] ?? close,
+            high: iQ.high?.[i] ?? close,
+            low: iQ.low?.[i] ?? close,
+            close,
+            volume: iQ.volume?.[i] || 0,
+          });
+        }
+        const session = pickLatestIntradayDay(ics);
+        if (session) intradayCandles.set(sym, session);
+      }
     } catch (e) {
       // skip unavailable symbol rather than fabricate data
     }
@@ -474,14 +526,14 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
 
   // Probe one stock first. If Yahoo is unreachable, bail in ~4s.
   await fetchOne(symbols[0]);
-  if (quotes.size === 0) return { quotes, candles };
+  if (quotes.size === 0) return { quotes, candles, intradayCandles };
 
   for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
     const batch = symbols.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(fetchOne));
   }
 
-  const data: YahooData = { quotes, candles };
+  const data: YahooData = { quotes, candles, intradayCandles };
   yahooCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
@@ -517,8 +569,11 @@ export async function generateCandidates(
   const candidates: StockCandidate[] = [];
   let liveCount = 0;
 
-  // Fetch real prices + 3mo daily OHLC candles from Yahoo Finance
-  const { quotes: realQuotes, candles: realCandles } = await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol));
+  // Fetch real prices + 3mo daily OHLC candles + last-session 5m intraday
+  // candles from Yahoo Finance (free, no auth). Daily bars drive the trend
+  // context; the real 5m bars drive the signal engine's session profile.
+  const { quotes: realQuotes, candles: realCandles, intradayCandles: realIntraday } =
+    await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol));
 
   // Scan ALL stocks (sector filter applied in UI)
   const universe = NIFTY50_STOCKS;
@@ -595,8 +650,15 @@ export async function generateCandidates(
       const prevDayLow = prev?.low || basePrice;
       const prevWeekHigh = week.length ? Math.max(...week.map(c => c.high)) : prevDayHigh;
       const prevWeekLow = week.length ? Math.min(...week.map(c => c.low)) : prevDayLow;
+      // Prefer the last trading day's real 5m bars (the engine's native
+      // intraday timeframe — opening range, session VWAP, VAL/VAH, auction
+      // state all work correctly). Fall back to daily bars when intraday
+      // data is unavailable for this symbol.
+      const intraday = realIntraday.get(stock.symbol);
+      const engineCandles =
+        intraday && intraday.length >= 5 ? intraday : stockCandles;
       const analysis = analyzeEquityCash(
-        stock.symbol, stockCandles,
+        stock.symbol, engineCandles,
         prevDayHigh, prevDayLow, prevWeekHigh, prevWeekLow
       );
       engineAuctionState = analysis.data.auctionState;
@@ -1066,4 +1128,61 @@ export async function recordIntradayTrade(input: {
   } catch {
     /* sidecar down — non-blocking */
   }
+}
+
+// Record the scanner's top intraday candidates into the Trade Audit sidecar
+// (:4001) as trackable EQUITY signals (entry/SL/TP get MFE/MAE + TP/SL
+// detection against live prices), so the scanner's win rate / avg R /
+// expectancy is measurable alongside Zero Hero / SMC / BTST.
+export async function recordIntradayScannerSignals(
+  candidates: StockCandidate[],
+  topN = 8
+): Promise<number> {
+  const ranked = [...candidates]
+    .filter((c) => c.direction !== "NEUTRAL" && c.totalScore >= 60)
+    .sort((a, b) => b.totalScore - a.totalScore)
+    .slice(0, topN);
+
+  let recorded = 0;
+  await Promise.all(
+    ranked.map(async (c) => {
+      const ymd = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date());
+      try {
+        await recordSignal({
+          tradeId: `INTRADAY-${c.symbol}-${ymd}`,
+          strategyId: "INTRADAY",
+          strategyVersion: "1.0",
+          symbol: c.symbol,
+          exchange: "NSE",
+          instrumentType: "EQUITY",
+          spotPrice: c.currentPrice,
+          entryPrice: c.entry,
+          stopLoss: c.stopLoss,
+          tp1: c.target1,
+          tp2: c.target2,
+          signalConfidence: c.totalScore,
+          aiConfidence: c.engineScore,
+          trendDirection: c.direction === "BULLISH" ? "BULLISH" : "BEARISH",
+          signalReason: [
+            `Engine ${c.engineScore}/100 ${c.engineSetup} @ ${c.engineRegime}`,
+            ...(c.reasons.length ? c.reasons.slice(0, 3) : []),
+          ].join(" | ").slice(0, 400),
+          marketSession: "OPENING",
+          marketContext: {
+            engineSetup: c.engineSetup,
+            auctionState: c.engineAuctionState,
+            regime: c.engineRegime,
+            grade: c.grade,
+          },
+        });
+        recorded++;
+      } catch {
+        /* sidecar down — non-blocking */
+      }
+    })
+  );
+  return recorded;
 }
