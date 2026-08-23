@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 interface IndexComparisonData {
@@ -99,7 +99,7 @@ export function IndexComparison() {
     TRANSITION: '#78909c',
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -115,13 +115,13 @@ export function IndexComparison() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [interval]);
 
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 30000);
     return () => clearInterval(timer);
-  }, [interval]);
+  }, [fetchData]);
 
   const getBiasColor = (bias: string) => COLORS[bias as keyof typeof COLORS] || COLORS.NEUTRAL;
   const getSignalColor = (label: string) => SIGNAL_COLORS[label as keyof typeof SIGNAL_COLORS] || SIGNAL_COLORS.NO_TRADE;

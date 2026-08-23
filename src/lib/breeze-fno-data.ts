@@ -218,7 +218,13 @@ export async function fetchAllOptionChains(
   const chains = new Map<string, OptionChainSnapshot | null>();
   if (symbols.length === 0) return chains;
 
-  const probe = await fetchStockOptionChain(symbols[0], spotBySymbol.get(symbols[0]) || 0);
+  // Probe with a hard timeout — when Breeze auth is dead, the SDK's
+  // generateSession() hangs indefinitely on the network call. 5s is
+  // generous for a healthy probe and prevents the scanner from stalling.
+  const probe = await Promise.race([
+    fetchStockOptionChain(symbols[0], spotBySymbol.get(symbols[0]) || 0),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+  ]);
   chains.set(symbols[0], probe);
   if (!probe) {
     for (const sym of symbols.slice(1)) chains.set(sym, null);

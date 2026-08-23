@@ -51,13 +51,13 @@ export async function initSession(): Promise<boolean> {
       const cached: CachedSession = JSON.parse(raw);
       if (cached.expiresAt > Date.now()) {
         currentApiSession = cached.apiSession;
-        // Ensure the singleton client is actually authenticated — the cached
-        // fast-path only records the token; without generateSession() the SDK
-        // client has empty sessionKey/userId and API calls fail.
         const breeze = getBreezeClient();
         if (!breeze.sessionKey || !breeze.userId) {
           const config = getConfig();
-          await breeze.generateSession(config.secretKey, cached.apiSession);
+          await Promise.race([
+            breeze.generateSession(config.secretKey, cached.apiSession),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 8_000)),
+          ]);
         }
         return true;
       }
@@ -91,7 +91,10 @@ export async function generateSession(apiSession?: string): Promise<any> {
   const breeze = getBreezeClient();
   console.log('[Breeze SDK] Generating session with:', session.substring(0, 10) + '...');
 
-  const result = await breeze.generateSession(config.secretKey, session);
+  const result = await Promise.race([
+    breeze.generateSession(config.secretKey, session),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 8_000)),
+  ]);
 
   // Breeze SDK returns undefined on success (no error object = success)
   // Only treat as error if result explicitly has an error
@@ -142,9 +145,13 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
   }
   const client = getBreezeClient();
   try {
-    return await fn(client);
+    return await Promise.race([
+      fn(client),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK call timeout')), 10_000)),
+    ]);
   } catch (err: any) {
     const msg = String(err?.message || err?.status || err || '');
+    if (msg.includes('timeout')) throw err;
     const isAuthErr = AUTH_ERROR_PATTERNS.some(p => msg.toUpperCase().includes(String(p).toUpperCase()));
     if (isAuthErr) {
       console.warn('[Breeze Auth] Auth error detected, re-initializing session...');
@@ -152,7 +159,10 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
       breezeClient = null;
       const ok = await initSession();
       if (!ok) throw new Error('Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN.');
-      return await fn(getBreezeClient());
+      return await Promise.race([
+        fn(getBreezeClient()),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK call timeout')), 10_000)),
+      ]);
     }
     throw err;
   }

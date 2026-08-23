@@ -230,7 +230,14 @@ export async function GET(request: NextRequest) {
     // Fetch real per-stock Breeze option chains (probe-first + cached) so the
     // scanner's options score + monthly option trades use REAL premium/IV/PCR
     // when Breeze is up. Returns nulls quickly when Breeze is down.
-    const optionChains = await fetchAllOptionChains(NIFTY50_SYMBOLS, new Map());
+    const optionChains = await Promise.race([
+      fetchAllOptionChains(NIFTY50_SYMBOLS, new Map()),
+      new Promise<Map<string, any>>((resolve) => setTimeout(() => {
+        const empty = new Map<string, null>();
+        NIFTY50_SYMBOLS.forEach(s => empty.set(s, null));
+        resolve(empty);
+      }, 8_000)),
+    ]);
 
     // Run the scan
     const result = await runIntradayScan(config, optionChains);
