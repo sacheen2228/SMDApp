@@ -3,13 +3,10 @@ node_modules
 .git
 .data
 data
-/db/
-/db/**
 logs
 download
 downloads
 __pycache__
-*.db
 *.log
 dev.log
 server.log
