@@ -37,6 +37,44 @@ async function fetchIndexYahoo(yahooSymbol: string): Promise<{ ltp: number; prev
   return { ltp: meta.regularMarketPrice, prev: meta.chartPreviousClose || meta.regularMarketPrice };
 }
 
+// Estimate index from constituent stocks (fallback when index APIs fail)
+function estimateIndexFromStocks(indexName: string, stocks: any[]): { ltp: number; prev: number; changePct: number } | null {
+  const indexConstituents: Record<string, string[]> = {
+    NIFTY: [
+      "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN",
+      "BHARTIARTL","KOTAKBANK","LT","AXISBANK","BAJFINANCE","ASIANPAINT","MARUTI",
+      "SUNPHARMA","TITAN","ULTRACEMCO","NESTLEIND","TATAMOTORS","WIPRO","M&M",
+      "HCLTECH","POWERGRID","NTPC","ONGC","TATASTEEL","JSWSTEEL","ADANIENT",
+      "ADANIPORTS","TECHM","HDFCLIFE","SBILIFE","BRITANNIA","CIPLA","DRREDDY",
+      "DIVISLAB","EICHERMOT","GRASIM","HEROMOTOCO","HINDALCO","INDUSINDBK",
+      "BAJAJFINSV","COALINDIA","BPCL","TRENT","APOLLOHOSP","LTIM","HDFCAMC","PIDILITIND",
+    ],
+    BANKNIFTY: [
+      "HDFCBANK","ICICIBANK","SBIN","KOTAKBANK","AXISBANK","INDUSINDBK","BANKBARODA",
+      "PNB","CANBK","IDFCFIRSTB","FEDERALBNK","AUBANK",
+    ],
+    SENSEX: [
+      "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN",
+      "BHARTIARTL","KOTAKBANK","LT","AXISBANK","BAJFINANCE","ASIANPAINT","MARUTI",
+      "SUNPHARMA","TITAN","ULTRACEMCO","NESTLEIND","TATAMOTORS","WIPRO","M&M",
+      "HCLTECH","POWERGRID","NTPC","ONGC","TATASTEEL","JSWSTEEL","ADANIENT",
+      "ADANIPORTS","TECHM",
+    ],
+  };
+
+  const constituents = indexConstituents[indexName];
+  if (!constituents) return null;
+
+  const indexStocks = stocks.filter(s => constituents.includes(s.symbol));
+  if (indexStocks.length === 0) return null;
+
+  const avgChangePct = indexStocks.reduce((sum, s) => sum + s.changePct, 0) / indexStocks.length;
+  const avgLtp = indexStocks.reduce((sum, s) => sum + s.ltp, 0) / indexStocks.length;
+  const avgPrev = indexStocks.reduce((sum, s) => sum + s.prevClose, 0) / indexStocks.length;
+
+  return { ltp: avgLtp, prev: avgPrev, changePct: avgChangePct };
+}
+
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 60_000;
 
@@ -131,9 +169,12 @@ export async function GET() {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch all data in parallel
-    const [indexResults, stocks, vixData] = await Promise.all([
-      // Fetch indices
+    // Step 1: Fetch stocks first (needed for index fallback)
+    const stocks = await fetchNIFTY50Stocks();
+
+    // Step 2: Fetch indices with stock fallback, and VIX in parallel
+    const [indexData, vixData] = await Promise.all([
+      // Fetch indices with fallback to stock estimation
       (async () => {
         const indexData: any[] = [];
         for (const idx of INDICES) {
@@ -153,13 +194,24 @@ export async function GET() {
               changePct: parseFloat((((data.ltp - data.prev) / data.prev) * 100).toFixed(2)),
               prevClose: data.prev,
             });
+          } else {
+            // Fallback: estimate from constituent stocks
+            const estimated = estimateIndexFromStocks(idx.key, stocks);
+            if (estimated) {
+              indexData.push({
+                key: idx.key,
+                name: idx.name,
+                ltp: estimated.ltp,
+                change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)),
+                changePct: parseFloat(estimated.changePct.toFixed(2)),
+                prevClose: estimated.prev,
+                estimated: true,
+              });
+            }
           }
         }
         return indexData;
       })(),
-
-      // Fetch stocks for breadth/sector/EMA/VWAP analysis
-      fetchNIFTY50Stocks(),
 
       // Fetch VIX
       (async () => {
@@ -186,7 +238,6 @@ export async function GET() {
       })(),
     ]);
 
-    const indexData = indexResults;
     const vix = vixData.value;
 
     // Calculate multi-factor regime factors
@@ -202,15 +253,17 @@ export async function GET() {
     const indexTrend = avgIndexChange * 10 + (trendConsistency - 0.5) * 40; // -100 to +100
 
     // 2. Market Breadth (from stocks)
-    const advances = stocks.filter(s => s.changePct > 0).length;
-    const declines = stocks.filter(s => s.changePct < 0).length;
-    const total = stocks.length;
+    // Re-fetch stocks for breadth calculation (or use cached)
+    const breadthStocks = await fetchNIFTY50Stocks();
+    const advances = breadthStocks.filter(s => s.changePct > 0).length;
+    const declines = breadthStocks.filter(s => s.changePct < 0).length;
+    const total = breadthStocks.length;
     const breadthRatio = declines > 0 ? advances / declines : advances > 0 ? 100 : 1;
     const breadth = Math.max(-100, Math.min(100, (breadthRatio - 1) * 50)); // -100 to +100
 
     // 3. Sector Breadth
     const sectorMap = new Map<string, number[]>();
-    for (const s of stocks) {
+    for (const s of breadthStocks) {
       if (!sectorMap.has(s.sector)) sectorMap.set(s.sector, []);
       sectorMap.get(s.sector)!.push(s.changePct);
     }
@@ -224,34 +277,33 @@ export async function GET() {
       : 0; // -100 to +100
 
     // 4. Volume
-    const volAdvancing = stocks.filter(s => s.changePct > 0).reduce((sum, s) => sum + s.volume, 0);
-    const volDeclining = stocks.filter(s => s.changePct < 0).reduce((sum, s) => sum + s.volume, 0);
+    const volAdvancing = breadthStocks.filter(s => s.changePct > 0).reduce((sum, s) => sum + s.volume, 0);
+    const volDeclining = breadthStocks.filter(s => s.changePct < 0).reduce((sum, s) => sum + s.volume, 0);
     const volRatio = volDeclining > 0 ? volAdvancing / volDeclining : volAdvancing > 0 ? 100 : 1;
     const volume = Math.max(-100, Math.min(100, (volRatio - 1) * 50));
 
     // 5. VWAP Participation
-    const aboveVWAP = stocks.filter(s => {
+    const aboveVWAP = breadthStocks.filter(s => {
       const vwap = (s.dayHigh + s.dayLow + s.ltp) / 3;
       return s.ltp > vwap;
     }).length;
     const vwapParticipation = total > 0 ? ((aboveVWAP / total) * 200 - 100) : 0; // -100 to +100
 
     // 6. EMA Structure
-    const aboveEMA20 = stocks.filter(s => s.ltp > (s.prevClose + (s.change || 0) * 0.3)).length;
-    const aboveEMA50 = stocks.filter(s => s.ltp > s.prevClose).length;
-    const aboveEMA200 = stocks.filter(s => s.ltp > s.prevClose * 0.95).length;
+    const aboveEMA20 = breadthStocks.filter(s => s.ltp > (s.prevClose + (s.change || 0) * 0.3)).length;
+    const aboveEMA50 = breadthStocks.filter(s => s.ltp > s.prevClose).length;
+    const aboveEMA200 = breadthStocks.filter(s => s.ltp > s.prevClose * 0.95).length;
     const emaScore = ((aboveEMA20 + aboveEMA50 + aboveEMA200) / (3 * total)) * 200 - 100; // -100 to +100
 
     // 7. Momentum
-    const strongMomentum = stocks.filter(s => s.changePct > 2).length;
-    const weakMomentum = stocks.filter(s => s.changePct < -2).length;
+    const strongMomentum = breadthStocks.filter(s => s.changePct > 2).length;
+    const weakMomentum = breadthStocks.filter(s => s.changePct < -2).length;
     const momentum = total > 0 ? ((strongMomentum - weakMomentum) / total) * 100 : 0; // -100 to +100
 
     // 8. Volatility (VIX-based, inverted for scoring)
     const volatility = Math.max(0, 100 - vix * 3); // Lower VIX = higher score
 
     // 9. F&O Positioning (placeholder - would need real OI data)
-    // Positive if more long buildup, negative if short buildup
     const foPositioning = 0; // placeholder
 
     const factors: RegimeFactors = {
