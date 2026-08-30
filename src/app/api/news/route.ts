@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getCachedMarketNews, fetchStockNews } from "@/lib/news-engine";
+import { analyzeSentiment } from "@/lib/sentiment-analyzer";
 
 export async function GET(request: NextRequest) {
   try {
@@ -131,10 +132,22 @@ async function fetchRSSFeeds(symbol: string): Promise<any> {
           source: feed.name,
           url: item.link,
           publishedAt: item.pubDate || new Date().toISOString(),
-          sentiment: 0.1 + Math.random() * 0.2,
-          sentimentLabel: ["BULLISH", "NEUTRAL", "BEARISH"][Math.floor(Math.random() * 3)] as any,
-          confidence: 0.7 + Math.random() * 0.3,
-          event: { type: "RSS_FEED", sentimentBias: 0.2 - Math.random() * 0.4, confidence: 0.8 },
+          sentiment: (() => {
+            const s = analyzeSentiment(item.title + " " + (item.description || ""));
+            return s.score;
+          })(),
+          sentimentLabel: (() => {
+            const s = analyzeSentiment(item.title + " " + (item.description || ""));
+            return s.label;
+          })(),
+          confidence: (() => {
+            const s = analyzeSentiment(item.title + " " + (item.description || ""));
+            return s.confidence;
+          })(),
+          event: (() => {
+            const s = analyzeSentiment(item.title + " " + (item.description || ""));
+            return { type: s.eventType, sentimentBias: s.score, confidence: s.confidence };
+          })(),
           stockEntities: [symbol],
           sectorEntities: [],
         });
@@ -264,18 +277,9 @@ async function getMarketNews(sources: any[]): Promise<any> {
       const title = item.title || "";
       const content = item.description || "";
       
-      // Simple sentiment heuristic based on words
-      const sentimentText = (title + " " + content).toLowerCase();
-      let sentiment = 0;
-      const bullishWords = ["bullish", "rise", "rise", "up", "gain", "growth", "positive", "beat", "exceed", "surge", "jump", "upgrade", "outperform", "buy", "strong", "optimistic", "record high", "boom"];
-      const bearishWords = ["bearish", "fall", "down", "drop", "decline", "negative", "miss", "downgrade", "underperform", "sell", "weak", "pessimistic", "fall", "crash", "plummet", "loss", "loss"];
-      
-      const bullishCount = bullishWords.reduce((count, word) => sentimentText.includes(word) ? count + 1 : count, 0);
-      const bearishCount = bearishWords.reduce((count, word) => sentimentText.includes(word) ? count + 1 : count, 0);
-      
-      if (bullishCount > bearishCount) sentiment = 0.2 + Math.random() * 0.3;
-      else if (bearishCount > bullishCount) sentiment = -0.3 - Math.random() * 0.2;
-      else sentiment = Math.random() * 0.2 - 0.1;
+      // Keyword-based sentiment analysis (deterministic, no Math.random)
+      const s = analyzeSentiment(title + " " + content);
+      const sentiment = s.score;
       
       return {
         id: `market-rss-${idx}-${Date.now()}`, // source removed from id
@@ -286,15 +290,11 @@ async function getMarketNews(sources: any[]): Promise<any> {
         publishedAt: item.pubDate || new Date().toISOString(),
         sentiment: parseFloat(sentiment.toFixed(2)),
         sentimentLabel: sentiment > 0.2 ? "BULLISH" : sentiment < -0.2 ? "BEARISH" : "NEUTRAL",
-        confidence: 0.6 + Math.random() * 0.3,
+        confidence: s.confidence,
         event: { 
-          type: title.toLowerCase().includes("rbi") ? "RBI_POLICY" : 
-                title.toLowerCase().includes("sebi") ? "REGULATORY" :
-                title.toLowerCase().includes("budget") ? "GOVT_POLICY" :
-                title.toLowerCase().includes("rate") ? "RBI_POLICY" :
-                "UNKNOWN", 
+          type: s.eventType, 
           sentimentBias: sentiment, 
-          confidence: 0.8 
+          confidence: s.confidence 
         },
         stockEntities: [],
         sectorEntities: [],
