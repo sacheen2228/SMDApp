@@ -2,10 +2,10 @@
 
 "use client";
 
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, LineChart, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-type ViewMode = 'chain' | 'sdm' | 'gap' | 'agent' | 'scanner' | 'news' | 'strategy' | 'strategies' | 'greeks' | 'admin' | 'correlation' | 'ivSurface' | 'backtest' | 'terminal' | 'btst' | 'daily' | 'futures';
+type ViewMode = 'chain' | 'sdm' | 'gap' | 'agent' | 'scanner' | 'news' | 'strategy' | 'strategies' | 'greeks' | 'admin' | 'correlation' | 'ivSurface' | 'backtest' | 'terminal' | 'btst' | 'daily' | 'futures' | 'intelligence';
 
 interface MobileNavProps {
   viewMode: ViewMode;
@@ -25,6 +25,7 @@ const TABS: { mode: ViewMode; label: string; icon: any; color: string }[] = [
   { mode: "gap", label: "Gap", icon: CalendarClock, color: "text-amber-500" },
   { mode: "agent", label: "Chat", icon: Bot, color: "text-purple-600" },
   { mode: "futures", label: "Futures", icon: Zap, color: "text-purple-500" },
+  { mode: "intelligence", label: "Intel", icon: LayoutGrid, color: "text-emerald-500" },
 ];
 
 export function MobileNav({ viewMode, onViewChange }: MobileNavProps) {

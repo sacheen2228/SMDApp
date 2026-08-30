@@ -50,6 +50,11 @@ import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
 import { IndexComparison } from '@/components/dashboard/IndexComparison';
+import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
+import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
+import { SectorRotation } from '@/components/dashboard/SectorRotation';
+import { MarketHeatmap } from '@/components/dashboard/MarketHeatmap';
+import { BestTradesNow } from '@/components/dashboard/BestTradesNow';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -316,7 +321,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
@@ -763,7 +768,12 @@ return (
             <Button variant={viewMode === 'indexcomp' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'indexcomp' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
               onClick={() => { setViewMode('indexcomp'); setDisplayMode('pro'); }}>
-              <Activity className="h-2.5 w-2.5 mr-0.5" /> Idx Comp
+              <LineChart className="h-2.5 w-2.5 mr-0.5" /> Index
+            </Button>
+            <Button variant={viewMode === 'intelligence' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'intelligence' ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
+              onClick={() => { setViewMode('intelligence'); setDisplayMode('pro'); }}>
+              <Brain className="h-2.5 w-2.5 mr-0.5" /> Intel
             </Button>
           </div>
 
@@ -1005,6 +1015,21 @@ return (
         /* ═══════ INDEX COMPARISON ═══════ */
         <div className="flex-1 overflow-hidden">
           <IndexComparison />
+        </div>
+        ) : viewMode === 'intelligence' ? (
+        /* ═══════ MARKET INTELLIGENCE ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            <MarketRegimePanel />
+            <MarketBreadth />
+            <SectorRotation />
+            <div className="md:col-span-2 lg:col-span-3">
+              <MarketHeatmap />
+            </div>
+            <div className="md:col-span-2 lg:col-span-3">
+              <BestTradesNow />
+            </div>
+          </div>
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
