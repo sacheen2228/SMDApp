@@ -1,93 +1,18 @@
 // Market Heatmap API — Stock data for treemap visualization
-// Fetches NIFTY 50 stocks with sector mapping, change %, volume
+// Uses NSE India API (single call for all NIFTY 50) — no rate limiting
 
 import { NextResponse } from "next/server";
-import { STOCK_SECTOR_MAP } from "../sectors/route";
-
-const NIFTY50 = [
-  "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN",
-  "BHARTIARTL","KOTAKBANK","LT","AXISBANK","BAJFINANCE","ASIANPAINT","MARUTI",
-  "SUNPHARMA","TITAN","ULTRACEMCO","NESTLEIND","TATAMOTORS","WIPRO","M&M",
-  "HCLTECH","POWERGRID","NTPC","ONGC","TATASTEEL","JSWSTEEL","ADANIENT",
-  "ADANIPORTS","TECHM","HDFCLIFE","SBILIFE","BRITANNIA","CIPLA","DRREDDY",
-  "DIVISLAB","EICHERMOT","GRASIM","HEROMOTOCO","HINDALCO","INDUSINDBK",
-  "BAJAJFINSV","COALINDIA","BPCL","TRENT","APOLLOHOSP","LTIM","HDFCAMC","PIDILITIND",
-];
-
-const NIFTY50_NAMES: Record<string, string> = {
-  RELIANCE: "Reliance", TCS: "TCS", HDFCBANK: "HDFC Bank", INFY: "Infosys",
-  ICICIBANK: "ICICI Bank", HINDUNILVR: "HUL", ITC: "ITC", SBIN: "SBI",
-  BHARTIARTL: "Bharti Airtel", KOTAKBANK: "Kotak Bank", LT: "L&T",
-  AXISBANK: "Axis Bank", BAJFINANCE: "Bajaj Finance", ASIANPAINT: "Asian Paints",
-  MARUTI: "Maruti", SUNPHARMA: "Sun Pharma", TITAN: "Titan", ULTRACEMCO: "UltraTech",
-  NESTLEIND: "Nestle", TATAMOTORS: "Tata Motors", WIPRO: "Wipro", "M&M": "M&M",
-  HCLTECH: "HCL Tech", POWERGRID: "Power Grid", NTPC: "NTPC", ONGC: "ONGC",
-  TATASTEEL: "Tata Steel", JSWSTEEL: "JSW Steel", ADANIENT: "Adani Ent",
-  ADANIPORTS: "Adani Ports", TECHM: "Tech Mahindra", HDFCLIFE: "HDFC Life",
-  SBILIFE: "SBI Life", BRITANNIA: "Britannia", CIPLA: "Cipla", DRREDDY: "Dr Reddy",
-  DIVISLAB: "Divi's Lab", EICHERMOT: "Eicher", GRASIM: "Grasim",
-  HEROMOTOCO: "Hero Moto", HINDALCO: "Hindalco", INDUSINDBK: "IndusInd",
-  BAJAJFINSV: "Bajaj Finserv", COALINDIA: "Coal India", BPCL: "BPCL",
-  TRENT: "Trent", APOLLOHOSP: "Apollo Hospital", LTIM: "LTIM", HDFCAMC: "HDFC AMC",
-  PIDILITIND: "Pidilite",
-};
-
-async function fetchStock(sym: string) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=1d&interval=1d`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const meta = data?.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice) return null;
-    const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-    const ltp = meta.regularMarketPrice;
-    return {
-      symbol: sym,
-      name: NIFTY50_NAMES[sym] || sym,
-      sector: STOCK_SECTOR_MAP[sym] || "Other",
-      ltp,
-      changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
-      change: parseFloat((ltp - prev).toFixed(2)),
-      volume: meta.regularMarketVolume || 0,
-      prevClose: prev,
-      dayHigh: meta.regularMarketDayHigh || ltp,
-      dayLow: meta.regularMarketDayLow || ltp,
-      weekHigh52: meta.fiftyTwoWeekHigh || ltp,
-      weekLow52: meta.fiftyTwoWeekLow || ltp,
-    };
-  } catch { return null; }
-}
-
-let cache: { data: any; ts: number } | null = null;
-const CACHE_TTL = 60_000;
+import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const index = searchParams.get("index") || "NIFTY50";
 
-    if (cache && Date.now() - cache.ts < CACHE_TTL) {
-      return NextResponse.json(cache.data);
-    }
-
-    // Fetch stocks in batches of 10 with stagger to avoid Yahoo rate limits
-    const BATCH_SIZE = 10;
-    const stocks: any[] = [];
-    for (let i = 0; i < NIFTY50.length; i += BATCH_SIZE) {
-      const batch = NIFTY50.slice(i, i + BATCH_SIZE);
-      const results = await Promise.allSettled(batch.map(fetchStock));
-      for (const r of results) {
-        if (r.status === "fulfilled" && r.value !== null) stocks.push(r.value);
-      }
-      // Small delay between batches to stay under Yahoo rate limit
-      if (i + BATCH_SIZE < NIFTY50.length) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
+    const stocks = await fetchNIFTY50Stocks();
 
     if (stocks.length === 0) {
-      return NextResponse.json({ error: "No data available" }, { status: 503 });
+      return NextResponse.json({ stocks: [], sectors: [], stockCount: 0, error: "NSE data unavailable" });
     }
 
     // Group by sector
@@ -106,17 +31,14 @@ export async function GET(request: Request) {
       declineCount: stks.filter(s => s.changePct < 0).length,
     }));
 
-    const result = {
+    return NextResponse.json({
       stocks,
       sectors: sectorData,
       index,
       stockCount: stocks.length,
       timestamp: new Date().toISOString(),
-    };
-
-    cache = { data: result, ts: Date.now() };
-    return NextResponse.json(result);
+    });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Heatmap fetch failed" }, { status: 500 });
+    return NextResponse.json({ stocks: [], sectors: [], error: error.message || "Heatmap fetch failed" });
   }
 }
