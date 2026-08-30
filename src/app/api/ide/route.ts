@@ -13,7 +13,7 @@ const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get("symbol") || "NIFTY").toUpperCase();
   if (!IDE_SYMBOLS.has(symbol)) {
-    return NextResponse.json({ error: "IDE supports NIFTY and SENSEX only" }, { status: 400 });
+    return NextResponse.json({ success: false, error: "IDE supports NIFTY and SENSEX only" }, { status: 400 });
   }
 
   try {
@@ -21,10 +21,10 @@ export async function GET(req: NextRequest) {
       fetch(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
       fetch(`${BASE}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
     ]);
-    if (!chainRes.ok) return NextResponse.json({ error: "option-chain unavailable", status: chainRes.status }, { status: 502 });
+    if (!chainRes.ok) return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
     const json = await chainRes.json();
     const d = json?.data;
-    if (!d || !d.data?.length) return NextResponse.json({ error: "no chain data" }, { status: 502 });
+    if (!d || !d.data?.length) return NextResponse.json({ success: false, error: "no chain data" }, { status: 502 });
 
     const spot = d.spotPrice || d.summary?.spotPrice || 0;
     const atmStrike = d.summary?.atmStrike || d.analysis?.atmStrike || 0;
@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
     }
     const atmCE = atm.ce?.ltp ?? 0;
     const atmPE = atm.pe?.ltp ?? 0;
-    const atmDelta = (atm.ce?.delta ?? 0) + (atm.pe?.delta ?? 0) / 2;
+    const atmDelta = ((atm.ce?.delta ?? 0) + (atm.pe?.delta ?? 0)) / 2;
     const atmGamma = Math.max(atm.ce?.gamma ?? 0, atm.pe?.gamma ?? 0);
     const atmVega = Math.max(atm.ce?.vega ?? 0, atm.pe?.vega ?? 0);
     const atmTheta = Math.min(atm.ce?.theta ?? 0, atm.pe?.theta ?? 0);
@@ -129,7 +129,7 @@ export async function GET(req: NextRequest) {
     const signal = runInstitutionalDerivativesEngine(symbol, input, { strikes, ctx, daysToExpiry });
     return NextResponse.json({ success: true, symbol, signal, expectedMove: round2(expectedMove) });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "IDE compute failed" }, { status: 500 });
+    return NextResponse.json({ success: false, error: err?.message || "IDE compute failed" }, { status: 500 });
   }
 }
 

@@ -32,7 +32,10 @@ export async function GET(request: NextRequest) {
     if (all) {
       // Full F&O equity universe DOM analysis
       const startTime = Date.now();
-      const data = await runDOMAnalysis();
+      const data = await Promise.race([
+        runDOMAnalysis(),
+        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 45_000)),
+      ]);
       const duration = Date.now() - startTime;
       
       if (save) {
@@ -50,7 +53,10 @@ export async function GET(request: NextRequest) {
     }
     
     // Default: top OI buildup across all F&O equities
-    const data = await runDOMAnalysis();
+    const data = await Promise.race([
+      runDOMAnalysis(),
+      new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 45_000)),
+    ]);
     
     const topBuildup = data
       .flatMap(d => d.unusualBuildup.map(u => ({ ...u, symbol: d.symbol, spot: d.spot })))

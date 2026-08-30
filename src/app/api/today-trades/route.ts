@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { rankStrikes, type ChainContext, type StrikeLeg } from "@/lib/institutional-derivatives-engine";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 
-const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
+const BASE = process.env.INTERNAL_API_BASE || "";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 
 export async function GET(req: NextRequest) {

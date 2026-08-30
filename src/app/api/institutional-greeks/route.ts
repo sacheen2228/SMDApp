@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     const params = new URLSearchParams({ symbol });
     if (expiry) params.set("expiry", expiry);
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const baseUrl = process.env.INTERNAL_API_BASE || new URL(request.url).origin;
     const chainRes = await fetch(`${baseUrl}/api/option-chain?${params.toString()}`, {
       cache: "no-store",
     });

@@ -23,12 +23,12 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
     if (!res.ok) {
-      return NextResponse.json({ error: "option-chain unavailable", status: res.status }, { status: 502 });
+      return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
     }
     const json = await res.json();
     const d = json?.data;
     if (!d || !d.data?.length) {
-      return NextResponse.json({ error: "no chain data" }, { status: 502 });
+      return NextResponse.json({ success: false, error: "no chain data" }, { status: 502 });
     }
 
     const spot = d.spotPrice || d.summary?.spotPrice || 0;
@@ -72,6 +72,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ success: true, symbol, range, containment });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "straddle compute failed" }, { status: 500 });
+    return NextResponse.json({ success: false, error: err?.message || "straddle compute failed" }, { status: 500 });
   }
 }
