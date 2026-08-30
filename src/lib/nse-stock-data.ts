@@ -1,7 +1,10 @@
 // Shared stock data fetcher for all NIFTY 50 stocks.
-// Primary: Moneycontrol priceapi (fast, no rate limiting).
-// Fallback: Yahoo Finance for stocks not found on Moneycontrol.
-// Single function called by all market APIs — replaces per-stock Yahoo calls.
+// Tier 1: Moneycontrol priceapi (per-stock, batches of 5)
+// Tier 2: Yahoo Finance batch quote (all missing stocks in one call via v7/finance/quote)
+// Tier 3: Yahoo Finance per-stock chart (final fallback for stragglers)
+// Returns whatever data was successfully fetched — never throws.
+
+import { fetchWithFallback, FallbackSource } from "./fetch-with-fallback";
 
 export interface NSEStockQuote {
   symbol: string;
@@ -55,7 +58,6 @@ const NAME_MAP: Record<string, string> = {
 };
 
 // Moneycontrol priceapi display IDs for NIFTY 50 stocks
-// Verified: all return correct NSEID and pricecurrent from priceapi
 const MC_ID_MAP: Record<string, string> = {
   RELIANCE: "RI", TCS: "TCS", HDFCBANK: "HDF01", INFY: "IT",
   ICICIBANK: "ICI02", HINDUNILVR: "HL", ITC: "ITC", SBIN: "SBI",
@@ -73,115 +75,190 @@ const MC_ID_MAP: Record<string, string> = {
   TRENT: "L", APOLLOHOSP: "AHE", LTIM: "", HDFCAMC: "HAM02", PIDILITIND: "PI11",
 };
 
-// Stocks not found on Moneycontrol — use Yahoo Finance fallback
-const YAHOO_FALLBACK = ["TATAMOTORS", "LTIM"];
+const NIFTY50 = [
+  "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "ITC", "SBIN",
+  "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK", "BAJFINANCE", "ASIANPAINT", "MARUTI",
+  "SUNPHARMA", "TITAN", "ULTRACEMCO", "NESTLEIND", "TATAMOTORS", "WIPRO", "M&M",
+  "HCLTECH", "POWERGRID", "NTPC", "ONGC", "TATASTEEL", "JSWSTEEL", "ADANIENT",
+  "ADANIPORTS", "TECHM", "HDFCLIFE", "SBILIFE", "BRITANNIA", "CIPLA", "DRREDDY",
+  "DIVISLAB", "EICHERMOT", "GRASIM", "HEROMOTOCO", "HINDALCO", "INDUSINDBK",
+  "BAJAJFINSV", "COALINDIA", "BPCL", "TRENT", "APOLLOHOSP", "LTIM", "HDFCAMC", "PIDILITIND",
+];
 
-interface MCResponse {
-  data: {
-    pricecurrent: string;
-    pricechange: string;
-    pricepercentchange: string;
-    priceprevclose: string;
-    LP: string;
-    HP: string;
-    VOL: string;
-    "52H": string;
-    "52L": string;
-    NSEID: string;
-    SC_FULLNM: string;
+// ─── TIER 1: Moneycontrol priceapi (per-stock) ───
+async function fetchFromMoneycontrol(mcId: string): Promise<NSEStockQuote | null> {
+  const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/${mcId}`, {
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  if (json.code !== "200" || !json.data) return null;
+  const d = json.data;
+  const ltp = parseFloat(d.pricecurrent) || 0;
+  if (!ltp) return null;
+  const prevClose = parseFloat(d.priceprevclose) || ltp;
+  const change = parseFloat(d.pricechange) || (ltp - prevClose);
+  const changePct = parseFloat(d.pricepercentchange) || (prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0);
+  const sym = d.NSEID || "";
+  return {
+    symbol: sym, name: NAME_MAP[sym] || d.SC_FULLNM || sym,
+    ltp, change: Math.round(change * 100) / 100, changePct: Math.round(changePct * 100) / 100,
+    volume: parseInt(d.VOL) || 0, prevClose: Math.round(prevClose * 100) / 100,
+    dayHigh: parseFloat(d.HP) || ltp, dayLow: parseFloat(d.LP) || ltp,
+    weekHigh52: parseFloat(d["52H"]) || 0, weekLow52: parseFloat(d["52L"]) || 0,
+    sector: SECTOR_MAP[sym] || "Other",
   };
 }
 
-async function fetchOneStockMC(mcId: string, fallbackSymbol: string): Promise<NSEStockQuote | null> {
+// ─── TIER 2: Yahoo Finance batch quote (all stocks in one call) ───
+// Uses v7/finance/quote with crumb auth — same approach as github.com/0xramm/Indian-Stock-Market-API
+const YF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+let yfCrumbCache: { crumb: string; cookie: string; expiresAt: number } | null = null;
+
+async function getYFCrumb(): Promise<{ crumb: string; cookie: string }> {
+  if (yfCrumbCache && Date.now() < yfCrumbCache.expiresAt) {
+    return { crumb: yfCrumbCache.crumb, cookie: yfCrumbCache.cookie };
+  }
+  const cookieRes = await fetch("https://fc.yahoo.com", {
+    headers: { "User-Agent": YF_UA },
+    signal: AbortSignal.timeout(5000),
+  });
+  const setCookie = cookieRes.headers.get("set-cookie") || "";
+  const cookie = setCookie.split(";")[0] || "";
+  const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+    headers: { "User-Agent": YF_UA, Cookie: cookie },
+    signal: AbortSignal.timeout(5000),
+  });
+  const crumb = (await crumbRes.text()).trim();
+  yfCrumbCache = { crumb, cookie, expiresAt: Date.now() + 50 * 60 * 1000 };
+  return { crumb, cookie };
+}
+
+async function fetchYahooBatch(symbols: string[]): Promise<Map<string, NSEStockQuote>> {
+  const result = new Map<string, NSEStockQuote>();
+  if (symbols.length === 0) return result;
+
   try {
-    const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/${mcId}`, {
+    const { crumb, cookie } = await getYFCrumb();
+    const tickers = symbols.map(s => `${s}.NS`).join(",");
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(tickers)}&crumb=${encodeURIComponent(crumb)}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": YF_UA, Cookie: cookie },
       signal: AbortSignal.timeout(12000),
     });
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.code !== "200" || !json.data) return null;
-    const d = json.data;
-    const ltp = parseFloat(d.pricecurrent) || 0;
-    if (!ltp) return null;
-    const prevClose = parseFloat(d.priceprevclose) || ltp;
-    const change = parseFloat(d.pricechange) || (ltp - prevClose);
-    const changePct = parseFloat(d.pricepercentchange) || (prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0);
-    const sym = d.NSEID || fallbackSymbol;
-    return {
-      symbol: sym,
-      name: NAME_MAP[sym] || d.SC_FULLNM || sym,
-      ltp, change: Math.round(change * 100) / 100, changePct: Math.round(changePct * 100) / 100,
-      volume: parseInt(d.VOL) || 0, prevClose: Math.round(prevClose * 100) / 100,
-      dayHigh: parseFloat(d.HP) || ltp, dayLow: parseFloat(d.LP) || ltp,
-      weekHigh52: parseFloat(d["52H"]) || 0, weekLow52: parseFloat(d["52L"]) || 0,
-      sector: SECTOR_MAP[sym] || "Other",
-    };
-  } catch { return null; }
-}
-
-async function fetchOneStockYahoo(symbol: string): Promise<NSEStockQuote | null> {
-  try {
-    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.NS?range=1d&interval=1d`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Retry with fresh crumb
+      yfCrumbCache = null;
+      const { crumb: c2, cookie: ck2 } = await getYFCrumb();
+      const res2 = await fetch(
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(tickers)}&crumb=${encodeURIComponent(c2)}`,
+        { headers: { "User-Agent": YF_UA, Cookie: ck2 }, signal: AbortSignal.timeout(12000) },
+      );
+      if (!res2.ok) return result;
+      const data2 = await res2.json();
+      return parseYahooBatch(data2, symbols);
+    }
     const data = await res.json();
-    const meta = data?.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice) return null;
-    const ltp = meta.regularMarketPrice;
-    const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-    return {
-      symbol, name: NAME_MAP[symbol] || symbol, ltp,
-      change: parseFloat((ltp - prev).toFixed(2)),
-      changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
-      volume: meta.regularMarketVolume || 0, prevClose: prev,
-      dayHigh: meta.regularMarketDayHigh || ltp, dayLow: meta.regularMarketDayLow || ltp,
-      weekHigh52: meta.fiftyTwoWeekHigh || 0, weekLow52: meta.fiftyTwoWeekLow || 0,
-      sector: SECTOR_MAP[symbol] || "Other",
-    };
-  } catch { return null; }
+    return parseYahooBatch(data, symbols);
+  } catch {
+    return result;
+  }
 }
 
+function parseYahooBatch(data: any, symbols: string[]): Map<string, NSEStockQuote> {
+  const result = new Map<string, NSEStockQuote>();
+  for (const q of data?.quoteResponse?.result || []) {
+    const raw = q.symbol?.replace(".NS", "");
+    if (!raw || !symbols.includes(raw)) continue;
+    const ltp = q.regularMarketPrice;
+    if (!ltp) continue;
+    const prev = q.regularMarketPreviousClose || ltp;
+    result.set(raw, {
+      symbol: raw,
+      name: NAME_MAP[raw] || q.shortName || q.longName || raw,
+      ltp,
+      change: parseFloat((q.regularMarketChange ?? (ltp - prev)).toFixed(2)),
+      changePct: parseFloat((q.regularMarketChangePercent ?? ((ltp - prev) / prev) * 100).toFixed(2)),
+      volume: q.regularMarketVolume || 0,
+      prevClose: prev,
+      dayHigh: q.regularMarketDayHigh || ltp,
+      dayLow: q.regularMarketDayLow || ltp,
+      weekHigh52: q.fiftyTwoWeekHigh || 0,
+      weekLow52: q.fiftyTwoWeekLow || 0,
+      sector: SECTOR_MAP[raw] || "Other",
+    });
+  }
+  return result;
+}
+
+// ─── TIER 3: Yahoo Finance per-stock chart (final fallback) ───
+async function fetchFromYahooChart(symbol: string): Promise<NSEStockQuote | null> {
+  const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.NS?range=1d&interval=1d`, {
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const meta = data?.chart?.result?.[0]?.meta;
+  if (!meta?.regularMarketPrice) return null;
+  const ltp = meta.regularMarketPrice;
+  const prev = meta.chartPreviousClose || meta.regularMarketPrice;
+  return {
+    symbol, name: NAME_MAP[symbol] || symbol, ltp,
+    change: parseFloat((ltp - prev).toFixed(2)),
+    changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
+    volume: meta.regularMarketVolume || 0, prevClose: prev,
+    dayHigh: meta.regularMarketDayHigh || ltp, dayLow: meta.regularMarketDayLow || ltp,
+    weekHigh52: meta.fiftyTwoWeekHigh || 0, weekLow52: meta.fiftyTwoWeekLow || 0,
+    sector: SECTOR_MAP[symbol] || "Other",
+  };
+}
+
+// ─── Main fetcher with 3-tier fallback ───
 let cache: { data: NSEStockQuote[]; ts: number } | null = null;
 const CACHE_TTL = 60_000;
-
-async function batchFetch<T>(items: T[], fn: (item: T) => Promise<NSEStockQuote | null>, concurrency: number): Promise<NSEStockQuote[]> {
-  const results: NSEStockQuote[] = [];
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    const batchResults = await Promise.allSettled(batch.map(fn));
-    for (const r of batchResults) {
-      if (r.status === "fulfilled" && r.value) results.push(r.value);
-    }
-    if (i + concurrency < items.length) await new Promise(r => setTimeout(r, 300));
-  }
-  return results;
-}
 
 export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
   if (cache && Date.now() - cache.ts < CACHE_TTL) return cache.data;
 
   try {
-    // Fetch all stocks from Moneycontrol in batches of 5 (Render free tier limits concurrent connections)
-    const mcEntries = Object.entries(MC_ID_MAP).filter(([, id]) => id);
-    const mcStocks = await batchFetch(
-      mcEntries,
-      ([symbol, mcId]) => fetchOneStockMC(mcId, symbol),
-      5,
-    );
+    const resultMap = new Map<string, NSEStockQuote>();
 
-    // Fetch fallback stocks from Yahoo Finance
-    const yahooStocks = await batchFetch(
-      YAHOO_FALLBACK,
-      (sym) => fetchOneStockYahoo(sym),
-      3,
-    );
-
-    const allStocks = [...mcStocks, ...yahooStocks];
-    if (allStocks.length > 0) {
-      cache = { data: allStocks, ts: Date.now() };
+    // ── Tier 1: Moneycontrol (batches of 5) ──
+    const mcEntries = NIFTY50.filter(s => MC_ID_MAP[s]);
+    for (let i = 0; i < mcEntries.length; i += 5) {
+      const batch = mcEntries.slice(i, i + 5);
+      const results = await Promise.allSettled(
+        batch.map(sym => fetchFromMoneycontrol(MC_ID_MAP[sym])),
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) resultMap.set(r.value.symbol, r.value);
+      }
+      if (i + 5 < mcEntries.length) await new Promise(r => setTimeout(r, 200));
     }
-    return allStocks;
+
+    // ── Tier 2: Yahoo Finance batch (for stocks Moneycontrol missed) ──
+    const missing = NIFTY50.filter(s => !resultMap.has(s));
+    if (missing.length > 0) {
+      const yahooBatch = await fetchYahooBatch(missing);
+      for (const [sym, quote] of yahooBatch) {
+        resultMap.set(sym, quote);
+      }
+    }
+
+    // ── Tier 3: Yahoo Finance per-stock chart (for any still missing) ──
+    const stillMissing = NIFTY50.filter(s => !resultMap.has(s));
+    if (stillMissing.length > 0 && stillMissing.length <= 10) {
+      const results = await Promise.allSettled(stillMissing.map(fetchFromYahooChart));
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) resultMap.set(r.value.symbol, r.value);
+      }
+    }
+
+    const results = NIFTY50.map(s => resultMap.get(s)).filter(Boolean) as NSEStockQuote[];
+    if (results.length > 0) {
+      cache = { data: results, ts: Date.now() };
+    }
+    return results;
   } catch (err: any) {
     console.error("[Stock Data] Fetch failed:", err.message);
     if (cache) return cache.data;

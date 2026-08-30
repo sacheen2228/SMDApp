@@ -1,21 +1,42 @@
 // Market Regime API — Market regime, VIX, sentiment, trade environment
-// Uses Yahoo Finance for indices + VIX
+// Fallback chain: Moneycontrol → Yahoo Finance → skip for each index
+// VIX: Yahoo Finance → hardcoded default (15)
 
 import { NextResponse } from "next/server";
+import { fetchWithFallback, FallbackSource } from "@/lib/fetch-with-fallback";
 
 const INDICES = [
-  { key: "NIFTY", yahoo: "^NSEI", name: "NIFTY 50" },
-  { key: "BANKNIFTY", yahoo: "^NSEBANK", name: "BANK NIFTY" },
-  { key: "SENSEX", yahoo: "^BSESN", name: "SENSEX" },
-  { key: "FINNIFTY", yahoo: "^NSEMIDCAP", name: "FIN NIFTY" },
+  { key: "NIFTY", yahoo: "^NSEI", mcId: "NIFTY 50", name: "NIFTY 50" },
+  { key: "BANKNIFTY", yahoo: "^NSEBANK", mcId: "NIFTY Bank", name: "BANK NIFTY" },
+  { key: "SENSEX", yahoo: "^BSESN", mcId: "SENSEX", name: "SENSEX" },
+  { key: "FINNIFTY", yahoo: "^NSEMIDCAP", mcId: "", name: "FIN NIFTY" },
 ];
 
-let lastReq = 0;
-async function rlFetch(url: string) {
-  const wait = Math.max(0, 2000 - (Date.now() - lastReq));
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastReq = Date.now();
-  return fetch(url, { signal: AbortSignal.timeout(10000) });
+// Source A: Moneycontrol index price
+async function fetchIndexMC(mcId: string): Promise<{ ltp: number; prev: number } | null> {
+  const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/index/${mcId}`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  if (json.code !== "200" || !json.data) return null;
+  const ltp = parseFloat(json.data.pricecurrent) || 0;
+  const prev = parseFloat(json.data.priceprevclose) || ltp;
+  if (!ltp) return null;
+  return { ltp, prev };
+}
+
+// Source B: Yahoo Finance index price
+async function fetchIndexYahoo(yahooSymbol: string): Promise<{ ltp: number; prev: number } | null> {
+  const res = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1d`,
+    { signal: AbortSignal.timeout(8000) },
+  );
+  if (!res.ok) return null;
+  const data = await res.json();
+  const meta = data?.chart?.result?.[0]?.meta;
+  if (!meta?.regularMarketPrice) return null;
+  return { ltp: meta.regularMarketPrice, prev: meta.chartPreviousClose || meta.regularMarketPrice };
 }
 
 let cache: { data: any; ts: number } | null = null;
@@ -27,48 +48,54 @@ export async function GET() {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch all indices
+    // Fetch each index with fallback chain
     const indexData: any[] = [];
     for (const idx of INDICES) {
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(idx.yahoo)}?range=1d&interval=1d`;
-        const res = await rlFetch(url);
-        if (!res.ok) continue;
-        const data = await res.json();
-        const meta = data?.chart?.result?.[0]?.meta;
-        if (!meta?.regularMarketPrice) continue;
-        const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-        const ltp = meta.regularMarketPrice;
+      const sources: FallbackSource<{ ltp: number; prev: number }>[] = [];
+      if (idx.mcId) {
+        sources.push({ name: `MC:${idx.key}`, fetch: () => fetchIndexMC(idx.mcId) });
+      }
+      sources.push({ name: `YF:${idx.key}`, fetch: () => fetchIndexYahoo(idx.yahoo) });
+
+      const { data } = await fetchWithFallback(sources);
+      if (data) {
         indexData.push({
           key: idx.key,
           name: idx.name,
-          ltp,
-          change: parseFloat((ltp - prev).toFixed(2)),
-          changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
-          prevClose: prev,
+          ltp: data.ltp,
+          change: parseFloat((data.ltp - data.prev).toFixed(2)),
+          changePct: parseFloat((((data.ltp - data.prev) / data.prev) * 100).toFixed(2)),
+          prevClose: data.prev,
         });
-      } catch { /* skip */ }
+      }
     }
 
-    // Fetch VIX
+    // Fetch VIX: Yahoo Finance → hardcoded default
     let vix = { value: 15, change: 0 };
-    try {
-      const url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d";
-      const res = await rlFetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const meta = data?.chart?.result?.[0]?.meta;
-        if (meta?.regularMarketPrice) {
+    const vixSources: FallbackSource<{ value: number; change: number }>[] = [
+      {
+        name: "YF:VIX",
+        fetch: async () => {
+          const res = await fetch(
+            "https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d",
+            { signal: AbortSignal.timeout(8000) },
+          );
+          if (!res.ok) return null;
+          const data = await res.json();
+          const meta = data?.chart?.result?.[0]?.meta;
+          if (!meta?.regularMarketPrice) return null;
           const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-          vix = {
+          return {
             value: parseFloat(meta.regularMarketPrice.toFixed(2)),
             change: parseFloat((meta.regularMarketPrice - prev).toFixed(2)),
           };
-        }
-      }
-    } catch { /* use default */ }
+        },
+      },
+    ];
+    const { data: vixData } = await fetchWithFallback(vixSources);
+    if (vixData) vix = vixData;
 
-    // Determine regime from index performance
+    // Determine regime
     const nifty = indexData.find(i => i.key === "NIFTY");
     const bankNifty = indexData.find(i => i.key === "BANKNIFTY");
     const avgChange = indexData.length > 0
