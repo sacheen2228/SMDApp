@@ -1,4 +1,4 @@
-// LLM Client — Groq (fast+free) → OpenRouter → Nvidia → Ollama
+// LLM Client — Groq (fast+free) → OpenRouter (7 free models) → Ollama
 // Supports native tool calling for all providers
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -192,12 +192,21 @@ export async function callLLM(messages: LLMMessage[], tools?: any[], model?: str
     }
   }
 
-  // 2. OpenRouter free — rate limited
+  // 2. OpenRouter free — rate limited, try best models first
   if (orKey) {
-    for (const m of ["google/gemma-4-31b-it:free", "meta-llama/llama-3.3-70b-instruct:free"]) {
+    const freeModels = [
+      "nvidia/nemotron-3-ultra-550b-a55b:free",          // 1M ctx, 550B
+      "nvidia/nemotron-3.5-lightning:free",              // 1M ctx
+      "minimax/minimax-m3:free",                         // 1M ctx
+      "nvidia/nemotron-3-super-120b-a12b:free",          // 262K ctx, 120B
+      "google/gemma-4-31b-it:free",                      // 262K ctx
+      "google/gemma-4-26b-a4b-it:free",                  // 262K ctx
+      "meta-llama/llama-3.3-70b-instruct:free",          // 128K ctx
+    ];
+    for (const m of freeModels) {
       try {
         console.log(`[LLM] OpenRouter: ${m}`);
-        const r = await callAPI(OPENROUTER_URL, orKey, msgs, m, 15000, internalTools, "openrouter");
+        const r = await callAPI(OPENROUTER_URL, orKey, msgs, m, 20000, internalTools, "openrouter");
         console.log(`[LLM] ✅ OpenRouter ${m} OK`);
         return r;
       } catch (e: any) {
