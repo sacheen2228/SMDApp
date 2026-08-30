@@ -71,11 +71,20 @@ export async function GET(request: Request) {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch ALL stocks in parallel (no rate limit — Yahoo allows concurrent)
-    const results = await Promise.allSettled(NIFTY50.map(fetchStock));
-    const stocks = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
-      .map(r => r.value);
+    // Fetch stocks in batches of 10 with stagger to avoid Yahoo rate limits
+    const BATCH_SIZE = 10;
+    const stocks: any[] = [];
+    for (let i = 0; i < NIFTY50.length; i += BATCH_SIZE) {
+      const batch = NIFTY50.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(batch.map(fetchStock));
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value !== null) stocks.push(r.value);
+      }
+      // Small delay between batches to stay under Yahoo rate limit
+      if (i + BATCH_SIZE < NIFTY50.length) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
 
     if (stocks.length === 0) {
       return NextResponse.json({ error: "No data available" }, { status: 503 });

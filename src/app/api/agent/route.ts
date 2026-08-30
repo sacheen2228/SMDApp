@@ -120,12 +120,13 @@ export async function POST(req: NextRequest) {
     let freshSummary = summary || null;
     let freshSpotPrice = spotPrice || 0;
 
+    const origin = new URL(req.url).origin;
     const [sdmResult, chainResult, giftResult, corrResult, scanResult] = await Promise.allSettled([
-      fetch(`/api/sdm-signal?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`${origin}/api/sdm-signal?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => d.success ? d.signal : null)
         .catch(() => null),
-      fetch(`/api/option-chain?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`${origin}/api/option-chain?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => {
           if (d.success && d.analysis) {
@@ -139,15 +140,15 @@ export async function POST(req: NextRequest) {
           return null;
         })
         .catch(() => null),
-      fetch(`/api/gift-nifty`, { signal: AbortSignal.timeout(8000) })
+      fetch(`${origin}/api/gift-nifty`, { signal: AbortSignal.timeout(8000) })
         .then(r => r.json())
         .then(d => d.success ? d.data : null)
         .catch(() => null),
-      fetch(`/api/correlation`, { signal: AbortSignal.timeout(10000) })
+      fetch(`${origin}/api/correlation`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => d.success ? d : null)
         .catch(() => null),
-      fetch(`/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(30000) })
+      fetch(`${origin}/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(30000) })
         .then(r => r.json())
         .then(d => d.success ? d.data : null)
         .catch(() => null),
@@ -211,6 +212,7 @@ ${dashSignal ? `Bias: ${dashSignal.marketBias} | Action: ${dashSignal.recommenda
         giftNifty,
         correlation,
         scanner,
+        apiBase: origin,
         // Dashboard data
         dashboardContext,
         dashboardTrades: dashTrades,

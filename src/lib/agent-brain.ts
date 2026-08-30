@@ -371,15 +371,16 @@ export const AGENT_TOOLS = [
 export async function executeTool(
   name: string,
   args: any,
-  ctx: { symbol: string; spotPrice: number; analysis: any; summary: any }
+  ctx: { symbol: string; spotPrice: number; analysis: any; summary: any; apiBase?: string }
 ): Promise<string> {
   console.log(`[AgentBrain] executeTool: ${name} args=${JSON.stringify(args)} ctx=${ctx ? 'OK' : 'NULL'}`);
   args = args || {};
   const symbol = args.symbol || ctx?.symbol || "NIFTY";
+  const BASE = ctx?.apiBase || process.env.NEXT_PUBLIC_BASE_URL || "";
   switch (name) {
     case "get_option_chain": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${BASE}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch option chain";
         const chain = data.data?.strikes || [];
@@ -397,7 +398,7 @@ export async function executeTool(
         const days = args.days || 30;
         const end = new Date().toISOString().split("T")[0];
         const start = new Date(Date.now() - days * 86400000).toISOString().split("T")[0];
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/backtest?symbol=${symbol}&startDate=${start}&endDate=${end}`, { signal: AbortSignal.timeout(20000) });
+        const res = await fetch(`${BASE}/api/backtest?symbol=${symbol}&startDate=${start}&endDate=${end}`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to run backtest";
         const p = data.data.performance;
@@ -407,7 +408,7 @@ export async function executeTool(
 
     case "get_scanner_picks": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(30000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch scanner";
         const picks = (data.data?.candidates || []).slice(0, 10);
@@ -418,7 +419,7 @@ export async function executeTool(
 
     case "get_news_sentiment": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/news`, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(`${BASE}/api/news`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch news";
         const market = data.data?.market || {};
@@ -429,7 +430,7 @@ export async function executeTool(
 
     case "get_breakout_signals": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/breakout?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(`${BASE}/api/breakout?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch breakout data";
         const s = data.data?.signal;
@@ -442,7 +443,7 @@ export async function executeTool(
     case "get_trade_history": {
       try {
         const limit = args.limit || 20;
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/trade-journal?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(`${BASE}/api/trade-journal?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         const trades = (data.trades || []).slice(0, limit);
         const stats = data.stats || {};
@@ -469,7 +470,7 @@ export async function executeTool(
     case "get_sdm_signal": {
       try {
         const isExpiryDay = args.expiryDay ? "true" : "false";
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
+        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch SDM signal";
         const s = data.signal;
@@ -505,7 +506,7 @@ Trades today: ${s.tradesTakenToday}/${(s.tradesTakenToday ?? 0) + (s.tradesRemai
 
     case "get_market_structure": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch market structure";
         const ms = data.signal?.marketStructure;
@@ -523,7 +524,7 @@ Resistance Levels: ${(ms.resistanceLevels || []).join(", ") || "—"}`;
 
     case "get_correlation_signal": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/correlation`, { signal: AbortSignal.timeout(20000) });
+        const res = await fetch(`${BASE}/api/correlation`, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch correlation data";
         return `NIFTY vs SENSEX Correlation:
@@ -545,8 +546,8 @@ Tip: ${data.tip}`;
         const isExpiryDay = args.expiryDay ? "true" : "false";
         // Fetch both SDM and option chain in parallel for a complete picture
         const [sdmRes, chainRes] = await Promise.allSettled([
-          fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
-          fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+          fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+          fetch(`${BASE}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
         ]);
         if (!sdmRes || sdmRes.status !== "fulfilled" || !sdmRes.value?.success) return "Failed to fetch SDM signal for trade recommendation";
         const s = sdmRes.value.signal;
@@ -623,7 +624,7 @@ EXIT CONDITIONS:
 
     case "get_gift_nifty": {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/gift-nifty`, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(`${BASE}/api/gift-nifty`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Gift Nifty data not available (may use estimated spot)";
         const g = data.data;
@@ -640,7 +641,7 @@ Time: ${g.timestamp || "N/A"}`;
     case "get_historical_data": {
       try {
         const days = Math.min(args.days || 30, 365);
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/nse?symbol=${symbol}&days=${days}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${BASE}/api/nse?symbol=${symbol}&days=${days}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch historical data";
         const candles = data.data || [];
@@ -703,6 +704,7 @@ export async function agentRespondLLM(
     giftNifty?: any;
     correlation?: any;
     scanner?: any;
+    apiBase?: string;
   }
 ): Promise<{ response: string; toolCallsMade: string[] }> {
   const systemPrompt = buildSystemPrompt({ ...ctx, giftNifty: ctx.giftNifty, correlation: ctx.correlation, scanner: ctx.scanner });
@@ -745,7 +747,7 @@ export async function agentRespondLLM(
       toolCallsMadeSet.add(toolCall.function.name);
 
       try {
-        const toolResult = await executeTool(toolCall.function.name, args, ctx);
+        const toolResult = await executeTool(toolCall.function.name, args, { ...ctx, apiBase: ctx.apiBase });
         messages.push({
           role: "tool",
           content: toolResult,
