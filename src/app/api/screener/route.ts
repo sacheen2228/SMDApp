@@ -31,13 +31,12 @@ export async function GET(req: NextRequest) {
   const symbol = searchParams.get("symbol") || "NIFTY";
   const direction = searchParams.get("direction") || "CE";
 
-  // Fetch data FIRST (while Node.js is handling this request)
+  const origin = new URL(req.url).origin;
   const chainRes = await fetch(
-    `${process.env.SMDAPP_API_BASE || ""}/api/option-chain?symbol=${symbol}`,
+    `${origin}/api/option-chain?symbol=${symbol}`,
     { signal: AbortSignal.timeout(10000) }
   ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
 
-  // Pass it to Python so it doesn't self-call (avoids deadlock)
   const result = await runPython({
     action,
     symbol,
@@ -51,8 +50,9 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const symbol = body.symbol || "NIFTY";
+    const origin = new URL(req.url).origin;
     const chainRes = await fetch(
-    `${process.env.SMDAPP_API_BASE || ""}/api/option-chain?symbol=${symbol}`,
+      `${origin}/api/option-chain?symbol=${symbol}`,
       { signal: AbortSignal.timeout(10000) }
     ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
     const result = await runPython({ ...body, chain_data: chainRes });

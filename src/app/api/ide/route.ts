@@ -7,7 +7,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runInstitutionalDerivativesEngine, type DerivativeInput, type StrikeLeg, type ChainContext } from "@/lib/institutional-derivatives-engine";
 
-const BASE = process.env.INTERNAL_API_BASE || "";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 
 export async function GET(req: NextRequest) {
@@ -15,11 +14,11 @@ export async function GET(req: NextRequest) {
   if (!IDE_SYMBOLS.has(symbol)) {
     return NextResponse.json({ success: false, error: "IDE supports NIFTY and SENSEX only" }, { status: 400 });
   }
-
+  const origin = new URL(req.url).origin;
   try {
     const [chainRes, fiiRes] = await Promise.all([
-      fetch(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
-      fetch(`${BASE}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
+      fetch(`${origin}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
+      fetch(`${origin}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
     ]);
     if (!chainRes.ok) return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
     const json = await chainRes.json();

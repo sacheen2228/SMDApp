@@ -58,6 +58,7 @@ import { BestTradesNow } from '@/components/dashboard/BestTradesNow';
 import { AlertCenter } from '@/components/dashboard/AlertCenter';
 import { CASPanel } from '@/components/dashboard/CASPanel';
 import { StockAnalysisDrawer } from '@/components/dashboard/StockAnalysisDrawer';
+import InstitutionalPositioningPanel from '@/components/terminal/InstitutionalPositioningPanel';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';

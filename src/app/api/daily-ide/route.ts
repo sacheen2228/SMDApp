@@ -12,7 +12,6 @@ import { recordSignal, updatePrice } from "@/lib/trade-audit-client";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 import { type StrikeLeg, type ChainContext, type DerivativeInput } from "@/lib/institutional-derivatives-engine";
 
-const BASE = process.env.INTERNAL_API_BASE || "";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 const STRATEGY = "IDE_DAILY";
 
@@ -21,14 +20,13 @@ export async function GET(req: NextRequest) {
   if (!IDE_SYMBOLS.has(symbol)) {
     return NextResponse.json({ success: false, error: "Daily IDE supports NIFTY and SENSEX only" }, { status: 400 });
   }
-  // ?record=true persists a confirmed trade into the audit sidecar.
   const shouldRecord = req.nextUrl.searchParams.get("record") === "true";
-
+  const origin = new URL(req.url).origin;
   try {
     const [chainRes, fiiRes, instRes] = await Promise.all([
-      fetch(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
-      fetch(`${BASE}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
-      fetch(`${BASE}/api/institutional-positioning`, { cache: "no-store" }).catch(() => null),
+      fetch(`${origin}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
+      fetch(`${origin}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
+      fetch(`${origin}/api/institutional-positioning`, { cache: "no-store" }).catch(() => null),
     ]);
     if (!chainRes.ok) return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
     const json = await chainRes.json();
