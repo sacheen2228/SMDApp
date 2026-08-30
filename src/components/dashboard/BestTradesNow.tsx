@@ -22,6 +22,26 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
   return <Badge variant="outline" className={`${color} text-[9px]`}>{confidence}</Badge>;
 }
 
+function EntryStateBadge({ state }: { state: string }) {
+  const colors: Record<string, string> = {
+    CONFIRMED: "bg-emerald-600 text-white",
+    CONFIRMING: "bg-blue-600 text-white",
+    WATCH: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+    INVALIDATED: "bg-red-500/20 text-red-400 border-red-500/30",
+  };
+  const icons: Record<string, string> = {
+    CONFIRMED: "✓",
+    CONFIRMING: "⟳",
+    WATCH: "👁",
+    INVALIDATED: "✗",
+  };
+  return (
+    <Badge variant="outline" className={`${colors[state] || "bg-zinc-600"} text-[9px] font-bold`}>
+      {icons[state] || ""} {state}
+    </Badge>
+  );
+}
+
 export function BestTradesNow() {
   const { data, isLoading } = useQuery({
     queryKey: ["best-trades"],
@@ -62,11 +82,12 @@ export function BestTradesNow() {
                   <span className="text-sm font-bold text-white">{opp.symbol}</span>
                   <span className="text-[10px] text-zinc-500">{opp.name}</span>
                 </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <Badge className="bg-emerald-600 text-white text-[9px]">LONG</Badge>
-                  <Badge variant="outline" className="text-[9px] text-zinc-400">{opp.setup}</Badge>
-                  <Badge variant="outline" className="text-[9px] text-zinc-400">{opp.sector}</Badge>
-                </div>
+<div className="flex items-center gap-2 mt-1">
+                <Badge className="bg-emerald-600 text-white text-[9px]">LONG</Badge>
+                <Badge variant="outline" className="text-[9px] text-zinc-400">{opp.setup}</Badge>
+                <Badge variant="outline" className="text-[9px] text-zinc-400">{opp.sector}</Badge>
+                <EntryStateBadge state={opp.entryState} />
+              </div>
               </div>
               <div className="text-right">
                 <ScoreBadge score={opp.score} />
@@ -96,7 +117,7 @@ export function BestTradesNow() {
               </div>
               <div>
                 <span className="text-zinc-500">R:R</span>
-                <div className={`font-bold ${opp.rr >= 2 ? "text-emerald-400" : opp.rr >= 1.5 ? "text-yellow-400" : "text-red-400"}`}>
+                <div className={`font-bold text-lg ${opp.rr >= 2.5 ? "text-emerald-400" : opp.rr >= 2 ? "text-emerald-300" : opp.rr >= 1.5 ? "text-yellow-400" : "text-red-400"}`}>
                   1:{opp.rr}
                 </div>
               </div>
@@ -104,7 +125,7 @@ export function BestTradesNow() {
 
             {/* Reasons */}
             {opp.reasons?.length > 0 && (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1 mb-1">
                 {opp.reasons.slice(0, 3).map((r: string, i: number) => (
                   <Badge key={i} className="bg-emerald-500/10 text-emerald-400 text-[8px] border-emerald-500/20">
                     ✓ {r}
@@ -113,16 +134,23 @@ export function BestTradesNow() {
               </div>
             )}
 
-            {/* Risks */}
-            {opp.risks?.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {opp.risks.map((r: string, i: number) => (
-                  <Badge key={i} className="bg-red-500/10 text-red-400 text-[8px] border-red-500/20">
-                    ⚠ {r}
-                  </Badge>
-                ))}
-              </div>
-            )}
+            {/* Risks + False Breakout */}
+            <div className="flex flex-wrap gap-1">
+              {opp.risks?.length > 0 && opp.risks.map((r: string, i: number) => (
+                <Badge key={i} className="bg-red-500/10 text-red-400 text-[8px] border-red-500/20">
+                  ⚠ {r}
+                </Badge>
+              ))}
+              {opp.falseBreakoutRisk && opp.falseBreakoutRisk !== "LOW" && (
+                <Badge className={`text-[8px] ${
+                  opp.falseBreakoutRisk === "CRITICAL" ? "bg-red-600" :
+                  opp.falseBreakoutRisk === "HIGH" ? "bg-orange-600" :
+                  "bg-yellow-600"
+                }`}>
+                  ⚡ FALSE BREAKOUT: {opp.falseBreakoutRisk}
+                </Badge>
+              )}
+            </div>
           </div>
         ))}
 

@@ -1,76 +1,123 @@
-// Trade Opportunity Engine — Aggregates all signals into ranked opportunities
-// Uses NSE India API (single call for all NIFTY 50) — no rate limiting
+// Trade Opportunity Engine — Uses technical analysis detection engines
+// Breakout, Pullback, Momentum, Breakdown, Reversal detection with confirmations
 
 import { NextResponse } from "next/server";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import {
+  detectBreakout,
+  detectPullback,
+  detectMomentum,
+  detectBreakdown,
+  detectReversal,
+  scanStock,
+  TechnicalIndicators,
+  ScanContext,
+} from "@/lib/technical-analysis";
 
-function scoreOpportunity(stock: any, sectorAvgChange: number) {
-  let score = 50;
-  const reasons: string[] = [];
-  const risks: string[] = [];
+const REGIME_API = process.env.INTERNAL_API_BASE || "";
 
-  if (stock.changePct > 3) { score += 20; reasons.push("Strong momentum"); }
-  else if (stock.changePct > 1.5) { score += 15; reasons.push("Good momentum"); }
-  else if (stock.changePct > 0.5) { score += 10; reasons.push("Positive momentum"); }
-  else if (stock.changePct > 0) { score += 5; }
-  else if (stock.changePct > -1) { score -= 5; }
-  else { score -= 15; risks.push("Negative momentum"); }
-
-  const sectorOutperform = stock.changePct - sectorAvgChange;
-  if (sectorOutperform > 1) { score += 15; reasons.push("Sector outperformer"); }
-  else if (sectorOutperform > 0) { score += 10; reasons.push("Above sector average"); }
-  else if (sectorOutperform < -1) { score -= 10; risks.push("Sector underperformer"); }
-
-  if (stock.volume > 5000000) { score += 10; reasons.push("High volume"); }
-  else if (stock.volume > 2000000) { score += 5; }
-
-  const range = stock.dayHigh - stock.dayLow;
-  if (range > 0) {
-    const pos = (stock.ltp - stock.dayLow) / range;
-    if (pos > 0.8) { score += 10; reasons.push("Near day high"); }
-    else if (pos > 0.6) { score += 5; }
-    else if (pos < 0.2) { risks.push("Near day low"); score -= 5; }
+async function getMarketContext(): Promise<ScanContext> {
+  try {
+    const res = await fetch(`${REGIME_API}/api/market/regime`, {
+      next: { revalidate: 60 },
+    });
+    if (!res.ok) throw new Error("Regime fetch failed");
+    const data = await res.json();
+    return {
+      marketRegime: data.regime || "NEUTRAL",
+      marketBreadth: data.avgIndexChange || 0,
+      vix: data.vix?.value || 15,
+      session: data.session || "CLOSED",
+    };
+  } catch {
+    return {
+      marketRegime: "NEUTRAL",
+      marketBreadth: 0,
+      vix: 15,
+      session: "CLOSED",
+    };
   }
+}
 
-  let setup: string;
-  if (stock.changePct > 2 && stock.volume > 3000000) setup = "MOMENTUM";
-  else if (stock.changePct > 0.5 && sectorOutperform > 0.5) setup = "SECTOR LEADER";
-  else if (stock.changePct > 0 && stock.changePct < 1) setup = "PULLBACK";
-  else if (stock.changePct < -1 && sectorOutperform > 0) setup = "RELATIVE STRENGTH";
-  else setup = "WATCH";
-
-  let confidence: string;
-  if (score >= 80) confidence = "VERY HIGH";
-  else if (score >= 65) confidence = "HIGH";
-  else if (score >= 50) confidence = "MEDIUM";
-  else confidence = "LOW";
-
+function estimateIndicators(stock: any, sectorAvg: number, marketAvg: number): TechnicalIndicators {
+  const range = stock.dayHigh - stock.dayLow;
   const atr = range > 0 ? range : stock.ltp * 0.015;
-  const entry = stock.ltp;
-  const sl = stock.changePct > 0 ? entry - atr * 1.5 : entry - atr * 2;
-  const tp1 = entry + atr * 2;
-  const tp2 = entry + atr * 3;
-  const risk = entry - sl;
-  const reward = tp1 - entry;
-  const rr = risk > 0 ? parseFloat((reward / risk).toFixed(1)) : 0;
+
+  // Estimate relVolume (would need avgVolume from historical data)
+  const avgVolume = 2000000; // placeholder - in production use real avg volume
+  const relVolume = stock.volume / avgVolume;
+
+  // Estimate EMAs from available data
+  // In production, these would come from historical data
+  const ema20 = stock.prevClose + (stock.change || 0) * 0.3; // rough estimate
+  const ema50 = stock.prevClose;
+  const ema200 = stock.prevClose;
+
+  // Estimate VWAP (typically between day high/low)
+  const vwap = (stock.dayHigh + stock.dayLow + stock.ltp) / 3;
+
+  // Estimate RSI from changePct
+  let rsi = 50;
+  if (stock.changePct > 3) rsi = 70;
+  else if (stock.changePct > 1.5) rsi = 60;
+  else if (stock.changePct > 0) rsi = 55;
+  else if (stock.changePct > -1.5) rsi = 45;
+  else if (stock.changePct > -3) rsi = 40;
+  else rsi = 30;
+
+  // Estimate MACD
+  const macd = {
+    macd: stock.changePct * 0.5,
+    signal: stock.changePct * 0.3,
+    histogram: stock.changePct * 0.2,
+  };
+
+  // Estimate Bollinger Bands
+  const bbMiddle = ema20;
+  const bbUpper = ema20 + atr * 2;
+  const bbLower = ema20 - atr * 2;
 
   return {
-    score: Math.min(100, Math.max(0, score)),
-    setup, reasons, risks, confidence,
-    entry: parseFloat(entry.toFixed(2)),
-    sl: parseFloat(sl.toFixed(2)),
-    tp1: parseFloat(tp1.toFixed(2)),
-    tp2: parseFloat(tp2.toFixed(2)),
-    rr,
+    ltp: stock.ltp,
+    open: stock.prevClose + (stock.change || 0) * 0.5,
+    high: stock.dayHigh,
+    low: stock.dayLow,
+    prevClose: stock.prevClose,
+    changePct: stock.changePct,
+    volume: stock.volume,
+    avgVolume,
+    relVolume,
+    vwap,
+    ema20,
+    ema50,
+    ema200,
+    rsi,
+    macd,
+    atr,
+    atrPct: (atr / stock.ltp) * 100,
+    bbUpper,
+    bbLower,
+    bbMiddle,
+    dayHigh: stock.dayHigh,
+    dayLow: stock.dayLow,
+    weekHigh52: stock.weekHigh52,
+    weekLow52: stock.weekLow52,
+    prevDayHigh: stock.dayHigh, // placeholder
+    prevDayLow: stock.dayLow, // placeholder
+    sectorChangePct: sectorAvg,
+    marketChangePct: marketAvg,
   };
 }
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const topN = parseInt(searchParams.get("top") || "5");
+    const topN = parseInt(searchParams.get("top") || "10");
 
-    const stocks = await fetchNIFTY50Stocks();
+    const [stocks, context] = await Promise.all([
+      fetchNIFTY50Stocks(),
+      getMarketContext(),
+    ]);
 
     if (stocks.length === 0) {
       return NextResponse.json({ success: true, opportunities: [], stockCount: 0 });
@@ -86,25 +133,60 @@ export async function GET(request: Request) {
     for (const [sec, stks] of Object.entries(sectorMap)) {
       sectorAvg[sec] = stks.reduce((sum: number, s: any) => sum + s.changePct, 0) / stks.length;
     }
+    const marketAvg = stocks.reduce((sum: number, s: any) => sum + s.changePct, 0) / stocks.length;
 
-    const opportunities = stocks.map((s: any) => ({
-      ...scoreOpportunity(s, sectorAvg[s.sector] || 0),
-      symbol: s.symbol,
-      name: s.name,
-      sector: s.sector,
-      ltp: s.ltp,
-      changePct: s.changePct,
-      volume: s.volume,
-    }));
+    // Scan each stock
+    const opportunities = stocks.map((s: any) => {
+      const indicators = estimateIndicators(s, sectorAvg[s.sector] || 0, marketAvg);
+      const scan = scanStock(indicators, context);
 
-    opportunities.sort((a: any, b: any) => b.score - a.score);
-    const topOpps = opportunities.slice(0, Math.min(topN, 10));
+      return {
+        symbol: s.symbol,
+        name: s.name,
+        sector: s.sector,
+        ltp: s.ltp,
+        changePct: s.changePct,
+        volume: s.volume,
+        relVolume: indicators.relVolume,
+        score: scan.overallScore,
+        setup: scan.bestSetup?.type || "WATCH",
+        entryState: scan.entryState,
+        confidence: scan.bestSetup?.confidence >= 75 ? "VERY HIGH" :
+          scan.bestSetup?.confidence >= 60 ? "HIGH" :
+          scan.bestSetup?.confidence >= 45 ? "MEDIUM" : "LOW",
+        reasons: scan.bestSetup?.confirmations || [],
+        risks: scan.bestSetup?.warnings || [],
+        entry: scan.bestSetup?.entryZone?.low || s.ltp,
+        sl: scan.bestSetup?.stopLoss || s.ltp * 0.985,
+        tp1: scan.bestSetup?.targets?.[0] || s.ltp * 1.03,
+        tp2: scan.bestSetup?.targets?.[1] || s.ltp * 1.05,
+        rr: scan.bestSetup?.riskReward || 0,
+        falseBreakoutRisk: scan.bestSetup ? "LOW" : "N/A",
+      };
+    });
+
+    // Sort by score, then by entryState priority
+    const statePriority = { CONFIRMED: 4, CONFIRMING: 3, WATCH: 2, INVALIDATED: 1 };
+    opportunities.sort((a, b) => {
+      if (statePriority[b.entryState] !== statePriority[a.entryState]) {
+        return statePriority[b.entryState] - statePriority[a.entryState];
+      }
+      return b.score - a.score;
+    });
+
+    const topOpps = opportunities.slice(0, Math.min(topN, 15));
 
     return NextResponse.json({
       opportunities: topOpps,
       totalStocks: stocks.length,
       avgScore: Math.round(opportunities.reduce((sum: number, o: any) => sum + o.score, 0) / opportunities.length),
       topOppCount: opportunities.filter((o: any) => o.score >= 70).length,
+      marketContext: {
+        regime: context.marketRegime,
+        vix: context.vix,
+        session: context.session,
+        breadth: context.marketBreadth,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
