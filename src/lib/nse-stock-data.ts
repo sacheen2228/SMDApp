@@ -95,7 +95,7 @@ interface MCResponse {
 async function fetchOneStockMC(mcId: string, fallbackSymbol: string): Promise<NSEStockQuote | null> {
   try {
     const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/${mcId}`, {
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(12000),
     });
     if (!res.ok) return null;
     const json = await res.json();
@@ -153,7 +153,7 @@ async function batchFetch<T>(items: T[], fn: (item: T) => Promise<NSEStockQuote 
     for (const r of batchResults) {
       if (r.status === "fulfilled" && r.value) results.push(r.value);
     }
-    if (i + concurrency < items.length) await new Promise(r => setTimeout(r, 200));
+    if (i + concurrency < items.length) await new Promise(r => setTimeout(r, 300));
   }
   return results;
 }
@@ -162,12 +162,12 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
   if (cache && Date.now() - cache.ts < CACHE_TTL) return cache.data;
 
   try {
-    // Fetch all stocks from Moneycontrol in parallel batches of 10
+    // Fetch all stocks from Moneycontrol in batches of 5 (Render free tier limits concurrent connections)
     const mcEntries = Object.entries(MC_ID_MAP).filter(([, id]) => id);
     const mcStocks = await batchFetch(
       mcEntries,
       ([symbol, mcId]) => fetchOneStockMC(mcId, symbol),
-      10,
+      5,
     );
 
     // Fetch fallback stocks from Yahoo Finance
