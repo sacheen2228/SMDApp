@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
+import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 
 const PYTHON_DIR = join(process.cwd(), "python-screener");
 const WRAPPER = join(PYTHON_DIR, "wrapper.py");
@@ -31,17 +32,13 @@ export async function GET(req: NextRequest) {
   const symbol = searchParams.get("symbol") || "NIFTY";
   const direction = searchParams.get("direction") || "CE";
 
-  const origin = new URL(req.url).origin;
-  const chainRes = await fetch(
-    `${origin}/api/option-chain?symbol=${symbol}`,
-    { signal: AbortSignal.timeout(10000) }
-  ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
+  const chainResult = await fetchLiveOptionChain(symbol).catch(() => ({ success: false as const, source: 'none' as const, error: 'fetch failed' }));
 
   const result = await runPython({
     action,
     symbol,
     direction,
-    chain_data: chainRes,
+    chain_data: chainResult,
   });
   return NextResponse.json(result);
 }
@@ -50,12 +47,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const symbol = body.symbol || "NIFTY";
-    const origin = new URL(req.url).origin;
-    const chainRes = await fetch(
-      `${origin}/api/option-chain?symbol=${symbol}`,
-      { signal: AbortSignal.timeout(10000) }
-    ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
-    const result = await runPython({ ...body, chain_data: chainRes });
+    const chainResult = await fetchLiveOptionChain(symbol).catch(() => ({ success: false as const, source: 'none' as const, error: 'fetch failed' }));
+    const result = await runPython({ ...body, chain_data: chainResult });
     return NextResponse.json(result);
   } catch (e: any) {
     return NextResponse.json({ success: false, error: e.message }, { status: 500 });

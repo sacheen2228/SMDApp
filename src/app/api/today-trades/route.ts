@@ -1,13 +1,12 @@
 // app/api/today-trades/route.ts
 //
-// "Today's Trade — Top 5" derivatives scan. Scores every near-ATM strike on
-// both CE and PE sides using the Institutional Derivatives Engine, ranks them,
-// and returns the top 5 candidates with entry, R:R and star rating.
-// NIFTY / SENSEX only. Pure derivatives data (no SMC / TA indicators).
+// "Today's Trade — Top 5" derivatives scan. Uses the shared option chain
+// fetcher (no HTTP self-fetch). NIFTY / SENSEX only.
 
 import { NextRequest, NextResponse } from "next/server";
 import { rankStrikes, type ChainContext, type StrikeLeg } from "@/lib/institutional-derivatives-engine";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
+import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 
@@ -16,29 +15,31 @@ export async function GET(req: NextRequest) {
   if (!IDE_SYMBOLS.has(symbol)) {
     return NextResponse.json({ error: "Top-5 scan supports NIFTY and SENSEX only" }, { status: 400 });
   }
-  const origin = new URL(req.url).origin;
+
   try {
-    const [chainRes, fiiRes] = await Promise.all([
-      fetch(`${origin}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
-      fetch(`${origin}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
+    const [chainResult, fiiRes] = await Promise.all([
+      fetchLiveOptionChain(symbol, undefined, req.signal),
+      fetch(`${new URL(req.url).origin}/api/fii-dii`, { cache: "no-store", signal: AbortSignal.timeout(5000) }).catch(() => null),
     ]);
-    if (!chainRes.ok) return NextResponse.json({ error: "option-chain unavailable", status: chainRes.status }, { status: 502 });
-    const json = await chainRes.json();
-    const d = json?.data;
-    if (!d || !d.data?.length) return NextResponse.json({ error: "no chain data" }, { status: 502 });
 
-    const spot = d.spotPrice || d.summary?.spotPrice || 0;
-    const atmStrike = d.summary?.atmStrike || d.analysis?.atmStrike || 0;
-    const pcr = d.summary?.pcr ?? d.analysis?.pcr ?? 1;
-    const iv = d.summary?.indiaVIX ?? d.analysis?.greeks?.vix ?? 15;
+    if (!chainResult.success || !chainResult.data) {
+      return NextResponse.json({ error: chainResult.error || "option-chain unavailable" }, { status: 502 });
+    }
+    const d = chainResult.data;
+    if (!d.data.length) return NextResponse.json({ error: "no chain data" }, { status: 502 });
 
-    const rows = (d.data || []).map((row: any) => ({
+    const spot = d.summary.spotPrice;
+    const atmStrike = d.summary.atmStrike;
+    const pcr = d.summary.pcr;
+    const iv = d.summary.indiaVIX ?? 15;
+
+    const rows = d.data.map((row: any) => ({
       strike: row.strike,
       ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0, vega: row.ce.vega || 0, theta: row.ce.theta || 0, bid: row.ce.bid || 0, ask: row.ce.ask || 0 } : null,
       pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, gamma: row.pe.gamma || 0, vega: row.pe.vega || 0, theta: row.pe.theta || 0, bid: row.pe.bid || 0, ask: row.pe.ask || 0 } : null,
     }));
 
-    // ATM expected move (for SL/TP scaling).
+    // ATM
     let atm = rows[0];
     let best = Infinity;
     for (const s of rows) { const dd = Math.abs(s.strike - spot); if (dd < best) { best = dd; atm = s; } }
@@ -52,8 +53,7 @@ export async function GET(req: NextRequest) {
       if (s.pe?.oi) highestPutOI = Math.max(highestPutOI, s.pe.oi);
       totalVolume += (s.ce?.volume ?? 0) + (s.pe?.volume ?? 0);
     }
-    // Boost the ATM expected move by gamma (matches engine factor).
-    const expectedMove = round2(atmEM * (atmGamma > 0.03 ? 1.05 : 1));
+    const expectedMove = Math.round(atmEM * (atmGamma > 0.03 ? 1.05 : 1) * 100) / 100;
 
     let fiiLong = 50, fiiShort = 50, diiBuy = 50, diiSell = 50;
     if (fiiRes && fiiRes.ok) {
@@ -70,8 +70,6 @@ export async function GET(req: NextRequest) {
       fiiLong, fiiShort, diiBuy, diiSell, expectedMove,
     };
 
-    // Rank EVERY near-ATM strike on both sides via the full strike model,
-    // then return only the single best (or top-2 if statistically tied).
     const scanThreshold = spot * 0.03;
     const strikes: { strike: number; type: "CE" | "PE"; leg: StrikeLeg }[] = [];
     for (const s of rows) {
@@ -80,19 +78,14 @@ export async function GET(req: NextRequest) {
       if (s.pe && s.pe.ltp > 0) strikes.push({ strike: s.strike, type: "PE", leg: s.pe });
     }
 
-    const daysToExpiry = parseExpiryDays(d?.selectedExpiry || d?.expiries?.[0]?.date);
+    const daysToExpiry = parseExpiryDays(d.selectedExpiry || d.expiries?.[0]?.date);
     const ranked = rankStrikes(strikes, ctx, { daysToExpiry });
 
-    // Return top 5 candidates (filter confidence >= 50 for quality)
     const top = ranked
       .filter((c) => c.probability >= 50)
       .slice(0, 5)
       .map((c, i) => ({ rank: i + 1, ...c }));
 
-    // ── Paper-record the ranked candidates into the Trade Audit sidecar so the
-    // IDE signals get backtest-verified (MFE/MAE, win rate, R-multiple). Each
-    // poll feeds the live premium as a tracking tick (idempotent per day).
-    // Only candidates that clear the engine's confidence floor are recorded.
     const shouldRecord = req.nextUrl.searchParams.get("record") === "true";
     if (shouldRecord) {
       try {
@@ -100,34 +93,18 @@ export async function GET(req: NextRequest) {
           .filter((c) => c.probability >= 55)
           .slice(0, 3)
           .map((c) => ({
-            strike: c.strike,
-            type: c.type,
-            entry: c.entry,
-            sl: c.stopLoss,
-            tp1: c.tp1,
-            tp2: c.tp2,
-            tp3: c.tp3,
-            rr: c.rr,
-            conf: c.probability,
-            reason: `IDE Top — prob ${c.probability}, R:R ${c.rr}`,
-            price: c.entry,
+            strike: c.strike, type: c.type, entry: c.entry, sl: c.stopLoss,
+            tp1: c.tp1, tp2: c.tp2, tp3: c.tp3, rr: c.rr, conf: c.probability,
+            reason: `IDE Top — prob ${c.probability}, R:R ${c.rr}`, price: c.entry,
           }));
-        if (toRecord.length) {
-          await recordOptionSignals("IDE_TOP", symbol, toRecord);
-        }
-      } catch {
-        /* audit recording is best-effort */
-      }
+        if (toRecord.length) await recordOptionSignals("IDE_TOP", symbol, toRecord);
+      } catch { /* best-effort */ }
     }
 
     return NextResponse.json({ success: true, symbol, expectedMove, top });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "today-trades failed" }, { status: 500 });
   }
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
 
 function parseExpiryDays(label: any): number | undefined {

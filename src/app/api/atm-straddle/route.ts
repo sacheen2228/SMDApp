@@ -1,9 +1,8 @@
 // app/api/atm-straddle/route.ts
 //
-// ATM Straddle Range Engine endpoint. Reuses the live option chain already
-// served by /api/option-chain, resolves the ATM strike + CE/PE premiums, and
-// returns the projected intraday Support/Resistance range plus a confidence
-// score and breakout confirmation. Polled by the dashboard on every refresh.
+// ATM Straddle Range Engine endpoint. Uses the shared option chain fetcher
+// (no HTTP self-fetch), resolves the ATM strike + CE/PE premiums, and
+// returns the projected intraday Support/Resistance range.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -13,31 +12,27 @@ import {
   evaluateContainment,
   type StraddleChainInput,
 } from "@/lib/atm-straddle-range";
-
-const BASE = process.env.INTERNAL_API_BASE || "";
+import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get("symbol") || "NIFTY").toUpperCase();
-  const origin = new URL(req.url).origin;
   try {
-    const res = await fetch(`${origin}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, {
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
+    const result = await fetchLiveOptionChain(symbol, undefined, req.signal);
+    if (!result.success || !result.data) {
+      return NextResponse.json({ success: false, error: result.error || "option-chain unavailable" }, { status: 502 });
     }
-    const json = await res.json();
-    const d = json?.data;
-    if (!d || !d.data?.length) {
+
+    const d = result.data;
+    if (!d.data.length) {
       return NextResponse.json({ success: false, error: "no chain data" }, { status: 502 });
     }
 
-    const spot = d.spotPrice || d.summary?.spotPrice || 0;
-    const atmStrike = d.summary?.atmStrike || d.analysis?.atmStrike || 0;
-    const pcr = d.summary?.pcr ?? d.analysis?.pcr ?? 1;
-    const maxPain = d.summary?.maxPain ?? d.analysis?.maxPain ?? 0;
-    const iv = d.summary?.indiaVIX ?? d.analysis?.greeks?.vix ?? 15;
-    const chain = (d.data || []).map((row: any) => ({
+    const spot = d.summary.spotPrice;
+    const atmStrike = d.summary.atmStrike;
+    const pcr = d.summary.pcr;
+    const maxPain = d.summary.maxPain;
+    const iv = d.summary.indiaVIX ?? 15;
+    const chain = d.data.map((row: any) => ({
       strike: row.strike,
       ce: row.ce
         ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0, vega: row.ce.vega || 0, theta: row.ce.theta || 0 }
@@ -48,15 +43,13 @@ export async function GET(req: NextRequest) {
     }));
 
     const atm = resolveATM(spot, chain);
-    const atmCE = atm?.ce ?? 0;
-    const atmPE = atm?.pe ?? 0;
 
     const input: StraddleChainInput = {
       symbol,
       spot,
       atmStrike: atm?.strike ?? atmStrike,
-      atmCE,
-      atmPE,
+      atmCE: atm?.ce ?? 0,
+      atmPE: atm?.pe ?? 0,
       chain,
       pcr,
       maxPain,
@@ -67,7 +60,6 @@ export async function GET(req: NextRequest) {
     const range = computeATMStraddleRange(input);
     recordRangeSnapshot(range);
 
-    // Optional end-of-day containment evaluation (?close=price)
     const closeParam = req.nextUrl.searchParams.get("close");
     const containment = closeParam ? evaluateContainment(symbol, Number(closeParam)) : undefined;
 

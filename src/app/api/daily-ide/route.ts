@@ -1,16 +1,14 @@
 // app/api/daily-ide/route.ts
 //
-// Daily Trade Recommendation Engine (derivatives-driven). Builds the live
-// DerivativeInput from the option chain + FII/DII, runs the IDE decision engine,
-// and returns a single daily recommendation (BUY_CALL / BUY_PUT / NO_TRADE)
-// with full trade plan. NIFTY / SENSEX only. When a trade is signaled it is
-// recorded into the Trade Audit sidecar (same workflow as the other scanners).
+// Daily Trade Recommendation Engine (derivatives-driven). Uses the shared
+// option chain fetcher (no HTTP self-fetch). NIFTY / SENSEX only.
 
 import { NextRequest, NextResponse } from "next/server";
 import { buildDailyDerivativesRecommendation } from "@/lib/daily-derivatives-recommendation";
 import { recordSignal, updatePrice } from "@/lib/trade-audit-client";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 import { type StrikeLeg, type ChainContext, type DerivativeInput } from "@/lib/institutional-derivatives-engine";
+import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 const STRATEGY = "IDE_DAILY";
@@ -21,23 +19,25 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, error: "Daily IDE supports NIFTY and SENSEX only" }, { status: 400 });
   }
   const shouldRecord = req.nextUrl.searchParams.get("record") === "true";
-  const origin = new URL(req.url).origin;
-  try {
-    const [chainRes, fiiRes, instRes] = await Promise.all([
-      fetch(`${origin}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" }),
-      fetch(`${origin}/api/fii-dii`, { cache: "no-store" }).catch(() => null),
-      fetch(`${origin}/api/institutional-positioning`, { cache: "no-store" }).catch(() => null),
-    ]);
-    if (!chainRes.ok) return NextResponse.json({ success: false, error: "option-chain unavailable" }, { status: 502 });
-    const json = await chainRes.json();
-    const d = json?.data;
-    if (!d || !d.data?.length) return NextResponse.json({ success: false, error: "no chain data" }, { status: 502 });
 
-    const spot = d.spotPrice || d.summary?.spotPrice || 0;
-    const atmStrike = d.summary?.atmStrike || d.analysis?.atmStrike || 0;
-    const pcr = d.summary?.pcr ?? d.analysis?.pcr ?? 1;
-    const iv = d.summary?.indiaVIX ?? d.analysis?.greeks?.vix ?? 15;
-    const chain = (d.data || []).map((row: any) => ({
+  try {
+    const [chainResult, fiiRes, instRes] = await Promise.all([
+      fetchLiveOptionChain(symbol, undefined, req.signal),
+      fetch(`${new URL(req.url).origin}/api/fii-dii`, { cache: "no-store", signal: AbortSignal.timeout(5000) }).catch(() => null),
+      fetch(`${new URL(req.url).origin}/api/institutional-positioning`, { cache: "no-store", signal: AbortSignal.timeout(5000) }).catch(() => null),
+    ]);
+
+    if (!chainResult.success || !chainResult.data) {
+      return NextResponse.json({ success: false, error: chainResult.error || "option-chain unavailable" }, { status: 502 });
+    }
+    const d = chainResult.data;
+    if (!d.data.length) return NextResponse.json({ success: false, error: "no chain data" }, { status: 502 });
+
+    const spot = d.summary.spotPrice;
+    const atmStrike = d.summary.atmStrike;
+    const pcr = d.summary.pcr;
+    const iv = d.summary.indiaVIX ?? 15;
+    const chain = d.data.map((row: any) => ({
       strike: row.strike,
       ce: row.ce ? { ltp: row.ce.ltp || 0, oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0, iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0, vega: row.ce.vega || 0, theta: row.ce.theta || 0, bid: row.ce.bid || 0, ask: row.ce.ask || 0 } : null,
       pe: row.pe ? { ltp: row.pe.ltp || 0, oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0, iv: row.pe.iv || 0, delta: row.pe.delta || 0, gamma: row.pe.gamma || 0, vega: row.pe.vega || 0, theta: row.pe.theta || 0, bid: row.pe.bid || 0, ask: row.pe.ask || 0 } : null,
@@ -45,10 +45,7 @@ export async function GET(req: NextRequest) {
 
     let atm = chain[0];
     let best = Infinity;
-    for (const s of chain) {
-      const dd = Math.abs(s.strike - spot);
-      if (dd < best) { best = dd; atm = s; }
-    }
+    for (const s of chain) { const dd = Math.abs(s.strike - spot); if (dd < best) { best = dd; atm = s; } }
     const atmCE = atm.ce?.ltp ?? 0;
     const atmPE = atm.pe?.ltp ?? 0;
     const atmDelta = ((atm.ce?.delta ?? 0) + (atm.pe?.delta ?? 0)) / 2;
@@ -65,30 +62,21 @@ export async function GET(req: NextRequest) {
       totalPutVol += s.pe?.volume ?? 0;
     }
     const totalVol = totalCallVol + totalPutVol || 1;
-    const atmVol = atmCallVol + atmPutVol;
-    const volumeRatio = atmVol / (totalVol / Math.max(1, chain.length));
+    const volumeRatio = (atmCallVol + atmPutVol) / (totalVol / Math.max(1, chain.length));
 
     const ceOiChg = atm.ce?.oiChg ?? 0;
     const peOiChg = atm.pe?.oiChg ?? 0;
-    const callWriting = ceOiChg < 0;
-    const putWriting = peOiChg < 0;
-    const callUnwind = ceOiChg > 0;
-    const putUnwind = peOiChg > 0;
 
     let fiiLong = 50, fiiShort = 50, diiBuy = 50, diiSell = 50;
     if (fiiRes && fiiRes.ok) {
       const f = await fiiRes.json();
-      const fiiNet = typeof f.fiiNet === "number" ? f.fiiNet : 0;
-      const diiNet = typeof f.diiNet === "number" ? f.diiNet : 0;
-      const fiiClamp = Math.max(-2000, Math.min(2000, fiiNet));
-      fiiLong = Math.round(50 + (fiiClamp / 2000) * 50);
-      fiiShort = 100 - fiiLong;
-      const diiClamp = Math.max(-2000, Math.min(2000, diiNet));
-      diiBuy = Math.round(50 + (diiClamp / 2000) * 50);
-      diiSell = 100 - diiBuy;
+      const fiiClamp = Math.max(-2000, Math.min(2000, typeof f.fiiNet === "number" ? f.fiiNet : 0));
+      fiiLong = Math.round(50 + (fiiClamp / 2000) * 50); fiiShort = 100 - fiiLong;
+      const diiClamp = Math.max(-2000, Math.min(2000, typeof f.diiNet === "number" ? f.diiNet : 0));
+      diiBuy = Math.round(50 + (diiClamp / 2000) * 50); diiSell = 100 - diiBuy;
     }
 
-    // ── NSE Participant-wise OI (institutional positioning) ──
+    // Institutional positioning
     let institutional: DerivativeInput['institutional'] = undefined;
     if (instRes && instRes.ok) {
       try {
@@ -122,7 +110,6 @@ export async function GET(req: NextRequest) {
       } catch { /* best-effort */ }
     }
 
-    // ── Build the full near-ATM strike set for the ranking model ──
     const expectedMove = (atmCE + atmPE) * (iv > 22 ? 1.2 : iv > 18 ? 1.1 : 1) * (atmGamma > 0.03 ? 1.05 : 1);
     const ctx: ChainContext = {
       spot, atmStrike: atm.strike || atmStrike, pcr, iv,
@@ -146,36 +133,18 @@ export async function GET(req: NextRequest) {
       if (s.ce && s.ce.ltp > 0) strikes.push({ strike: s.strike, type: "CE", leg: s.ce });
       if (s.pe && s.pe.ltp > 0) strikes.push({ strike: s.strike, type: "PE", leg: s.pe });
     }
-    const daysToExpiry = parseExpiryDays(d?.selectedExpiry || d?.expiries?.[0]?.date);
+    const daysToExpiry = parseExpiryDays(d.selectedExpiry || d.expiries?.[0]?.date);
 
     const rec = buildDailyDerivativesRecommendation(symbol, {
-      spot,
-      atm: atm.strike || atmStrike,
-      ce: atmCE,
-      pe: atmPE,
-      pcr,
-      iv,
-      delta: atmDelta,
-      gamma: atmGamma,
-      vega: atmVega,
-      theta: atmTheta,
+      spot, atm: atm.strike || atmStrike, ce: atmCE, pe: atmPE,
+      pcr, iv, delta: atmDelta, gamma: atmGamma, vega: atmVega, theta: atmTheta,
       volumeRatio,
-      callWriting,
-      putWriting,
-      callUnwind,
-      putUnwind,
-      fiiLong,
-      fiiShort,
-      diiBuy,
-      diiSell,
-      highestCallOI,
-      highestPutOI,
-      institutional,
+      callWriting: ceOiChg < 0, putWriting: peOiChg < 0,
+      callUnwind: ceOiChg > 0, putUnwind: peOiChg > 0,
+      fiiLong, fiiShort, diiBuy, diiSell,
+      highestCallOI, highestPutOI, institutional,
     }, { strikes, ctx, daysToExpiry });
 
-    // Persist confirmed trades into the audit sidecar (same workflow as scanners).
-    // Each poll also feeds the live premium as a tracking tick so the engine
-    // computes MFE/MAE and auto-closes on SL/TP (real backtest verification).
     if (shouldRecord && rec.action !== "NO_TRADE" && rec.strike != null && rec.entry != null) {
       try {
         const trend = rec.action === "BUY_CALL" ? "BULLISH" : "BEARISH";
@@ -183,34 +152,17 @@ export async function GET(req: NextRequest) {
           .format(new Date()).replace(/-/g, "");
         const tradeId = `${STRATEGY}-${symbol}-${rec.strike}-${rec.type}-${ymd}`;
         await recordSignal({
-          tradeId,
-          strategyId: STRATEGY,
-          strategyVersion: "1.0",
-          symbol,
-          exchange: "NSE",
-          instrumentType: "OPTIONS",
-          spotPrice: spot,
-          strikePrice: rec.strike,
-          optionType: rec.type,
-          entryPrice: rec.entry,
-          stopLoss: rec.stopLoss ?? 0,
-          tp1: rec.tp1 ?? 0,
-          tp2: rec.tp2 ?? null,
-          tp3: rec.tp3 ?? null,
-          signalConfidence: rec.confidence,
-          aiConfidence: rec.confidence,
+          tradeId, strategyId: STRATEGY, strategyVersion: "1.0", symbol, exchange: "NSE",
+          instrumentType: "OPTIONS", spotPrice: spot, strikePrice: rec.strike,
+          optionType: rec.type, entryPrice: rec.entry,
+          stopLoss: rec.stopLoss ?? 0, tp1: rec.tp1 ?? 0, tp2: rec.tp2 ?? null, tp3: rec.tp3 ?? null,
+          signalConfidence: rec.confidence, aiConfidence: rec.confidence,
           probabilityScore: rec.action === "BUY_CALL" ? rec.callProbability : rec.putProbability,
-          trendDirection: trend,
-          marketSession: istSession(),
+          trendDirection: trend, marketSession: istSession(),
           signalReason: rec.reasoning.join(" | "),
         });
-        // Feed the live ATM premium as a tracking tick (real backtest).
-        if (rec.entry && rec.entry > 0) {
-          await updatePrice(tradeId, rec.entry).catch(() => {});
-        }
-      } catch {
-        /* audit recording is best-effort */
-      }
+        if (rec.entry && rec.entry > 0) await updatePrice(tradeId, rec.entry).catch(() => {});
+      } catch { /* best-effort */ }
     }
 
     return NextResponse.json({ success: true, symbol, strategy: STRATEGY, recommendation: rec });
