@@ -35,7 +35,7 @@ const NIFTY50_NAMES: Record<string, string> = {
 let lastReq = 0;
 async function rlFetch(url: string) {
   const wait = Math.max(0, 2000 - (Date.now() - lastReq));
-  if (wait > 0) await Promise(r => setTimeout(r, wait));
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
   lastReq = Date.now();
   return fetch(url, { signal: AbortSignal.timeout(10000) });
 }
