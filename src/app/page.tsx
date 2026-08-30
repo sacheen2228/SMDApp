@@ -55,6 +55,9 @@ import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
 import { SectorRotation } from '@/components/dashboard/SectorRotation';
 import { MarketHeatmap } from '@/components/dashboard/MarketHeatmap';
 import { BestTradesNow } from '@/components/dashboard/BestTradesNow';
+import { AlertCenter } from '@/components/dashboard/AlertCenter';
+import { CASPanel } from '@/components/dashboard/CASPanel';
+import { StockAnalysisDrawer } from '@/components/dashboard/StockAnalysisDrawer';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -324,6 +327,7 @@ export default function TradingDashboard() {
   const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
+  const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. (The raw API returns analysis.recommendation + analysis.pcr /
   // vix / maxPain; we map it onto the SDMRecommendation shape SimpleMode reads.)
@@ -1023,11 +1027,11 @@ return (
             <MarketRegimePanel />
             <MarketBreadth />
             <SectorRotation />
+            <CASPanel />
+            <AlertCenter />
+            <BestTradesNow />
             <div className="md:col-span-2 lg:col-span-3">
-              <MarketHeatmap />
-            </div>
-            <div className="md:col-span-2 lg:col-span-3">
-              <BestTradesNow />
+              <MarketHeatmap onStockClick={setSelectedAnalysisStock} />
             </div>
           </div>
         </div>
@@ -1058,6 +1062,9 @@ return (
       
       {/* ─── Order Panel (Modal) ─── */}
        <OrderPanel />
+
+      {/* ─── Stock Analysis Drawer ─── */}
+       <StockAnalysisDrawer symbol={selectedAnalysisStock} onClose={() => setSelectedAnalysisStock(null)} />
        
 {/* ─── Mobile Navigation ─── */}
         <MobileNav viewMode={viewMode} onViewChange={setViewMode} />

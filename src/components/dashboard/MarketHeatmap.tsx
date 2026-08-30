@@ -52,9 +52,14 @@ function HeatmapCell({ stock, size, onClick }: HeatmapCellProps) {
   );
 }
 
-export function MarketHeatmap() {
+export function MarketHeatmap({ onStockClick }: { onStockClick?: (symbol: string) => void }) {
   const [selected, setSelected] = useState<any>(null);
   const [view, setView] = useState<"bySector" | "flat">("bySector");
+
+  const handleStockClick = (stock: any) => {
+    setSelected(stock);
+    onStockClick?.(stock.symbol);
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ["market-heatmap"],
@@ -112,7 +117,7 @@ export function MarketHeatmap() {
                 </div>
                 <div className="flex flex-wrap gap-0.5">
                   {sector.stocks.map((stock: any) => (
-                    <HeatmapCell key={stock.symbol} stock={stock} size="sm" onClick={setSelected} />
+                    <HeatmapCell key={stock.symbol} stock={stock} size="sm" onClick={handleStockClick} />
                   ))}
                 </div>
               </div>
@@ -121,7 +126,7 @@ export function MarketHeatmap() {
         ) : (
           <div className="flex flex-wrap gap-0.5">
             {data.stocks?.map((stock: any) => (
-              <HeatmapCell key={stock.symbol} stock={stock} size="md" onClick={setSelected} />
+              <HeatmapCell key={stock.symbol} stock={stock} size="md" onClick={handleStockClick} />
             ))}
           </div>
         )}
