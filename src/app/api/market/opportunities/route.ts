@@ -34,44 +34,36 @@ const NIFTY50_NAMES: Record<string, string> = {
   PIDILITIND: "Pidilite",
 };
 
-let lastReq = 0;
-async function rlFetch(url: string) {
-  const wait = Math.max(0, 2000 - (Date.now() - lastReq));
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastReq = Date.now();
-  return fetch(url, { signal: AbortSignal.timeout(10000) });
+async function fetchStock(sym: string) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=1d&interval=1d`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta?.regularMarketPrice) return null;
+    const prev = meta.chartPreviousClose || meta.regularMarketPrice;
+    const ltp = meta.regularMarketPrice;
+    return {
+      symbol: sym,
+      name: NIFTY50_NAMES[sym] || sym,
+      sector: STOCK_SECTOR_MAP[sym] || "Other",
+      ltp,
+      change: parseFloat((ltp - prev).toFixed(2)),
+      changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
+      volume: meta.regularMarketVolume || 0,
+      prevClose: prev,
+      dayHigh: meta.regularMarketDayHigh || ltp,
+      dayLow: meta.regularMarketDayLow || ltp,
+    };
+  } catch { return null; }
 }
 
-interface StockData {
-  symbol: string;
-  name: string;
-  sector: string;
-  ltp: number;
-  change: number;
-  changePct: number;
-  volume: number;
-  prevClose: number;
-  dayHigh: number;
-  dayLow: number;
-}
-
-function scoreOpportunity(stock: StockData, sectorAvgChange: number): {
-  score: number;
-  setup: string;
-  reasons: string[];
-  risks: string[];
-  confidence: string;
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
-  rr: number;
-} {
-  let score = 50; // base
+function scoreOpportunity(stock: any, sectorAvgChange: number) {
+  let score = 50;
   const reasons: string[] = [];
   const risks: string[] = [];
 
-  // Price momentum (0-20)
   if (stock.changePct > 3) { score += 20; reasons.push("Strong momentum"); }
   else if (stock.changePct > 1.5) { score += 15; reasons.push("Good momentum"); }
   else if (stock.changePct > 0.5) { score += 10; reasons.push("Positive momentum"); }
@@ -79,17 +71,14 @@ function scoreOpportunity(stock: StockData, sectorAvgChange: number): {
   else if (stock.changePct > -1) { score -= 5; }
   else { score -= 15; risks.push("Negative momentum"); }
 
-  // Sector alignment (0-15)
   const sectorOutperform = stock.changePct - sectorAvgChange;
   if (sectorOutperform > 1) { score += 15; reasons.push("Sector outperformer"); }
   else if (sectorOutperform > 0) { score += 10; reasons.push("Above sector average"); }
   else if (sectorOutperform < -1) { score -= 10; risks.push("Sector underperformer"); }
 
-  // Volume (0-10) — high volume confirms move
   if (stock.volume > 5000000) { score += 10; reasons.push("High volume"); }
   else if (stock.volume > 2000000) { score += 5; }
 
-  // Range position (0-10)
   const range = stock.dayHigh - stock.dayLow;
   if (range > 0) {
     const pos = (stock.ltp - stock.dayLow) / range;
@@ -98,28 +87,19 @@ function scoreOpportunity(stock: StockData, sectorAvgChange: number): {
     else if (pos < 0.2) { risks.push("Near day low"); score -= 5; }
   }
 
-  // Setup detection
   let setup: string;
-  if (stock.changePct > 2 && stock.volume > 3000000) {
-    setup = "MOMENTUM";
-  } else if (stock.changePct > 0.5 && sectorOutperform > 0.5) {
-    setup = "SECTOR LEADER";
-  } else if (stock.changePct > 0 && stock.changePct < 1) {
-    setup = "PULLBACK";
-  } else if (stock.changePct < -1 && sectorOutperform > 0) {
-    setup = "RELATIVE STRENGTH";
-  } else {
-    setup = "WATCH";
-  }
+  if (stock.changePct > 2 && stock.volume > 3000000) setup = "MOMENTUM";
+  else if (stock.changePct > 0.5 && sectorOutperform > 0.5) setup = "SECTOR LEADER";
+  else if (stock.changePct > 0 && stock.changePct < 1) setup = "PULLBACK";
+  else if (stock.changePct < -1 && sectorOutperform > 0) setup = "RELATIVE STRENGTH";
+  else setup = "WATCH";
 
-  // Confidence
   let confidence: string;
   if (score >= 80) confidence = "VERY HIGH";
   else if (score >= 65) confidence = "HIGH";
   else if (score >= 50) confidence = "MEDIUM";
   else confidence = "LOW";
 
-  // Entry/SL/TP calculation
   const atr = range > 0 ? range : stock.ltp * 0.015;
   const entry = stock.ltp;
   const sl = stock.changePct > 0 ? entry - atr * 1.5 : entry - atr * 2;
@@ -131,10 +111,7 @@ function scoreOpportunity(stock: StockData, sectorAvgChange: number): {
 
   return {
     score: Math.min(100, Math.max(0, score)),
-    setup,
-    reasons,
-    risks,
-    confidence,
+    setup, reasons, risks, confidence,
     entry: parseFloat(entry.toFixed(2)),
     sl: parseFloat(sl.toFixed(2)),
     tp1: parseFloat(tp1.toFixed(2)),
@@ -155,43 +132,18 @@ export async function GET(request: Request) {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch all stocks
-    const stocks: StockData[] = [];
-    for (let i = 0; i < NIFTY50.length; i += 5) {
-      const batch = NIFTY50.slice(i, i + 5);
-      const results = await Promise.all(batch.map(async (sym) => {
-        try {
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=1d&interval=1d`;
-          const res = await rlFetch(url);
-          if (!res.ok) return null;
-          const data = await res.json();
-          const meta = data?.chart?.result?.[0]?.meta;
-          if (!meta?.regularMarketPrice) return null;
-          const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-          const ltp = meta.regularMarketPrice;
-          return {
-            symbol: sym,
-            name: NIFTY50_NAMES[sym] || sym,
-            sector: STOCK_SECTOR_MAP[sym] || "Other",
-            ltp,
-            change: parseFloat((ltp - prev).toFixed(2)),
-            changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
-            volume: meta.regularMarketVolume || 0,
-            prevClose: prev,
-            dayHigh: meta.regularMarketDayHigh || ltp,
-            dayLow: meta.regularMarketDayLow || ltp,
-          };
-        } catch { return null; }
-      }));
-      for (const r of results) if (r) stocks.push(r);
-    }
+    // Fetch ALL stocks in parallel
+    const results = await Promise.allSettled(NIFTY50.map(fetchStock));
+    const stocks = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
+      .map(r => r.value);
 
     if (stocks.length === 0) {
       return NextResponse.json({ error: "No data available" }, { status: 503 });
     }
 
     // Sector averages
-    const sectorMap: Record<string, StockData[]> = {};
+    const sectorMap: Record<string, any[]> = {};
     for (const s of stocks) {
       if (!sectorMap[s.sector]) sectorMap[s.sector] = [];
       sectorMap[s.sector].push(s);
@@ -201,7 +153,6 @@ export async function GET(request: Request) {
       sectorAvg[sec] = stks.reduce((sum, s) => sum + s.changePct, 0) / stks.length;
     }
 
-    // Score all stocks
     const opportunities = stocks.map(s => ({
       ...scoreOpportunity(s, sectorAvg[s.sector] || 0),
       symbol: s.symbol,
@@ -212,10 +163,7 @@ export async function GET(request: Request) {
       volume: s.volume,
     }));
 
-    // Sort by score
     opportunities.sort((a, b) => b.score - a.score);
-
-    // Filter to top opportunities only
     const topOpps = opportunities.slice(0, Math.min(topN, 10));
 
     const result = {

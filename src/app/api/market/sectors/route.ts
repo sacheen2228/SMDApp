@@ -3,7 +3,6 @@
 
 import { NextResponse } from "next/server";
 
-// Stock → Sector mapping (NIFTY 50)
 const STOCK_SECTOR: Record<string, string> = {
   RELIANCE: "Energy", TCS: "IT", HDFCBANK: "Banking", INFY: "IT",
   ICICIBANK: "Banking", HINDUNILVR: "FMCG", ITC: "FMCG", SBIN: "Banking",
@@ -32,15 +31,27 @@ const NIFTY50 = [
   "BAJAJFINSV","COALINDIA","BPCL","TRENT","APOLLOHOSP","LTIM","HDFCAMC","PIDILITIND",
 ];
 
-let lastReq = 0;
-async function rlFetch(url: string) {
-  const wait = Math.max(0, 2000 - (Date.now() - lastReq));
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastReq = Date.now();
-  return fetch(url, { signal: AbortSignal.timeout(10000) });
-}
-
 export const STOCK_SECTOR_MAP = STOCK_SECTOR;
+
+async function fetchStock(sym: string) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=1d&interval=1d`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta?.regularMarketPrice) return null;
+    const prev = meta.chartPreviousClose || meta.regularMarketPrice;
+    const ltp = meta.regularMarketPrice;
+    return {
+      symbol: sym,
+      sector: STOCK_SECTOR[sym] || "Other",
+      changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
+      ltp,
+      volume: meta.regularMarketVolume || 0,
+    };
+  } catch { return null; }
+}
 
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 120_000;
@@ -51,31 +62,11 @@ export async function GET() {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch individual stock data
-    const stocks: { symbol: string; sector: string; changePct: number; ltp: number; volume: number }[] = [];
-    for (let i = 0; i < NIFTY50.length; i += 5) {
-      const batch = NIFTY50.slice(i, i + 5);
-      const results = await Promise.all(batch.map(async (sym) => {
-        try {
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=1d&interval=1d`;
-          const res = await rlFetch(url);
-          if (!res.ok) return null;
-          const data = await res.json();
-          const meta = data?.chart?.result?.[0]?.meta;
-          if (!meta?.regularMarketPrice) return null;
-          const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-          const ltp = meta.regularMarketPrice;
-          return {
-            symbol: sym,
-            sector: STOCK_SECTOR[sym] || "Other",
-            changePct: parseFloat((((ltp - prev) / prev) * 100).toFixed(2)),
-            ltp,
-            volume: meta.regularMarketVolume || 0,
-          };
-        } catch { return null; }
-      }));
-      for (const r of results) if (r) stocks.push(r);
-    }
+    // Fetch ALL stocks in parallel
+    const results = await Promise.allSettled(NIFTY50.map(fetchStock));
+    const stocks = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
+      .map(r => r.value);
 
     if (stocks.length === 0) {
       return NextResponse.json({ error: "No data available" }, { status: 503 });
@@ -88,30 +79,21 @@ export async function GET() {
       sectorMap[s.sector].push(s);
     }
 
-    // Compute sector metrics
     const sectors = Object.entries(sectorMap).map(([name, stks]) => {
       const avgChangePct = parseFloat((stks.reduce((sum, s) => sum + s.changePct, 0) / stks.length).toFixed(2));
-      const totalVolume = stks.reduce((sum, s) => sum + s.volume, 0);
-      const advanceCount = stks.filter(s => s.changePct > 0).length;
-      const declineCount = stks.filter(s => s.changePct < 0).length;
-      const advanceRatio = stks.length > 0 ? advanceCount / stks.length : 0;
-
       return {
         key: name,
         name,
         changePct: avgChangePct,
-        totalVolume,
-        advanceCount,
-        declineCount,
-        advanceRatio: parseFloat((advanceRatio * 100).toFixed(0)),
+        totalVolume: stks.reduce((sum, s) => sum + s.volume, 0),
+        advanceCount: stks.filter(s => s.changePct > 0).length,
+        declineCount: stks.filter(s => s.changePct < 0).length,
         stocks: stks.map(s => ({ symbol: s.symbol, changePct: s.changePct, ltp: s.ltp })),
       };
     });
 
-    // Sort by performance
     sectors.sort((a, b) => b.changePct - a.changePct);
 
-    // Classify rotation
     const classified = sectors.map((s, i) => {
       const pct = (i / Math.max(1, sectors.length - 1)) * 100;
       let rotation: string;
@@ -120,7 +102,6 @@ export async function GET() {
       else if (pct < 60) rotation = "NEUTRAL";
       else if (pct < 80) rotation = "WEAKENING";
       else rotation = "LAGGING";
-
       return {
         ...s,
         rotation,
