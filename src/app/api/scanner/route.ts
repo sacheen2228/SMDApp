@@ -167,11 +167,36 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // If no real data available, return error
+    // Option chain is optional — scanner can work with Yahoo Finance stock
+    // data alone. When Breeze/NSE are unavailable (weekend/holiday), use
+    // defaults so the scanner still produces results.
+    let dataSource: string | null = null;
+    let liveError: string | null = null;
+
+    if (!chainData) {
+      // Use Yahoo Finance for spot price as context
+      try {
+        const { fetchYahooIndexData, fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
+        const [yahooData, vixData] = await Promise.all([
+          fetchYahooIndexData(symbol).catch(() => null),
+          fetchIndiaVIX().catch(() => null),
+        ]);
+        const spot = yahooData?.regularMarketPrice || 0;
+        if (spot > 0) {
+          chainData = {
+            spotPrice: spot,
+            data: [],
+            summary: { indiaVIX: vixData?.value ?? null },
+          };
+          liveError = "Option chain unavailable — scanning with Yahoo Finance stock data only.";
+        }
+      } catch {}
+    }
+
     if (!chainData) {
       return NextResponse.json({
         success: false,
-        error: "No real option chain data available for market context.",
+        error: "Market data unavailable — neither option chain nor Yahoo Finance could provide data.",
       }, { status: 503 });
     }
 
@@ -194,10 +219,7 @@ export async function GET(request: NextRequest) {
     const vix = summary.indiaVIX || 15;
 
     // Live stock data is fetched inside runIntradayScan (generateCandidates)
-    // via Yahoo Finance for the full NIFTY50 universe. There is no simulated
-    // fallback — if Yahoo returns nothing we surface a 503 below.
-    let dataSource: string | null = null;
-    let liveError: string | null = null;
+    // via Yahoo Finance for the full NIFTY50 universe.
 
     // Fetch news sentiment
     let marketNews = null;
@@ -291,12 +313,11 @@ export async function GET(request: NextRequest) {
       topBearish: marketNews.topBearish.slice(0, 3),
     } : null;
 
-    // No simulated fallback: if we got zero live quotes, fail loudly.
+    // If we got zero candidates, return success with empty results rather
+    // than a 503 — the UI handles empty state gracefully.
     if (!result.candidates || result.candidates.length === 0) {
-      return NextResponse.json({
-        success: false,
-        error: "Live market data unavailable — Yahoo Finance returned no real quotes.",
-      }, { status: 503 });
+      result.candidates = [];
+      result.dataQuality = "UNAVAILABLE";
     }
 
     dataSource = result.dataQuality === "LIVE" || result.dataQuality === "PARTIAL" ? "Yahoo Finance" : null;
