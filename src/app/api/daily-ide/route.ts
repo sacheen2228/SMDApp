@@ -12,7 +12,7 @@ import { recordSignal, updatePrice } from "@/lib/trade-audit-client";
 import { recordOptionSignals, istSession } from "@/lib/audit-recorders";
 import { type StrikeLeg, type ChainContext, type DerivativeInput } from "@/lib/institutional-derivatives-engine";
 
-const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
+const BASE = process.env.INTERNAL_API_BASE || "";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 const STRATEGY = "IDE_DAILY";
 

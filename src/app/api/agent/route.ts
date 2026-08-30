@@ -121,11 +121,11 @@ export async function POST(req: NextRequest) {
     let freshSpotPrice = spotPrice || 0;
 
     const [sdmResult, chainResult, giftResult, corrResult, scanResult] = await Promise.allSettled([
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/sdm-signal?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`/api/sdm-signal?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => d.success ? d.signal : null)
         .catch(() => null),
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/option-chain?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`/api/option-chain?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => {
           if (d.success && d.analysis) {
@@ -139,15 +139,15 @@ export async function POST(req: NextRequest) {
           return null;
         })
         .catch(() => null),
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/gift-nifty`, { signal: AbortSignal.timeout(8000) })
+      fetch(`/api/gift-nifty`, { signal: AbortSignal.timeout(8000) })
         .then(r => r.json())
         .then(d => d.success ? d.data : null)
         .catch(() => null),
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/correlation`, { signal: AbortSignal.timeout(10000) })
+      fetch(`/api/correlation`, { signal: AbortSignal.timeout(10000) })
         .then(r => r.json())
         .then(d => d.success ? d : null)
         .catch(() => null),
-      fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(30000) })
+      fetch(`/api/scanner?symbol=${detectedSymbol}`, { signal: AbortSignal.timeout(30000) })
         .then(r => r.json())
         .then(d => d.success ? d.data : null)
         .catch(() => null),

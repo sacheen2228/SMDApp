@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const symbol = (searchParams.get("symbol") || "NIFTY").toUpperCase();
 
-    const origin = request.headers.get("origin") || "http://localhost:3000";
+    const origin = new URL(request.url).origin;
     const chainRes = await fetch(`${origin}/api/option-chain?symbol=${symbol}`, {
       cache: "no-store",
     });

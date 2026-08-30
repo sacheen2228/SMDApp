@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
 
   // Fetch data FIRST (while Node.js is handling this request)
   const chainRes = await fetch(
-    `${process.env.SMDAPP_API_BASE || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`,
+    `${process.env.SMDAPP_API_BASE || ""}/api/option-chain?symbol=${symbol}`,
     { signal: AbortSignal.timeout(10000) }
   ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
 
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const symbol = body.symbol || "NIFTY";
     const chainRes = await fetch(
-      `${process.env.SMDAPP_API_BASE || "http://localhost:3000"}/api/option-chain?symbol=${symbol}`,
+    `${process.env.SMDAPP_API_BASE || ""}/api/option-chain?symbol=${symbol}`,
       { signal: AbortSignal.timeout(10000) }
     ).then(r => r.json()).catch(() => ({ success: false, error: "chain fetch failed" }));
     const result = await runPython({ ...body, chain_data: chainRes });

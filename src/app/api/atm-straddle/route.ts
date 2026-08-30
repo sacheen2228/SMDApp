@@ -14,7 +14,7 @@ import {
   type StraddleChainInput,
 } from "@/lib/atm-straddle-range";
 
-const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
+const BASE = process.env.INTERNAL_API_BASE || "";
 
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get("symbol") || "NIFTY").toUpperCase();

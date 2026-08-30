@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runInstitutionalDerivativesEngine, type DerivativeInput, type StrikeLeg, type ChainContext } from "@/lib/institutional-derivatives-engine";
 
-const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
+const BASE = process.env.INTERNAL_API_BASE || "";
 const IDE_SYMBOLS = new Set(["NIFTY", "SENSEX"]);
 
 export async function GET(req: NextRequest) {
