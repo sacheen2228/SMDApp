@@ -13,6 +13,7 @@ import {
   TechnicalIndicators,
   ScanContext,
 } from "@/lib/technical-analysis";
+import { runIntradayScan } from "@/lib/intraday-scanner";
 
 const REGIME_API = process.env.INTERNAL_API_BASE || "";
 
@@ -119,6 +120,24 @@ export async function GET(request: Request) {
       getMarketContext(),
     ]);
 
+    // Also run intraday scan for additional signal sources
+    let intradayCandidates: any[] = [];
+    try {
+      const intradayResult = await runIntradayScan(
+        { symbol: "NIFTY", spotPrice: 0, optionChain: null, vix: context.vix, pcr: 1, maxPain: 0, totalCallOI: 0, totalPutOI: 0 },
+        null
+      );
+      intradayCandidates = intradayResult.candidates || [];
+    } catch {
+      // Intraday scan is optional — don't fail the whole endpoint
+    }
+
+    // Build intraday lookup by symbol
+    const intradayBySymbol: Record<string, any> = {};
+    for (const c of intradayCandidates) {
+      intradayBySymbol[c.symbol] = c;
+    }
+
     if (stocks.length === 0) {
       return NextResponse.json({ success: true, opportunities: [], stockCount: 0 });
     }
@@ -139,6 +158,15 @@ export async function GET(request: Request) {
     const opportunities = stocks.map((s: any) => {
       const indicators = estimateIndicators(s, sectorAvg[s.sector] || 0, marketAvg);
       const scan = scanStock(indicators, context);
+      const intraday = intradayBySymbol[s.symbol];
+
+      // Merge intraday score if available (20% weight)
+      let mergedScore = scan.overallScore;
+      let source = "TECHNICAL_ANALYSIS";
+      if (intraday && intraday.totalScore > 0) {
+        mergedScore = Math.round(scan.overallScore * 0.8 + intraday.totalScore * 0.2);
+        source = "TECHNICAL_ANALYSIS+INTRADAY";
+      }
 
       return {
         symbol: s.symbol,
@@ -148,7 +176,7 @@ export async function GET(request: Request) {
         changePct: s.changePct,
         volume: s.volume,
         relVolume: indicators.relVolume,
-        score: scan.overallScore,
+        score: mergedScore,
         setup: scan.bestSetup?.type || "WATCH",
         entryState: scan.entryState,
         confidence: scan.bestSetup?.confidence >= 75 ? "VERY HIGH" :
@@ -162,6 +190,9 @@ export async function GET(request: Request) {
         tp2: scan.bestSetup?.targets?.[1] || s.ltp * 1.05,
         rr: scan.bestSetup?.riskReward || 0,
         falseBreakoutRisk: scan.bestSetup ? "LOW" : "N/A",
+        source,
+        intradayGrade: intraday?.grade || null,
+        intradayDirection: intraday?.direction || null,
       };
     });
 

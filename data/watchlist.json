@@ -1,0 +1,62 @@
+[
+  {
+    "symbol": "NIFTY",
+    "name": "NIFTY 50",
+    "sector": "Index",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "BANKNIFTY",
+    "name": "NIFTY Bank",
+    "sector": "Index",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "RELIANCE",
+    "name": "Reliance",
+    "sector": "Energy",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "HDFCBANK",
+    "name": "HDFC Bank",
+    "sector": "Banking",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "INFY",
+    "name": "Infosys",
+    "sector": "IT",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "TCS",
+    "name": "TCS",
+    "sector": "IT",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "ICICIBANK",
+    "name": "ICICI Bank",
+    "sector": "Banking",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "HDFC",
+    "name": "HDFC",
+    "sector": "Finance",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "SBIN",
+    "name": "SBI",
+    "sector": "Banking",
+    "addedAt": 1788286185939
+  },
+  {
+    "symbol": "BHARTIARTL",
+    "name": "Bharti Airtel",
+    "sector": "Telecom",
+    "addedAt": 1788286185939
+  }
+]
