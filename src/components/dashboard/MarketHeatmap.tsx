@@ -581,7 +581,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   type="number"
                   placeholder="Min"
                   value={priceRange[0]}
-                  onChange={e => setPriceRange([parseFloat(e.target.value) || 0, priceRange[1]])}
+                  onChange={e => setPriceRange(prev => [parseFloat(e.target.value) || 0, prev[1]])}
                   className="w-20 text-[10px] bg-zinc-800 border-zinc-700"
                 />
                 <span className="text-zinc-500 text-[10px]">–</span>
@@ -589,7 +589,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   type="number"
                   placeholder="Max"
                   value={priceRange[1] === 10000 ? "" : priceRange[1]}
-                  onChange={e => setPriceRange([priceRange[0], parseFloat(e.target.value) || 10000])}
+                  onChange={e => setPriceRange(prev => [prev[0], parseFloat(e.target.value) || 10000])}
                   className="w-20 text-[10px] bg-zinc-800 border-zinc-700"
                 />
               </div>
