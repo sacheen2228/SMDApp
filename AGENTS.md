@@ -33,8 +33,10 @@ bun run dev        # starts on :3000
 - **Database**: SQLite via Prisma (`db/custom.db`), schema has Trade model (active), User/Post (unused)
 - **UI**: shadcn/ui (new-york style), Tailwind CSS v4, lucide icons
 - **State**: React Query for server state, Zustand for global state (`src/stores/useTradingStore.ts`), React useState for local UI state
-- **Data flow**: Three-tier fallback: ICICI Breeze API → NSE API → Simulation (`src/lib/option-chain-data.ts`)
+- **Data flow**: Three-tier fallback: ICICI Breeze API → NSE API → Yahoo Finance
 - **Analysis**: SDM Options Intelligence Engine (`src/lib/sdm-engine.ts`) + ORCA Engine (`src/lib/orca-engine.ts`)
+- **Market Intelligence**: Technical analysis engines, sector heatmap, breadth, regime, F&O scanner, expiry liquidity engine
+- **Trade Backtest**: Real trade backtest against Yahoo Finance historical candles (99/100 trades backtestable)
 
 ### Key source files
 
@@ -48,8 +50,7 @@ bun run dev        # starts on :3000
 | `src/lib/sdm-recommendation.ts` | V2 recommendation orchestrator |
 | `src/lib/sdm-scores.ts` | 14-factor quality scoring |
 | `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
-| `src/lib/option-chain-data.ts` | Simulated option chain generator (100% fake data) |
-| `src/lib/historical-data.ts` | Seeded PRNG candle generator (100% fake data) |
+| `src/lib/historical-data.ts` | Breeze + Yahoo Finance candle fetcher (real data) |
 | `src/lib/greeks.ts` | Black-Scholes Greeks calculator (real math, may get fake inputs) |
 | `src/lib/ml-engine.ts` | Technical indicator scoring (NOT machine learning — just RSI/Bollinger/VWAP/EMA/ADX) |
 | `src/lib/master-bot-engine.ts` | Master Bot trade plans using Yahoo Finance data |
@@ -71,6 +72,23 @@ bun run dev        # starts on :3000
 | `src/lib/audit-recorders.ts` | Records Terminal-tab Zero Hero + Smart Money candidates into the audit engine |
 | `src/lib/fii-dii.ts` | FII/DII data scraper — NSE India primary + MrChartist 60-day history |
 | `src/app/api/fii-dii/route.ts` | FII/DII API endpoint — latest + 30-day history |
+| `src/lib/technical-analysis.ts` | Detection engines (breakout, pullback, momentum, breakdown, reversal), OI classification, trade scoring |
+| `src/lib/nse-stock-data.ts` | Shared stock data fetcher with 3-tier fallback (Moneycontrol → Yahoo batch → Yahoo per-stock) |
+| `src/lib/fetch-with-fallback.ts` | Reusable fallback utility (`fetchWithFallback`, `fetchWithRetry`) |
+| `src/lib/sentiment-analyzer.ts` | Deterministic keyword-based sentiment scoring (80+ keywords) |
+| `src/lib/market-session.ts` | Centralized session config (CAS timeline, phases, confidence multipliers) |
+| `src/lib/expiry-liquidity/` | Expiry Liquidity Shift Engine — 14 sub-engines (CAS, futures, OI, premium, IV, volume, gamma, auction, breadth, heatmap) |
+| `src/lib/trade-backtest-engine.ts` | Real trade backtest — replays every trade against Yahoo Finance historical candles |
+| `src/stores/useWatchlistStore.ts` | Zustand store for watchlist state |
+| `src/app/api/market/heatmap/route.ts` | Multi-market heatmap API (NIFTY50, BANKNIFTY, SENSEX, etc.) |
+| `src/app/api/market/breadth/route.ts` | Enhanced breadth API (EMA, VWAP, RelVol) |
+| `src/app/api/market/regime/route.ts` | Multi-factor regime engine with stock-based fallback |
+| `src/app/api/market/opportunities/route.ts` | Trade opportunities — uses detection engines + intraday scanner |
+| `src/app/api/alerts/route.ts` | Alert engine REST API (fire/acknowledge/history) |
+| `src/app/api/watchlist/route.ts` | Watchlist CRUD with JSON file persistence |
+| `src/app/api/scanner/fno/route.ts` | Dedicated F&O option scanner |
+| `src/app/api/backtest/expiry/route.ts` | Deterministic expiry liquidity backtest |
+| `src/app/api/backtest/trades/route.ts` | Real trade backtest against historical candles |
 
 ## Data Reality Check
 
@@ -201,3 +219,109 @@ Auditing/duplicating code BEFORE understanding the existing codebase is forbidde
 - **Phase 8 — Cleanup**: Only AFTER every test passes, remove the deprecated duplicate files.
 
 Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidates` → `FullZeroHero` → Trade Audit (`registerTrades("ZERO_HERO_AI", …)`). Everything Zero-Hero must integrate into this path.
+
+## API Endpoints — Complete List
+
+### Core
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/option-chain` | GET | Option chain data (Breeze → NSE fallback) |
+| `/api/agent` | POST | AI Agent with LLM + 13 tools |
+| `/api/breeze-connect` | GET/POST | Breeze session management |
+| `/api/sdm-signal` | GET | SDM scoring signals |
+| `/api/trade-journal` | GET/POST/PATCH/DELETE | Trade CRUD with Prisma DB |
+| `/api/today-trades` | GET | Live strike ranking via institutional engine |
+
+### Market Intelligence
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/market/heatmap` | GET | Multi-market heatmap (NIFTY50, BANKNIFTY, SENSEX, etc.) — Moneycontrol → Yahoo batch → Yahoo per-stock |
+| `/api/market/breadth` | GET | Enhanced breadth (EMA20/50/200, VWAP participation, RelVol) |
+| `/api/market/regime` | GET | Multi-factor regime engine with stock-based index fallback |
+| `/api/market/opportunities` | GET | Trade opportunities — technical analysis engines + intraday scanner merge |
+| `/api/fii-dii` | GET | FII/DII flow data (NSE India + MrChartist history) |
+| `/api/news` | GET | Market news with deterministic sentiment scoring |
+
+### Scanners
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/scanner` | GET | Main intraday scanner (Breeze → Yahoo candles, Auction Theory engine) |
+| `/api/scanner/fno` | GET | Dedicated F&O option scanner (OI change, IV percentile, premium velocity, volume) |
+| `/api/weekly-scanner` | GET | Weekly equity swing scanner |
+| `/api/btst` | GET | BTST (Buy Today Sell Tomorrow) scanner |
+| `/api/intraday-scan` | GET | Intraday equity scan |
+
+### Backtesting
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/backtest` | GET | Multi-day breakout backtest (Breeze historical candles) |
+| `/api/backtest/trades` | GET | **Real trade backtest** — replays every closed trade against Yahoo Finance candles. Filters: strategyId, symbol, maxTrades, dateFrom, dateTo |
+| `/api/backtest/expiry` | GET | Deterministic expiry liquidity backtest |
+| `/api/backtest-analyzer` | GET | Trade validation and analysis |
+
+### Expiry Liquidity Engine
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/expiry-liquidity` | GET/POST | Expiry Liquidity Shift Engine — 14 sub-engines (CAS reference/dislocation, futures, OI, premium/IV/volume velocity, gamma, auction, breadth, heatmap) |
+| `/api/expiry-liquidity/opportunities` | GET | Expiry-specific trade opportunities |
+
+### Alerts & Watchlist
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/alerts` | GET | Alert history, stats, unacknowledged count |
+| `/api/alerts` | POST | Fire alert (type, symbol, message, severity) |
+| `/api/alerts` | PATCH | Acknowledge alert by ID |
+| `/api/watchlist` | GET | Returns watchlist (10 default symbols) |
+| `/api/watchlist` | POST | Add symbol to watchlist |
+| `/api/watchlist` | DELETE | Remove symbol from watchlist |
+
+### Other
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/atm-straddle` | GET | ATM straddle data |
+| `/api/dom-analysis` | GET | DOM (Depth of Market) analysis |
+| `/api/institutional-greeks` | GET | Institutional positioning + Greeks |
+| `/api/participant-oi` | GET | Participant-wise OI data |
+| `/api/telegram` | GET/POST | Telegram bot integration |
+| `/api/admin/system` | GET | System health check |
+
+## Session: Sep 1 2026 — What We Built
+
+### Expiry Liquidity Shift Engine (14 sub-engines)
+- CAS Reference Engine — VWAP reference 15:00-15:15
+- CAS Dislocation Engine — price vs CAS reference tracking
+- Futures Dislocation Engine — futures basis tracking
+- Option Chain Flow Engine — OI/volume/premium/IV per strike
+- OI Classification Engine — Long/Short Buildup, Short Covering, Long Unwinding
+- Premium Velocity Engine — rate of premium change
+- IV Velocity Engine — implied volatility shifts
+- Volume Velocity Engine — volume momentum
+- Gamma Pressure Engine — dealer gamma exposure
+- OI Concentration Engine — support/resistance from OI walls
+- Support/Resistance Engine — key levels
+- Auction Theory Engine — auction state classification
+- Market Breadth Engine — sector breadth confirmation
+- Heatmap Confirmation Engine — cross-sector confirmation
+
+### Real Trade Backtest Engine
+- Fetches closed trades from audit sidecar (port 4001)
+- Groups by symbol, fetches daily/intraday candles from Yahoo Finance
+- Smart interval: 5m for recent intraday, 15m/1h for swing, 1d for older
+- Replays each trade: detects TP1/TP2/TP3 and SL hits
+- Computes actual MFE/MAE/P&L/R-multiple
+- Compares with recorded P&L (correlation coefficient)
+- Full summary: by-strategy, by-symbol, equity curve, P&L distribution
+- Tested: 99/100 trades backtestable, 65.7% WR, +2882 P&L, 5.34 profit factor
+
+### Data Source Upgrades
+- Moneycontrol priceapi integration for NIFTY 50 stocks (48/50 mapped)
+- Yahoo Finance batch quotes with crumb auth (v7/finance/quote)
+- Stock-based index fallback for regime when index APIs fail
+- Deterministic keyword-based sentiment analyzer (80+ keywords)
+- Technical analysis detection engines (breakout, pullback, momentum, breakdown, reversal)
+- Entry state machine (WATCH → CONFIRMING → CONFIRMED → INVALIDATED)
+
+### Market Session Config
+- `market-session.ts` — general session info (SessionInfo type)
+- `market-session-config.ts` — detailed CAS/F&O timings (SessionState type with phase, isCasActive, minutesRemaining)
+- **IMPORTANT**: Files in `expiry-liquidity/` must import from `./market-session-config`, NOT `@/lib/market-session`
