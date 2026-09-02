@@ -528,11 +528,10 @@ function DStat({ label, value, tone }: { label: string; value: string; tone?: st
   );
 }
 
-// ─── Today's Trade — Top 5 (NIFTY / SENSEX only) ───────────────────────
+// ─── Today's Trade — Top 5 (All Modes: Index F&O / Stock F&O / Equity Swing) ──
 function TodaysTradeView() {
-  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
   const [top5, setTop5] = useState<any[]>([]);
-  const [em, setEm] = useState(0);
+  const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
@@ -540,11 +539,11 @@ function TodaysTradeView() {
 
   const fetchTop = useCallback(async () => {
     try {
-      const res = await fetch(`/api/today-trades?symbol=${encodeURIComponent(sym)}&record=true`, { cache: "no-store" });
+      const res = await fetch(`/api/today-trades?record=true`, { cache: "no-store" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "no data");
       setTop5(json.top || []);
-      setEm(json.expectedMove || 0);
+      setSummary(json.summary || null);
       setError(null);
       setUpdatedAt(Date.now());
     } catch (e: any) {
@@ -552,17 +551,38 @@ function TodaysTradeView() {
     } finally {
       setLoading(false);
     }
-  }, [sym]);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
     if (!frozen) fetchTop();
-    const id = setInterval(() => { if (!frozen) fetchTop(); }, 900000);
+    const id = setInterval(() => { if (!frozen) fetchTop(); }, 300000); // 5 min
     return () => clearInterval(id);
   }, [fetchTop, frozen]);
 
   const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(2)) : "--");
   const stars = (n: number) => "★".repeat(Math.max(0, Math.min(5, n))) + "☆".repeat(Math.max(0, 5 - Math.min(5, n)));
+
+  const modeColors: Record<string, string> = {
+    INDEX_FO: "bg-blue-500/20 text-blue-400 border-blue-500/40",
+    STOCK_FO: "bg-purple-500/20 text-purple-400 border-purple-500/40",
+    EQUITY_SWING: "bg-emerald-500/20 text-emerald-400 border-emerald-500/40",
+  };
+  const modeLabels: Record<string, string> = {
+    INDEX_FO: "INDEX",
+    STOCK_FO: "F&O",
+    EQUITY_SWING: "SWING",
+  };
+  const dirColors: Record<string, string> = {
+    LONG: "text-[#1fbf75]",
+    BUY: "text-[#1fbf75]",
+    BUY_CE: "text-[#1fbf75]",
+    SHORT: "text-[#f2495c]",
+    SELL: "text-[#f2495c]",
+    BUY_PE: "text-[#f2495c]",
+    CALL: "text-[#1fbf75]",
+    PUT: "text-[#f2495c]",
+  };
 
   return (
     <div className="flex flex-col gap-2 h-full">
@@ -570,14 +590,16 @@ function TodaysTradeView() {
         <div className="flex items-center gap-2">
           <Flame className="h-4 w-4 text-orange-400" />
           <span className="text-sm font-bold">🔥 Today&apos;s Trade — Top 5</span>
-          <span className="text-[10px] text-[#7d8ba0]">Derivatives Engine · Exp.Move ₹{fmt(em)}</span>
+          <span className="text-[10px] text-[#7d8ba0]">All Sectors · Index + F&O + Swing</span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
-          <span>Index:</span>
-          {(["NIFTY", "SENSEX"] as const).map((s) => (
-            <button key={s} onClick={() => setSym(s)}
-              className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-orange-500/20 text-orange-400 border border-orange-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
-          ))}
+          {summary && (
+            <span className="text-[9px]">
+              <span className="text-blue-400">IDX:{summary.indexFO}</span>{" "}
+              <span className="text-purple-400">F&O:{summary.stockFO}</span>{" "}
+              <span className="text-emerald-400">SW:{summary.equitySwing}</span>
+            </span>
+          )}
           {loading && <Activity className="h-3 w-3 animate-spin" />}
           {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
           <button onClick={() => setFrozen(!frozen)}
@@ -594,32 +616,50 @@ function TodaysTradeView() {
 
       <div className="flex-1 overflow-auto">
         {top5.length === 0 && !loading && !error && (
-          <div className="p-6 text-center text-[#7d8ba0] text-[12.5px]">No candidates scored above threshold right now.</div>
+          <div className="p-6 text-center text-[#7d8ba0] text-[12.5px]">
+            No high-conviction setups right now.<br/>
+            <span className="text-[10px]">Market conditions may be unclear. Scanning Index F&O, Stock F&O, and Equity Swing across all sectors.</span>
+          </div>
         )}
         <div className="flex flex-col gap-1.5">
           {top5.map((c) => {
-            const isCall = c.type === "CE";
-            const color = isCall ? "text-[#1fbf75]" : "text-[#f2495c]";
+            const mode = c.mode || "EQUITY_SWING";
+            const modeColor = modeColors[mode] || modeColors.EQUITY_SWING;
+            const modeLabel = modeLabels[mode] || "SWING";
+            const dirColor = dirColors[c.direction] || "text-[#dfe6ee]";
+            const isFut = c.type === "FUT";
+            const isEq = c.type === "EQ";
             return (
-              <div key={`${c.rank}-${c.strike}-${c.type}`}
+              <div key={`${c.rank}-${c.symbol}-${c.mode}`}
                 className="flex items-center gap-3 rounded-lg border border-[#1f2733] bg-[#10151d] px-3 py-2.5">
                 <div className="w-5 text-center text-[15px] font-extrabold text-[#7d8ba0]">{c.rank}</div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
-                    <span className={`text-[14px] font-bold ${color}`}>{c.strike} {c.type}</span>
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/30 text-[#9fb0c3]">{c.side || c.direction}</span>
+                    <span className={`text-[14px] font-bold ${dirColor}`}>{c.symbol}</span>
+                    <span className={`text-[9px] px-1 py-0.5 rounded border ${modeColor}`}>{modeLabel}</span>
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/30 text-[#9fb0c3]">
+                      {isEq ? c.setupType : isFut ? "FUT" : `${c.strike || ""} ${c.type}`}
+                    </span>
+                    {c.sector && <span className="text-[9px] text-[#7d8ba0]">{c.sector}</span>}
                   </div>
                   <div className="text-[10px] text-[#7d8ba0] mt-0.5">
                     Entry ₹{fmt(c.entry)} · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}
                   </div>
+                  {c.instrument && c.instrument !== "NO_TRADE" && (
+                    <div className="text-[9px] text-[#9fb0c3] mt-0.5">
+                      {c.instrument} {c.holdingPeriod && `· ${c.holdingPeriod}`}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
-                  <div className="text-[13px] font-bold text-[#dfe6ee]">1:{c.rr}</div>
+                  <div className="text-[13px] font-bold text-[#dfe6ee]">1:{c.rr?.toFixed(1) || "—"}</div>
                   <div className="text-[12px] text-[#e8a33d] tracking-tight">{stars(c.stars)}</div>
                 </div>
                 <div className="w-12 text-right">
-                  <div className="text-[13px] font-bold" style={{ color }}>{c.probability ?? c.confidence}%</div>
-                  <div className="text-[9px] text-[#7d8ba0]">prob</div>
+                  <div className="text-[13px] font-bold" style={{ color: c.probability >= 80 ? "#1fbf75" : c.probability >= 70 ? "#e8a33d" : "#dfe6ee" }}>
+                    {c.probability}%
+                  </div>
+                  <div className="text-[9px] text-[#7d8ba0]">score</div>
                 </div>
               </div>
             );
@@ -628,7 +668,7 @@ function TodaysTradeView() {
       </div>
 
       <div className="text-[10px] text-[#7d8ba0]">
-        Ranked by the Institutional Derivatives Engine across near-ATM strikes (both sides). R:R = (TP1 − Entry) / (Entry − SL), SL at ½ Expected Move. Pure derivatives data — no SMC / TA indicators.
+        Unified ranking across Index F&O (NIFTY/BANKNIFTY/SENSEX), Stock F&O (futures/options/OI), and Equity Swing (breakout/pullback/accumulation) — all sectors.
       </div>
     </div>
   );
