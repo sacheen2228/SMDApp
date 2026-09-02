@@ -9,6 +9,7 @@ import { runBacktestV2 } from "@/lib/cas-straddle-backtest-v2";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 import { buildMarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
 import { analyzeIndexFO } from "@/lib/trade-intelligence/index-fo-mode";
+import { detectEntryWindow, getPhaseLabel, TIME_WINDOWS } from "@/lib/cas-time-engine";
 
 // ─── GET: Live Signal ─────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -55,10 +56,34 @@ export async function GET(req: NextRequest) {
 
       const config: StrategyConfig = { ...DEFAULT_CONFIG, strategy: strategy as any, strikeSelection: strikeSelection as any, expiryType };
       const signal = generateStrategySignalV2(snap, config);
+
+      // Time engine status
+      const now = new Date();
+      const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
+      const ist = new Date(istMs);
+      const istMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+      const currentWindow = detectEntryWindow(istMinutes);
+
       return NextResponse.json({
         success: true, symbol, signal,
         snapshot: { spot, atmStrike: atm.strike || atmStrike, cePremium: atm.ce?.ltp || 0, pePremium: atm.pe?.ltp || 0, combinedPremium: snap.combinedPremium, pcr, iv, maxPain: d.summary.maxPain || 0 },
         source: chainResult.source || "unknown",
+        timeEngine: {
+          currentWindow: currentWindow.window,
+          currentPhase: getPhaseLabel(currentWindow.window),
+          entryAllowed: currentWindow.entryAllowed,
+          minTradeQuality: currentWindow.minTradeQuality,
+          minEMCoverage: currentWindow.minEMCoverage,
+          description: currentWindow.description,
+          istTime: `${ist.getUTCHours().toString().padStart(2, "0")}:${ist.getUTCMinutes().toString().padStart(2, "0")}:${ist.getUTCSeconds().toString().padStart(2, "0")}`,
+          windows: TIME_WINDOWS.map(w => ({
+            window: w.window,
+            startMin: w.startMin,
+            endMin: w.endMin,
+            entryAllowed: w.entryAllowed,
+            label: getPhaseLabel(w.window),
+          })),
+        },
       });
     }
 
@@ -140,7 +165,24 @@ export async function POST(req: NextRequest) {
     };
 
     const result = await runBacktestV2(config, symbol.toUpperCase());
-    return NextResponse.json(result);
+
+    // Add time engine live status
+    const now = new Date();
+    const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
+    const ist = new Date(istMs);
+    const istMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    const { detectEntryWindow, getPhaseLabel } = await import("@/lib/cas-time-engine");
+    const currentWindow = detectEntryWindow(istMinutes);
+
+    return NextResponse.json({
+      ...result,
+      timeEngine: {
+        currentWindow: currentWindow.window,
+        currentPhase: getPhaseLabel(currentWindow.window),
+        entryAllowed: currentWindow.entryAllowed,
+        istTime: `${ist.getUTCHours().toString().padStart(2, "0")}:${ist.getUTCMinutes().toString().padStart(2, "0")}:${ist.getUTCSeconds().toString().padStart(2, "0")}`,
+      },
+    });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err?.message || "Backtest failed" }, { status: 500 });
   }

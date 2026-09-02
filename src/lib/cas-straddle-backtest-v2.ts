@@ -24,6 +24,14 @@ import {
   type MarketRegime,
   DEFAULT_CONFIG,
 } from "./cas-straddle-strategy-v2";
+import {
+  detectEntryWindow,
+  computeWindowPerformance,
+  computeExitTypePerformance,
+  type WindowPerformance,
+  type ExitTypePerformance,
+  type EntryWindow,
+} from "./cas-time-engine";
 
 // ─── Backtest Trade Record ────────────────────────────────────────
 export interface BacktestTrade {
@@ -35,6 +43,7 @@ export interface BacktestTrade {
   strategy: string;
   strikeSelection: string;
   expiryType: string;
+  entryWindow: string;
   // Entry snapshot (immutable after creation)
   spotAtEntry: number;
   ceStrike: number;
@@ -142,6 +151,9 @@ export interface BacktestResult {
     validation: { trades: number; winRate: number; netPnL: number; profitFactor: number };
     outOfSample: { trades: number; winRate: number; netPnL: number; profitFactor: number };
   };
+  // Time analysis (CAS Time Engine)
+  windowPerformance: Record<string, WindowPerformance>;
+  exitTypePerformance: Record<string, ExitTypePerformance>;
   // Data quality
   dataQualityScore: number;
   incompleteTradesRemoved: number;
@@ -533,6 +545,7 @@ export async function runBacktestV2(config: StrategyConfig, symbol: string): Pro
       strategy: signal.strategy,
       strikeSelection: config.strikeSelection,
       expiryType: config.expiryType,
+      entryWindow: detectEntryWindow(config.entryTime.split(":").reduce((h, m) => parseInt(h) * 60 + parseInt(m), 0)).window,
       spotAtEntry: candle.close,
       ceStrike: signal.ceStrike,
       peStrike: signal.peStrike,
@@ -652,6 +665,10 @@ export async function runBacktestV2(config: StrategyConfig, symbol: string): Pro
   if (maxDrawdownPct > 50) diagnosis.push(`Max drawdown ${maxDrawdownPct.toFixed(1)}% — risk management issue`);
   if (avgLoss > avgProfit * 2) diagnosis.push(`Avg loss ₹${avgLoss.toFixed(0)} > 2x avg profit ₹${avgProfit.toFixed(0)} — stop loss too wide`);
 
+  // ─── Time Analysis (CAS Time Engine) ────────────────────────
+  const windowPerformance = computeWindowPerformance(trades);
+  const exitTypePerformance = computeExitTypePerformance(trades);
+
   return {
     success: true,
     config,
@@ -683,6 +700,8 @@ export async function runBacktestV2(config: StrategyConfig, symbol: string): Pro
     strategyComparison,
     regimeBreakdown,
     diagnosis,
+    windowPerformance,
+    exitTypePerformance,
     dataQualityScore: totalScans > 0 ? Math.round(dataQualitySum / totalScans) : 0,
     incompleteTradesRemoved: incompleteRemoved,
   };
