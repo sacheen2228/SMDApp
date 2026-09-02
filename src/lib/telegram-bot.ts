@@ -166,6 +166,74 @@ async function handleStatus(): Promise<string> {
   ].filter(Boolean).join("\n");
 }
 
+async function handleRank(): Promise<string> {
+  const data = await fetchApi("/api/trade-intelligence?action=ranking");
+  if (!data?.success) return "⚠️ Could not fetch trade ranking.";
+  const top = (data.ranking || []).slice(0, 5);
+  if (top.length === 0) return "📭 No high-conviction setups right now.";
+  const lines = ["📊 <b>Unified Trade Ranking</b>", ""];
+  for (const t of top) {
+    const emoji = t.direction === "LONG" || t.direction === "CALL" ? "🟢" : t.direction === "SHORT" || t.direction === "PUT" ? "🔴" : "⚪";
+    const mode = t.mode === "index_fo" ? "IDX" : t.mode === "stock_fo" ? "F&O" : "EQ";
+    lines.push(`${emoji} <b>${t.symbol}</b> (${mode}) — ${t.confidence}%`);
+    lines.push(`   ${t.direction} | Entry: ${t.entry ? "₹" + t.entry : "TBD"} | SL: ${t.stopLoss ? "₹" + t.stopLoss : "TBD"}`);
+    if (t.reasoning?.[0]) lines.push(`   ${t.reasoning[0]}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+async function handlePnL(): Promise<string> {
+  const data = await fetchApi("/api/trade-journal");
+  if (!data?.success) return "⚠️ Could not fetch trade journal.";
+  const stats = data.stats;
+  if (!stats || stats.total === 0) return "📭 No trades in journal yet.";
+  return [
+    "💰 <b>Trade Journal P&L</b>",
+    "",
+    `Total Trades: <b>${stats.total}</b>`,
+    `Win Rate: <b>${stats.winRate}%</b>`,
+    `P&L: <b>${stats.totalPnL >= 0 ? "+" : ""}₹${stats.totalPnL.toLocaleString("en-IN")}</b>`,
+    `Open: ${stats.open} | Closed: ${stats.closed}`,
+    `Avg R: ${stats.avgR?.toFixed(2) || "N/A"}`,
+    "",
+    `🕐 ${formatDateTime(new Date().toISOString())}`,
+  ].filter(Boolean).join("\n");
+}
+
+async function handleTrades(): Promise<string> {
+  const data = await fetchApi("/api/trade-intelligence?action=trades");
+  if (!data?.success) return "⚠️ Could not fetch active trades.";
+  const trades = (data.trades || []).filter((t: any) => t.status !== "INVALIDATED" && t.status !== "EXHAUSTED").slice(0, 5);
+  if (trades.length === 0) return "📭 No active trades.";
+  const lines = ["📈 <b>Active Trades</b>", ""];
+  for (const t of trades) {
+    const emoji = t.side === "LONG" || t.side === "CALL" ? "🟢" : "🔴";
+    lines.push(`${emoji} <b>${t.symbol}</b> — ${t.side} ${t.instrumentType || ""}`);
+    lines.push(`   Status: ${t.status} | Confidence: ${t.confidence}%`);
+    if (t.entry) lines.push(`   Entry: ₹${t.entry} | SL: ₹${t.stopLoss || "?"} | TP: ₹${t.target1 || "?"}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+async function handleRegime(): Promise<string> {
+  const data = await fetchApi("/api/market/regime");
+  if (!data?.success) return "⚠️ Could not fetch market regime.";
+  const r = data.regime || data;
+  return [
+    "🌐 <b>Market Regime</b>",
+    "",
+    `Trend: <b>${r.trend || r.regime || "N/A"}</b>`,
+    `Confidence: <b>${r.confidence || "N/A"}%</b>`,
+    `VIX: ${r.vix || "N/A"}`,
+    `Breadth: ${r.breadth || "N/A"}`,
+    `FII: ${r.fii || "N/A"}`,
+    "",
+    `🕐 ${formatDateTime(new Date().toISOString())}`,
+  ].filter(Boolean).join("\n");
+}
+
 export async function processMessage(chatId: number, text: string): Promise<void> {
   const msg = text.trim();
   const lower = msg.toLowerCase();
@@ -173,7 +241,7 @@ export async function processMessage(chatId: number, text: string): Promise<void
   // Handle commands
   if (lower === "/start") {
     await sendTelegramMessage(
-      `🤖 <b>SD Trading Bot</b>\n\nWelcome! I'll send you trade alerts from the SDM engine.\n\n<b>Commands:</b>\n/signal NIFTY — Latest trade signal\n/price NIFTY — Current spot price\n/status — System status\n/help — Full help`,
+      `🤖 <b>SD Trading Bot</b>\n\nWelcome! I'll send you trade alerts from the SDM engine.\n\n<b>Commands:</b>\n/signal NIFTY — Latest trade signal\n/price NIFTY — Current spot price\n/rank — Unified trade ranking (all sectors)\n/pnl — Trade journal P&L\n/trades — Active trades\n/regime — Market regime\n/status — System status\n/help — Full help\n\nOr just <b>type a message</b> — I understand Hindi, English, and Hinglish!`,
       String(chatId)
     );
     return;
@@ -185,9 +253,16 @@ export async function processMessage(chatId: number, text: string): Promise<void
       `<b>📈 SDM Trading</b>\n` +
       `/signal [SYMBOL] — Get latest SDM trade signal\n` +
       `/price [SYMBOL] — Get current spot price\n` +
+      `/rank — Unified ranking across all sectors\n` +
+      `/pnl — Trade journal P&L summary\n` +
+      `/trades — Active trades status\n` +
+      `/regime — Market regime analysis\n` +
       `/status — System health & trade stats\n\n` +
       `<b>Supported symbols:</b>\n` +
       `NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX\n\n` +
+      `<b>Free text:</b> Just type a message!\n` +
+      `"NIFTY kya kar raha hai?" — Hindi/Hinglish OK\n` +
+      `"Give me trade ideas" — English works too\n\n` +
       `You'll also receive automatic alerts when trades trigger.`,
       String(chatId)
     );
@@ -196,6 +271,30 @@ export async function processMessage(chatId: number, text: string): Promise<void
 
   if (lower === "/status") {
     const response = await handleStatus();
+    await sendTelegramMessage(response, String(chatId));
+    return;
+  }
+
+  if (lower === "/rank") {
+    const response = await handleRank();
+    await sendTelegramMessage(response, String(chatId));
+    return;
+  }
+
+  if (lower === "/pnl") {
+    const response = await handlePnL();
+    await sendTelegramMessage(response, String(chatId));
+    return;
+  }
+
+  if (lower === "/trades") {
+    const response = await handleTrades();
+    await sendTelegramMessage(response, String(chatId));
+    return;
+  }
+
+  if (lower === "/regime") {
+    const response = await handleRegime();
     await sendTelegramMessage(response, String(chatId));
     return;
   }

@@ -23,6 +23,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: ok, info });
     }
 
+    if (action === "setup_webhook") {
+      // Auto-detect webhook URL from environment
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : process.env.RENDER_EXTERNAL_URL || null;
+      if (!baseUrl) {
+        return NextResponse.json({ success: false, error: "No public URL found. Set NEXT_PUBLIC_BASE_URL or RENDER_EXTERNAL_URL." }, { status: 400 });
+      }
+      const webhookUrl = `${baseUrl}/api/telegram/webhook`;
+      const ok = await setWebhook(webhookUrl);
+      const info = await getWebhookInfo();
+      return NextResponse.json({ success: ok, webhookUrl, info });
+    }
+
     if (action === "webhook_info") {
       const info = await getWebhookInfo();
       return NextResponse.json({ success: true, info });

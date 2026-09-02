@@ -2,6 +2,26 @@ const TELEGRAM_API = "https://api.telegram.org/bot";
 
 import { isTelegramSendWindow } from "./marketHours";
 
+// Dedup: trade signature → last send timestamp (5-minute cooldown)
+const recentAlerts = new Map<string, number>();
+const DEDUP_COOLDOWN_MS = 5 * 60 * 1000;
+
+function makeAlertKey(params: { symbol: string; action: string; strike: number; type: string }): string {
+  return `${params.symbol}|${params.action}|${params.strike}|${params.type}`;
+}
+
+function isDuplicate(key: string): boolean {
+  const last = recentAlerts.get(key);
+  if (last && Date.now() - last < DEDUP_COOLDOWN_MS) return true;
+  recentAlerts.set(key, Date.now());
+  // Cleanup entries older than 1 hour
+  if (recentAlerts.size > 200) {
+    const cutoff = Date.now() - 3600000;
+    for (const [k, v] of recentAlerts) { if (v < cutoff) recentAlerts.delete(k); }
+  }
+  return false;
+}
+
 function getBotToken(): string {
   return process.env.TELEGRAM_BOT_TOKEN || "";
 }
@@ -62,6 +82,10 @@ export async function sendTelegramMessage(text: string, chatId?: string): Promis
   }
 }
 
+export function checkTradeDedup(symbol: string, action: string, strike: number, type: string): boolean {
+  return isDuplicate(makeAlertKey({ symbol, action, strike, type }));
+}
+
 export async function sendTradeAlert(params: {
   symbol: string;
   action: string;
@@ -74,6 +98,12 @@ export async function sendTradeAlert(params: {
   target2?: number;
   source?: string;
 }): Promise<boolean> {
+  // Dedup: skip if same trade signature sent within 5 minutes
+  const alertKey = makeAlertKey(params);
+  if (isDuplicate(alertKey)) {
+    console.log(`[Telegram] Dedup: skipped ${alertKey} (sent <5min ago)`);
+    return false;
+  }
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
   const sourceLabel = params.source || "SDM Engine";
   const msg = `

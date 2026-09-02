@@ -233,9 +233,28 @@ export async function GET(request: NextRequest) {
       dir || undefined
     );
 
-    // Note: Alerts from this route suppressed — sdm-signal always uses simulation data.
-    // Real-data alerts fire from option-chain route instead.
-    const signalConf = signal.confidence ?? 0;
+    // Send Telegram alert when data is real (not simulation) and confidence is high
+    const rec = signal.recommendation || signal;
+    const alertAction = rec.action || signal.action;
+    const isTradeAction = alertAction && !["HOLD", "NEUTRAL", "WAIT", "NO_TRADE"].includes(alertAction);
+    const conf = typeof signal.confidence === "object" ? signal.confidence?.total ?? 0 : signal.confidence ?? 0;
+    const hasConfidence = conf >= 60;
+    if (isTradeAction && hasConfidence && source !== "simulation") {
+      const strike = rec.strike || signal.strike || spotPrice;
+      const optionType = rec.strikeType || rec.optionType || "OPTION";
+      sendTradeAlert({
+        symbol,
+        action: alertAction,
+        strike,
+        type: optionType,
+        confidence: conf,
+        entry: rec.entry || signal.entry,
+        stopLoss: rec.stopLoss || signal.stopLoss,
+        target1: rec.target1 || signal.target1,
+        target2: rec.target2 || signal.target2,
+        source: `SDM Engine (${source})`,
+      }).catch(() => {});
+    }
 
     return NextResponse.json({
       success: true,
