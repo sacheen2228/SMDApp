@@ -22,12 +22,8 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 async function sendTelegramMessage(chatId: number, text: string) {
-  // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
-  // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
-  if (!isTelegramSendWindow()) {
-    console.warn("[webhook] outside 09:10-15:20 IST window — suppressed send");
-    return;
-  }
+  // No time gate for inbound replies — users expect a response when they message the bot.
+  // The time gate only applies to proactive alerts (in telegram.ts sendTelegramMessage).
   await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
