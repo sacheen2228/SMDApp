@@ -317,6 +317,31 @@ export async function runBacktest(config: StrategyConfig, symbol: string): Promi
     const optionData = optionPrices.get(candle.date);
     const cas = reconstructCAS(candle, prevCloses.map((_, idx) => candles[i - 60 + idx]?.close || 0));
 
+    // Build option chain with multiple strikes (needed for strangle strike selection)
+    const step = symbol === "SENSEX" ? 100 : 50;
+    const chain: MarketSnapshot["chain"] = [];
+    for (let offset = -5; offset <= 5; offset++) {
+      const strike = roundToNearest(candle.close, symbol) + offset * step;
+      const distFromSpot = Math.abs(strike - candle.close) / candle.close;
+      const tte = 1 / 365; // 1 day
+      const iv = (optionData?.iv || 15) / 100;
+      const ceIv = iv * (1 + distFromSpot * 2); // IV skew
+      const peIv = iv * (1 + distFromSpot * 2);
+      const ceLtp = blackScholesPrice(candle.close, strike, ceIv, tte, "CE");
+      const peLtp = blackScholesPrice(candle.close, strike, peIv, tte, "PE");
+      chain.push({
+        strike,
+        ce: { ltp: ceLtp, oi: Math.round(100000 * Math.exp(-distFromSpot * 5)), oiChg: 0, volume: Math.round(50000 * Math.exp(-distFromSpot * 3)), iv: ceIv * 100, delta: strike === roundToNearest(candle.close, symbol) ? 0.5 : undefined },
+        pe: { ltp: peLtp, oi: Math.round(100000 * Math.exp(-distFromSpot * 5)), oiChg: 0, volume: Math.round(50000 * Math.exp(-distFromSpot * 3)), iv: peIv * 100, delta: strike === roundToNearest(candle.close, symbol) ? -0.5 : undefined },
+      });
+    }
+
+    // Use chain data for ATM premiums if optionData is missing
+    const atmRow = chain.find(s => s.strike === roundToNearest(candle.close, symbol));
+    const ceAtm = atmRow?.ce?.ltp || optionData?.ceAtm || 0;
+    const peAtm = atmRow?.pe?.ltp || optionData?.peAtm || 0;
+    const iv = atmRow?.ce?.iv || optionData?.iv || 15;
+
     const snap: MarketSnapshot = {
       timestamp: candle.date,
       spot: candle.close,
@@ -327,16 +352,16 @@ export async function runBacktest(config: StrategyConfig, symbol: string): Promi
       casVelocity: cas.casVelocity,
       casAboveReference: cas.casAboveReference,
       atmStrike: roundToNearest(candle.close, symbol),
-      atmCE: optionData?.ceAtm || 0,
-      atmPE: optionData?.peAtm || 0,
-      combinedPremium: (optionData?.ceAtm || 0) + (optionData?.peAtm || 0),
-      expectedMove: (optionData?.ceAtm || 0) + (optionData?.peAtm || 0),
+      atmCE: ceAtm,
+      atmPE: peAtm,
+      combinedPremium: ceAtm + peAtm,
+      expectedMove: ceAtm + peAtm,
       pcr: cas.pcr,
       maxPain: cas.maxPain,
-      iv: optionData?.iv || 15,
-      chain: [], // simplified for backtest
+      iv,
+      chain,
       regime: cas.regime,
-      vix: optionData?.iv || 15,
+      vix: iv,
       candles: history.map(c => ({
         time: new Date(c.date).getTime(),
         open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
@@ -366,18 +391,42 @@ export async function runBacktest(config: StrategyConfig, symbol: string): Promi
     const lotSize = getLotSize(symbol, entryDate);
     const entryPremium = signal.combinedPremium;
 
-    // Exit: next day close (simplified — real backtest would use intraday)
+    // Exit: next day close — use actual strike prices from chain
     const exitIdx = Math.min(i + 1, candles.length - 1);
     const exitCandle = candles[exitIdx];
     const exitOptionData = optionPrices.get(exitCandle.date);
     let exitPremium = entryPremium;
 
-    if (signal.strategy === "STRADDLE" || signal.strategy === "STRANGLE") {
-      exitPremium = (exitOptionData?.ceAtm || 0) + (exitOptionData?.peAtm || 0);
+    // Build exit chain for actual strike prices
+    const exitStep = symbol === "SENSEX" ? 100 : 50;
+    const exitChain: Array<{ strike: number; ce?: { ltp: number } | null; pe?: { ltp: number } | null }> = [];
+    for (let offset = -5; offset <= 5; offset++) {
+      const strike = roundToNearest(exitCandle.close, symbol) + offset * exitStep;
+      const distFromSpot = Math.abs(strike - exitCandle.close) / exitCandle.close;
+      const tte = 1 / 365;
+      const iv = ((exitOptionData?.iv || 15) / 100) * (1 + distFromSpot * 2);
+      exitChain.push({
+        strike,
+        ce: { ltp: blackScholesPrice(exitCandle.close, strike, iv, tte, "CE") },
+        pe: { ltp: blackScholesPrice(exitCandle.close, strike, iv, tte, "PE") },
+      });
+    }
+
+    if (signal.strategy === "STRADDLE") {
+      // Exit ATM straddle
+      const exitAtm = exitChain.find(s => s.strike === roundToNearest(exitCandle.close, symbol));
+      exitPremium = (exitAtm?.ce?.ltp || 0) + (exitAtm?.pe?.ltp || 0);
+    } else if (signal.strategy === "STRANGLE") {
+      // Exit using the SAME strikes as entry
+      const exitCe = exitChain.find(s => s.strike === signal.ceStrike);
+      const exitPe = exitChain.find(s => s.strike === signal.peStrike);
+      exitPremium = (exitCe?.ce?.ltp || 0) + (exitPe?.pe?.ltp || 0);
     } else if (signal.strategy === "CALL") {
-      exitPremium = exitOptionData?.ceAtm || entryPremium;
+      const exitLeg = exitChain.find(s => s.strike === signal.ceStrike);
+      exitPremium = exitLeg?.ce?.ltp || entryPremium;
     } else if (signal.strategy === "PUT") {
-      exitPremium = exitOptionData?.peAtm || entryPremium;
+      const exitLeg = exitChain.find(s => s.strike === signal.peStrike);
+      exitPremium = exitLeg?.pe?.ltp || entryPremium;
     }
 
     // Calculate P&L using SAME function as live
