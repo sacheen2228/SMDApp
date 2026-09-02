@@ -787,14 +787,26 @@ export async function generateCandidates(
     // Trade setup — use the real engine's structural levels (VAH/VAL/POC,
     // swing-based SL, profile targets) when it produced a confident plan;
     // otherwise fall back to ATR-based levels.
-    const atrFloor = Math.max(atr, basePrice * 0.01);
+    const atrFloor = Math.max(atr, basePrice * 0.015);
     let entry: number, stopLoss: number, target1: number, target2: number, riskReward: number;
     if (engineBest && engineDirection !== "NO_TRADE") {
       entry = engineBest.entry.aggressive || basePrice;
       stopLoss = engineBest.stopLoss.price || (direction === "BULLISH" ? entry - atrFloor * 1.5 : entry + atrFloor * 1.5);
       target1 = engineBest.targets[0]?.price || (direction === "BULLISH" ? entry + atrFloor * 2 : entry - atrFloor * 2);
       target2 = engineBest.targets[1]?.price || (direction === "BULLISH" ? entry + atrFloor * 3 : entry - atrFloor * 3);
-      riskReward = engineBest.riskReward > 0 ? engineBest.riskReward : Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
+
+      // Belt-and-suspenders: enforce direction-correct levels
+      if (direction === "BULLISH") {
+        if (target1 <= entry) target1 = entry + atrFloor * 2;
+        if (target2 <= target1) target2 = entry + atrFloor * 3;
+        if (stopLoss >= entry) stopLoss = entry - atrFloor * 1.5;
+      } else if (direction === "BEARISH") {
+        if (target1 >= entry) target1 = entry - atrFloor * 2;
+        if (target2 >= target1) target2 = entry - atrFloor * 3;
+        if (stopLoss <= entry) stopLoss = entry + atrFloor * 1.5;
+      }
+
+      riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     } else if (direction === "BULLISH") {
       entry = basePrice;
       stopLoss = basePrice - atrFloor * 1.5;

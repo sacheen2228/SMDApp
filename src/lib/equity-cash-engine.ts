@@ -341,14 +341,20 @@ export function generateEquityTradePlan(
 
   // Targets
   const targets: Target[] = [];
+  const atr = data.atr || price * 0.015;
   if (direction === 'LONG') {
-    targets.push({ price: profile.vah, type: 'VAH', rr: (profile.vah - price) / (price - slPrice) });
-    targets.push({ price: profile.poc, type: 'POC', rr: (profile.poc - price) / (price - slPrice) });
-    targets.push({ price: profile.vah * 1.01, type: 'LIQUIDITY', rr: (profile.vah * 1.01 - price) / (price - slPrice) });
+    const t1 = Math.max(profile.vah, price + atr);
+    const t2 = Math.max(profile.poc, price + atr * 0.5);
+    targets.push({ price: t1, type: 'VAH', rr: (t1 - price) / (price - slPrice) });
+    targets.push({ price: t2, type: 'POC', rr: (t2 - price) / (price - slPrice) });
+    targets.push({ price: t1 * 1.01, type: 'LIQUIDITY', rr: (t1 * 1.01 - price) / (price - slPrice) });
   } else {
-    targets.push({ price: profile.val, type: 'VAL', rr: (price - profile.val) / (slPrice - price) });
-    targets.push({ price: profile.poc, type: 'POC', rr: (price - profile.poc) / (slPrice - price) });
-    targets.push({ price: profile.val * 0.99, type: 'LIQUIDITY', rr: (price - profile.val * 0.99) / (slPrice - price) });
+    // SHORT: targets must be BELOW entry price
+    const t1 = Math.min(profile.val, price - atr);
+    const t2 = Math.min(profile.poc, price - atr * 0.5);
+    targets.push({ price: t1, type: 'VAL', rr: (price - t1) / (slPrice - price) });
+    targets.push({ price: t2, type: 'POC', rr: (price - t2) / (slPrice - price) });
+    targets.push({ price: t1 * 0.99, type: 'LIQUIDITY', rr: (price - t1 * 0.99) / (slPrice - price) });
   }
 
   const avgR = targets.reduce((s, t) => s + t.rr, 0) / targets.length;
