@@ -18,7 +18,7 @@ import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
-import { ATMStraddleRange } from "@/components/dashboard/ATMStraddleRange";
+import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -713,29 +713,7 @@ function TodaysTradeView() {
   );
 }
 
-// ─── ATM Straddle Range Tab (NIFTY / SENSEX only) ─────────────────────
-const IndexStraddleView = () => {
-  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
-  return (
-    <div className="flex flex-col gap-2 h-full">
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] text-[#7d8ba0] font-bold">Index:</span>
-        {(["NIFTY", "SENSEX"] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => setSym(s)}
-            className={`px-3 py-1 rounded text-[11px] font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-      <div className="flex-1 overflow-auto">
-        <ATMStraddleRange symbol={sym} autoRefresh />
-      </div>
-    </div>
-  );
-};
+// ─── CAS Straddle / Strangle Tab (Live + Backtest) ───────────────
 
 // ─── Main Component ────────────────────────────────────────────────
 export function ZeroHeroTerminal() {
@@ -1195,7 +1173,7 @@ export function ZeroHeroTerminal() {
             <PositionsTab positions={positions} closePosition={closePosition} totalPnl={totalPnl} />
           )}
           {activeTab === "straddle" && (
-            <IndexStraddleView />
+            <CASStraddleTab />
           )}
           {activeTab === "ide" && (
             <InstitutionalDerivativesView />
