@@ -365,6 +365,74 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_unified_ranking",
+      description: "Get the UNIFIED TRADE RANKING — scans ALL modes (Index F&O, Stock F&O, Equity Swing) and returns the strongest setups ranked by conviction score (0-100). Use this when user asks 'what should I trade now' or 'best trades'.",
+      parameters: {
+        type: "object",
+        properties: {
+          forceRefresh: { type: "boolean", description: "Force fresh data fetch (default false)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_index_fo",
+      description: "Analyze Index F&O — NIFTY, BANKNIFTY, SENSEX for directional/index options trades. Returns signals with direction (LONG/SHORT/CALL/PUT/NO_TRADE), confidence, entry/SL/TP.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Index: NIFTY, BANKNIFTY, SENSEX (optional, defaults to all)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_stock_fo",
+      description: "Analyze Stock F&O — scans F&O stocks for the strongest futures/options setup. Returns top stocks with direction, confidence, entry/SL/TP.",
+      parameters: {
+        type: "object",
+        properties: {
+          maxStocks: { type: "number", description: "Max stocks to scan (default 10)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_equity_swing",
+      description: "Analyze Equity Swing — scans NSE cash stocks for multi-day swing opportunities (breakout, pullback, trend continuation, accumulation). Returns buy zone, SL, targets, holding period.",
+      parameters: {
+        type: "object",
+        properties: {
+          maxStocks: { type: "number", description: "Max stocks to scan (default 10)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_trade_tracking",
+      description: "Get active tracked trades — shows all high-conviction setups being monitored with live P&L, MFE/MAE, stage (WATCH→SETUP→TRIGGERED→ACTIVE→TP1→TP2→STOPPED).",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
 ];
 
 // ─── Tool Execution ─────────────────────────────────────────────
@@ -681,6 +749,81 @@ ${changes.join("\n")}`;
       // The knowledge is already in the system prompt, so the LLM can answer directly
       // This tool just helps route educational questions
       return `ANSWER_QUESTION: ${question} (level: ${level})`;
+    }
+
+    case "get_unified_ranking": {
+      try {
+        const forceRefresh = args.forceRefresh || false;
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=ranking&force=${forceRefresh}`, { signal: AbortSignal.timeout(30000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch unified ranking";
+        const r = data.data;
+        const hc = r.highConvictionSetups || [];
+        const watch = r.watchSetups || [];
+        const noTrade = r.noTrade;
+        if (noTrade) return `NO HIGH-CONVICTION TRADES FOUND\n\nScanned ${r.summary.totalScanned} setups across Index F&O (${r.summary.indexFOCount}), Stock F&O (${r.summary.stockFOCount}), and Equity Swing (${r.summary.equitySwingCount}).\n\nReason: ${r.noTradeReason}\n\nAvg Score: ${r.summary.avgScore}/100 | Best Mode: ${r.summary.bestMode} | Data: ${r.dataQuality}`;
+        let output = `UNIFIED TRADE RANKING — ${new Date().toLocaleTimeString("en-IN")}\nSession: ${r.sessionPhase} | Data: ${r.dataQuality}\n\n`;
+        if (hc.length > 0) {
+          output += `HIGH-CONVICTION SETUPS:\n`;
+          hc.forEach((s: any, i: number) => {
+            output += `${i + 1}. ${s.symbol} (${s.mode}) — ${s.score}/100 ${s.conviction === "EXTREME" ? "🔥" : ""}\n   Direction: ${s.direction} | Entry: ₹${s.entry} | SL: ₹${s.stopLoss} | TP1: ₹${s.target1} | TP2: ₹${s.target2}\n   R:R: 1:${s.riskReward?.toFixed(1)} | Holding: ${s.holdingPeriod} | Instrument: ${s.recommendedInstrument}\n   Why: ${s.reasoning.slice(0, 3).join("; ")}\n\n`;
+          });
+        }
+        if (watch.length > 0) {
+          output += `WATCH LIST:\n`;
+          watch.slice(0, 5).forEach((s: any, i: number) => {
+            output += `${i + 1}. ${s.symbol} (${s.mode}) — ${s.score}/100 | ${s.direction} | ${s.recommendedInstrument}\n`;
+          });
+        }
+        return output;
+      } catch { return "Error fetching unified ranking"; }
+    }
+
+    case "get_index_fo": {
+      try {
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=index-fo`, { signal: AbortSignal.timeout(30000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch Index F&O analysis";
+        const signals = data.data.signals || [];
+        if (signals.length === 0) return "No Index F&O signals available";
+        return `INDEX F&O ANALYSIS:\n\n${signals.map((s: any) => `${s.symbol}: ${s.direction} (${s.confidence}% confidence)\n  Entry: ₹${s.entry} | SL: ₹${s.stopLoss} | TP1: ₹${s.target1} | TP2: ₹${s.target2}\n  R:R: 1:${s.riskReward?.toFixed(1)} | Instrument: ${s.recommendedInstrument}\n  Factors: PCR=${s.factors.oiAnalysis} Futures=${s.factors.futuresPositioning} Regime=${s.factors.regimeAlignment} Breadth=${s.factors.breadthConfirmation}\n  Why: ${s.reasoning.slice(0, 3).join("; ")}`).join("\n\n")}`;
+      } catch { return "Error fetching Index F&O analysis"; }
+    }
+
+    case "get_stock_fo": {
+      try {
+        const maxStocks = args.maxStocks || 10;
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=stock-fo`, { signal: AbortSignal.timeout(30000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch Stock F&O analysis";
+        const signals = data.data.signals || [];
+        if (signals.length === 0) return "No Stock F&O signals available";
+        return `STOCK F&O ANALYSIS (Top ${maxStocks}):\n\n${signals.slice(0, maxStocks).map((s: any, i: number) => `${i + 1}. ${s.symbol} (${s.sector}) — ${s.direction} (${s.confidence}%)\n   Entry: ₹${s.entry} | SL: ₹${s.stopLoss} | TP1: ₹${s.target1} | TP2: ₹${s.target2}\n   Instrument: ${s.recommendedInstrument} | R:R: 1:${s.riskReward?.toFixed(1)}\n   Why: ${s.reasoning.slice(0, 2).join("; ")}`).join("\n\n")}`;
+      } catch { return "Error fetching Stock F&O analysis"; }
+    }
+
+    case "get_equity_swing": {
+      try {
+        const maxStocks = args.maxStocks || 10;
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=equity-swing`, { signal: AbortSignal.timeout(30000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch Equity Swing analysis";
+        const signals = data.data.signals || [];
+        if (signals.length === 0) return "No Equity Swing signals available";
+        return `EQUITY SWING ANALYSIS (Top ${maxStocks}):\n\n${signals.slice(0, maxStocks).map((s: any, i: number) => `${i + 1}. ${s.symbol} (${s.sector}) — ${s.direction} (${s.confidence}%)\n   Setup: ${s.setup.type} — ${s.setup.description}\n   Entry: ₹${s.entry} | SL: ₹${s.stopLoss} | TP1: ₹${s.target1} | TP2: ₹${s.target2}\n   R:R: 1:${s.riskReward?.toFixed(1)} | Holding: ${s.holdingPeriod} | Move: ${s.expectedMove}\n   Why: ${s.reasoning.slice(0, 2).join("; ")}`).join("\n\n")}`;
+      } catch { return "Error fetching Equity Swing analysis"; }
+    }
+
+    case "get_trade_tracking": {
+      try {
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=trades`, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch trade tracking";
+        const trades = data.data.trades || [];
+        const stats = data.data.stats || {};
+        if (trades.length === 0) return `No active tracked trades.\nStats: Total tracked: ${stats.total} | Avg Score: ${stats.avgScore}`;
+        return `ACTIVE TRACKED TRADES (${trades.length}):\n\n${trades.map((t: any) => `${t.symbol} (${t.mode}) — ${t.stage} | Score: ${t.score}\n  Direction: ${t.direction} | Entry: ₹${t.entry} | Current: ₹${t.currentPrice}\n  P&L: ${t.unrealizedPnL >= 0 ? "+" : ""}₹${t.unrealizedPnL.toFixed(0)} (${t.unrealizedPnLPercent >= 0 ? "+" : ""}${t.unrealizedPnLPercent.toFixed(1)}%)\n  MFE: ₹${t.mfe.toFixed(0)} | MAE: ₹${t.mae.toFixed(0)} | R:R: 1:${t.riskReward?.toFixed(1)}\n  Created: ${new Date(t.createdAt).toLocaleTimeString("en-IN")}`).join("\n\n")}\n\nStats: Active: ${stats.active} | Total: ${stats.total} | Avg Score: ${stats.avgScore}`;
+      } catch { return "Error fetching trade tracking"; }
     }
 
     default:
