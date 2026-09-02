@@ -226,6 +226,7 @@ function InstitutionalDerivativesView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
+  const [source, setSource] = useState<string>("");
 
   const fetchSig = useCallback(async () => {
     try {
@@ -233,6 +234,7 @@ function InstitutionalDerivativesView() {
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "no data");
       setSig(json.signal);
+      setSource(json.source || "live-chain");
       setError(null);
       setUpdatedAt(Date.now());
     } catch (e: any) {
@@ -251,10 +253,18 @@ function InstitutionalDerivativesView() {
 
   const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(1)) : "--");
   const decColor = (d: string) =>
-    d === "BUY_CALL" ? "text-[#1fbf75]" : d === "BUY_PUT" ? "text-[#f2495c]" : "text-[#7d8ba0]";
+    d === "BUY_CALL" || d === "CALL" || d === "LONG" ? "text-[#1fbf75]" :
+    d === "BUY_PUT" || d === "PUT" || d === "SHORT" ? "text-[#f2495c]" : "text-[#7d8ba0]";
+
+  // Handle fallback (trade intelligence) data format
+  const isFallback = source === "trade-intelligence" || source === "context-fallback";
+  const rec = sig?.recommendation || {};
+  const isNoTrade = sig?.action === "NO_TRADE" || rec?.action === "NO_TRADE";
+  const conf = sig?.confidence?.total || 0;
+  const reasons = sig?.reasoning || rec?.reasons || [];
 
   let barPos = 50;
-  if (sig) {
+  if (sig?.raw) {
     const span = sig.resistance - sig.support;
     barPos = span > 0 ? ((sig.raw.spot - sig.support) / span) * 100 : 50;
     barPos = Math.max(2, Math.min(98, barPos));
@@ -266,7 +276,10 @@ function InstitutionalDerivativesView() {
         <div className="flex items-center gap-2">
           <Layers className="h-4 w-4 text-emerald-400" />
           <span className="text-sm font-bold">Institutional Derivatives Engine</span>
-          <span className="text-[10px] text-[#7d8ba0]">Option Chain + Greeks + OI + FII/DII → Decision</span>
+          <span className="text-[10px] text-[#7d8ba0]">
+            {isFallback ? "Trade Intelligence Fallback" : "Option Chain + Greeks + OI + FII/DII → Decision"}
+          </span>
+          {isFallback && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40">FALLBACK</span>}
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
           <span>Index:</span>
@@ -284,59 +297,64 @@ function InstitutionalDerivativesView() {
 
       {sig && (
         <>
-          {/* Pipeline row */}
-          <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
-            <IdeStat label="Spot" value={fmt(sig.raw.spot)} />
-            <IdeStat label="ATM" value={fmt(sig.raw.atm)} />
-            <IdeStat label="ATM CE" value={fmt(sig.raw.ce)} />
-            <IdeStat label="ATM PE" value={fmt(sig.raw.pe)} />
-            <IdeStat label="PCR" value={fmt(sig.raw.pcr)} />
-            <IdeStat label="IV" value={fmt(sig.raw.iv)} />
-          </div>
-
-          {/* Expected Move + S/R */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
-            <IdeCard title="Expected Move">
-              <div className="text-2xl font-extrabold text-emerald-400">{fmt(sig.expectedMove)}</div>
-              <div className="text-[10px] text-[#7d8ba0]">{sig.expectedMovePct}% of spot</div>
-            </IdeCard>
-            <IdeCard title="Support">
-              <div className="text-2xl font-extrabold text-[#1fbf75]">{fmt(sig.support)}</div>
-              <StrengthBar label="Strength" v={sig.supportStrength} />
-            </IdeCard>
-            <IdeCard title="Resistance">
-              <div className="text-2xl font-extrabold text-[#f2495c]">{fmt(sig.resistance)}</div>
-              <StrengthBar label="Strength" v={sig.resistanceStrength} />
-            </IdeCard>
-          </div>
-
-          {/* Range bar */}
-          <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-            <div className="relative h-3 rounded-full bg-gradient-to-r from-[#1fbf75]/30 via-[#1f2733] to-[#f2495c]/30">
-              <div className="absolute inset-y-0 left-1/2 w-px bg-[#7d8ba0]" />
-              <div className="absolute -top-1 h-5 w-1.5 rounded bg-emerald-400 shadow" style={{ left: `${barPos}%`, transform: "translateX(-50%)" }} />
+          {/* Pipeline row — only show if live chain data */}
+          {!isFallback && sig.raw && (
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
+              <IdeStat label="Spot" value={fmt(sig.raw.spot)} />
+              <IdeStat label="ATM" value={fmt(sig.raw.atm)} />
+              <IdeStat label="ATM CE" value={fmt(sig.raw.ce)} />
+              <IdeStat label="ATM PE" value={fmt(sig.raw.pe)} />
+              <IdeStat label="PCR" value={fmt(sig.raw.pcr)} />
+              <IdeStat label="IV" value={fmt(sig.raw.iv)} />
             </div>
-            <div className="flex justify-between text-[10px] mt-1 text-[#7d8ba0]">
-              <span>S {fmt(sig.support)}</span><span>R {fmt(sig.resistance)}</span>
+          )}
+
+          {/* Fallback context */}
+          {isFallback && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+              <IdeStat label="Market Bias" value={sig.marketBias || "N/A"} tone={decColor(sig.marketBias)} />
+              <IdeStat label="Confidence" value={`${conf}%`} tone={conf >= 70 ? "text-[#1fbf75]" : conf >= 50 ? "text-[#e8a33d]" : "text-[#7d8ba0]"} />
+              <IdeStat label="PCR" value={fmt(sig.oi?.pcr || 1)} />
+              <IdeStat label="Max Pain" value={fmt(sig.oi?.maxPain || 0)} />
             </div>
-          </div>
+          )}
 
           {/* Decision + probabilities */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
             <IdeCard title="Decision">
-              <div className={`text-xl font-extrabold ${decColor(sig.decision)}`}>{sig.decision.replace("_", " ")}</div>
-              <div className="text-[10px] text-[#7d8ba0] mt-1">Confidence {sig.confidence}%</div>
+              <div className={`text-xl font-extrabold ${decColor(rec.action || sig.decision)}`}>
+                {isNoTrade ? "NO TRADE" : (rec.action || sig.decision || "N/A").replace("_", " ")}
+              </div>
+              <div className="text-[10px] text-[#7d8ba0] mt-1">
+                {conf > 0 ? `Confidence ${conf}%` : "No high-conviction setup"}
+              </div>
             </IdeCard>
-            <IdeCard title="CE (Call) Probability">
-              <ProbBar v={sig.callProbability} color="#1fbf75" />
-            </IdeCard>
-            <IdeCard title="PE (Put) Probability">
-              <ProbBar v={sig.putProbability} color="#f2495c" />
-            </IdeCard>
+            {!isFallback && sig.callProbability != null && (
+              <>
+                <IdeCard title="CE (Call) Probability">
+                  <ProbBar v={sig.callProbability} color="#1fbf75" />
+                </IdeCard>
+                <IdeCard title="PE (Put) Probability">
+                  <ProbBar v={sig.putProbability} color="#f2495c" />
+                </IdeCard>
+              </>
+            )}
+            {isFallback && (
+              <>
+                <IdeCard title="Regime">
+                  <div className="text-lg font-bold text-[#dfe6ee]">{sig.marketBias || "N/A"}</div>
+                  <div className="text-[10px] text-[#7d8ba0]">{sig.greeks?.dealerRegime || "Neutral"}</div>
+                </IdeCard>
+                <IdeCard title="Data Source">
+                  <div className="text-lg font-bold text-[#e8a33d]">{source}</div>
+                  <div className="text-[10px] text-[#7d8ba0]">Live chain unavailable</div>
+                </IdeCard>
+              </>
+            )}
           </div>
 
-          {/* Strike + SL + TP */}
-          {sig.decision !== "NO_TRADE" && sig.recommendedStrike != null && (
+          {/* Trade Plan — live chain */}
+          {!isFallback && sig.decision !== "NO_TRADE" && sig.recommendedStrike != null && (
             <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
               <div className="text-[12px] font-bold mb-2">
                 Trade Plan — {sig.recommendedType} @ {fmt(sig.recommendedStrike)}
@@ -350,17 +368,38 @@ function InstitutionalDerivativesView() {
             </div>
           )}
 
+          {/* Trade Plan — fallback */}
+          {isFallback && !isNoTrade && (
+            <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
+              <div className="text-[12px] font-bold mb-2">
+                Trade Plan — {rec.action} {rec.strikeType !== "N/A" ? `${rec.strike} ${rec.strikeType}` : ""}
+              </div>
+              <div className="grid grid-cols-4 gap-2 text-center">
+                <IdeStat label="Entry" value={fmt(rec.entry)} />
+                <IdeStat label="SL" value={fmt(rec.stopLoss)} tone="text-[#f2495c]" />
+                <IdeStat label="TP1" value={fmt(rec.target1)} tone="text-[#1fbf75]" />
+                <IdeStat label="TP2" value={fmt(rec.target2)} tone="text-[#1fbf75]" />
+              </div>
+              {rec.riskReward > 0 && (
+                <div className="text-center text-[11px] text-[#e8a33d] mt-2">R:R 1:{rec.riskReward.toFixed(1)}</div>
+              )}
+            </div>
+          )}
+
           {/* Reasons */}
           <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-            <div className="text-[11px] font-bold mb-1.5">Engine Reasoning</div>
+            <div className="text-[11px] font-bold mb-1.5">
+              {isFallback ? "Market Intelligence" : "Engine Reasoning"}
+            </div>
             <ul className="text-[10px] text-[#9fb0c3] space-y-0.5">
-              {sig.reasons.map((r: string, i: number) => <li key={i}>• {r}</li>)}
+              {reasons.map((r: string, i: number) => <li key={i}>• {r}</li>)}
             </ul>
           </div>
 
           <div className="text-[10px] text-[#7d8ba0]">
-            Pure derivatives engine — no SMC / BOS / CHOCH / Order Blocks / FVG / EMA / VWAP / RSI / MACD / candlesticks.
-            Gamma, OI-change, IV and FII positioning scored adaptively (percentile vs last 25 sessions).
+            {isFallback
+              ? "Live option chain unavailable — showing analysis from trade intelligence engine (Index F&O + Market Context)."
+              : "Pure derivatives engine — no SMC / BOS / CHOCH / Order Blocks / FVG / EMA / VWAP / RSI / MACD / candlesticks."}
           </div>
         </>
       )}
