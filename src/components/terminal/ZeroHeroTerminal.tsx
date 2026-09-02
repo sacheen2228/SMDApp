@@ -115,12 +115,12 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "options", icon: <Link2 size={19} />, label: "Option Chain" },
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
+  { id: "straddle", icon: <Crosshair size={19} />, label: "CAS Straddle" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
   { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
-  { id: "straddle", icon: <Crosshair size={19} />, label: "Straddle Range v2" },
   { id: "ide", icon: <Layers size={19} />, label: "Institutional Derivatives" },
   { id: "top5", icon: <Flame size={19} />, label: "Today's Trade" },
 ];
