@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Bell, AlertTriangle, TrendingUp, TrendingDown, Volume2, Target, Shield, X, CheckCheck } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface ClientAlert {
   id: string;
@@ -195,14 +195,26 @@ export function AlertCenter() {
   });
 
   // ── Generate client alerts from market data (fallback) ──
+  // Use useRef to track if alerts were already generated for current data
+  const lastOppsRef = useRef<string>("");
+  const lastBreadthRef = useRef<string>("");
+
   useEffect(() => {
+    const oppsKey = JSON.stringify(opps?.opportunities?.map((o: any) => o.symbol + o.score) || []);
+    const breadthKey = String(breadth?.breadth?.score ?? breadth?.breadthScore ?? "");
+
+    // Skip if data hasn't changed
+    if (oppsKey === lastOppsRef.current && breadthKey === lastBreadthRef.current) return;
+    lastOppsRef.current = oppsKey;
+    lastBreadthRef.current = breadthKey;
+
     const newAlerts: ClientAlert[] = [];
 
     if (opps?.opportunities) {
       for (const opp of opps.opportunities) {
         if (opp.score >= 70) {
           newAlerts.push({
-            id: `opp-${opp.symbol}-${Date.now()}`,
+            id: `opp-${opp.symbol}-${opp.score}`,
             type: "opportunity",
             symbol: opp.symbol,
             message: `${opp.setup} setup — ${opp.reasons?.join(", ") || "Technical alignment"}`,
@@ -219,25 +231,29 @@ export function AlertCenter() {
       }
     }
 
-    if (breadth?.breadthScore !== undefined) {
-      if (breadth.breadthScore >= 80) {
+    const breadthScore = breadth?.breadth?.score ?? breadth?.breadthScore;
+    const advances = breadth?.breadth?.advances ?? breadth?.advances ?? 0;
+    const declines = breadth?.breadth?.declines ?? breadth?.declines ?? 0;
+
+    if (breadthScore !== undefined) {
+      if (breadthScore >= 80) {
         newAlerts.push({
-          id: `breadth-bull-${Date.now()}`,
+          id: `breadth-bull-${breadthScore}`,
           type: "score",
           symbol: "MARKET",
-          message: `Strong bullish breadth — ${breadth.advances} advances vs ${breadth.declines} declines. Score: ${breadth.breadthScore}/100`,
-          score: breadth.breadthScore,
+          message: `Strong bullish breadth — ${advances} advances vs ${declines} declines. Score: ${breadthScore}/100`,
+          score: breadthScore,
           timestamp: new Date().toISOString(),
           read: false,
           source: "client",
         });
-      } else if (breadth.breadthScore <= 30) {
+      } else if (breadthScore <= 30) {
         newAlerts.push({
-          id: `breadth-bear-${Date.now()}`,
+          id: `breadth-bear-${breadthScore}`,
           type: "risk",
           symbol: "MARKET",
-          message: `Weak breadth warning — ${breadth.declines} declines vs ${breadth.advances} advances. Score: ${breadth.breadthScore}/100`,
-          score: breadth.breadthScore,
+          message: `Weak breadth warning — ${declines} declines vs ${advances} advances. Score: ${breadthScore}/100`,
+          score: breadthScore,
           timestamp: new Date().toISOString(),
           read: false,
           source: "client",
@@ -247,8 +263,9 @@ export function AlertCenter() {
 
     if (newAlerts.length > 0) {
       setClientAlerts((prev) => {
-        const existing = new Set(prev.map((a) => a.symbol + a.type));
-        const fresh = newAlerts.filter((a) => !existing.has(a.symbol + a.type));
+        const existing = new Set(prev.map((a) => a.id));
+        const fresh = newAlerts.filter((a) => !existing.has(a.id));
+        if (fresh.length === 0) return prev;
         return [...fresh, ...prev].slice(0, 20);
       });
     }
