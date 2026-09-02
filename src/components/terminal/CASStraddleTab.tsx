@@ -30,12 +30,15 @@ interface LiveSignal {
 interface BacktestResult {
   success: boolean;
   totalTrades: number;
+  totalScans: number;
+  noTradePct: number;
   winningTrades: number;
   losingTrades: number;
   winRate: number;
   grossPnL: number;
   totalCharges: number;
   netPnL: number;
+  expectancy: number;
   avgProfit: number;
   avgLoss: number;
   profitFactor: number;
@@ -44,9 +47,12 @@ interface BacktestResult {
   largestWin: number;
   largestLoss: number;
   returnOnCapital: number;
+  avgHoldingTime: string;
   equityCurve: Array<{ date: string; equity: number; drawdown: number }>;
   trades: any[];
   strategyComparison: Record<string, any>;
+  regimeBreakdown: Record<string, any>;
+  diagnosis: string[];
   dataQualityScore: number;
   incompleteTradesRemoved: number;
 }
@@ -307,24 +313,28 @@ function BacktestMode({ symbol }: { symbol: string }) {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
               <MetricCard label="Trades" value={String(result.totalTrades)} />
+              <MetricCard label="Scans" value={`${result.totalScans} (${result.noTradePct}% idle)`} />
               <MetricCard label="Win Rate" value={`${result.winRate}%`} tone={result.winRate >= 50 ? "text-[#1fbf75]" : "text-[#f2495c]"} />
               <MetricCard label="Net P&L" value={`₹${result.netPnL.toLocaleString("en-IN")}`} tone={result.netPnL >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"} />
-              <MetricCard label="Profit Factor" value={result.profitFactor.toFixed(2)} tone={result.profitFactor >= 1.5 ? "text-[#1fbf75]" : "text-[#e8a33d]"} />
-              <MetricCard label="Max Drawdown" value={`${result.maxDrawdownPct}%`} tone="text-[#f2495c]" />
-              <MetricCard label="Return on Capital" value={`${result.returnOnCapital}%`} tone={result.returnOnCapital >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"} />
+              <MetricCard label="Profit Factor" value={result.profitFactor.toFixed(2)} tone={result.profitFactor >= 1.5 ? "text-[#1fbf75]" : result.profitFactor >= 1 ? "text-[#e8a33d]" : "text-[#f2495c]"} />
+              <MetricCard label="Return" value={`${result.returnOnCapital}%`} tone={result.returnOnCapital >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"} />
             </div>
-          </div>
-
-          {/* Detailed Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <MetricCard label="Winning" value={String(result.winningTrades)} tone="text-[#1fbf75]" />
-            <MetricCard label="Losing" value={String(result.losingTrades)} tone="text-[#f2495c]" />
-            <MetricCard label="Avg Profit" value={`₹${result.avgProfit.toLocaleString("en-IN")}`} tone="text-[#1fbf75]" />
-            <MetricCard label="Avg Loss" value={`₹${result.avgLoss.toLocaleString("en-IN")}`} tone="text-[#f2495c]" />
-            <MetricCard label="Largest Win" value={`₹${result.largestWin.toLocaleString("en-IN")}`} tone="text-[#1fbf75]" />
-            <MetricCard label="Largest Loss" value={`₹${result.largestLoss.toLocaleString("en-IN")}`} tone="text-[#f2495c]" />
-            <MetricCard label="Gross P&L" value={`₹${result.grossPnL.toLocaleString("en-IN")}`} />
-            <MetricCard label="Total Charges" value={`₹${result.totalCharges.toLocaleString("en-IN")}`} />
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mt-2">
+              <MetricCard label="Max Drawdown" value={`${result.maxDrawdownPct}%`} tone="text-[#f2495c]" />
+              <MetricCard label="Expectancy" value={`₹${result.expectancy.toLocaleString("en-IN")}`} tone={result.expectancy >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"} />
+              <MetricCard label="Avg Holding" value={result.avgHoldingTime} />
+              <MetricCard label="Largest Win" value={`₹${result.largestWin.toLocaleString("en-IN")}`} tone="text-[#1fbf75]" />
+              <MetricCard label="Largest Loss" value={`₹${result.largestLoss.toLocaleString("en-IN")}`} tone="text-[#f2495c]" />
+              <MetricCard label="Data Quality" value={`${result.dataQualityScore}/100`} />
+            </div>
+            {/* Diagnosis */}
+            {result.diagnosis && result.diagnosis.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {result.diagnosis.map((d: string, i: number) => (
+                  <span key={i} className="text-[10px] bg-[#e8a33d]/10 text-[#e8a33d] px-2 py-0.5 rounded">{d}</span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Strategy Comparison */}
@@ -340,10 +350,45 @@ function BacktestMode({ symbol }: { symbol: string }) {
                       <th className="text-right py-1 px-2">Win %</th>
                       <th className="text-right py-1 px-2">Net P&L</th>
                       <th className="text-right py-1 px-2">Profit Factor</th>
+                      <th className="text-right py-1 px-2">Expectancy</th>
                     </tr>
                   </thead>
                   <tbody>
                     {Object.entries(result.strategyComparison).map(([key, stats]) => (
+                      <tr key={key} className="border-b border-[#1f2733]/50 hover:bg-[#1a2230]">
+                        <td className="py-1 px-2 font-bold">{key}</td>
+                        <td className="text-right py-1 px-2">{stats.trades}</td>
+                        <td className="text-right py-1 px-2">{stats.winRate.toFixed(1)}%</td>
+                        <td className={`text-right py-1 px-2 font-bold ${stats.netPnL >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
+                          ₹{stats.netPnL.toLocaleString("en-IN")}
+                        </td>
+                        <td className="text-right py-1 px-2">{stats.profitFactor.toFixed(2)}</td>
+                        <td className="text-right py-1 px-2">₹{Math.round(stats.expectancy).toLocaleString("en-IN")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Regime Breakdown */}
+          {result.regimeBreakdown && Object.keys(result.regimeBreakdown).length > 0 && (
+            <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
+              <div className="text-[11px] font-bold mb-2">Regime Breakdown</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[10px]">
+                  <thead>
+                    <tr className="text-[#7d8ba0] border-b border-[#1f2733]">
+                      <th className="text-left py-1 px-2">Regime</th>
+                      <th className="text-right py-1 px-2">Trades</th>
+                      <th className="text-right py-1 px-2">Win %</th>
+                      <th className="text-right py-1 px-2">Net P&L</th>
+                      <th className="text-right py-1 px-2">Profit Factor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(result.regimeBreakdown).map(([key, stats]) => (
                       <tr key={key} className="border-b border-[#1f2733]/50 hover:bg-[#1a2230]">
                         <td className="py-1 px-2 font-bold">{key}</td>
                         <td className="text-right py-1 px-2">{stats.trades}</td>
@@ -382,7 +427,7 @@ function BacktestMode({ symbol }: { symbol: string }) {
                 <table className="w-full text-[9px]">
                   <thead className="sticky top-0 bg-[#10151d]">
                     <tr className="text-[#7d8ba0] border-b border-[#1f2733]">
-                      {["date", "strategy", "spot", "ceStrike", "peStrike", "combinedPremium", "casScore", "exitReason", "netPnL", "returnPct"].map(col => (
+                      {["date", "strategy", "spot", "combinedPremium", "casScore", "tradeQuality", "exitReason", "barsHeld", "netPnL", "returnPct"].map(col => (
                         <th key={col} className="text-left py-1 px-1.5 cursor-pointer hover:text-[#dfe6ee]"
                           onClick={() => { setSortBy(col); setSortDir(d => d === "asc" ? "desc" : "asc"); }}>
                           {col.replace(/([A-Z])/g, " $1").toUpperCase()}
@@ -396,11 +441,11 @@ function BacktestMode({ symbol }: { symbol: string }) {
                         <td className="py-1 px-1.5">{t.date}</td>
                         <td className="py-1 px-1.5 font-bold">{t.strategy}</td>
                         <td className="py-1 px-1.5">₹{t.spot?.toLocaleString("en-IN")}</td>
-                        <td className="py-1 px-1.5">{t.ceStrike ? `₹${t.ceStrike.toLocaleString("en-IN")}` : "-"}</td>
-                        <td className="py-1 px-1.5">{t.peStrike ? `₹${t.peStrike.toLocaleString("en-IN")}` : "-"}</td>
                         <td className="py-1 px-1.5">₹{t.combinedPremium?.toFixed(1)}</td>
                         <td className="py-1 px-1.5">{t.casScore}</td>
+                        <td className="py-1 px-1.5">{t.tradeQuality}</td>
                         <td className="py-1 px-1.5">{t.exitReason}</td>
+                        <td className="py-1 px-1.5">{t.barsHeld}d</td>
                         <td className={`py-1 px-1.5 font-bold ${t.netPnL >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
                           ₹{t.netPnL?.toLocaleString("en-IN")}
                         </td>
