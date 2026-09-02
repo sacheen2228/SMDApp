@@ -1,4 +1,7 @@
 import { sendTelegramMessage } from "./telegram";
+import { handleSDMMessage, type SDMContext } from "./sdmChat";
+import { detectIntent } from "./tradeAlertEngine";
+import { getHistory, appendTurn } from "./historyStore";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
@@ -321,6 +324,54 @@ export async function processMessage(chatId: number, text: string): Promise<void
     }
     const response = await handlePrice(symbol);
     await sendTelegramMessage(response, String(chatId));
+    return;
+  }
+
+  // Free text — route through SDM Chat engine (same as webhook)
+  if (!msg.startsWith("/")) {
+    try {
+      const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+      const detected = detectIntent(msg);
+      const symbol = detected.symbol || "NIFTY";
+
+      // Build minimal SDMContext
+      let spot = 0, pcr = 1, vix = 15;
+      let chain: any[] = [];
+      try {
+        const res = await fetch(`${base}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+        const json = await res.json();
+        const d = json?.data;
+        if (d) {
+          spot = d.spotPrice || d.summary?.spotPrice || 0;
+          pcr = d.summary?.pcr || 1;
+          vix = d.summary?.indiaVIX || 15;
+          chain = (d.data || []).map((row: any) => ({
+            strike: row.strike,
+            ceLtp: row.ce?.ltp || 0, ceOi: row.ce?.oi || 0, ceOichg: row.ce?.oiChg || 0, ceVol: row.ce?.volume || 0, ceIv: row.ce?.iv || 0,
+            peLtp: row.pe?.ltp || 0, peOi: row.pe?.oi || 0, peOichg: row.pe?.oiChg || 0, peVol: row.pe?.volume || 0, peIv: row.pe?.iv || 0,
+          }));
+        }
+      } catch {}
+
+      const history = getHistory(String(chatId));
+      const ctx: SDMContext = {
+        symbol, spot, pcr, vix, chain,
+        allChains: chain.length > 0 ? [{ symbol, spot, pcr, vix, chain }] : [],
+        history,
+        newsLookup: async () => null,
+        gapLookup: async () => null,
+        correlationLookup: async () => null,
+        equityLookup: async () => null,
+      };
+
+      const reply = await handleSDMMessage(msg, ctx);
+      appendTurn(String(chatId), { role: "user", text: msg, intent: reply.intentKind, symbol: reply.symbol || symbol });
+      appendTurn(String(chatId), { role: "bot", text: reply.text, intent: reply.intentKind, symbol: reply.symbol || symbol });
+      await sendTelegramMessage(reply.text, String(chatId));
+    } catch (e: any) {
+      console.error("[Telegram] Free text error:", e.message);
+      await sendTelegramMessage("Sorry, something went wrong. Try /help for commands.", String(chatId));
+    }
     return;
   }
 
