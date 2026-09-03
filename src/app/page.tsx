@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -59,6 +59,7 @@ import { AlertCenter } from '@/components/dashboard/AlertCenter';
 import { CASPanel } from '@/components/dashboard/CASPanel';
 import { StockAnalysisDrawer } from '@/components/dashboard/StockAnalysisDrawer';
 import InstitutionalPositioningPanel from '@/components/terminal/InstitutionalPositioningPanel';
+import ChallengeTab from '@/components/challenge/ChallengeTab';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -325,7 +326,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -735,6 +736,11 @@ return (
               onClick={() => { setViewMode('daily'); setDisplayMode('pro'); }}>
               <CalendarClock className="h-2.5 w-2.5 mr-0.5" /> Daily
             </Button>
+            <Button variant={viewMode === 'challenge' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'challenge' ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('challenge'); setDisplayMode('pro'); }}>
+              <Trophy className="h-2.5 w-2.5 mr-0.5" /> ₹15K→₹1L
+            </Button>
             <Button variant={viewMode === 'expiry' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'expiry' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('expiry'); setDisplayMode('pro'); }}>
@@ -973,6 +979,11 @@ return (
         /* ═══════ DAILY DERIVATIVES RECOMMENDATION ═══════ */
         <div className="flex-1 overflow-auto">
           <DailyDerivativesPanel symbol={symbol} />
+        </div>
+        ) : viewMode === 'challenge' ? (
+        /* ═══════ ₹15K → ₹1L CHALLENGE ═══════ */
+        <div className="flex-1 overflow-auto">
+          <ChallengeTab />
         </div>
         ) : viewMode === 'expiry' ? (
         /* ═══════ EXPIRY PLAN ═══════ */
