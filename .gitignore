@@ -52,8 +52,6 @@ test
 prompt
 
 server.log
-# Skills directory
-/skills/
 
 # local files
 /downloads/

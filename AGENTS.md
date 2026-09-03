@@ -200,6 +200,16 @@ First compile takes 15-30s. If it hangs, `rm -rf .next` and restart.
 - Symlink: `ln -s /home/sachin/Desktop/SMDApp /home/z/my-project`
 - Or update the scripts to use the actual project path
 
+## Development Skills
+
+Three skills adapted from Superpowers (obra/superpowers) for SMDApp. Reference these during development.
+
+| Skill | File | When to Use |
+|---|---|---|
+| **Test-Driven Development** | `skills/TDD.md` | New engines, bug fixes, scoring logic — test first, code second |
+| **Git Worktrees** | `skills/GIT-WORKTREES.md` | Feature work touching 3+ files — isolate from main |
+| **Systematic Debugging** | `skills/DEBUGGING.md` | Any bug — find root cause before fixing |
+
 ## Architecture Guardian (MANDATORY pre-coding workflow)
 
 Every coding task MUST follow these phases, in order. Do NOT skip to coding.
@@ -215,7 +225,9 @@ Auditing/duplicating code BEFORE understanding the existing codebase is forbidde
   - Refactor before creating. Extend before replacing. Merge before deleting.
   - Integrate new logic into the existing production path; do not fork a parallel path.
   - Mark duplicate modules `@deprecated` and keep them until the production change is verified — never delete immediately.
-- **Phase 7 — Testing**: Run the project, verify compilation, imports, dashboard, the affected feature, audit recording, API responses, backtest, and agent chat. Every existing feature must keep working.
+  - **For new engines/logic**: Follow `skills/TDD.md` — write failing test first, then implement.
+  - **For feature work 3+ files**: Follow `skills/GIT-WORKTREES.md` — isolate in worktree.
+- **Phase 7 — Testing**: Run `bun test` + `bun run build`. Verify compilation, imports, dashboard, the affected feature, audit recording, API responses, backtest, and agent chat. Every existing feature must keep working.
 - **Phase 8 — Cleanup**: Only AFTER every test passes, remove the deprecated duplicate files.
 
 Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidates` → `FullZeroHero` → Trade Audit (`registerTrades("ZERO_HERO_AI", …)`). Everything Zero-Hero must integrate into this path.
