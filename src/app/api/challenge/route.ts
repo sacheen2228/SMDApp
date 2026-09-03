@@ -1,10 +1,13 @@
 // app/api/challenge/route.ts
 //
 // ₹15K → ₹1L Challenge Engine API
-// GET: scan + status | POST: execute trade | PATCH: close trade | DELETE: reset
+// GET: scan + status + trade feed
+// POST: auto-execute trade (LIVE or PAPER)
+// PATCH: close trade
+// DELETE: reset
 
 import { NextRequest, NextResponse } from "next/server";
-import { runChallengeScan, executeChallengeTrade } from "@/lib/challenge/challenge-engine";
+import { runChallengeScan } from "@/lib/challenge/challenge-engine";
 import {
   getChallenge,
   initChallenge,
@@ -12,12 +15,23 @@ import {
   resetChallenge,
   getTodayPnL,
 } from "@/lib/challenge/challenge-tracker";
+import {
+  executeTrade,
+  closeTradeExecution,
+  getTradeLog,
+  getTradeStats,
+  getOpenTrades,
+  type ExecutionMode,
+} from "@/lib/challenge/auto-executor";
 
-// ─── GET: Scan + Status ────────────────────────────────────────────
+// ─── GET: Scan + Status + Trade Feed ──────────────────────────────
 export async function GET(req: NextRequest) {
   try {
     const ch = getChallenge();
     const scan = await runChallengeScan();
+    const tradeLog = getTradeLog(50);
+    const tradeStats = getTradeStats();
+    const openTrades = getOpenTrades();
 
     return NextResponse.json({
       success: true,
@@ -42,29 +56,40 @@ export async function GET(req: NextRequest) {
         drawdown: ch.currentDrawdown,
       },
       scan,
+      tradeFeed: tradeLog,
+      tradeStats,
+      openTrades,
     });
   } catch (e: any) {
     return NextResponse.json({ success: false, error: e.message }, { status: 500 });
   }
 }
 
-// ─── POST: Execute Trade ───────────────────────────────────────────
+// ─── POST: Auto-Execute Trade ──────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { opportunityIndex = 0 } = body;
+    const { mode = "PAPER", opportunityIndex = 0 } = body;
 
     const scan = await runChallengeScan();
     if (!scan.bestTrade) {
       return NextResponse.json({ success: false, error: "No trade available", scan }, { status: 400 });
     }
 
-    const trade = executeChallengeTrade(scan.bestTrade);
+    // Execute via auto-executor (LIVE or PAPER)
+    const result = await executeTrade(scan.bestTrade, mode as ExecutionMode);
+
+    // Also record in challenge tracker for capital tracking
     const ch = getChallenge();
+    if (result.success) {
+      ch.currentCapital -= result.maxLoss; // Reserve max loss
+      ch.totalTrades++;
+      ch.lastUpdate = new Date().toISOString();
+    }
 
     return NextResponse.json({
       success: true,
-      trade,
+      execution: result,
       challenge: {
         currentCapital: ch.currentCapital,
         totalTrades: ch.totalTrades,
@@ -86,15 +111,17 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ success: false, error: "tradeId and exitPrice required" }, { status: 400 });
     }
 
-    const trade = closeTrade(tradeId, exitPrice, exitReason);
-    if (!trade) {
-      return NextResponse.json({ success: false, error: "Trade not found or already closed" }, { status: 404 });
-    }
+    // Close in auto-executor
+    const execResult = await closeTradeExecution(tradeId, exitPrice, exitReason);
 
+    // Also close in challenge tracker
+    const trackerTrade = closeTrade(tradeId, exitPrice, exitReason);
     const ch = getChallenge();
+
     return NextResponse.json({
       success: true,
-      trade,
+      execution: execResult,
+      trade: trackerTrade,
       challenge: {
         currentCapital: ch.currentCapital,
         status: ch.status,
