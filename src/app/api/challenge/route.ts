@@ -1,13 +1,10 @@
-// app/api/challenge/route.ts
-//
-// ₹15K → ₹1L Challenge Engine API
-// GET: scan + status + trade feed
-// POST: auto-execute trade (LIVE or PAPER)
-// PATCH: close trade
-// DELETE: reset
+// ═══════════════════════════════════════════════════════════════════════════
+// Challenge API — ₹15K → ₹1L Challenge
+// FIXED: scan caching, capital deduction, ID matching
+// ═══════════════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from "next/server";
-import { runChallengeScan } from "@/lib/challenge/challenge-engine";
+import { runChallengeScan, type ChallengeScanResult } from "@/lib/challenge/challenge-engine";
 import {
   getChallenge,
   initChallenge,
@@ -24,11 +21,29 @@ import {
   type ExecutionMode,
 } from "@/lib/challenge/auto-executor";
 
-// ─── GET: Scan + Status + Trade Feed ──────────────────────────────
+// ── Scan cache (FIXED: don't re-scan every GET) ──
+let lastScan: ChallengeScanResult | null = null;
+let lastScanTime = 0;
+const SCAN_TTL_MS = 15_000; // 15 seconds
+
+async function getCachedScan(): Promise<ChallengeScanResult> {
+  const now = Date.now();
+  if (lastScan && now - lastScanTime < SCAN_TTL_MS) {
+    return lastScan;
+  }
+  lastScan = await runChallengeScan();
+  lastScanTime = now;
+  return lastScan;
+}
+
+// ─── GET: Status + Trade Feed (scan on-demand via ?refresh=1) ─────
 export async function GET(req: NextRequest) {
   try {
     const ch = getChallenge();
-    const scan = await runChallengeScan();
+    const refresh = req.nextUrl.searchParams.get("refresh") === "1";
+
+    // Only re-scan when explicitly requested or first load
+    const scan = refresh ? await runChallengeScan() : await getCachedScan();
     const tradeLog = getTradeLog(50);
     const tradeStats = getTradeStats();
     const openTrades = getOpenTrades();
@@ -43,6 +58,7 @@ export async function GET(req: NextRequest) {
         peakCapital: ch.peakCapital,
         targetCapital: ch.targetCapital,
         progressPct: ch.progressPct,
+        progressLabel: ch.progressLabel,
         totalTrades: ch.totalTrades,
         winCount: ch.winCount,
         lossCount: ch.lossCount,
@@ -54,6 +70,7 @@ export async function GET(req: NextRequest) {
         milestones: ch.milestones,
         todayPnL: getTodayPnL(),
         drawdown: ch.currentDrawdown,
+        equityCurve: ch.equityCurve.slice(-50), // Last 50 points for chart
       },
       scan,
       tradeFeed: tradeLog,
@@ -72,20 +89,24 @@ export async function POST(req: NextRequest) {
     const { mode = "PAPER", opportunityIndex = 0 } = body;
 
     const scan = await runChallengeScan();
-    if (!scan.bestTrade) {
+    const opp = scan.topOpportunities[opportunityIndex] || scan.bestTrade;
+    if (!opp) {
       return NextResponse.json({ success: false, error: "No trade available", scan }, { status: 400 });
     }
 
     // Execute via auto-executor (LIVE or PAPER)
-    const result = await executeTrade(scan.bestTrade, mode as ExecutionMode);
+    const result = await executeTrade(opp, mode as ExecutionMode);
 
-    // Also record in challenge tracker for capital tracking
+    // Record in challenge tracker (FIXED: don't deduct maxLoss from capital)
     const ch = getChallenge();
     if (result.success) {
-      ch.currentCapital -= result.maxLoss; // Reserve max loss
+      // Track the trade but DON'T deduct maxLoss — P&L applied on close only
       ch.totalTrades++;
       ch.lastUpdate = new Date().toISOString();
     }
+
+    // Invalidate scan cache after executing
+    lastScan = null;
 
     return NextResponse.json({
       success: true,
@@ -94,6 +115,7 @@ export async function POST(req: NextRequest) {
         currentCapital: ch.currentCapital,
         totalTrades: ch.totalTrades,
         status: ch.status,
+        progressPct: ch.progressPct,
       },
     });
   } catch (e: any) {
@@ -111,12 +133,15 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ success: false, error: "tradeId and exitPrice required" }, { status: 400 });
     }
 
-    // Close in auto-executor
+    // Close in auto-executor (handles Breeze square-off + audit close)
     const execResult = await closeTradeExecution(tradeId, exitPrice, exitReason);
 
-    // Also close in challenge tracker
+    // Also close in challenge tracker for capital tracking (FIXED: ID matching)
     const trackerTrade = closeTrade(tradeId, exitPrice, exitReason);
     const ch = getChallenge();
+
+    // Invalidate scan cache
+    lastScan = null;
 
     return NextResponse.json({
       success: true,
@@ -124,6 +149,8 @@ export async function PATCH(req: NextRequest) {
       trade: trackerTrade,
       challenge: {
         currentCapital: ch.currentCapital,
+        progressPct: ch.progressPct,
+        progressLabel: ch.progressLabel,
         status: ch.status,
         winRate: ch.winRate,
         profitFactor: ch.profitFactor,
@@ -138,6 +165,7 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE() {
   try {
     const ch = resetChallenge();
+    lastScan = null; // Invalidate cache
     return NextResponse.json({
       success: true,
       message: `Challenge #${ch.challengeNumber} initialized`,

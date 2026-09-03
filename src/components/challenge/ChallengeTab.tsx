@@ -1,11 +1,105 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Challenge Tab — ₹15K → ₹1L Smart Trading Challenge
-// Auto-execute + Copy Trading + Trade Feed
+// Challenge Tab — ₹15K → ₹1L Challenge + Copy Trading
+// FIXED: copy button, close trade, VIX display, progress, icons
 // ═══════════════════════════════════════════════════════════════════════════
 
 "use client";
-import { useState, useEffect, useCallback } from "react";
-import { Activity, Trophy, TrendingUp, TrendingDown, Target, AlertTriangle, Zap, BarChart3, RefreshCw, Play, Square, RotateCcw, Copy, Check, Clock, Circle } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import {
+  Trophy,
+  Target,
+  TrendingUp,
+  TrendingDown,
+  AlertTriangle,
+  Zap,
+  RefreshCw,
+  Copy,
+  BarChart3,
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Play,
+  Pause,
+  RotateCcw,
+  CheckCircle,
+  XCircle,
+  Clock,
+  Shield,
+  ArrowRight,
+} from "lucide-react";
+
+// ── Types ──
+interface ChallengeState {
+  number: number;
+  status: string;
+  startingCapital: number;
+  currentCapital: number;
+  peakCapital: number;
+  targetCapital: number;
+  progressPct: number;
+  progressLabel: string;
+  totalTrades: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  profitFactor: number;
+  expectancy: number;
+  maxDrawdownPct: number;
+  consecutiveLosses: number;
+  milestones: Array<{ target: number; label: string; reached: boolean; progress: number }>;
+  todayPnL: number;
+  drawdown: {
+    totalDrawdownPct: number;
+    dailyDrawdownPct: number;
+    challengeFailed: boolean;
+    failureReason?: string;
+  };
+  equityCurve: Array<{ timestamp: string; capital: number }>;
+}
+
+interface ScanResult {
+  timestamp: string;
+  decision: string;
+  topOpportunities: Array<{
+    rank: number;
+    symbol: string;
+    instrument: string;
+    strategy: string;
+    score: number;
+    confidence: number;
+    direction: string;
+    entry: number;
+    stopLoss: number;
+    target1: number;
+    target2: number;
+    riskReward: number;
+    volume: number;
+    reasoning: string[];
+    position: { quantity: number; lotSize: number; canTrade: boolean; reason?: string };
+    data: { ltp: number; changePct: number };
+  }>;
+  bestTrade?: any;
+  summary: {
+    nifty500Scanned: number;
+    nifty500Valid: number;
+    nifty500Candidates: number;
+    indexFOAvailable: number;
+    indexFOCandidates: number;
+    stockFOAvailable: number;
+    stockFOCandidates: number;
+    equitySwingCandidates: number;
+    totalSetups: number;
+    dataSource: string;
+  };
+  marketContext: {
+    regime: string;
+    vix: number;
+    vixAvailable: boolean;
+    breadth: string;
+  };
+  capital: { current: number; available: number; riskBudget: number };
+  noTradeReason?: string;
+}
 
 interface TradeFeedEntry {
   id: string;
@@ -17,473 +111,507 @@ interface TradeFeedEntry {
   instrument: string;
   entry: number;
   exit?: number;
+  stopLoss: number;
+  target: number;
   quantity: number;
   lotSize: number;
   pnl?: number;
   score: number;
   status: string;
   exitReason?: string;
-  orderId?: string;
 }
 
-interface ChallengeData {
-  challenge: any;
-  scan: any;
-  tradeFeed: TradeFeedEntry[];
-  tradeStats: {
-    total: number;
-    open: number;
-    closed: number;
-    wins: number;
-    losses: number;
-    winRate: number;
-    totalPnl: number;
-    avgPnl: number;
-  };
-  openTrades: TradeFeedEntry[];
-}
-
+// ── Helper: format currency ──
 function fmt(n: number): string {
-  return `₹${n.toLocaleString("en-IN")}`;
+  return n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
 }
 
-function timeAgo(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+// ── Status badge colors ──
+function statusColor(status: string) {
+  switch (status) {
+    case "WIN": return "text-emerald-400 bg-emerald-400/10";
+    case "LOSS": return "text-red-400 bg-red-400/10";
+    case "BREAKEVEN": return "text-yellow-400 bg-yellow-400/10";
+    case "OPEN": return "text-blue-400 bg-blue-400/10";
+    case "EXPIRED": return "text-gray-400 bg-gray-400/10";
+    default: return "text-gray-400 bg-gray-400/10";
+  }
 }
 
-function StatusDot({ status }: { status: string }) {
-  if (status === "OPEN") return <Circle className="h-2 w-2 fill-[#e8a33d] text-[#e8a33d]" />;
-  if (status === "WIN") return <Check className="h-2 w-2 text-[#1fbf75]" />;
-  if (status === "LOSS") return <Circle className="h-2 w-2 fill-[#f2495c] text-[#f2495c]" />;
-  return <Circle className="h-2 w-2 fill-[#7d8ba0] text-[#7d8ba0]" />;
+function decisionColor(d: string) {
+  switch (d) {
+    case "TRADE": return "text-emerald-400 bg-emerald-400/10 border-emerald-400/30";
+    case "WATCH": return "text-yellow-400 bg-yellow-400/10 border-yellow-400/30";
+    case "NO_TRADE": return "text-gray-400 bg-gray-400/10 border-gray-400/30";
+    default: return "text-gray-400 bg-gray-400/10";
+  }
 }
+
+function instrumentIcon(inst: string) {
+  switch (inst) {
+    case "CALL": return <TrendingUp className="w-3.5 h-3.5" />;
+    case "PUT": return <TrendingDown className="w-3.5 h-3.5" />;
+    case "FUTURES": return <BarChart3 className="w-3.5 h-3.5" />;
+    case "EQUITY": return <Activity className="w-3.5 h-3.5" />;
+    default: return <Zap className="w-3.5 h-3.5" />;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ChallengeTab Component
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function ChallengeTab() {
-  const [data, setData] = useState<ChallengeData | null>(null);
+  const [challenge, setChallenge] = useState<ChallengeState | null>(null);
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [tradeFeed, setTradeFeed] = useState<TradeFeedEntry[]>([]);
+  const [tradeStats, setTradeStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [executing, setExecuting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [execMode, setExecMode] = useState<"PAPER" | "LIVE">("PAPER");
+  const [executing, setExecuting] = useState<number | null>(null);
+  const [closingTradeId, setClosingTradeId] = useState<string | null>(null);
+  const [closePrice, setClosePrice] = useState<string>("");
+  const [expandedOpp, setExpandedOpp] = useState<number | null>(null);
+  const [copyMode, setCopyMode] = useState<"PAPER" | "LIVE">("PAPER");
+  const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const refreshRef = useRef<NodeJS.Timeout | null>(null);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  // Fetch challenge data
+  const fetchData = useCallback(async (refresh = false) => {
     try {
-      const res = await fetch("/api/challenge");
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error || "Failed");
-      setData(json);
-    } catch (e: any) {
-      setError(e.message);
+      const url = `/api/challenge${refresh ? "?refresh=1" : ""}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.success) {
+        setChallenge(data.challenge);
+        setScan(data.scan);
+        setTradeFeed(data.tradeFeed);
+        setTradeStats(data.tradeStats);
+      }
+    } catch (e) {
+      console.error("Failed to fetch challenge:", e);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
-  // Auto-refresh every 15s
-  useEffect(() => { const t = setInterval(fetchData, 15000); return () => clearInterval(t); }, [fetchData]);
+  // Initial fetch + auto-refresh
+  useEffect(() => {
+    fetchData(true);
+  }, [fetchData]);
 
-  const executeTrade = async (mode: "PAPER" | "LIVE") => {
-    setExecuting(true);
-    setExecMode(mode);
+  useEffect(() => {
+    if (autoRefresh) {
+      refreshRef.current = setInterval(() => fetchData(false), 15000);
+    }
+    return () => { if (refreshRef.current) clearInterval(refreshRef.current); };
+  }, [autoRefresh, fetchData]);
+
+  // Execute trade
+  const executeTrade = async (oppIndex: number) => {
+    setExecuting(oppIndex);
     try {
       const res = await fetch("/api/challenge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode: copyMode, opportunityIndex: oppIndex }),
       });
-      const json = await res.json();
-      if (!json.success) setError(json.error);
-      await fetchData();
-    } catch (e: any) {
-      setError(e.message);
+      const data = await res.json();
+      if (data.success) {
+        fetchData(true);
+      }
     } finally {
-      setExecuting(false);
+      setExecuting(null);
     }
   };
 
-  const closeTrade = async (tradeId: string, exitPrice: number) => {
+  // Close trade
+  const closeTrade = async (tradeId: string) => {
+    if (!closePrice) return;
+    setClosingTradeId(tradeId);
     try {
-      await fetch("/api/challenge", {
+      const res = await fetch("/api/challenge", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tradeId, exitPrice, exitReason: "MANUAL" }),
+        body: JSON.stringify({ tradeId, exitPrice: parseFloat(closePrice), exitReason: "MANUAL" }),
       });
-      await fetchData();
-    } catch (e: any) {
-      setError(e.message);
+      const data = await res.json();
+      if (data.success) {
+        setClosePrice("");
+        setClosingTradeId(null);
+        fetchData(true);
+      }
+    } finally {
+      setClosingTradeId(null);
     }
   };
 
+  // Reset challenge
   const resetChallenge = async () => {
-    if (!confirm("Reset challenge? Current progress will be lost.")) return;
+    if (!confirm("Reset challenge? Current challenge will be archived.")) return;
     await fetch("/api/challenge", { method: "DELETE" });
-    await fetchData();
+    fetchData(true);
   };
 
-  const copyTrade = (trade: TradeFeedEntry) => {
-    const text = `${trade.direction} ${trade.quantity} ${trade.symbol} @ ₹${trade.entry} | SL: Stop | Score: ${trade.score} | ${trade.strategy}`;
-    navigator.clipboard.writeText(text).catch(() => {});
-    setCopiedId(trade.id);
-    setTimeout(() => setCopiedId(null), 2000);
+  // Copy signal
+  const copySignal = (opp: any) => {
+    const text = `${opp.strategy} ${opp.direction} ${opp.symbol} @ ₹${opp.entry} | SL ₹${opp.stopLoss} | TP ₹${opp.target1} | R:R 1:${opp.riskReward.toFixed(1)} | Score ${opp.score}`;
+    navigator.clipboard.writeText(text);
+    setCopiedIds(new Set([...copiedIds, opp.symbol + opp.timestamp]));
+    setTimeout(() => setCopiedIds(new Set([...copiedIds].filter(id => id !== opp.symbol + opp.timestamp))), 2000);
   };
 
-  if (!data) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-[#7d8ba0]">
-        {loading ? <Activity className="h-5 w-5 animate-spin mr-2" /> : "Failed to load challenge data"}
+      <div className="flex items-center justify-center h-64 text-neutral-400">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400 mr-3" />
+        Loading challenge data...
       </div>
     );
   }
 
-  const { challenge: ch, scan, tradeFeed, tradeStats, openTrades } = data;
-  const isFailed = ch.status === "FAILED";
-  const isTarget = ch.status === "TARGET_REACHED";
-  const isActive = ch.status === "ACTIVE";
+  if (!challenge || !scan) {
+    return <div className="text-center text-neutral-400 py-12">No challenge data available</div>;
+  }
+
+  const progressWidth = Math.max(0, Math.min(100, challenge.progressPct));
+  const behind = challenge.progressPct < 0;
+  const capitalGain = challenge.currentCapital - challenge.startingCapital;
+  const capitalGainPct = (capitalGain / challenge.startingCapital) * 100;
 
   return (
-    <div className="flex flex-col gap-2 p-2 overflow-auto h-full">
-      {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
-
-      {/* ─── Challenge Header ─── */}
-      <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <Trophy className={`h-4 w-4 ${isTarget ? "text-[#e8a33d]" : isFailed ? "text-[#f2495c]" : "text-[#7d8ba0]"}`} />
-            <span className="text-sm font-bold">CHALLENGE #{ch.number}</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-              isActive ? "bg-[#1fbf75]/20 text-[#1fbf75]" :
-              isTarget ? "bg-[#e8a33d]/20 text-[#e8a33d]" :
-              isFailed ? "bg-[#f2495c]/20 text-[#f2495c]" :
-              "bg-[#7d8ba0]/20 text-[#7d8ba0]"
-            }`}>{ch.status}</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-              execMode === "LIVE" ? "bg-[#f2495c]/20 text-[#f2495c]" : "bg-[#7d8ba0]/20 text-[#7d8ba0]"
-            }`}>{execMode}</span>
-          </div>
-          <div className="flex gap-1">
-            <button onClick={fetchData} className="px-2 py-1 rounded bg-[#1f2733] hover:bg-[#2a3441] text-[10px] font-bold text-[#7d8ba0]">
-              <RefreshCw className="h-3 w-3" />
-            </button>
-            <button onClick={resetChallenge} className="px-2 py-1 rounded bg-[#1f2733] hover:bg-[#2a3441] text-[10px] font-bold text-[#f2495c]">
-              <RotateCcw className="h-3 w-3" />
-            </button>
+    <div className="space-y-4 p-4 max-w-[1400px] mx-auto">
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Trophy className="w-6 h-6 text-amber-400" />
+          <div>
+            <h2 className="text-lg font-bold text-white">
+              Challenge #{challenge.number}{" "}
+              <span className={`text-sm font-normal px-2 py-0.5 rounded-full ${
+                challenge.status === "ACTIVE" ? "bg-emerald-400/10 text-emerald-400" :
+                challenge.status === "FAILED" ? "bg-red-400/10 text-red-400" :
+                challenge.status === "TARGET_REACHED" ? "bg-amber-400/10 text-amber-400" :
+                "bg-neutral-700 text-neutral-400"
+              }`}>
+                {challenge.status}
+              </span>
+            </h2>
+            <p className="text-xs text-neutral-400">
+              ₹{fmt(challenge.startingCapital)} → ₹{fmt(challenge.targetCapital)} • {challenge.progressLabel}
+            </p>
           </div>
         </div>
-
-        <div className="grid grid-cols-4 gap-2 text-center mb-2">
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">STARTING</div>
-            <div className="text-sm font-bold">{fmt(ch.startingCapital)}</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">CURRENT</div>
-            <div className={`text-sm font-bold ${ch.currentCapital >= ch.startingCapital ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
-              {fmt(ch.currentCapital)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">TARGET</div>
-            <div className="text-sm font-bold text-[#e8a33d]">{fmt(ch.targetCapital)}</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">PROGRESS</div>
-            <div className="text-sm font-bold">{ch.progressPct}%</div>
-          </div>
-        </div>
-
-        <div className="w-full h-1.5 bg-[#1a2230] rounded-full overflow-hidden mb-2">
-          <div className="h-full bg-[#1fbf75] rounded-full" style={{ width: `${ch.progressPct}%` }} />
-        </div>
-
-        <div className="grid grid-cols-4 gap-2 text-center">
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">P&L</div>
-            <div className={`text-[11px] font-bold ${ch.currentCapital >= ch.startingCapital ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
-              {fmt(ch.currentCapital - ch.startingCapital)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">MAX DD</div>
-            <div className="text-[11px] font-bold text-[#f2495c]">{ch.maxDrawdownPct.toFixed(1)}%</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">TODAY</div>
-            <div className={`text-[11px] font-bold ${ch.todayPnL >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
-              {fmt(ch.todayPnL)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">PF</div>
-            <div className={`text-[11px] font-bold ${ch.profitFactor >= 1.5 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>{ch.profitFactor.toFixed(2)}</div>
-          </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              autoRefresh ? "bg-emerald-400/10 text-emerald-400" : "bg-neutral-800 text-neutral-400"
+            }`}
+          >
+            {autoRefresh ? "AUTO" : "MANUAL"}
+          </button>
+          <button onClick={() => fetchData(true)} className="p-1.5 rounded-lg bg-neutral-800 text-neutral-400 hover:text-white">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button onClick={resetChallenge} className="p-1.5 rounded-lg bg-neutral-800 text-neutral-400 hover:text-red-400">
+            <RotateCcw className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* ─── Milestones ─── */}
-      <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-        <div className="text-[11px] font-bold mb-2">MILESTONES</div>
-        <div className="flex gap-1">
-          {ch.milestones.map((m: any) => (
-            <div key={m.target} className={`flex-1 text-center rounded p-1 ${m.reached ? "bg-[#1fbf75]/20" : "bg-[#1a2230]"}`}>
-              <div className={`text-[10px] font-bold ${m.reached ? "text-[#1fbf75]" : "text-[#7d8ba0]"}`}>{m.label}</div>
-              <div className="text-[8px] text-[#7d8ba0]">{m.reached ? "✓" : `${m.progress}%`}</div>
+      {/* ── Progress Bar (FIXED: shows negative) ── */}
+      <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-neutral-400">Progress to Target</span>
+          <span className={`text-sm font-bold ${behind ? "text-red-400" : "text-emerald-400"}`}>
+            {challenge.progressPct.toFixed(1)}%
+          </span>
+        </div>
+        <div className="w-full bg-neutral-800 rounded-full h-3 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-500 ${
+              behind ? "bg-red-500" : "bg-gradient-to-r from-amber-500 to-emerald-500"
+            }`}
+            style={{ width: `${progressWidth}%` }}
+          />
+        </div>
+        <div className="flex justify-between mt-1 text-xs text-neutral-500">
+          <span>₹{fmt(challenge.startingCapital)}</span>
+          <span className={behind ? "text-red-400" : "text-emerald-400"}>
+            ₹{fmt(challenge.currentCapital)} ({capitalGain >= 0 ? "+" : ""}{capitalGainPct.toFixed(1)}%)
+          </span>
+          <span>₹{fmt(challenge.targetCapital)}</span>
+        </div>
+      </div>
+
+      {/* ── Stats Cards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatCard icon={<Target className="w-4 h-4" />} label="Capital" value={`₹${fmt(challenge.currentCapital)}`}
+          sub={`Peak ₹${fmt(challenge.peakCapital)}`} color={capitalGain >= 0 ? "emerald" : "red"} />
+        <StatCard icon={<BarChart3 className="w-4 h-4" />} label="Win Rate" value={`${challenge.winRate}%`}
+          sub={`${challenge.winCount}W / ${challenge.lossCount}L`} color={challenge.winRate >= 50 ? "emerald" : "red"} />
+        <StatCard icon={<TrendingUp className="w-4 h-4" />} label="Profit Factor"
+          value={challenge.profitFactor === 0 ? "—" : challenge.profitFactor >= 99 ? "∞" : challenge.profitFactor.toFixed(2)}
+          sub={challenge.totalTrades === 0 ? "No trades" : `${challenge.totalTrades} trades`}
+          color={challenge.profitFactor >= 2 ? "emerald" : challenge.profitFactor > 0 ? "amber" : "neutral"} />
+        <StatCard icon={<AlertTriangle className="w-4 h-4" />} label="Max Drawdown" value={`${challenge.maxDrawdownPct.toFixed(1)}%`}
+          sub={`Daily ${challenge.drawdown.dailyDrawdownPct.toFixed(1)}%`} color={challenge.maxDrawdownPct > 15 ? "red" : "amber"} />
+        <StatCard icon={<Zap className="w-4 h-4" />} label="Today P&L" value={`₹${fmt(challenge.todayPnL)}`}
+          sub={challenge.consecutiveLosses > 0 ? `${challenge.consecutiveLosses} losses` : "Streak OK"}
+          color={challenge.todayPnL >= 0 ? "emerald" : "red"} />
+        <StatCard icon={<Shield className="w-4 h-4" />} label="VIX"
+          value={scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}
+          sub={scan.marketContext.regime || "N/A"} color="amber" />
+      </div>
+
+      {/* ── Milestones ── */}
+      <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+        <h3 className="text-sm font-semibold text-neutral-300 mb-3">Milestones</h3>
+        <div className="flex gap-2 flex-wrap">
+          {challenge.milestones.map((m, i) => (
+            <div key={i} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${
+              m.reached ? "bg-amber-400/10 text-amber-400 border border-amber-400/30" : "bg-neutral-800 text-neutral-500 border border-neutral-700"
+            }`}>
+              {m.reached ? <CheckCircle className="w-3.5 h-3.5" /> : <Target className="w-3.5 h-3.5" />}
+              {m.label}
             </div>
           ))}
         </div>
       </div>
 
-      {/* ─── Scan + Decision ─── */}
-      <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[11px] font-bold">MARKET SCAN</div>
-          <div className="text-[9px] text-[#7d8ba0]">{scan.marketContext.regime} | VIX {scan.marketContext.vix?.toFixed(1)}</div>
-        </div>
-        <div className="grid grid-cols-4 gap-2 text-center mb-2">
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">NIFTY 500</div>
-            <div className="text-[11px] font-bold">{scan.summary.nifty500Scanned}</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">INDEX F&O</div>
-            <div className="text-[11px] font-bold">{scan.summary.indexFO}</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">STOCK F&O</div>
-            <div className="text-[11px] font-bold">{scan.summary.stockFO}</div>
-          </div>
-          <div>
-            <div className="text-[9px] text-[#7d8ba0]">SWING</div>
-            <div className="text-[11px] font-bold">{scan.summary.equitySwing}</div>
-          </div>
+      {/* ── Top Opportunities ── */}
+      <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-neutral-300">
+            Top Setups ({scan.topOpportunities.length}/{scan.summary.totalSetups} total)
+          </h3>
+          <span className={`text-xs px-2 py-0.5 rounded-full border ${decisionColor(scan.decision)}`}>
+            {scan.decision}
+          </span>
         </div>
 
-        {/* Decision + Execute */}
-        <div className={`rounded-lg p-2 mb-2 ${
-          scan.decision === "TRADE" ? "bg-[#1fbf75]/10 border border-[#1fbf75]/30" :
-          scan.decision === "WATCH" ? "bg-[#e8a33d]/10 border border-[#e8a33d]/30" :
-          "bg-[#7d8ba0]/10 border border-[#7d8ba0]/30"
-        }`}>
-          <div className="flex items-center justify-between">
-            <span className={`text-sm font-bold ${
-              scan.decision === "TRADE" ? "text-[#1fbf75]" :
-              scan.decision === "WATCH" ? "text-[#e8a33d]" : "text-[#7d8ba0]"
-            }`}>
-              {scan.decision === "TRADE" ? "🟢 TRADE" : scan.decision === "WATCH" ? "🟡 WATCH" : "⚪ NO TRADE"}
-            </span>
-            {isActive && scan.decision !== "NO_TRADE" && (
-              <div className="flex gap-1">
-                <button
-                  onClick={() => executeTrade("PAPER")}
-                  disabled={executing}
-                  className="px-3 py-1 rounded bg-[#1f2733] hover:bg-[#2a3441] text-[10px] font-bold text-[#7d8ba0] disabled:opacity-40"
-                >
-                  {executing && execMode === "PAPER" ? "..." : "📝 Paper"}
-                </button>
-                <button
-                  onClick={() => executeTrade("LIVE")}
-                  disabled={executing}
-                  className="px-3 py-1 rounded bg-[#f2495c] hover:bg-[#f2495c]/80 text-[10px] font-bold text-white disabled:opacity-40"
-                >
-                  {executing && execMode === "LIVE" ? "..." : "⚡ Live"}
-                </button>
-              </div>
-            )}
+        {scan.noTradeReason && (
+          <div className="text-xs text-neutral-500 bg-neutral-800/50 rounded-lg px-3 py-2 mb-3">
+            {scan.noTradeReason}
           </div>
-          {scan.noTradeReason && <div className="text-[10px] text-[#7d8ba0] mt-1">{scan.noTradeReason}</div>}
+        )}
+
+        <div className="space-y-2">
+          {scan.topOpportunities.map((opp, i) => {
+            const isExpanded = expandedOpp === i;
+            const canExec = opp.position.canTrade && scan.decision === "TRADE";
+            const isCopied = copiedIds.has(opp.symbol + opp.timestamp);
+
+            return (
+              <div key={i} className="bg-neutral-800/50 rounded-lg border border-neutral-700/50 overflow-hidden">
+                <div className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-neutral-800/80"
+                  onClick={() => setExpandedOpp(isExpanded ? null : i)}>
+                  <span className="text-xs text-neutral-500 w-5">#{opp.rank}</span>
+                  {instrumentIcon(opp.instrument)}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-white text-sm">{opp.symbol}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        opp.direction.includes("BUY") || opp.direction === "LONG" || opp.direction === "CALL"
+                          ? "bg-emerald-400/10 text-emerald-400"
+                          : "bg-red-400/10 text-red-400"
+                      }`}>{opp.direction}</span>
+                      <span className="text-xs text-neutral-500">{opp.instrument}</span>
+                    </div>
+                    <div className="text-xs text-neutral-400 mt-0.5">
+                      ₹{opp.entry} • SL ₹{opp.stopLoss} • TP ₹{opp.target1} • R:R 1:{opp.riskReward.toFixed(1)}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-lg font-bold ${
+                      opp.score >= 80 ? "text-emerald-400" : opp.score >= 60 ? "text-amber-400" : "text-neutral-400"
+                    }`}>{opp.score}</div>
+                    <div className="text-xs text-neutral-500">score</div>
+                  </div>
+                  {isExpanded ? <ChevronUp className="w-4 h-4 text-neutral-500" /> : <ChevronDown className="w-4 h-4 text-neutral-500" />}
+                </div>
+
+                {isExpanded && (
+                  <div className="px-3 pb-3 border-t border-neutral-700/50 pt-2">
+                    <div className="text-xs text-neutral-400 space-y-1 mb-3">
+                      <div><span className="text-neutral-500">Strategy:</span> {opp.strategy}</div>
+                      <div><span className="text-neutral-500">Volume:</span> {(opp.volume / 100000).toFixed(1)}L • R:R 1:{opp.riskReward.toFixed(1)}</div>
+                      <div><span className="text-neutral-500">Qty:</span> {opp.position.quantity} {opp.position.lotSize > 1 ? `(lot ${opp.position.lotSize})` : ""}</div>
+                      {opp.reasoning.map((r, j) => (
+                        <div key={j} className="flex items-center gap-1.5">
+                          <ArrowRight className="w-3 h-3 text-amber-400" />
+                          <span>{r}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); executeTrade(i); }}
+                        disabled={!canExec || executing === i}
+                        className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          canExec && executing === null
+                            ? copyMode === "LIVE"
+                              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30"
+                              : "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30"
+                            : "bg-neutral-800 text-neutral-600 cursor-not-allowed"
+                        }`}
+                      >
+                        {executing === i ? "EXECUTING..." : copyMode === "LIVE" ? "⚡ LIVE EXECUTE" : "📝 PAPER EXECUTE"}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); copySignal(opp); }}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-700"
+                      >
+                        {isCopied ? "✓ Copied" : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* ─── Best Trade Card ─── */}
-      {scan.bestTrade && (
-        <div className="rounded-lg border border-[#1fbf75]/30 bg-[#10151d] p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] font-bold text-[#1fbf75]">BEST TRADE — {scan.bestTrade.symbol}</div>
-            <div className="flex items-center gap-1">
-              <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-                scan.bestTrade.instrument === "EQUITY" ? "bg-[#3b82f6]/20 text-[#3b82f6]" :
-                scan.bestTrade.instrument === "CALL" ? "bg-[#1fbf75]/20 text-[#1fbf75]" :
-                scan.bestTrade.instrument === "PUT" ? "bg-[#f2495c]/20 text-[#f2495c]" :
-                scan.bestTrade.instrument === "FUTURES" ? "bg-[#e8a33d]/20 text-[#e8a33d]" :
-                "bg-[#7d8ba0]/20 text-[#7d8ba0]"
-              }`}>{scan.bestTrade.instrument}</span>
-              <span className="text-[10px] font-bold text-[#e8a33d]">{scan.bestTrade.score}/100</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2 text-[10px]">
-            <div><span className="text-[#7d8ba0]">Entry:</span> <span className="font-bold">{fmt(scan.bestTrade.entry)}</span></div>
-            <div><span className="text-[#7d8ba0]">SL:</span> <span className="font-bold text-[#f2495c]">{fmt(scan.bestTrade.stopLoss)}</span></div>
-            <div><span className="text-[#7d8ba0]">TP:</span> <span className="font-bold text-[#1fbf75]">{fmt(scan.bestTrade.target1)}</span></div>
-            <div><span className="text-[#7d8ba0]">Qty:</span> <span className="font-bold">{scan.bestTrade.position.quantity}</span></div>
-            <div><span className="text-[#7d8ba0]">Max Loss:</span> <span className="font-bold text-[#f2495c]">{fmt(scan.bestTrade.position.maxLoss)}</span></div>
-            <div><span className="text-[#7d8ba0]">R:R:</span> <span className="font-bold">1:{scan.bestTrade.riskReward.toFixed(1)}</span></div>
-          </div>
-          {scan.bestTrade.reasoning?.length > 0 && (
-            <div className="mt-2 text-[9px] text-[#9fb0c3]">
-              {scan.bestTrade.reasoning.slice(0, 3).map((r: string, i: number) => <div key={i}>• {r}</div>)}
+      {/* ── Mode Toggle ── */}
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-neutral-400">Execution Mode:</span>
+        <button
+          onClick={() => setCopyMode("PAPER")}
+          className={`px-3 py-1 rounded-lg text-xs font-medium ${
+            copyMode === "PAPER" ? "bg-emerald-400/10 text-emerald-400 border border-emerald-400/30" : "bg-neutral-800 text-neutral-500"
+          }`}
+        >📝 Paper</button>
+        <button
+          onClick={() => setCopyMode("LIVE")}
+          className={`px-3 py-1 rounded-lg text-xs font-medium ${
+            copyMode === "LIVE" ? "bg-red-400/10 text-red-400 border border-red-400/30" : "bg-neutral-800 text-neutral-500"
+          }`}
+        >⚡ Live</button>
+        <span className="text-xs text-neutral-500">• {scan.summary.nifty500Scanned} stocks • {scan.summary.totalSetups} setups • VIX {scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}</span>
+      </div>
+
+      {/* ── Trade Feed ── */}
+      <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-neutral-300">
+            Trade Feed ({tradeFeed.length})
+          </h3>
+          {tradeStats && (
+            <div className="flex gap-3 text-xs text-neutral-400">
+              <span>{tradeStats.wins}W / {tradeStats.losses}L</span>
+              <span>P&L ₹{fmt(tradeStats.totalPnl)}</span>
+              <span>PF {tradeStats.profitFactor === 0 ? "—" : tradeStats.profitFactor >= 99 ? "∞" : tradeStats.profitFactor}</span>
             </div>
           )}
         </div>
-      )}
 
-      {/* ─── Top 10 ─── */}
-      <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-        <div className="text-[11px] font-bold mb-2">TOP 10 OPPORTUNITIES</div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[10px]">
-            <thead>
-              <tr className="text-[#7d8ba0] border-b border-[#1f2733]">
-                <th className="text-left py-1 px-1">#</th>
-                <th className="text-left py-1 px-1">SYMBOL</th>
-                <th className="text-left py-1 px-1">TYPE</th>
-                <th className="text-right py-1 px-1">SCORE</th>
-                <th className="text-right py-1 px-1">ENTRY</th>
-                <th className="text-right py-1 px-1">R:R</th>
-                <th className="text-left py-1 px-1">SETUP</th>
-                <th className="text-center py-1 px-1">COPY</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scan.topOpportunities.map((opp: any) => (
-                <tr key={opp.rank} className={`border-b border-[#1f2733]/50 ${opp.rank === 1 ? "bg-[#1fbf75]/5" : "hover:bg-[#1a2230]"}`}>
-                  <td className="py-1 px-1 font-bold">{opp.rank}</td>
-                  <td className="py-1 px-1 font-bold">{opp.symbol}</td>
-                  <td className="py-1 px-1">
-                    <span className={`text-[9px] px-1 rounded ${
-                      opp.instrument === "EQUITY" ? "bg-[#3b82f6]/20 text-[#3b82f6]" :
-                      opp.instrument === "CALL" ? "bg-[#1fbf75]/20 text-[#1fbf75]" :
-                      opp.instrument === "PUT" ? "bg-[#f2495c]/20 text-[#f2495c]" :
-                      "bg-[#e8a33d]/20 text-[#e8a33d]"
-                    }`}>{opp.instrument}</span>
-                  </td>
-                  <td className={`text-right py-1 px-1 font-bold ${opp.score >= 80 ? "text-[#1fbf75]" : opp.score >= 60 ? "text-[#e8a33d]" : "text-[#7d8ba0]"}`}>{opp.score}</td>
-                  <td className="text-right py-1 px-1">{fmt(opp.entry)}</td>
-                  <td className="text-right py-1 px-1">1:{opp.riskReward.toFixed(1)}</td>
-                  <td className="py-1 px-1 text-[9px]">{opp.strategy}</td>
-                  <td className="text-center py-1 px-1">
-                    <button onClick={() => copyTrade(opp)} className="text-[#7d8ba0] hover:text-[#1fbf75]">
-                      {copiedId === opp.id ? <Check className="h-3 w-3 text-[#1fbf75]" /> : <Copy className="h-3 w-3" />}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ─── Trade Feed (Copy Trading) ─── */}
-      <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[11px] font-bold">TRADE FEED — COPY TRADING</div>
-          <div className="flex items-center gap-2 text-[9px] text-[#7d8ba0]">
-            <span>{tradeStats.total} trades</span>
-            <span>{tradeStats.winRate}% WR</span>
-            <span className={tradeStats.totalPnl >= 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}>{fmt(tradeStats.totalPnl)}</span>
+        {tradeFeed.length === 0 ? (
+          <div className="text-center text-neutral-500 text-sm py-6">
+            No trades yet. Execute a setup above to start.
           </div>
-        </div>
-
-        {openTrades.length > 0 && (
-          <div className="mb-2">
-            <div className="text-[9px] text-[#e8a33d] font-bold mb-1">OPEN ({openTrades.length})</div>
-            {openTrades.map(t => (
-              <div key={t.id} className="flex items-center justify-between py-1 px-2 bg-[#e8a33d]/5 rounded mb-1 text-[10px]">
-                <div className="flex items-center gap-2">
-                  <StatusDot status={t.status} />
-                  <span className="font-bold">{t.symbol}</span>
-                  <span className={`px-1 rounded text-[9px] ${t.direction === "BUY" ? "bg-[#1fbf75]/20 text-[#1fbf75]" : "bg-[#f2495c]/20 text-[#f2495c]"}`}>{t.direction}</span>
-                  <span className="text-[#7d8ba0]">{t.instrument}</span>
+        ) : (
+          <div className="space-y-1.5">
+            {tradeFeed.map((t) => (
+              <div key={t.id} className="flex items-center gap-3 px-3 py-2 bg-neutral-800/50 rounded-lg">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${statusColor(t.status)}`}>
+                  {t.status}
+                </span>
+                {instrumentIcon(t.instrument)}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-white text-sm">{t.symbol}</span>
+                    <span className={`text-xs ${t.direction.includes("BUY") ? "text-emerald-400" : "text-red-400"}`}>{t.direction}</span>
+                    <span className="text-xs text-neutral-500">{t.instrument}</span>
+                  </div>
+                  <div className="text-xs text-neutral-400">
+                    ₹{t.entry} → {t.exit ? `₹${t.exit}` : "—"} • Qty {t.quantity} • Score {t.score}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span>{t.quantity} @ {fmt(t.entry)}</span>
-                  <span className="text-[#7d8ba0]">{t.strategy}</span>
-                  <span className={`text-[9px] px-1 rounded ${t.mode === "LIVE" ? "bg-[#f2495c]/20 text-[#f2495c]" : "bg-[#7d8ba0]/20 text-[#7d8ba0]"}`}>{t.mode}</span>
-                  <button onClick={() => copyTrade(t)} className="text-[#7d8ba0] hover:text-[#1fbf75]">
-                    <Copy className="h-3 w-3" />
-                  </button>
+                <div className="text-right">
+                  {t.pnl !== undefined ? (
+                    <div className={`text-sm font-bold ${t.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {t.pnl >= 0 ? "+" : ""}₹{fmt(t.pnl)}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-neutral-500">OPEN</div>
+                  )}
+                  <div className="text-xs text-neutral-500">{t.mode}</div>
                 </div>
+                {/* Close button for open trades */}
+                {t.status === "OPEN" && (
+                  <div className="flex items-center gap-1">
+                    {closingTradeId === t.id ? (
+                      <input
+                        type="number"
+                        value={closePrice}
+                        onChange={(e) => setClosePrice(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && closeTrade(t.id)}
+                        placeholder="Exit ₹"
+                        className="w-20 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded text-white"
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setClosingTradeId(t.id)}
+                        className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-700"
+                      >
+                        Close
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
-
-        {tradeFeed.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[10px]">
-              <thead>
-                <tr className="text-[#7d8ba0] border-b border-[#1f2733]">
-                  <th className="text-left py-1 px-1">STATUS</th>
-                  <th className="text-left py-1 px-1">TIME</th>
-                  <th className="text-left py-1 px-1">SYMBOL</th>
-                  <th className="text-left py-1 px-1">SIDE</th>
-                  <th className="text-left py-1 px-1">TYPE</th>
-                  <th className="text-right py-1 px-1">ENTRY</th>
-                  <th className="text-right py-1 px-1">EXIT</th>
-                  <th className="text-right py-1 px-1">QTY</th>
-                  <th className="text-right py-1 px-1">P&L</th>
-                  <th className="text-left py-1 px-1">MODE</th>
-                  <th className="text-center py-1 px-1">COPY</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tradeFeed.map(t => (
-                  <tr key={t.id} className="border-b border-[#1f2733]/50 hover:bg-[#1a2230]">
-                    <td className="py-1 px-1"><StatusDot status={t.status} /></td>
-                    <td className="py-1 px-1 text-[#7d8ba0]">{timeAgo(t.timestamp)}</td>
-                    <td className="py-1 px-1 font-bold">{t.symbol}</td>
-                    <td className="py-1 px-1">
-                      <span className={`px-1 rounded text-[9px] ${t.direction === "BUY" ? "bg-[#1fbf75]/20 text-[#1fbf75]" : "bg-[#f2495c]/20 text-[#f2495c]"}`}>{t.direction}</span>
-                    </td>
-                    <td className="py-1 px-1">{t.instrument}</td>
-                    <td className="text-right py-1 px-1">{fmt(t.entry)}</td>
-                    <td className="text-right py-1 px-1">{t.exit ? fmt(t.exit) : "—"}</td>
-                    <td className="text-right py-1 px-1">{t.quantity}</td>
-                    <td className={`text-right py-1 px-1 font-bold ${!t.pnl ? "text-[#7d8ba0]" : t.pnl > 0 ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>
-                      {t.pnl !== undefined ? fmt(t.pnl) : "—"}
-                    </td>
-                    <td className="py-1 px-1">
-                      <span className={`text-[9px] px-1 rounded ${t.mode === "LIVE" ? "bg-[#f2495c]/20 text-[#f2495c]" : "bg-[#7d8ba0]/20 text-[#7d8ba0]"}`}>{t.mode}</span>
-                    </td>
-                    <td className="text-center py-1 px-1">
-                      <button onClick={() => copyTrade(t)} className="text-[#7d8ba0] hover:text-[#1fbf75]">
-                        {copiedId === t.id ? <Check className="h-3 w-3 text-[#1fbf75]" /> : <Copy className="h-3 w-3" />}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-4 text-[10px] text-[#7d8ba0]">No trades yet — execute a trade to start copy trading</div>
-        )}
       </div>
 
-      {/* ─── Challenge Failed ─── */}
-      {isFailed && (
-        <div className="rounded-lg border border-[#f2495c] bg-[#f2495c]/10 p-4 text-center">
-          <div className="text-lg font-bold text-[#f2495c] mb-1">🛑 CHALLENGE FAILED</div>
-          <div className="text-[11px] text-[#7d8ba0]">{ch.drawdown.failureReason}</div>
-          <button onClick={resetChallenge} className="mt-2 px-4 py-1 rounded bg-[#f2495c] text-white text-[11px] font-bold">
-            Start Challenge #{ch.number + 1}
-          </button>
-        </div>
-      )}
+      {/* ── Market Context ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <MiniCard label="Regime" value={scan.marketContext.regime || "N/A"} />
+        <MiniCard label="VIX" value={scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"} />
+        <MiniCard label="Breadth" value={scan.marketContext.breadth || "N/A"} />
+        <MiniCard label="Data" value={scan.summary.dataSource} />
+      </div>
+    </div>
+  );
+}
 
-      {isTarget && (
-        <div className="rounded-lg border border-[#e8a33d] bg-[#e8a33d]/10 p-4 text-center">
-          <div className="text-lg font-bold text-[#e8a33d] mb-1">🏆 TARGET REACHED!</div>
-          <div className="text-[11px] text-[#7d8ba0]">{fmt(ch.currentCapital)} achieved from {fmt(ch.startingCapital)}</div>
-        </div>
-      )}
+// ── Stat Card ──
+function StatCard({ icon, label, value, sub, color }: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  color: string;
+}) {
+  const c = {
+    emerald: "text-emerald-400",
+    red: "text-red-400",
+    amber: "text-amber-400",
+    neutral: "text-neutral-400",
+  }[color] || "text-neutral-400";
+
+  return (
+    <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-3">
+      <div className="flex items-center gap-1.5 text-neutral-500 mb-1">
+        {icon}
+        <span className="text-xs">{label}</span>
+      </div>
+      <div className={`text-lg font-bold ${c}`}>{value}</div>
+      <div className="text-xs text-neutral-500 truncate">{sub}</div>
+    </div>
+  );
+}
+
+// ── Mini Card ──
+function MiniCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-neutral-900 rounded-lg border border-neutral-800 p-2 text-center">
+      <div className="text-xs text-neutral-500 mb-0.5">{label}</div>
+      <div className="text-sm font-semibold text-white">{value}</div>
     </div>
   );
 }
