@@ -259,17 +259,21 @@ async function fetchSectors(): Promise<SectorData[]> {
   }));
 }
 
-async function fetchRegime(): Promise<RegimeData> {
+async function fetchRegime(): Promise<RegimeData & { vix?: number }> {
   const data = await fetchJSON<any>(`http://localhost:3000/api/market/regime`);
-  if (!data?.regime) {
+  if (!data) {
     return { regime: "UNKNOWN", trend: "SIDEWAYS", confidence: 0, factors: {} };
   }
-  const r = data.regime;
+  // API returns: { regime: "NEUTRAL", vix: { value: 10.68 }, factors: {...}, ... }
+  const regimeStr = typeof data.regime === "string" ? data.regime : data.regime?.regime || "UNKNOWN";
+  const factors = data.factors || {};
+  const vix = data.vix?.value || 0;
   return {
-    regime: r.regime || r.label || "UNKNOWN",
-    trend: r.trend || r.direction || "SIDEWAYS",
-    confidence: r.confidence || r.score || 50,
-    factors: r.factors || {},
+    regime: regimeStr,
+    trend: data.trend || data.direction || "SIDEWAYS",
+    confidence: data.regimeScore || data.confidence || 50,
+    factors,
+    vix,
   };
 }
 
@@ -503,7 +507,7 @@ export async function buildMarketIntelligenceContext(
     stockQuotes: stockQuotesData,
     technicals: {},
     giftNifty: giftNiftyData,
-    indiaVix: 0,
+    indiaVix: (regimeData as any).vix || 0,
     fiiDii: fiiData,
     expiry: nifty?.expiry || "",
     sessionPhase,

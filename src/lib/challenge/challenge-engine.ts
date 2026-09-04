@@ -10,7 +10,10 @@ import {
   type CapitalConfig,
   DEFAULT_CAPITAL_CONFIG,
 } from "./capital-manager";
-import { getChallenge } from "./challenge-tracker";
+import {
+  getChallenge,
+  recordTrade,
+} from "./challenge-tracker";
 import { buildMarketIntelligenceContext, type MarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
 import { analyzeEquitySwing } from "@/lib/trade-intelligence/equity-swing-mode";
 import { analyzeStockFO } from "@/lib/trade-intelligence/stock-fo-mode";
@@ -413,7 +416,6 @@ export async function runChallengeScan(
 
 // ── Execute a trade (paper) ──
 export function executeChallengeTrade(opportunity: ChallengeOpportunity) {
-  const { recordTrade } = require("./challenge-tracker");
   return recordTrade({
     symbol: opportunity.symbol,
     strategy: opportunity.strategy,

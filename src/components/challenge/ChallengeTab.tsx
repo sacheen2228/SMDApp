@@ -174,6 +174,8 @@ export default function ChallengeTab() {
   const [copyMode, setCopyMode] = useState<"PAPER" | "LIVE">("PAPER");
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoExec, setAutoExec] = useState<{ enabled: boolean; mode: string }>({ enabled: false, mode: "PAPER" });
+  const [togglingAuto, setTogglingAuto] = useState(false);
   const refreshRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch challenge data
@@ -187,6 +189,7 @@ export default function ChallengeTab() {
         setScan(data.scan);
         setTradeFeed(data.tradeFeed);
         setTradeStats(data.tradeStats);
+        if (data.autoExecute) setAutoExec(data.autoExecute);
       }
     } catch (e) {
       console.error("Failed to fetch challenge:", e);
@@ -251,6 +254,24 @@ export default function ChallengeTab() {
     if (!confirm("Reset challenge? Current challenge will be archived.")) return;
     await fetch("/api/challenge", { method: "DELETE" });
     fetchData(true);
+  };
+
+  // Toggle auto-execute
+  const toggleAutoExecute = async () => {
+    setTogglingAuto(true);
+    try {
+      const res = await fetch("/api/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_auto", mode: copyMode }),
+      });
+      const data = await res.json();
+      if (data.success && data.autoExecute) {
+        setAutoExec(data.autoExecute);
+      }
+    } finally {
+      setTogglingAuto(false);
+    }
   };
 
   // Copy signal
@@ -474,9 +495,9 @@ export default function ChallengeTab() {
         </div>
       </div>
 
-      {/* ── Mode Toggle ── */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-neutral-400">Execution Mode:</span>
+      {/* ── Mode Toggle + Auto-Trade ── */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-xs text-neutral-400">Mode:</span>
         <button
           onClick={() => setCopyMode("PAPER")}
           className={`px-3 py-1 rounded-lg text-xs font-medium ${
@@ -489,7 +510,27 @@ export default function ChallengeTab() {
             copyMode === "LIVE" ? "bg-red-400/10 text-red-400 border border-red-400/30" : "bg-neutral-800 text-neutral-500"
           }`}
         >⚡ Live</button>
-        <span className="text-xs text-neutral-500">• {scan.summary.nifty500Scanned} stocks • {scan.summary.totalSetups} setups • VIX {scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}</span>
+
+        <div className="w-px h-5 bg-neutral-700 mx-1" />
+
+        <button
+          onClick={toggleAutoExecute}
+          disabled={togglingAuto}
+          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+            autoExec.enabled
+              ? "bg-amber-400/20 text-amber-400 border border-amber-400/40 animate-pulse"
+              : "bg-neutral-800 text-neutral-500 border border-neutral-700 hover:text-white"
+          }`}
+        >
+          {autoExec.enabled ? "🤖 AUTO-TRADE ON" : "🤖 AUTO-TRADE OFF"}
+        </button>
+        {autoExec.enabled && (
+          <span className="text-xs text-amber-400/70">Auto: {autoExec.mode} • 1min cooldown</span>
+        )}
+
+        <span className="text-xs text-neutral-500 ml-auto">
+          {scan.summary.nifty500Scanned} stocks • {scan.summary.totalSetups} setups • VIX {scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}
+        </span>
       </div>
 
       {/* ── Trade Feed ── */}
