@@ -260,10 +260,10 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
     enabled: true,
   });
 
-  // Fetch Index F&O data + per-stock F&O enrichment
+  // Fetch Index F&O + per-stock F&O enrichment (separate endpoint, cached 5min)
   const { data: foData } = useQuery({
     queryKey: ["market-heatmap-fo"],
-    queryFn: () => fetch("/api/market/heatmap?market=NIFTY50&fo=true").then(r => r.json()),
+    queryFn: () => fetch("/api/market/heatmap/fo").then(r => r.json()),
     refetchInterval: 300_000,
     staleTime: 300_000,
     enabled: true,
@@ -272,12 +272,12 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
   const data = marketData || allData?.markets?.[selectedMarket];
   const indexFO = foData?.indexFO || [];
 
-  // Merge F&O data into stocks
+  // Merge per-stock F&O data into stocks
   const foStockMap = useMemo(() => {
     const map = new Map<string, any>();
-    if (foData?.stocks) {
-      for (const s of foData.stocks) {
-        if (s.foData) map.set(s.symbol, s.foData);
+    if (foData?.stockFO) {
+      for (const [sym, fo] of Object.entries(foData.stockFO)) {
+        map.set(sym, fo);
       }
     }
     return map;
