@@ -131,11 +131,19 @@ interface StockData {
   trend?: string;
   setup?: string;
   foData?: {
-    oi: number;
-    oiChange: number;
-    oiChangePct: number;
-    volume: number;
-    classification: string;
+    pcr: number;
+    totalCallOI: number;
+    totalPutOI: number;
+    maxPain: number;
+    callWall: number;
+    putFloor: number;
+    expiry: string;
+    atmStrike: number;
+    oi?: number;
+    oiChange?: number;
+    oiChangePct?: number;
+    volume?: number;
+    classification?: string;
   };
 }
 
@@ -169,7 +177,7 @@ function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
   };
 
   const relVol = stock.avgVolume > 0 ? (stock.volume / stock.avgVolume).toFixed(1) + "x" : "";
-  const foClass = stock.foData?.classification || "";
+  const pcr = stock.foData?.pcr;
   const weeklySign = stock.weeklyChangePct >= 0 ? "+" : "";
 
   return (
@@ -178,7 +186,7 @@ function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
       className={`${color} ${sizeClasses[size]} ${textColor} rounded-sm flex flex-col justify-between items-center 
         hover:brightness-125 hover:ring-1 hover:ring-white/30 transition-all cursor-pointer text-center 
         relative overflow-hidden`}
-      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Wk: ${weeklySign}${stock.weeklyChangePct}% | Vol: ${(stock.volume/100000).toFixed(1)}L | ${stock.sector}`}
+      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Wk: ${weeklySign}${stock.weeklyChangePct}% | Vol: ${(stock.volume/100000).toFixed(1)}L | PCR: ${pcr?.toFixed(2) || '—'} | ${stock.sector}`}
     >
       <div className="flex flex-col items-center w-full">
         <span className="text-[9px] font-bold leading-tight truncate w-full">{stock.symbol}</span>
@@ -193,7 +201,11 @@ function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
         )}
         {colorMode === "daily" && <span className="text-[7px] text-zinc-300/60">Wk:{weeklySign}{stock.weeklyChangePct?.toFixed(1) || 0}%</span>}
         {colorMode === "weekly" && <span className="text-[7px] text-zinc-300/60">Day:{stock.changePct >= 0 ? "+" : ""}{stock.changePct}%</span>}
-        {foClass && <span className="text-[7px] bg-white/10 px-1 rounded"> {foClass} </span>}
+        {pcr != null && pcr > 0 && (
+          <span className={`text-[7px] px-0.5 rounded ${pcr > 1.2 ? 'bg-emerald-500/30 text-emerald-300' : pcr < 0.8 ? 'bg-red-500/30 text-red-300' : 'bg-zinc-500/30 text-zinc-300'}`}>
+            PCR {pcr.toFixed(2)}
+          </span>
+        )}
       </div>
     </button>
   );
@@ -248,17 +260,28 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
     enabled: true,
   });
 
-  // Fetch Index F&O data
+  // Fetch Index F&O data + per-stock F&O enrichment
   const { data: foData } = useQuery({
     queryKey: ["market-heatmap-fo"],
     queryFn: () => fetch("/api/market/heatmap?market=NIFTY50&fo=true").then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 300_000,
+    staleTime: 300_000,
     enabled: true,
   });
 
   const data = marketData || allData?.markets?.[selectedMarket];
   const indexFO = foData?.indexFO || [];
+
+  // Merge F&O data into stocks
+  const foStockMap = useMemo(() => {
+    const map = new Map<string, any>();
+    if (foData?.stocks) {
+      for (const s of foData.stocks) {
+        if (s.foData) map.set(s.symbol, s.foData);
+      }
+    }
+    return map;
+  }, [foData]);
 
   // Apply filters client-side
   const filteredStocks = useMemo(() => {
@@ -348,10 +371,21 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
     });
   }, [data?.stocks, changeFilter, volumeFilter, relVolFilter, marketCapFilter, sectorFilter, trendFilter, setupFilter, foFilter, priceRange]);
 
+  // Merge F&O data into filtered stocks
+  const enrichedStocks = useMemo(() => {
+    return filteredStocks.map(stock => {
+      const fo = foStockMap.get(stock.symbol);
+      if (fo) {
+        return { ...stock, foData: fo };
+      }
+      return stock;
+    });
+  }, [filteredStocks, foStockMap]);
+
   // Group filtered stocks by sector
   const sectors = useMemo(() => {
     const sectorMap = new Map<string, StockData[]>();
-    for (const stock of filteredStocks) {
+    for (const stock of enrichedStocks) {
       if (!sectorMap.has(stock.sector)) sectorMap.set(stock.sector, []);
       sectorMap.get(stock.sector)!.push(stock);
     }
@@ -782,7 +816,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
             </div>
           ) : (
             <div className="flex flex-wrap gap-0.5">
-              {filteredStocks.map((stock: StockData) => (
+              {enrichedStocks.map((stock: StockData) => (
                 <HeatmapCell key={stock.symbol} stock={stock} size="md" onClick={handleStockClick} colorMode={colorMode} />
               ))}
             </div>
