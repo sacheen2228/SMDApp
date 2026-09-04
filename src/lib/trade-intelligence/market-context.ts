@@ -178,45 +178,61 @@ async function fetchJSON<T>(url: string, timeout = 10000): Promise<T | null> {
 
 // ── Build context from internal API routes ──
 async function fetchOptionChain(symbol: string): Promise<OptionChainSummary | null> {
-  const data = await fetchJSON<any>(`http://localhost:3000/api/option-chain?symbol=${symbol}`);
-  if (!data?.summary) return null;
-  const s = data.summary;
+  // fetchJSON strips outer wrapper (returns json.data), but analysis is at top level
+  // So we fetch raw and extract both
+  let raw: any = null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`http://localhost:3000/api/option-chain?symbol=${symbol}`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    raw = await res.json();
+  } catch { return null; }
+
+  // analysis is at raw.analysis, inner data at raw.data
+  const a = raw?.analysis;
+  const inner = raw?.data;
+  if (!a && !inner) return null;
+  const spot = a?.spotPrice || inner?.spotPrice || 0;
   return {
     symbol,
-    expiry: s.expiry || "",
-    spot: s.spot || 0,
-    atmStrike: s.atmStrike || 0,
-    pcr: s.pcr || 0,
-    maxPain: s.maxPain || 0,
-    totalCallOI: s.totalCallOI || 0,
-    totalPutOI: s.totalPutOI || 0,
-    pcrVolume: s.pcrVolume || 0,
-    ivMedian: s.ivMedian || 0,
-    ivRank: s.ivRank || 0,
-    支撑: s.support || [],
-    resistance: s.resistance || [],
-    callWall: s.callWall || 0,
-    putFloor: s.putFloor || 0,
+    expiry: a?.expiryDate || inner?.selectedExpiry || "",
+    spot,
+    atmStrike: a?.atmStrike || 0,
+    pcr: a?.pcr || 0,
+    maxPain: a?.maxPain || 0,
+    totalCallOI: a?.totalCallOI || 0,
+    totalPutOI: a?.totalPutOI || 0,
+    pcrVolume: a?.totalPutVolume && a?.totalCallVolume ? a.totalPutVolume / a.totalCallVolume : 0,
+    ivMedian: 0,
+    ivRank: 0,
+    支撑: a?.support || [],
+    resistance: a?.resistance || [],
+    callWall: a?.callWall || 0,
+    putFloor: a?.putFloor || 0,
   };
 }
 
 async function fetchFutures(symbol: string): Promise<FuturesData | null> {
   const data = await fetchJSON<any>(`http://localhost:3000/api/index-derivatives?symbol=${symbol}`);
-  if (!data?.futures) return null;
-  const f = data.futures[0];
+  // API returns futures as a metadata object at data.futures, not an array
+  const f = data?.data?.futures;
   if (!f) return null;
+  const spot = data?.data?.spotPrice || 0;
+  const futPrice = f.futuresPrice || 0;
   return {
     symbol,
-    expiry: f.expiry || "",
-    ltp: f.ltp || 0,
-    change: f.change || 0,
-    changePercent: f.changePercent || 0,
+    expiry: f.currentExpiry || "",
+    ltp: futPrice,
+    change: f.priceChange || 0,
+    changePercent: f.priceChangePct || 0,
     oi: f.oi || 0,
     oiChange: f.oiChange || 0,
     volume: f.volume || 0,
-    basis: f.basis || 0,
-    basisPercent: f.basisPercent || 0,
-    annualizedBasis: f.annualizedBasis || 0,
+    basis: f.basis || (spot > 0 && futPrice > 0 ? futPrice - spot : 0),
+    basisPercent: f.basisPct || (spot > 0 ? ((futPrice - spot) / spot) * 100 : 0),
+    annualizedBasis: 0,
   };
 }
 
@@ -264,13 +280,16 @@ async function fetchRegime(): Promise<RegimeData & { vix?: number }> {
   if (!data) {
     return { regime: "UNKNOWN", trend: "SIDEWAYS", confidence: 0, factors: {} };
   }
-  // API returns: { regime: "NEUTRAL", vix: { value: 10.68 }, factors: {...}, ... }
+  // API returns: { regime: "NEUTRAL", bias: "NEUTRAL", tradeEnv: "...", regimeScore: 50, factors: {...}, vix: { value: 10.68 }, ... }
   const regimeStr = typeof data.regime === "string" ? data.regime : data.regime?.regime || "UNKNOWN";
   const factors = data.factors || {};
   const vix = data.vix?.value || 0;
+  // Map bias → trend (API returns "bias", analyzers expect "trend")
+  const bias = data.bias || data.trend || data.direction || "NEUTRAL";
+  const trend = bias === "BULLISH" ? "BULLISH" : bias === "BEARISH" ? "BEARISH" : "SIDEWAYS";
   return {
     regime: regimeStr,
-    trend: data.trend || data.direction || "SIDEWAYS",
+    trend,
     confidence: data.regimeScore || data.confidence || 50,
     factors,
     vix,

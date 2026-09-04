@@ -237,7 +237,7 @@ export async function runChallengeScan(
   let indexFOCandidates = 0;
   if (ctx) {
     try {
-      const indexSignals = analyzeIndexFO(ctx);
+      const indexSignals = await analyzeIndexFO(ctx);
       indexFOAvailable = indexSignals.length;
       for (const sig of indexSignals) {
         if (sig.direction === "NO_TRADE") continue;
@@ -275,7 +275,7 @@ export async function runChallengeScan(
   let stockFOCandidates = 0;
   if (ctx) {
     try {
-      const stockSignals = analyzeStockFO(ctx, 20);
+      const stockSignals = await analyzeStockFO(ctx, 20);
       stockFOAvailable = stockSignals.length;
       for (const sig of stockSignals) {
         if (sig.direction === "NO_TRADE") continue;
