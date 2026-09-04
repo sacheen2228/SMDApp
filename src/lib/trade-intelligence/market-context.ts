@@ -346,14 +346,15 @@ async function fetchGiftNifty() {
 
 async function fetchStockQuotes(): Promise<StockQuote[]> {
   const data = await fetchJSON<any>(`http://localhost:3000/api/scanner?live=true`);
-  if (!data?.data?.candidates) return [];
-  return (data.data.candidates || []).map((c: any) => ({
+  // fetchJSON returns json.data which already strips the outer wrapper
+  const candidates = data?.data?.candidates || data?.candidates || [];
+  return candidates.map((c: any) => ({
     symbol: c.symbol || "",
     name: c.name || c.symbol || "",
     sector: c.sector || "",
-    price: c.price || c.ltp || 0,
+    price: c.currentPrice || c.price || c.ltp || 0,
     change: c.change || 0,
-    changePercent: c.changePercent || c.change_pct || 0,
+    changePercent: c.changePct || c.change_percent || 0,
     volume: c.volume || 0,
     avgVolume: c.avgVolume || c.avg_volume || 0,
     relativeVolume: c.relativeVolume || c.rvol || 1,
