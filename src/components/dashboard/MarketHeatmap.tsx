@@ -117,7 +117,9 @@ interface StockData {
   ltp: number;
   change: number;
   changePct: number;
+  weeklyChangePct: number;
   volume: number;
+  avgVolume: number;
   prevClose: number;
   dayHigh: number;
   dayLow: number;
@@ -125,7 +127,6 @@ interface StockData {
   weekLow52: number;
   sector: string;
   marketCap?: number;
-  avgVolume?: number;
   relVolume?: number;
   trend?: string;
   setup?: string;
@@ -138,15 +139,28 @@ interface StockData {
   };
 }
 
+type ColorMode = "daily" | "weekly" | "relVolume";
+
 interface HeatmapCellProps {
   stock: StockData;
   size: "sm" | "md" | "lg";
   onClick: (s: StockData) => void;
+  colorMode: ColorMode;
 }
 
-function HeatmapCell({ stock, size, onClick }: HeatmapCellProps) {
-  const color = getColor(stock.changePct);
-  const textColor = getTextColor(stock.changePct);
+function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
+  const getValue = () => {
+    switch (colorMode) {
+      case "weekly": return stock.weeklyChangePct || 0;
+      case "relVolume": return stock.volume && stock.avgVolume ? (stock.volume / stock.avgVolume - 1) * 100 : 0;
+      default: return stock.changePct;
+    }
+  };
+  const value = getValue();
+  const color = colorMode === "relVolume" 
+    ? (value > 50 ? "bg-cyan-600" : value > 20 ? "bg-cyan-500" : value > 0 ? "bg-cyan-400/80" : value > -20 ? "bg-zinc-600" : value > -50 ? "bg-orange-400/80" : "bg-orange-600")
+    : getColor(value);
+  const textColor = getTextColor(value);
 
   const sizeClasses = {
     sm: "min-w-[60px] min-h-[40px] p-1",
@@ -154,8 +168,9 @@ function HeatmapCell({ stock, size, onClick }: HeatmapCellProps) {
     lg: "min-w-[100px] min-h-[70px] p-2",
   };
 
-  const relVol = stock.relVolume ? `${stock.relVolume.toFixed(1)}x` : "";
+  const relVol = stock.avgVolume > 0 ? (stock.volume / stock.avgVolume).toFixed(1) + "x" : "";
   const foClass = stock.foData?.classification || "";
+  const weeklySign = stock.weeklyChangePct >= 0 ? "+" : "";
 
   return (
     <button
@@ -163,14 +178,21 @@ function HeatmapCell({ stock, size, onClick }: HeatmapCellProps) {
       className={`${color} ${sizeClasses[size]} ${textColor} rounded-sm flex flex-col justify-between items-center 
         hover:brightness-125 hover:ring-1 hover:ring-white/30 transition-all cursor-pointer text-center 
         relative overflow-hidden`}
-      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Vol: ${(stock.volume/100000).toFixed(1)}L | ${stock.sector}`}
+      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Wk: ${weeklySign}${stock.weeklyChangePct}% | Vol: ${(stock.volume/100000).toFixed(1)}L | ${stock.sector}`}
     >
       <div className="flex flex-col items-center w-full">
         <span className="text-[9px] font-bold leading-tight truncate w-full">{stock.symbol}</span>
-        <span className={`text-[10px] font-black ${stock.changePct >= 0 ? "text-emerald-100" : "text-red-100"}`}>
-          {stock.changePct >= 0 ? "+" : ""}{stock.changePct}%
-        </span>
-        {relVol && <span className="text-[8px] text-zinc-300/80">{relVol}</span>}
+        {colorMode === "relVolume" ? (
+          <span className={`text-[10px] font-black ${value > 0 ? "text-cyan-100" : "text-orange-100"}`}>
+            {relVol || "1.0x"}
+          </span>
+        ) : (
+          <span className={`text-[10px] font-black ${value >= 0 ? "text-emerald-100" : "text-red-100"}`}>
+            {value >= 0 ? "+" : ""}{value.toFixed(1)}%
+          </span>
+        )}
+        {colorMode === "daily" && <span className="text-[7px] text-zinc-300/60">Wk:{weeklySign}{stock.weeklyChangePct?.toFixed(1) || 0}%</span>}
+        {colorMode === "weekly" && <span className="text-[7px] text-zinc-300/60">Day:{stock.changePct >= 0 ? "+" : ""}{stock.changePct}%</span>}
         {foClass && <span className="text-[7px] bg-white/10 px-1 rounded"> {foClass} </span>}
       </div>
     </button>
@@ -187,6 +209,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
   const [view, setView] = useState<"bySector" | "flat">("bySector");
   const [showFilters, setShowFilters] = useState(false);
   const [selectedMarket, setSelectedMarket] = useState(initialMarket);
+  const [colorMode, setColorMode] = useState<ColorMode>("daily");
 
   // Filter states
   const [changeFilter, setChangeFilter] = useState<string[]>([]);
@@ -418,6 +441,36 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
             Flat
           </Button>
         </div>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Color Mode Toggle */}
+        <div className="flex gap-1">
+          <Button 
+            variant={colorMode === "daily" ? "default" : "ghost"} 
+            size="sm" 
+            onClick={() => setColorMode("daily")} 
+            className={`text-[9px] px-2 ${colorMode === "daily" ? "bg-emerald-600 text-white" : ""}`}
+          >
+            Daily %
+          </Button>
+          <Button 
+            variant={colorMode === "weekly" ? "default" : "ghost"} 
+            size="sm" 
+            onClick={() => setColorMode("weekly")} 
+            className={`text-[9px] px-2 ${colorMode === "weekly" ? "bg-cyan-600 text-white" : ""}`}
+          >
+            Weekly %
+          </Button>
+          <Button 
+            variant={colorMode === "relVolume" ? "default" : "ghost"} 
+            size="sm" 
+            onClick={() => setColorMode("relVolume")} 
+            className={`text-[9px] px-2 ${colorMode === "relVolume" ? "bg-violet-600 text-white" : ""}`}
+          >
+            Rel Vol
+          </Button>
+        </div>
       </div>
 
       {/* Filter Panel */}
@@ -632,9 +685,15 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[9px] font-bold text-zinc-500">{sector.name}</span>
                     <div className="flex items-center gap-2">
-                      <span className={`text-[9px] font-bold ${sector.avgChangePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                        {sector.avgChangePct >= 0 ? "+" : ""}{sector.avgChangePct.toFixed(2)}%
-                      </span>
+                      {colorMode === "weekly" ? (
+                        <span className={`text-[9px] font-bold ${(sector.avgWeeklyChangePct || 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {(sector.avgWeeklyChangePct || 0) >= 0 ? "+" : ""}{(sector.avgWeeklyChangePct || 0).toFixed(2)}% Wk
+                        </span>
+                      ) : (
+                        <span className={`text-[9px] font-bold ${sector.avgChangePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {sector.avgChangePct >= 0 ? "+" : ""}{sector.avgChangePct.toFixed(2)}%
+                        </span>
+                      )}
                       <span className="text-[9px] text-zinc-500">
                         ↑{sector.advanceCount} ↓{sector.declineCount}
                       </span>
@@ -642,7 +701,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   </div>
                   <div className="flex flex-wrap gap-0.5">
                     {sector.stocks.map((stock: StockData) => (
-                      <HeatmapCell key={stock.symbol} stock={stock} size="sm" onClick={handleStockClick} />
+                      <HeatmapCell key={stock.symbol} stock={stock} size="sm" onClick={handleStockClick} colorMode={colorMode} />
                     ))}
                   </div>
                 </div>
@@ -651,7 +710,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
           ) : (
             <div className="flex flex-wrap gap-0.5">
               {filteredStocks.map((stock: StockData) => (
-                <HeatmapCell key={stock.symbol} stock={stock} size="md" onClick={handleStockClick} />
+                <HeatmapCell key={stock.symbol} stock={stock} size="md" onClick={handleStockClick} colorMode={colorMode} />
               ))}
             </div>
           )}

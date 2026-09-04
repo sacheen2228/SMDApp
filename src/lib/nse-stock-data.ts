@@ -12,7 +12,9 @@ export interface NSEStockQuote {
   ltp: number;
   change: number;
   changePct: number;
+  weeklyChangePct: number; // 5-day change %
   volume: number;
+  avgVolume: number; // 20-day average volume
   prevClose: number;
   dayHigh: number;
   dayLow: number;
@@ -173,13 +175,17 @@ function parseYahooBatch(data: any, symbols: string[]): Map<string, NSEStockQuot
     const ltp = q.regularMarketPrice;
     if (!ltp) continue;
     const prev = q.regularMarketPreviousClose || ltp;
+    // Yahoo batch has 5-day change % in fiftyDayAverage and other fields
+    // We'll use regularMarketChangePercent for daily, and calculate weekly from chart data
     result.set(raw, {
       symbol: raw,
       name: NAME_MAP[raw] || q.shortName || q.longName || raw,
       ltp,
       change: parseFloat((q.regularMarketChange ?? (ltp - prev)).toFixed(2)),
       changePct: parseFloat((q.regularMarketChangePercent ?? ((ltp - prev) / prev) * 100).toFixed(2)),
+      weeklyChangePct: 0, // Will be populated by fetchWeeklyData
       volume: q.regularMarketVolume || 0,
+      avgVolume: q.averageDailyVolume3Month || q.averageDailyVolume10Day || 0,
       prevClose: prev,
       dayHigh: q.regularMarketDayHigh || ltp,
       dayLow: q.regularMarketDayLow || ltp,
@@ -256,6 +262,11 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
 
     const results = NIFTY50.map(s => resultMap.get(s)).filter(Boolean) as NSEStockQuote[];
     if (results.length > 0) {
+      // Fetch weekly data for all stocks
+      const weeklyData = await fetchWeeklyData(results.map(s => s.symbol));
+      for (const stock of results) {
+        stock.weeklyChangePct = weeklyData.get(stock.symbol) || 0;
+      }
       cache = { data: results, ts: Date.now() };
     }
     return results;
@@ -264,6 +275,49 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
     if (cache) return cache.data;
     return [];
   }
+}
+
+// Fetch 5-day change % for all stocks using Yahoo Finance chart API (batches of 10)
+async function fetchWeeklyData(symbols: string[]): Promise<Map<string, number>> {
+  const weeklyMap = new Map<string, number>();
+  if (symbols.length === 0) return weeklyMap;
+
+  try {
+    // Fetch 5-day chart data for each stock in parallel batches of 10
+    for (let i = 0; i < symbols.length; i += 10) {
+      const batch = symbols.slice(i, i + 10);
+      const results = await Promise.allSettled(
+        batch.map(async (sym) => {
+          try {
+            const res = await fetch(
+              `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=5d&interval=1d`,
+              { signal: AbortSignal.timeout(8000) }
+            );
+            if (!res.ok) return null;
+            const data = await res.json();
+            const candles = data?.chart?.result?.[0]?.indicators?.quote?.[0];
+            if (!candles?.close) return null;
+            const closes = candles.close.filter((c: number | null) => c != null) as number[];
+            if (closes.length < 2) return null;
+            const first = closes[0];
+            const last = closes[closes.length - 1];
+            if (first > 0) {
+              return { symbol: sym, change: parseFloat(((last - first) / first * 100).toFixed(2)) };
+            }
+          } catch {}
+          return null;
+        })
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) {
+          weeklyMap.set(r.value.symbol, r.value.change);
+        }
+      }
+      // Small delay between batches to avoid rate limiting
+      if (i + 10 < symbols.length) await new Promise(r => setTimeout(r, 300));
+    }
+  } catch {}
+  return weeklyMap;
 }
 
 export async function getSectorAverages(): Promise<Record<string, number>> {
