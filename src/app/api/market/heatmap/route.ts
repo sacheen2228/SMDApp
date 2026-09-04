@@ -1,8 +1,10 @@
 // Market Heatmap API — Stock data for treemap visualization
 // Supports multiple markets: NIFTY50, NIFTYNEXT50, NIFTY100, NIFTY200, NIFTY500, SENSEX, BANKNIFTY, FINNIFTY, MIDCAP, SMALLCAP
+// Also provides Index F&O data (NIFTY/BANKNIFTY/SENSEX spot, PCR, OI, futures)
 
 import { NextResponse } from "next/server";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import { buildMarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
 
 const MARKET_SYMBOLS: Record<string, string[]> = {
   NIFTY50: [
@@ -63,11 +65,75 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const market = searchParams.get("market") || "NIFTY50";
     const allMarkets = searchParams.get("allMarkets") === "true";
+    const includeFO = searchParams.get("fo") === "true";
 
     const stocks = await fetchNIFTY50Stocks();
 
     if (stocks.length === 0) {
       return NextResponse.json({ stocks: [], sectors: [], stockCount: 0, error: "NSE data unavailable" });
+    }
+
+    // Fetch Index F&O data if requested
+    let indexFO: any[] = [];
+    if (includeFO) {
+      try {
+        const ctx = await buildMarketIntelligenceContext();
+        indexFO = [
+          {
+            symbol: "NIFTY",
+            spot: ctx.nifty?.spot || 0,
+            pcr: ctx.nifty?.pcr || 0,
+            totalCallOI: ctx.nifty?.totalCallOI || 0,
+            totalPutOI: ctx.nifty?.totalPutOI || 0,
+            expiry: ctx.nifty?.expiry || "",
+            maxPain: ctx.nifty?.maxPain || 0,
+            callWall: ctx.nifty?.callWall || 0,
+            putFloor: ctx.nifty?.putFloor || 0,
+            futuresLtp: ctx.niftyFutures?.ltp || 0,
+            futuresBasis: ctx.niftyFutures?.basis || 0,
+            futuresBasisPct: ctx.niftyFutures?.basisPercent || 0,
+            futuresOI: ctx.niftyFutures?.oi || 0,
+            futuresOIChange: ctx.niftyFutures?.oiChange || 0,
+            futuresVolume: ctx.niftyFutures?.volume || 0,
+          },
+          {
+            symbol: "BANKNIFTY",
+            spot: ctx.banknifty?.spot || 0,
+            pcr: ctx.banknifty?.pcr || 0,
+            totalCallOI: ctx.banknifty?.totalCallOI || 0,
+            totalPutOI: ctx.banknifty?.totalPutOI || 0,
+            expiry: ctx.banknifty?.expiry || "",
+            maxPain: ctx.banknifty?.maxPain || 0,
+            callWall: ctx.banknifty?.callWall || 0,
+            putFloor: ctx.banknifty?.putFloor || 0,
+            futuresLtp: ctx.bankniftyFutures?.ltp || 0,
+            futuresBasis: ctx.bankniftyFutures?.basis || 0,
+            futuresBasisPct: ctx.bankniftyFutures?.basisPercent || 0,
+            futuresOI: ctx.bankniftyFutures?.oi || 0,
+            futuresOIChange: ctx.bankniftyFutures?.oiChange || 0,
+            futuresVolume: ctx.bankniftyFutures?.volume || 0,
+          },
+          {
+            symbol: "SENSEX",
+            spot: ctx.sensex?.spot || 0,
+            pcr: ctx.sensex?.pcr || 0,
+            totalCallOI: ctx.sensex?.totalCallOI || 0,
+            totalPutOI: ctx.sensex?.totalPutOI || 0,
+            expiry: ctx.sensex?.expiry || "",
+            maxPain: ctx.sensex?.maxPain || 0,
+            callWall: ctx.sensex?.callWall || 0,
+            putFloor: ctx.sensex?.putFloor || 0,
+            futuresLtp: ctx.sensexFutures?.ltp || 0,
+            futuresBasis: ctx.sensexFutures?.basis || 0,
+            futuresBasisPct: ctx.sensexFutures?.basisPercent || 0,
+            futuresOI: ctx.sensexFutures?.oi || 0,
+            futuresOIChange: ctx.sensexFutures?.oiChange || 0,
+            futuresVolume: ctx.sensexFutures?.volume || 0,
+          },
+        ];
+      } catch (e) {
+        // Index F&O data unavailable — return empty
+      }
     }
 
     if (allMarkets) {
@@ -97,6 +163,7 @@ export async function GET(request: Request) {
       }
       return NextResponse.json({
         markets,
+        indexFO,
         timestamp: new Date().toISOString(),
       });
     }
@@ -125,6 +192,7 @@ export async function GET(request: Request) {
       sectors: sectorData,
       market,
       stockCount: filteredStocks.length,
+      indexFO,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

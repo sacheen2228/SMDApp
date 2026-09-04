@@ -248,7 +248,17 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
     enabled: true,
   });
 
+  // Fetch Index F&O data
+  const { data: foData } = useQuery({
+    queryKey: ["market-heatmap-fo"],
+    queryFn: () => fetch("/api/market/heatmap?market=NIFTY50&fo=true").then(r => r.json()),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    enabled: true,
+  });
+
   const data = marketData || allData?.markets?.[selectedMarket];
+  const indexFO = foData?.indexFO || [];
 
   // Apply filters client-side
   const filteredStocks = useMemo(() => {
@@ -674,6 +684,69 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {/* Index F&O Panel */}
+      {indexFO && indexFO.length > 0 && (
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] font-bold text-cyan-400 uppercase">Index F&O</span>
+            <span className="text-[8px] text-zinc-500">NIFTY / BANKNIFTY / SENSEX</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {indexFO.map((idx: any) => (
+              <div key={idx.symbol} className="bg-zinc-800/50 border border-zinc-700 rounded p-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-bold text-white">{idx.symbol}</span>
+                  <span className="text-[9px] text-zinc-400">Spot: ₹{idx.spot?.toLocaleString()}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[8px]">
+                  <div>
+                    <span className="text-zinc-500">PCR</span>
+                    <span className={`ml-1 font-bold ${idx.pcr > 1 ? 'text-emerald-400' : idx.pcr < 0.8 ? 'text-red-400' : 'text-yellow-400'}`}>
+                      {idx.pcr?.toFixed(2) || '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Max Pain</span>
+                    <span className="ml-1 font-bold text-white">{idx.maxPain?.toLocaleString() || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Call OI</span>
+                    <span className="ml-1 font-bold text-red-400">{(idx.totalCallOI / 1e6)?.toFixed(1) || '—'}M</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Put OI</span>
+                    <span className="ml-1 font-bold text-emerald-400">{(idx.totalPutOI / 1e6)?.toFixed(1) || '—'}M</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Futures</span>
+                    <span className="ml-1 font-bold text-white">₹{idx.futuresLtp?.toLocaleString() || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Basis</span>
+                    <span className={`ml-1 font-bold ${(idx.futuresBasisPct || 0) > 0 ? 'text-emerald-400' : (idx.futuresBasisPct || 0) < 0 ? 'text-red-400' : 'text-zinc-400'}`}>
+                      {idx.futuresBasisPct ? `${idx.futuresBasisPct > 0 ? '+' : ''}${idx.futuresBasisPct.toFixed(2)}%` : '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">Fut OI</span>
+                    <span className="ml-1 font-bold text-white">{(idx.futuresOI / 1e6)?.toFixed(1) || '—'}M</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">OI Chg</span>
+                    <span className={`ml-1 font-bold ${(idx.futuresOIChange || 0) > 0 ? 'text-emerald-400' : (idx.futuresOIChange || 0) < 0 ? 'text-red-400' : 'text-zinc-400'}`}>
+                      {idx.futuresOIChange ? `${idx.futuresOIChange > 0 ? '+' : ''}${(idx.futuresOIChange / 1e6).toFixed(1)}M` : '—'}
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-1 text-[7px] text-zinc-500">
+                  Expiry: {idx.expiry || '—'} | Call Wall: {idx.callWall?.toLocaleString() || '—'} | Put Floor: {idx.putFloor?.toLocaleString() || '—'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Heatmap */}
       <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden flex-1" style={{ minHeight: 0 }}>
