@@ -9,6 +9,7 @@ export async function GET() {
       success: true,
       ...data,
       aiSummary: summary,
+      warning: data.source === 'none' ? 'No participant OI data available. Analysis based on empty positions — results are not actionable.' : undefined,
     });
   } catch (err: any) {
     return NextResponse.json(

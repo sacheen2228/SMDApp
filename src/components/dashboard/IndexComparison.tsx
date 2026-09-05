@@ -67,7 +67,7 @@ export function IndexComparison() {
   const [data, setData] = useState<ComparisonResponse['data'] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [interval, setInterval] = useState('5m');
+  const [interval, setInterval_] = useState('5m');
 
   const COLORS = {
     BULLISH: '#26a69a',
@@ -149,7 +149,7 @@ export function IndexComparison() {
         <div className="flex items-center gap-2">
           <select
             value={interval}
-            onChange={e => setInterval(e.target.value)}
+            onChange={e => setInterval_(e.target.value)}
             className="text-xs px-2 py-1 rounded bg-[#131722] border border-[#1e222d] text-white"
           >
             <option value="1m">1m</option>

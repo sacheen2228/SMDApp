@@ -367,10 +367,6 @@ export default function TradingDashboard() {
       const res = await fetch(`/api/option-chain?${params}`);
       if (!res.ok) throw new Error('Failed to fetch');
       const json = await res.json();
-      // Store analysis
-      if (json.analysis) {
-        setAnalysis(json.analysis);
-      }
       // Merge top-level analysis into the payload so downstream consumers
       // that read `data.analysis` / `data.data.…` get both summary and rec.
       const base = json.data || json;
@@ -379,6 +375,13 @@ export default function TradingDashboard() {
     refetchInterval: autoRefresh ? 900000 : false,
     staleTime: 5000,
   });
+
+  // Sync analysis from query data (not inside queryFn to avoid infinite loops)
+  useEffect(() => {
+    if ((data as any)?.analysis) {
+      setAnalysis((data as any).analysis);
+    }
+  }, [data]);
   
   // Fetch trade journal
   const { data: journalData } = useQuery<any[]>({
@@ -538,7 +541,7 @@ export default function TradingDashboard() {
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [autoRefresh, data]);
+  }, [autoRefresh]);
 
   // Max OI for heat map
   const chainData = useMemo(() => {

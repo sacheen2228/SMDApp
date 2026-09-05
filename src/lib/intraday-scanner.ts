@@ -448,7 +448,36 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     return null;
   };
 
-  const fetchOne = async (sym: string) => {
+  // Batch fetch quotes via Yahoo v7/finance/quote (1 request for all symbols)
+  const fetchBatchQuotes = async (syms: string[]) => {
+    try {
+      const yahooSyms = syms.map(s => `${s}.NS`);
+      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSyms.join(","))}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return;
+      const data = await res.json();
+      const results = data?.quoteResponse?.result || [];
+      for (const q of results) {
+        const sym = q.symbol?.replace(".NS", "");
+        if (!sym || !q.regularMarketPrice) continue;
+        const prevClose = q.regularMarketPreviousClose || q.regularMarketPrice;
+        quotes.set(sym, {
+          last_price: String(q.regularMarketPrice),
+          change: String((q.regularMarketPrice - prevClose).toFixed(2)),
+          change_percent: String(((q.regularMarketPrice - prevClose) / prevClose * 100).toFixed(2)),
+          volume: String(q.regularMarketVolume || 0),
+        });
+      }
+    } catch {}
+  };
+
+  // Probe batch quotes first — if Yahoo is unreachable, bail fast
+  await fetchBatchQuotes(symbols);
+  if (quotes.size === 0) return { quotes, candles, intradayCandles };
+
+  // Only fetch chart data (daily + intraday candles) for stocks that have quotes
+  // This reduces Yahoo requests from 100 to ~50 and avoids rate limiting
+  const fetchChart = async (sym: string) => {
     const yahooSym = `${sym}.NS`;
     // 3mo daily bars for trend/technical context + the last trading day's real
     // 5m bars for the intraday signal engine. Both come from the same free
@@ -524,13 +553,12 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     }
   };
 
-  // Probe one stock first. If Yahoo is unreachable, bail in ~4s.
-  await fetchOne(symbols[0]);
-  if (quotes.size === 0) return { quotes, candles, intradayCandles };
-
-  for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
-    const batch = symbols.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(fetchOne));
+  // Batch quotes already fetched above — now fetch chart candles only for stocks with quotes
+  // This reduces Yahoo requests from 100 to ~30 and avoids rate limiting
+  const symbolsWithQuotes = symbols.filter(s => quotes.has(s));
+  for (let i = 0; i < symbolsWithQuotes.length && Date.now() < DEADLINE; i += CONCURRENCY) {
+    const batch = symbolsWithQuotes.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(fetchChart));
   }
 
   const data: YahooData = { quotes, candles, intradayCandles };
