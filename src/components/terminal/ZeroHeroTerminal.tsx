@@ -17,7 +17,6 @@ import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
-import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { getLotSize } from "@/lib/symbol-config";
 import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
@@ -171,6 +170,9 @@ interface ZHCandidate {
   conf: number;
   stars: number;
   daysToExpiry: number;
+  unifiedScore?: number;
+  unifiedGrade?: string;
+  hardGatesPassed?: boolean;
 }
 
 interface TradeRec {
@@ -963,7 +965,39 @@ export function ZeroHeroTerminal() {
           maxPositionSize: 10,
           context: ctx,
         });
-        list.push({ rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2, rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars, daysToExpiry: ctx.expiry?.days_to_expiry ?? 1 });
+
+        // Unified scoring engine — HERO_ZERO profile
+        const optionChain = chain.map((row: any) => ({
+          strike: row.strike,
+          ce: row.ce ? { ltp: row.ce.ltp, oi: row.ce.oi, oiChg: row.ce.oiChg, volume: row.ce.vol, iv: row.iv || 15, delta: row.ce.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
+          pe: row.pe ? { ltp: row.pe.ltp, oi: row.pe.oi, oiChg: row.pe.oiChg, volume: row.pe.vol, iv: row.iv || 15, delta: row.pe.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
+        }));
+        const unifiedDecision = scoreTrade({
+          symbol,
+          strategy: "HERO_ZERO",
+          direction: type === "CE" ? "BULLISH" : "BEARISH",
+          spot,
+          optionChain,
+          pcr: ctx.oiAnalysis?.pcr || undefined,
+          maxPain: ctx.oiAnalysis?.maxPain || undefined,
+          vix: vix || undefined,
+          lotSize,
+          entryPrice: d.ltp,
+          stopLoss: r.sl,
+          target1: r.tp1,
+          target2: r.tp2,
+          historicalWinRate: 0.65,
+          historicalRR: r.rr,
+        });
+
+        list.push({
+          rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2,
+          rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars,
+          daysToExpiry: ctx.expiry?.days_to_expiry ?? 1,
+          unifiedScore: unifiedDecision.score,
+          unifiedGrade: unifiedDecision.grade,
+          hardGatesPassed: unifiedDecision.hardGateStatus.passed,
+        });
       }
     }
     list.sort((a, b) => b.conf - a.conf);
@@ -1278,6 +1312,14 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
                 <span>{idx + 1}. {fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span></span>
                 <span className="text-[#1fbf75]">₹{fmt(z.entry)}</span>
                 <span className={`px-1.5 py-0.5 rounded font-bold text-[10.5px] ${z.rr >= 3 ? "bg-[rgba(45,212,167,.18)] text-[#2dd4a7]" : z.rr >= 2 ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>1:{z.rr}</span>
+                {z.unifiedGrade && (
+                  <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${
+                    z.unifiedGrade === "A+" ? "bg-[rgba(212,175,55,.25)] text-[#d4af37]" :
+                    z.unifiedGrade === "A" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" :
+                    z.unifiedGrade === "B" ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" :
+                    "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"
+                  }`} title={`Unified Score: ${z.unifiedScore}/100`}>{z.unifiedGrade}</span>
+                )}
                 <StarRating count={z.stars} />
               </div>
             ))}
