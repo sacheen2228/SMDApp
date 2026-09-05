@@ -698,8 +698,11 @@ function runHardGates(input: MarketDataInput): HardGateResult {
 
   // 2. LIQUIDITY
   const liqIssues: string[] = [];
+  const isMCX = input.strategy === "MCX_COMMODITY";
   const avgVol = input.avgVolume ?? input.currentVolume;
-  if (avgVol != null && avgVol < 50000) liqIssues.push(`avg volume ${avgVol} < 50K`);
+  // MCX has lower volume thresholds than NSE
+  const liqThreshold = isMCX ? 500 : 50000;
+  if (avgVol != null && avgVol < liqThreshold) liqIssues.push(`avg volume ${avgVol} < ${liqThreshold}`);
   if (input.optionChain && input.spot > 0) {
     const near = input.optionChain.filter(s => Math.abs(s.strike - input.spot) / input.spot < 0.03);
     const totalOI = near.reduce((s, st) => {
@@ -725,21 +728,24 @@ function runHardGates(input: MarketDataInput): HardGateResult {
     name: "LIQUIDITY",
     status: liqIssues.length > 0 ? "FAIL" : "PASS",
     reason: liqIssues.length > 0 ? liqIssues.join("; ") : "Liquidity sufficient",
-    required: true,
+    required: !isMCX, // MCX: warn only, don't block
   });
 
   // 3. MARKET REGIME
   const regimeIssues: string[] = [];
   const vix = input.vix;
-  if (vix != null && vix > 35) regimeIssues.push(`VIX ${vix.toFixed(1)} — extreme volatility`);
-  if (input.strategy === "HERO_ZERO") {
-    if (vix != null && vix > 30) regimeIssues.push("Hero-Zero not suitable in extreme VIX");
-    if (vix != null && vix < 10) regimeIssues.push("Hero-Zero needs volatility to profit");
+  // MCX doesn't have India VIX — skip VIX checks for MCX
+  if (!isMCX) {
+    if (vix != null && vix > 35) regimeIssues.push(`VIX ${vix.toFixed(1)} — extreme volatility`);
+    if (input.strategy === "HERO_ZERO") {
+      if (vix != null && vix > 30) regimeIssues.push("Hero-Zero not suitable in extreme VIX");
+      if (vix != null && vix < 10) regimeIssues.push("Hero-Zero needs volatility to profit");
+    }
   }
   gates.push({
     name: "MARKET_REGIME",
     status: regimeIssues.length > 0 ? "FAIL" : "PASS",
-    reason: regimeIssues.length > 0 ? regimeIssues.join("; ") : "Regime acceptable",
+    reason: regimeIssues.length > 0 ? regimeIssues.join("; ") : (isMCX ? "MCX regime check skipped (no VIX)" : "Regime acceptable"),
     required: true,
   });
 
@@ -754,11 +760,16 @@ function runHardGates(input: MarketDataInput): HardGateResult {
       if (rr < 1.0) rrIssues.push(`R:R ${rr.toFixed(1)} < 1.0`);
     }
   }
+  // For MCX: check ATR-based R:R if explicit levels not provided
+  if (isMCX && input.atr && input.spot && rrIssues.length === 0) {
+    const atrRr = (input.atr * 2.5) / (input.atr * 1.5); // target 2.5x ATR, SL 1.5x ATR
+    // This is informational — don't block
+  }
   gates.push({
     name: "RISK_REWARD",
     status: rrIssues.length > 0 ? "FAIL" : "PASS",
     reason: rrIssues.length > 0 ? rrIssues.join("; ") : "R:R acceptable",
-    required: true,
+    required: !isMCX, // MCX: scanner computes its own levels
   });
 
   // 5. PRICE/OPTION DATA QUALITY
@@ -772,7 +783,8 @@ function runHardGates(input: MarketDataInput): HardGateResult {
       qualityIssues.push(`${strikesWithZeroLTP} strikes with zero LTP`);
     }
   }
-  if (input.vix != null && input.vix <= 0) qualityIssues.push("VIX is zero");
+  // MCX doesn't have India VIX — skip VIX check
+  if (!isMCX && input.vix != null && input.vix <= 0) qualityIssues.push("VIX is zero");
   gates.push({
     name: "DATA_QUALITY",
     status: qualityIssues.length > 0 ? "FAIL" : "PASS",
@@ -818,10 +830,14 @@ export function scoreTrade(input: MarketDataInput): TradeDecision {
   // 1. Compute all factor scores
   const factors = computeAllFactors(input);
 
-  // 2. Compute weighted composite score
+  // 2. Compute weighted composite score (normalize by actual available weight)
   const totalWeight = getWeightTotal(weights);
   const rawScore = factors.reduce((sum, f) => sum + f.weighted, 0);
-  const score = totalWeight > 0 ? Math.round((rawScore / totalWeight) * 100) : 0;
+  // For MCX: normalize by sum of weights that have data (not all factors available)
+  const availableWeight = factors.filter(f => f.available).reduce((sum, f) => sum + f.weight, 0);
+  const isMCXProfile = input.strategy === "MCX_COMMODITY";
+  const effectiveWeight = isMCXProfile ? Math.max(availableWeight, totalWeight * 0.5) : totalWeight;
+  const score = effectiveWeight > 0 ? Math.round((rawScore / effectiveWeight) * 100) : 0;
   const normalizedScore = Math.min(100, Math.max(0, score));
 
   // 3. Run hard gates

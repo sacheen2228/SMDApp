@@ -1,43 +1,179 @@
-// MCX Commodity Module — Scanner
-// Price structure, volume, OI analysis for 10 approved contracts
+// MCX Commodity Module — Scanner v2
+// Fetches Yahoo candles, computes ATR/trend/SR, generates Entry/SL/TP
 // Uses real data only. Never fabricates signals.
 
 import type { MCXCommodity, MCXQuote, MCXScannerResult, MCXDataStatus } from './types';
-import { MCX_APPROVED_CONTRACTS, MCX_ENERGY, MCX_PRECIOUS_METALS } from './types';
-import { MCX_CONTRACT_SPECS, getMCXContractSpec, isMCXHigherRisk, isMCXLowerLiquidity } from './instrument-master';
-import { fetchAllMCXQuotes, fetchMCXQuote } from './market-data';
-import { getMCXSession, isMCXActive } from './session';
-import { scoreTrade, type MarketDataInput, type TradeDecision } from '@/lib/unified-scoring-engine';
+import { MCX_APPROVED_CONTRACTS } from './types';
+import { MCX_CONTRACT_SPECS, isMCXHigherRisk, isMCXLowerLiquidity } from './instrument-master';
+import { fetchAllMCXQuotes } from './market-data';
+import { getMCXSession } from './session';
+import { scoreTrade, type MarketDataInput } from '@/lib/unified-scoring-engine';
 
-// ── Scanner result cache ──
+// ── Yahoo ticker mapping ──
+const MCX_TO_YAHOO: Record<MCXCommodity, string> = {
+  CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
+  NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
+  GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
+  SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
+};
+
+interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+// ── Cache ──
 let scannerCache: { results: MCXScannerResult[]; ts: number } | null = null;
-const SCANNER_CACHE_TTL = 30000; // 30 seconds
+const SCANNER_CACHE_TTL = 30000;
+const candleCache = new Map<string, { candles: Candle[]; ts: number }>();
+const CANDLE_CACHE_TTL = 300000; // 5 min
 
-// ── Main: Run MCX scanner on all 10 approved contracts ──
+// ── Fetch daily candles from Yahoo for a commodity ──
+async function fetchMCXCandles(symbol: MCXCommodity): Promise<Candle[]> {
+  const yahooSym = MCX_TO_YAHOO[symbol];
+  if (!yahooSym) return [];
+
+  const cacheKey = yahooSym;
+  const cached = candleCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CANDLE_CACHE_TTL) return cached.candles;
+
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(6000),
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result?.timestamp || !result?.indicators?.quote?.[0]) return [];
+
+    const ts = result.timestamp;
+    const q = result.indicators.quote[0];
+    const candles: Candle[] = [];
+
+    for (let i = 0; i < ts.length; i++) {
+      const close = q.close?.[i];
+      if (close == null) continue;
+      candles.push({
+        time: ts[i],
+        open: q.open?.[i] ?? close,
+        high: q.high?.[i] ?? close,
+        low: q.low?.[i] ?? close,
+        close,
+        volume: q.volume?.[i] || 0,
+      });
+    }
+
+    if (candles.length > 0) {
+      candleCache.set(cacheKey, { candles, ts: Date.now() });
+    }
+    return candles;
+  } catch {
+    return [];
+  }
+}
+
+// ── Technical Analysis from Candles ──
+function computeTechnicals(candles: Candle[]): {
+  atr: number;
+  atrPercent: number;
+  ema9: number;
+  ema21: number;
+  trend: 'UP' | 'DOWN' | 'FLAT';
+  support: number;
+  resistance: number;
+  avgVolume: number;
+  lastClose: number;
+  range20d: number;
+} {
+  if (candles.length < 5) {
+    return { atr: 0, atrPercent: 0, ema9: 0, ema21: 0, trend: 'FLAT', support: 0, resistance: 0, avgVolume: 0, lastClose: 0, range20d: 0 };
+  }
+
+  const last = candles[candles.length - 1];
+  const lastClose = last.close;
+
+  // ATR (14-period)
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const h = candles[i].high;
+    const l = candles[i].low;
+    const pc = candles[i - 1].close;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  const atr14 = trs.length >= 14
+    ? trs.slice(-14).reduce((s, v) => s + v, 0) / 14
+    : trs.reduce((s, v) => s + v, 0) / trs.length;
+  const atrPercent = lastClose > 0 ? (atr14 / lastClose) * 100 : 0;
+
+  // EMA 9 and 21
+  const ema9 = computeEMA(candles.map(c => c.close), 9);
+  const ema21 = computeEMA(candles.map(c => c.close), 21);
+
+  // Trend
+  let trend: 'UP' | 'DOWN' | 'FLAT' = 'FLAT';
+  if (ema9 > ema21 * 1.002) trend = 'UP';
+  else if (ema9 < ema21 * 0.998) trend = 'DOWN';
+
+  // Support/Resistance (20-day low/high)
+  const recent20 = candles.slice(-20);
+  const support = Math.min(...recent20.map(c => c.low));
+  const resistance = Math.max(...recent20.map(c => c.high));
+  const range20d = resistance - support;
+
+  // Average volume
+  const avgVolume = candles.slice(-20).reduce((s, c) => s + c.volume, 0) / Math.min(20, candles.length);
+
+  return { atr: atr14, atrPercent, ema9, ema21, trend, support, resistance, avgVolume, lastClose, range20d };
+}
+
+function computeEMA(prices: number[], period: number): number {
+  if (prices.length < period) return prices[prices.length - 1] || 0;
+  const k = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+// ── Main Scanner ──
 export async function runMCXScanner(): Promise<MCXScannerResult[]> {
   const now = Date.now();
-  if (scannerCache && now - scannerCache.ts < SCANNER_CACHE_TTL) {
-    return scannerCache.results;
-  }
+  if (scannerCache && now - scannerCache.ts < SCANNER_CACHE_TTL) return scannerCache.results;
 
   const [quotes, session] = await Promise.all([
     fetchAllMCXQuotes(),
     Promise.resolve(getMCXSession()),
   ]);
 
+  // Fetch candles for all commodities in parallel (4 unique Yahoo tickers)
+  const uniqueTickers = [...new Set(Object.values(MCX_TO_YAHOO))];
+  const tickerCandles = new Map<string, Candle[]>();
+  await Promise.all(uniqueTickers.map(async (ticker) => {
+    const sym = Object.entries(MCX_TO_YAHOO).find(([, v]) => v === ticker)?.[0] as MCXCommodity;
+    if (sym) tickerCandles.set(ticker, await fetchMCXCandles(sym));
+  }));
+
   const results: MCXScannerResult[] = [];
 
   for (const symbol of MCX_APPROVED_CONTRACTS) {
     const quote = quotes.get(symbol);
     const spec = MCX_CONTRACT_SPECS[symbol];
+    const yahooSym = MCX_TO_YAHOO[symbol];
+    const candles = tickerCandles.get(yahooSym) || [];
 
-    const result = analyzeMCXCommodity(symbol, quote, spec, session.isActive);
-    results.push(result);
+    results.push(analyzeMCXCommodity(symbol, quote, spec, candles, session.isActive));
   }
 
-  // Sort by score descending (best first)
+  // Sort: tradeable first, then by score
   results.sort((a, b) => {
-    //优先级: valid setups first, then by score
     if (a.grade === 'NO_TRADE' && b.grade !== 'NO_TRADE') return 1;
     if (a.grade !== 'NO_TRADE' && b.grade === 'NO_TRADE') return -1;
     return b.score - a.score;
@@ -47,67 +183,109 @@ export async function runMCXScanner(): Promise<MCXScannerResult[]> {
   return results;
 }
 
-// ── Analyze single MCX commodity ──
+// ── Analyze single commodity ──
 function analyzeMCXCommodity(
   symbol: MCXCommodity,
   quote: MCXQuote | undefined,
-  spec: ReturnType<typeof getMCXContractSpec>,
+  spec: ReturnType<typeof MCX_CONTRACT_SPECS extends Record<any, infer V> ? () => V : never>,
+  candles: Candle[],
   sessionActive: boolean
 ): MCXScannerResult {
-  const dataStatus: MCXDataStatus = quote?.dataStatus || 'DATA_UNAVAILABLE';
   const hasData = quote && quote.ltp !== null && quote.ltp > 0;
+  const hasCandles = candles.length >= 10;
 
-  // Determine direction first (needed for scoring)
-  const direction = determineDirection(quote, null, hasData);
+  if (!hasData) {
+    return noTradeResult(symbol, spec, 'DATA_UNAVAILABLE', sessionActive);
+  }
 
-  // Build scoring input
+  const ltp = quote.ltp!;
+  const technicals = hasCandles ? computeTechnicals(candles) : null;
+
+  // Direction from trend
+  let direction: 'LONG' | 'SHORT' | 'NEUTRAL' = 'NEUTRAL';
+  if (technicals) {
+    if (technicals.trend === 'UP' && ltp > technicals.ema21) direction = 'LONG';
+    else if (technicals.trend === 'DOWN' && ltp < technicals.ema21) direction = 'SHORT';
+    else if (quote.changePercent !== null) {
+      if (quote.changePercent > 0.3) direction = 'LONG';
+      else if (quote.changePercent < -0.3) direction = 'SHORT';
+    }
+  } else if (quote.changePercent !== null) {
+    if (quote.changePercent > 0.5) direction = 'LONG';
+    else if (quote.changePercent < -0.5) direction = 'SHORT';
+  }
+
+  if (direction === 'NEUTRAL') {
+    return noTradeResult(symbol, spec, 'NO_SIGNAL', sessionActive);
+  }
+
+  // Entry/SL/Target from structure
+  const levels = computeStructureLevels(ltp, direction, technicals, spec);
+
+  // Score via unified engine
   const input: MarketDataInput = {
     symbol,
     strategy: 'MCX_COMMODITY',
-    direction: direction === 'LONG' ? 'BULLISH' : direction === 'SHORT' ? 'BEARISH' : 'NEUTRAL',
-    spot: hasData ? quote.ltp! : 0,
-    candles: [],
-    optionChain: null,
-    vix: null,
+    direction: direction === 'LONG' ? 'BULLISH' : 'BEARISH',
+    spot: ltp,
+    candles: hasCandles ? candles.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })) : [],
+    prevClose: quote.previousClose || undefined,
+    dayHigh: quote.high || undefined,
+    dayLow: quote.low || undefined,
+    atr: technicals?.atr,
+    atrPercent: technicals?.atrPercent,
+    avgVolume: technicals?.avgVolume || undefined,
+    currentVolume: quote.volume || undefined,
   };
 
-  // Run unified scoring
-  const decision = hasData ? scoreTrade(input) : null;
+  const decision = scoreTrade(input);
 
-  // Analyze price structure
-  const priceStructure = analyzePriceStructure(quote, hasData);
+  // Risk flags
+  const riskFlags: string[] = [];
+  if (isMCXHigherRisk(symbol) && technicals && technicals.atrPercent > 4) {
+    riskFlags.push('HIGH_VOLATILITY');
+  }
+  if (quote.timestamp) {
+    const age = (Date.now() - new Date(quote.timestamp).getTime()) / 1000;
+    if (age > 300) riskFlags.push('STALE_DATA');
+  }
 
-  // Analyze volume
-  const volumeSignal = analyzeVolume(quote, hasData);
+  // Liquidity
+  const liquidityStatus = checkLiquidity(symbol, quote, technicals);
 
-  // Analyze OI
-  const oiSignal = analyzeOI(quote, hasData);
+  // Reasons
+  const reasons: string[] = [];
+  if (technicals) {
+    reasons.push(`Trend: ${technicals.trend}`);
+    if (direction === 'LONG') reasons.push(`Above EMA21 (${technicals.ema21.toFixed(1)})`);
+    else reasons.push(`Below EMA21 (${technicals.ema21.toFixed(1)})`);
+    reasons.push(`ATR: ${technicals.atr.toFixed(1)} (${technicals.atrPercent.toFixed(1)}%)`);
+  }
+  if (decision.reasons?.length) reasons.push(...decision.reasons.slice(0, 2));
 
-  // Check liquidity
-  const liquidityStatus = checkLiquidity(symbol, quote, hasData);
+  // Grade
+  let grade: MCXScannerResult['grade'] = 'NO_TRADE';
+  if (decision.score >= 90) grade = 'A+';
+  else if (decision.score >= 80) grade = 'A';
+  else if (decision.score >= 70) grade = 'B';
+  else if (decision.score >= 60) grade = 'WATCH';
 
-  // Check risk flags
-  const riskFlags = checkRiskFlags(symbol, quote, spec, hasData);
-
-  // Calculate entry/SL/target from structure
-  const levels = calculateLevels(symbol, quote, direction, hasData);
-
-  // Build reasons
-  const reasons = buildReasons(symbol, decision, priceStructure, volumeSignal, oiSignal, liquidityStatus, riskFlags);
-
-  // Use decision direction if available (overrides initial direction)
-  const finalDirection = decision?.direction === 'BUY' ? 'LONG' : decision?.direction === 'SELL' ? 'SHORT' : direction;
-
-  // Check if should be NO_TRADE
-  const shouldNoTrade = !hasData || !sessionActive || liquidityStatus === 'INSUFFICIENT' ||
-    riskFlags.length > 0 || decision?.decision === 'NO_TRADE';
+  // Block trade only for risk flags or insufficient liquidity
+  // Session closed: show signal but mark as WATCH (not actionable yet)
+  if (riskFlags.length > 0 || liquidityStatus === 'INSUFFICIENT') {
+    grade = 'NO_TRADE';
+    direction = 'NEUTRAL';
+  } else if (!sessionActive && grade !== 'NO_TRADE') {
+    // Market closed — downgrade to WATCH but keep the signal visible
+    grade = 'WATCH';
+  }
 
   return {
     symbol,
     category: spec.category,
-    direction: shouldNoTrade ? 'NEUTRAL' : finalDirection,
-    score: decision?.score || 0,
-    grade: shouldNoTrade ? 'NO_TRADE' : (decision?.grade || 'NO_TRADE'),
+    direction,
+    score: decision.score,
+    grade,
     entry: levels.entry,
     stopLoss: levels.stopLoss,
     target: levels.target,
@@ -117,296 +295,154 @@ function analyzeMCXCommodity(
     quantity: spec.lotSize,
     capitalRequired: levels.entry * spec.lotSize,
     liquidityStatus,
-    dataStatus,
-    priceStructure,
-    volumeSignal,
-    oiSignal,
+    dataStatus: quote.dataStatus,
+    priceStructure: technicals ? [technicals.trend, `ATR ${technicals.atrPercent.toFixed(1)}%`] : ['NO_CANDLES'],
+    volumeSignal: quote.volume ? [`Vol ${quote.volume.toLocaleString()}`] : ['NO_VOLUME'],
+    oiSignal: quote.openInterest ? [`OI ${quote.openInterest.toLocaleString()}`] : ['NO_OI'],
     reasons,
     riskFlags,
     timestamp: new Date().toISOString(),
   };
 }
 
-// ── Price Structure Analysis ──
-function analyzePriceStructure(quote: MCXQuote | undefined, hasData: boolean): string[] {
-  if (!hasData || !quote) return ['NO_DATA'];
+// ── Structure-based Entry/SL/Target ──
+function computeStructureLevels(
+  ltp: number,
+  direction: 'LONG' | 'SHORT',
+  technicals: ReturnType<typeof computeTechnicals> | null,
+  spec: any
+): { entry: number; stopLoss: number; target: number; riskReward: number; maxLoss: number } {
+  const entry = ltp;
 
-  const signals: string[] = [];
-
-  // Trend direction from price change
-  if (quote.changePercent !== null) {
-    if (quote.changePercent > 2) signals.push('STRONG_UPTREND');
-    else if (quote.changePercent > 0.5) signals.push('UPTREND');
-    else if (quote.changePercent < -2) signals.push('STRONG_DOWNTREND');
-    else if (quote.changePercent < -0.5) signals.push('DOWNTREND');
-    else signals.push('RANGE_BOUND');
+  if (!technicals || technicals.atr === 0) {
+    // Fallback: 2% SL, 3% target
+    const sl = direction === 'LONG' ? entry * 0.98 : entry * 1.02;
+    const tp = direction === 'LONG' ? entry * 1.03 : entry * 0.97;
+    const risk = Math.abs(entry - sl);
+    return {
+      entry,
+      stopLoss: sl,
+      target: tp,
+      riskReward: risk > 0 ? Math.abs(tp - entry) / risk : 0,
+      maxLoss: risk * spec.lotSize,
+    };
   }
 
-  // Intraday range expansion
-  if (quote.high !== null && quote.low !== null && quote.ltp !== null) {
-    const range = quote.high - quote.low;
-    const midPrice = (quote.high + quote.low) / 2;
-    const rangePercent = midPrice > 0 ? (range / midPrice) * 100 : 0;
+  let stopLoss: number;
+  let target: number;
 
-    if (rangePercent > 3) signals.push('RANGE_EXPANSION');
-    else if (rangePercent < 0.5) signals.push('CONSOLIDATION');
-  }
+  if (direction === 'LONG') {
+    // SL: below recent support or 1.5x ATR below entry
+    const slAtr = entry - technicals.atr * 1.5;
+    const slSupport = technicals.support * 0.995;
+    stopLoss = Math.max(slAtr, slSupport);
 
-  // Position within day's range
-  if (quote.high !== null && quote.low !== null && quote.ltp !== null) {
-    const range = quote.high - quote.low;
-    if (range > 0) {
-      const position = (quote.ltp - quote.low) / range;
-      if (position > 0.8) signals.push('NEAR_HIGH');
-      else if (position < 0.2) signals.push('NEAR_LOW');
-    }
-  }
-
-  return signals.length > 0 ? signals : ['NEUTRAL'];
-}
-
-// ── Volume Analysis ──
-function analyzeVolume(quote: MCXQuote | undefined, hasData: boolean): string[] {
-  if (!hasData || !quote) return ['NO_DATA'];
-
-  const signals: string[] = [];
-
-  if (quote.volume !== null && quote.volume > 0) {
-    signals.push('VOLUME_AVAILABLE');
-    // Note: Without historical average, can't determine relative volume
-    // This would need historical data integration
+    // Target: next resistance or 2x ATR above entry
+    const tpAtr = entry + technicals.atr * 2.5;
+    const tpResistance = technicals.resistance;
+    target = tpResistance > entry ? Math.min(tpAtr, tpResistance * 1.01) : tpAtr;
   } else {
-    signals.push('VOLUME_UNAVAILABLE');
+    // SL: above recent resistance or 1.5x ATR above entry
+    const slAtr = entry + technicals.atr * 1.5;
+    const slResistance = technicals.resistance * 1.005;
+    stopLoss = Math.min(slAtr, slResistance);
+
+    // Target: next support or 2x ATR below entry
+    const tpAtr = entry - technicals.atr * 2.5;
+    const tpSupport = technicals.support;
+    target = tpSupport < entry ? Math.max(tpAtr, tpSupport * 0.995) : tpAtr;
   }
 
-  return signals;
+  const risk = Math.abs(entry - stopLoss);
+  const reward = Math.abs(target - entry);
+  const riskReward = risk > 0 ? reward / risk : 0;
+
+  return {
+    entry,
+    stopLoss,
+    target,
+    riskReward,
+    maxLoss: risk * spec.lotSize,
+  };
 }
 
-// ── OI Analysis ──
-function analyzeOI(quote: MCXQuote | undefined, hasData: boolean): string[] {
-  if (!hasData || !quote) return ['NO_DATA'];
-
-  const signals: string[] = [];
-
-  if (quote.openInterest !== null && quote.openInterest > 0) {
-    signals.push('OI_AVAILABLE');
-    if (quote.changeInOI !== null) {
-      if (quote.changeInOI > 0) signals.push('OI_INCREASE');
-      else if (quote.changeInOI < 0) signals.push('OI_DECREASE');
-    }
-  } else {
-    signals.push('OI_UNAVAILABLE');
-  }
-
-  return signals;
-}
-
-// ── Liquidity Check ──
+// ── Liquidity check ──
 function checkLiquidity(
   symbol: MCXCommodity,
   quote: MCXQuote | undefined,
-  hasData: boolean
+  technicals: ReturnType<typeof computeTechnicals> | null
 ): 'HIGH' | 'MEDIUM' | 'LOW' | 'INSUFFICIENT' {
-  if (!hasData || !quote) return 'INSUFFICIENT';
+  if (!quote || quote.ltp === null) return 'INSUFFICIENT';
 
-  const spec = MCX_CONTRACT_SPECS[symbol];
   let score = 0;
 
-  // Volume-based liquidity
-  if (quote.volume !== null) {
-    if (quote.volume > 10000) score += 3;
-    else if (quote.volume > 1000) score += 2;
-    else if (quote.volume > 100) score += 1;
+  // Volume vs average
+  if (quote.volume && technicals && technicals.avgVolume > 0) {
+    const relVol = quote.volume / technicals.avgVolume;
+    if (relVol > 2) score += 3;
+    else if (relVol > 1) score += 2;
+    else if (relVol > 0.5) score += 1;
+  } else if (quote.volume && quote.volume > 1000) {
+    score += 2;
   }
 
-  // OI-based liquidity
-  if (quote.openInterest !== null) {
-    if (quote.openInterest > 50000) score += 3;
-    else if (quote.openInterest > 10000) score += 2;
-    else if (quote.openInterest > 1000) score += 1;
-  }
+  // OI
+  if (quote.openInterest && quote.openInterest > 10000) score += 2;
+  else if (quote.openInterest && quote.openInterest > 1000) score += 1;
 
-  // Bid-ask spread (if available)
-  if (quote.bid !== null && quote.ask !== null && quote.ltp !== null) {
-    const spread = quote.ask - quote.bid;
-    const spreadPercent = quote.ltp > 0 ? (spread / quote.ltp) * 100 : 0;
-    if (spreadPercent < 0.1) score += 2;
-    else if (spreadPercent < 0.5) score += 1;
-    else if (spreadPercent > 2) score -= 1;
-  }
+  // Lower liquidity commodities
+  if (isMCXLowerLiquidity(symbol)) score -= 1;
 
-  // Lower liquidity filter for specific commodities
-  if (isMCXLowerLiquidity(symbol)) {
-    score -= 1;
-  }
-
-  if (score >= 5) return 'HIGH';
-  if (score >= 3) return 'MEDIUM';
+  if (score >= 4) return 'HIGH';
+  if (score >= 2) return 'MEDIUM';
   if (score >= 1) return 'LOW';
   return 'INSUFFICIENT';
 }
 
-// ── Risk Flags ──
-function checkRiskFlags(
+// ── No-trade result ──
+function noTradeResult(
   symbol: MCXCommodity,
-  quote: MCXQuote | undefined,
-  spec: ReturnType<typeof getMCXContractSpec>,
-  hasData: boolean
-): string[] {
-  const flags: string[] = [];
-
-  if (!hasData || !quote) {
-    flags.push('NO_DATA');
-    return flags;
-  }
-
-  // Higher risk filter for NATURALGAS, NATGASMINI
-  if (isMCXHigherRisk(symbol)) {
-    // Check for extreme price movement
-    if (quote.changePercent !== null && Math.abs(quote.changePercent) > 5) {
-      flags.push('EXTREME_VOLATILITY');
-    }
-
-    // Check for large range expansion
-    if (quote.high !== null && quote.low !== null && quote.ltp !== null) {
-      const range = quote.high - quote.low;
-      const rangePercent = quote.ltp > 0 ? (range / quote.ltp) * 100 : 0;
-      if (rangePercent > 5) {
-        flags.push('RANGE_EXPANSION_WARNING');
-      }
-    }
-  }
-
-  // Check for stale data
-  if (quote.timestamp) {
-    const age = (Date.now() - new Date(quote.timestamp).getTime()) / 1000;
-    if (age > 300) flags.push('STALE_DATA');
-  }
-
-  return flags;
+  spec: any,
+  reason: string,
+  sessionActive: boolean
+): MCXScannerResult {
+  return {
+    symbol,
+    category: spec.category,
+    direction: 'NEUTRAL',
+    score: 0,
+    grade: 'NO_TRADE',
+    entry: 0,
+    stopLoss: 0,
+    target: 0,
+    riskReward: 0,
+    maxLoss: 0,
+    lotSize: spec.lotSize,
+    quantity: spec.lotSize,
+    capitalRequired: 0,
+    liquidityStatus: 'INSUFFICIENT',
+    dataStatus: reason === 'DATA_UNAVAILABLE' ? 'DATA_UNAVAILABLE' : 'LIVE',
+    priceStructure: [reason],
+    volumeSignal: [],
+    oiSignal: [],
+    reasons: [reason],
+    riskFlags: [],
+    timestamp: new Date().toISOString(),
+  };
 }
 
-// ── Determine Direction ──
-function determineDirection(
-  quote: MCXQuote | undefined,
-  decision: TradeDecision | null,
-  hasData: boolean
-): 'LONG' | 'SHORT' | 'NEUTRAL' {
-  if (!hasData || !quote) return 'NEUTRAL';
-
-  if (decision?.decision === 'NO_TRADE') return 'NEUTRAL';
-
-  // Use unified scoring direction
-  if (decision?.direction) {
-    return decision.direction === 'BUY' ? 'LONG' : 'SHORT';
-  }
-
-  // Fallback: price change direction
-  if (quote.changePercent !== null) {
-    if (quote.changePercent > 0.5) return 'LONG';
-    if (quote.changePercent < -0.5) return 'SHORT';
-  }
-
-  return 'NEUTRAL';
-}
-
-// ── Calculate Entry/SL/Target from Structure ──
-function calculateLevels(
-  symbol: MCXCommodity,
-  quote: MCXQuote | undefined,
-  direction: 'LONG' | 'SHORT' | 'NEUTRAL',
-  hasData: boolean
-): { entry: number; stopLoss: number; target: number; riskReward: number; maxLoss: number } {
-  if (!hasData || !quote || !quote.ltp || direction === 'NEUTRAL') {
-    return { entry: 0, stopLoss: 0, target: 0, riskReward: 0, maxLoss: 0 };
-  }
-
-  const entry = quote.ltp;
-  const spec = MCX_CONTRACT_SPECS[symbol];
-
-  // Structure-based SL: use day's low/high or ATR-based
-  let stopLoss = 0;
-  let target = 0;
-
-  if (direction === 'LONG') {
-    // SL below day's low (or 2% below entry if no low data)
-    stopLoss = quote.low !== null ? quote.low * 0.99 : entry * 0.98;
-    // Target: 1.5x risk from entry to SL
-    const risk = entry - stopLoss;
-    target = entry + risk * 1.5;
-  } else if (direction === 'SHORT') {
-    // SL above day's high (or 2% above entry if no high data)
-    stopLoss = quote.high !== null ? quote.high * 1.01 : entry * 1.02;
-    // Target: 1.5x risk from entry to SL
-    const risk = stopLoss - entry;
-    target = entry - risk * 1.5;
-  }
-
-  const riskPerUnit = Math.abs(entry - stopLoss);
-  const rewardPerUnit = Math.abs(target - entry);
-  const riskReward = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
-  const maxLoss = riskPerUnit * spec.lotSize;
-
-  return { entry, stopLoss, target, riskReward, maxLoss };
-}
-
-// ── Build Reasons ──
-function buildReasons(
-  symbol: MCXCommodity,
-  decision: TradeDecision | null,
-  priceStructure: string[],
-  volumeSignal: string[],
-  oiSignal: string[],
-  liquidityStatus: string,
-  riskFlags: string[]
-): string[] {
-  const reasons: string[] = [];
-
-  // Add decision reasons
-  if (decision?.reasons) {
-    reasons.push(...decision.reasons.slice(0, 3));
-  }
-
-  // Add structure signals
-  if (priceStructure.length > 0 && !priceStructure.includes('NO_DATA')) {
-    reasons.push(`Structure: ${priceStructure.join(', ')}`);
-  }
-
-  // Add volume/OI context
-  if (volumeSignal.includes('VOLUME_AVAILABLE')) {
-    reasons.push('Volume data available');
-  }
-  if (oiSignal.includes('OI_AVAILABLE')) {
-    reasons.push('OI data available');
-  }
-
-  // Add liquidity context
-  if (liquidityStatus === 'INSUFFICIENT') {
-    reasons.push('Insufficient liquidity');
-  }
-
-  return reasons.slice(0, 5); // Max 5 reasons
-}
-
-// ── Get best MCX trade ──
+// ── Best trade ──
 export async function getBestMCXTrade(): Promise<MCXScannerResult | null> {
   const results = await runMCXScanner();
-  const validTrades = results.filter(r => r.grade !== 'NO_TRADE' && r.score > 0);
-  return validTrades.length > 0 ? validTrades[0] : null;
+  const valid = results.filter(r => r.grade !== 'NO_TRADE' && r.score > 0);
+  return valid.length > 0 ? valid[0] : null;
 }
 
-// ── Get MCX scanner summary ──
-export async function getMCXScannerSummary(): Promise<{
-  total: number;
-  tradeable: number;
-  bestTrade: MCXScannerResult | null;
-  sessionActive: boolean;
-  dataHealth: string;
-}> {
+// ── Summary ──
+export async function getMCXScannerSummary() {
   const results = await runMCXScanner();
   const tradeable = results.filter(r => r.grade !== 'NO_TRADE');
   const session = getMCXSession();
-
   return {
     total: results.length,
     tradeable: tradeable.length,

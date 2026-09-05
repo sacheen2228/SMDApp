@@ -228,42 +228,62 @@ export function CommodityDashboard() {
         </CardHeader>
         <CardContent>
           {bestTrade ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <div className="flex items-center gap-3">
                 <span className="font-bold text-lg">{bestTrade.symbol}</span>
                 <Badge variant={bestTrade.direction === 'LONG' ? 'default' : 'destructive'}>
-                  {bestTrade.direction}
+                  {bestTrade.direction === 'LONG' ? 'BUY FUTURES' : 'SELL FUTURES'}
                 </Badge>
                 <Badge variant="outline">{bestTrade.grade}</Badge>
                 <span className="text-sm font-medium">{bestTrade.score}/100</span>
               </div>
-              <div className="grid grid-cols-4 gap-4 text-sm">
+              <div className="grid grid-cols-5 gap-3 text-sm">
+                <div className="bg-muted/50 rounded p-2">
+                  <span className="text-muted-foreground text-xs">ENTRY</span>
+                  <p className="font-mono font-bold">{bestTrade.entry > 0 ? bestTrade.entry.toFixed(1) : '-'}</p>
+                </div>
+                <div className="bg-red-500/10 rounded p-2">
+                  <span className="text-muted-foreground text-xs">STOP LOSS</span>
+                  <p className="font-mono font-bold text-red-500">{bestTrade.stopLoss > 0 ? bestTrade.stopLoss.toFixed(1) : '-'}</p>
+                </div>
+                <div className="bg-green-500/10 rounded p-2">
+                  <span className="text-muted-foreground text-xs">TARGET</span>
+                  <p className="font-mono font-bold text-green-500">{bestTrade.target > 0 ? bestTrade.target.toFixed(1) : '-'}</p>
+                </div>
+                <div className="bg-muted/50 rounded p-2">
+                  <span className="text-muted-foreground text-xs">R:R</span>
+                  <p className="font-mono font-bold">{bestTrade.riskReward > 0 ? bestTrade.riskReward.toFixed(2) : '-'}</p>
+                </div>
+                <div className="bg-muted/50 rounded p-2">
+                  <span className="text-muted-foreground text-xs">MAX LOSS</span>
+                  <p className="font-mono font-bold text-red-500">{bestTrade.maxLoss > 0 ? `₹${bestTrade.maxLoss.toFixed(0)}` : '-'}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-xs">
                 <div>
-                  <span className="text-muted-foreground">Entry</span>
-                  <p className="font-mono">{bestTrade.entry > 0 ? bestTrade.entry.toFixed(1) : '-'}</p>
+                  <span className="text-muted-foreground">Lot Size: </span>
+                  <span className="font-mono">{bestTrade.lotSize}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Stop Loss</span>
-                  <p className="font-mono text-red-500">{bestTrade.stopLoss > 0 ? bestTrade.stopLoss.toFixed(1) : '-'}</p>
+                  <span className="text-muted-foreground">Capital: </span>
+                  <span className="font-mono">{bestTrade.capitalRequired > 0 ? `₹${bestTrade.capitalRequired.toLocaleString()}` : '-'}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Target</span>
-                  <p className="font-mono text-green-500">{bestTrade.target > 0 ? bestTrade.target.toFixed(1) : '-'}</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">R:R</span>
-                  <p className="font-mono">{bestTrade.riskReward > 0 ? bestTrade.riskReward.toFixed(2) : '-'}</p>
+                  <span className="text-muted-foreground">Liquidity: </span>
+                  <Badge variant={bestTrade.liquidityStatus === 'HIGH' ? 'default' : 'secondary'} className="text-[10px]">
+                    {bestTrade.liquidityStatus}
+                  </Badge>
                 </div>
               </div>
               {bestTrade.reasons.length > 0 && (
-                <div className="text-xs text-muted-foreground">
-                  {bestTrade.reasons.slice(0, 3).join(' • ')}
+                <div className="text-xs text-muted-foreground border-t pt-2">
+                  {bestTrade.reasons.join(' • ')}
                 </div>
               )}
             </div>
           ) : (
-            <div className="text-center py-4">
-              <span className="text-muted-foreground font-medium">NO VALID MCX TRADE</span>
+            <div className="text-center py-6">
+              <span className="text-muted-foreground font-medium text-lg">NO VALID MCX TRADE</span>
               <p className="text-xs text-muted-foreground mt-1">No qualifying setups in the approved 10 contracts</p>
             </div>
           )}
@@ -279,6 +299,18 @@ export function CommodityDashboard() {
           </Button>
         </CardHeader>
         <CardContent className="p-0">
+          {/* Column Headers */}
+          <div className="flex items-center justify-between px-3 py-1 border-b text-[10px] text-muted-foreground font-medium">
+            <div className="flex items-center gap-2 w-48">CONTRACT</div>
+            <div className="flex items-center gap-4">
+              <span className="w-12 text-right">SCORE</span>
+              <span className="w-20 text-right">ENTRY</span>
+              <span className="w-16 text-right">SL</span>
+              <span className="w-16 text-right">TARGET</span>
+              <span className="w-12 text-right">R:R</span>
+              <span className="w-16 text-right">LIQ</span>
+            </div>
+          </div>
           <div className="divide-y">
             {scannerResults.map(r => (
               <ScannerRow key={r.symbol} result={r} />
