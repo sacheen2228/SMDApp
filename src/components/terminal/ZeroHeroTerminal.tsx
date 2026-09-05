@@ -18,6 +18,8 @@ import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 import { chainToSDMStrikes, runSMCAnalysis } from "@/lib/smc-engine";
+import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
+import { getLotSize } from "@/lib/symbol-config";
 import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
 
 /**
@@ -1625,26 +1627,109 @@ function DOMTab({ symbol }: { symbol: string }) {
 
 // ─── Smart Money Tab ───────────────────────────────────────────────
 function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, openTrade, symbol: activeSymbol, setSymbol }: any) {
-  // ─── SMC Engine results ─────────────────────────────────────────
-  const smcResult = useMemo(() => {
-    if (!chain.length || !spot) return null;
+  // ─── Unified Scoring Engine ───────────────────────────────────────
+  const scoredCandidates = useMemo(() => {
+    if (!chain.length || !spot) return [];
     try {
-      const sdmChain = chainToSDMStrikes(chain);
-      return runSMCAnalysis({
-        symbol: activeSymbol,
-        spot,
-        optionChain: sdmChain,
-        candles: candles as any[] | undefined,
-        vix: vix || undefined,
-      });
-    } catch {
-      return null;
-    }
-  }, [chain, spot, candles, vix, activeSymbol]);
+      const lotSize = getLotSize(activeSymbol);
+      // Build option chain for unified engine
+      const optionChain = chain.map((row: any) => ({
+        strike: row.strike,
+        ce: row.ce ? { ltp: row.ce.ltp, oi: row.ce.oi, oiChg: row.ce.oiChg, volume: row.ce.volume, iv: row.iv || 15, delta: row.ce.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
+        pe: row.pe ? { ltp: row.pe.ltp, oi: row.pe.oi, oiChg: row.pe.oiChg, volume: row.pe.volume, iv: row.iv || 15, delta: row.pe.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
+      }));
 
-  const smcCandidates = smcResult?.candidates || [];
-  const marketStructure = smcResult?.marketStructure;
-  const analysis = smcResult?.analysis;
+      // Score each strike with unified engine
+      const results: any[] = [];
+      const nearStrikes = chain.filter((row: any) => Math.abs(row.strike - spot) / spot < 0.03);
+
+      for (const row of nearStrikes) {
+        // CE direction
+        const ceInput: MarketDataInput = {
+          symbol: activeSymbol,
+          strategy: "FO" as StrategyProfile,
+          direction: "BULLISH",
+          spot,
+          optionChain,
+          pcr: pcr || undefined,
+          maxPain: maxPain || undefined,
+          vix: vix || undefined,
+          candles: candles as any[] | undefined,
+          lotSize,
+          entryPrice: row.ce?.ltp || 0,
+          stopLoss: row.ce ? row.ce.ltp * 0.7 : 0,
+          target1: row.ce ? row.ce.ltp * 1.5 : 0,
+          target2: row.ce ? row.ce.ltp * 2.0 : 0,
+          historicalWinRate: 0.65,
+          historicalRR: 2.0,
+        };
+        const ceDecision = scoreTrade(ceInput);
+        if (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH") {
+          results.push({
+            strike: row.strike,
+            type: "CE",
+            entry: ceDecision.entry,
+            sl: ceDecision.stopLoss,
+            tp1: ceDecision.target1,
+            tp2: ceDecision.target2,
+            tp3: ceDecision.target3,
+            rr: ceDecision.riskReward,
+            confidence: ceDecision.score,
+            qualityGrade: ceDecision.grade,
+            maxLoss: ceDecision.maxLoss,
+            reasons: ceDecision.reasons,
+            direction: ceDecision.direction,
+            hardGates: ceDecision.hardGateStatus,
+          });
+        }
+
+        // PE direction
+        const peInput: MarketDataInput = {
+          symbol: activeSymbol,
+          strategy: "FO" as StrategyProfile,
+          direction: "BEARISH",
+          spot,
+          optionChain,
+          pcr: pcr || undefined,
+          maxPain: maxPain || undefined,
+          vix: vix || undefined,
+          candles: candles as any[] | undefined,
+          lotSize,
+          entryPrice: row.pe?.ltp || 0,
+          stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
+          target1: row.pe ? row.pe.ltp * 1.5 : 0,
+          target2: row.pe ? row.pe.ltp * 2.0 : 0,
+          historicalWinRate: 0.65,
+          historicalRR: 2.0,
+        };
+        const peDecision = scoreTrade(peInput);
+        if (peDecision.decision === "TRADE" || peDecision.grade === "WATCH") {
+          results.push({
+            strike: row.strike,
+            type: "PE",
+            entry: peDecision.entry,
+            sl: peDecision.stopLoss,
+            tp1: peDecision.target1,
+            tp2: peDecision.target2,
+            tp3: peDecision.target3,
+            rr: peDecision.riskReward,
+            confidence: peDecision.score,
+            qualityGrade: peDecision.grade,
+            maxLoss: peDecision.maxLoss,
+            reasons: peDecision.reasons,
+            direction: peDecision.direction,
+            hardGates: peDecision.hardGateStatus,
+          });
+        }
+      }
+
+      return results.sort((a: any, b: any) => b.confidence - a.confidence).slice(0, 10);
+    } catch {
+      return [];
+    }
+  }, [chain, spot, candles, vix, pcr, maxPain, activeSymbol]);
+
+  const smcCandidates = scoredCandidates;
 
   // ─── Render helpers ─────────────────────────────────────────────
   function renderCandTable() {
@@ -1698,41 +1783,32 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
   }
 
   function renderDetails() {
-    if (!marketStructure || !analysis) return null;
+    if (!scoredCandidates.length) return null;
+    const top = scoredCandidates[0];
+    if (!top) return null;
     return (
-      <div className="grid grid-cols-3 gap-2 mt-2 text-[11px]">
+      <div className="grid grid-cols-2 gap-2 mt-2 text-[11px]">
         <div className="bg-[#0c111a] rounded p-2">
-          <div className="font-bold mb-1 text-[#2dd4a7]">Market Structure</div>
-          <div><span className="text-[#7d8ba0]">Trend:</span> <span className={marketStructure.trend === "BULLISH" ? "text-[#1fbf75]" : "text-[#f2495c]"}>{marketStructure.trend}</span></div>
-          <div><span className="text-[#7d8ba0]">BOS:</span> {marketStructure.bos ? "✓" : "✗"}</div>
-          <div><span className="text-[#7d8ba0]">CHoCH:</span> {marketStructure.choch ? "✓" : "✗"}</div>
-          <div><span className="text-[#7d8ba0]">Liq Sweep:</span> {marketStructure.liquiditySweep ? "✓" : "✗"}</div>
-          <div><span className="text-[#7d8ba0]">OB count:</span> {marketStructure.orderBlocks?.length || 0}</div>
-          <div><span className="text-[#7d8ba0]">FVG count:</span> {marketStructure.fvgs?.length || 0}</div>
+          <div className="font-bold mb-1 text-[#e8a33d]">Unified Score</div>
+          <div><span className="text-[#7d8ba0]">Score:</span> <span className={top.confidence >= 80 ? "text-[#1fbf75]" : top.confidence >= 60 ? "text-[#e8a33d]" : "text-[#f2495c]"}>{top.confidence}/100</span></div>
+          <div><span className="text-[#7d8ba0]">Grade:</span> <span className="text-[#4f8ff7]">{top.qualityGrade}</span></div>
+          <div><span className="text-[#7d8ba0]">Direction:</span> {top.direction}</div>
+          <div><span className="text-[#7d8ba0]">R:R:</span> 1:{top.rr?.toFixed(1)}</div>
+          <div><span className="text-[#7d8ba0]">Max Loss:</span> <span className="text-[#f2495c]">₹{fmtInt(top.maxLoss)}</span></div>
         </div>
         <div className="bg-[#0c111a] rounded p-2">
-          <div className="font-bold mb-1 text-[#e8a33d]">Scores</div>
-          <div><span className="text-[#7d8ba0]">ATR:</span> ₹{fmt(analysis.atr)}</div>
-          <div><span className="text-[#7d8ba0]">VWAP:</span> ₹{fmt(analysis.vwap)}</div>
-          <div><span className="text-[#7d8ba0]">PCR:</span> {analysis.pcr?.toFixed(2)}</div>
-          <div><span className="text-[#7d8ba0]">Confidence:</span> <span className={analysis.confidence >= (analysis.minConfidence || 75) ? "text-[#1fbf75]" : "text-[#e8a33d]"}>{analysis.confidence}%</span></div>
-          <div><span className="text-[#7d8ba0]">Min Conf:</span> <span className="text-[#4f8ff7]">{analysis.minConfidence}%</span></div>
-          <div><span className="text-[#7d8ba0]">Trend Score:</span> {analysis.trendScore}/100</div>
-          <div><span className="text-[#7d8ba0]">MSS:</span> <span className={analysis.mssBias === "BULLISH" ? "text-[#1fbf75]" : analysis.mssBias === "BEARISH" ? "text-[#f2495c]" : "text-[#7d8ba0]"}>{analysis.mssBias} {analysis.mssSweepGated ? "🔒" : ""}</span> <span className="text-[#7d8ba0]">({analysis.mssScore})</span></div>
-          <div><span className="text-[#7d8ba0]">SuperTrend:</span> <span className={analysis.supertrendDirection === "UP" ? "text-[#1fbf75]" : analysis.supertrendDirection === "DOWN" ? "text-[#f2495c]" : "text-[#7d8ba0]"}>{analysis.supertrendDirection}</span> {analysis.supertrendAligned ? "✓" : ""}</div>
+          <div className="font-bold mb-1 text-[#2dd4a7]">Hard Gates</div>
+          {top.hardGates?.gates?.map((g: any, i: number) => (
+            <div key={i} className="flex items-center gap-1">
+              <span className={g.status === "PASS" ? "text-[#1fbf75]" : g.status === "FAIL" ? "text-[#f2495c]" : "text-[#e8a33d]"}>{g.status === "PASS" ? "✓" : g.status === "FAIL" ? "✗" : "!"}</span>
+              <span className="text-[#7d8ba0]">{g.name}</span>
+            </div>
+          ))}
+          <div className="mt-1"><span className="text-[#7d8ba0]">Regime:</span> <span className="text-[#4f8ff7]">{top.hardGates?.passed ? "ALL PASS" : "GATES FAILED"}</span></div>
         </div>
-        <div className="bg-[#0c111a] rounded p-2">
-          <div className="font-bold mb-1 text-[#a78bfa]">India Context</div>
-          <div><span className="text-[#7d8ba0]">Regime:</span> <span className="text-[#4f8ff7]">{analysis.regime}</span></div>
-          <div><span className="text-[#7d8ba0]">VIX:</span> <span className={analysis.vixRegime === "EXTREME" ? "text-[#f2495c]" : "text-[#e8a33d]"}>{analysis.vixRegime}</span></div>
-          <div><span className="text-[#7d8ba0]">OI Signal:</span> <span className={analysis.oiSignal === "BUILDUP" ? "text-[#1fbf75]" : "text-[#7d8ba0]"}>{analysis.oiSignal}</span></div>
-          <div><span className="text-[#7d8ba0]">PCR Trend:</span> {analysis.pcrTrend}</div>
-          <div><span className="text-[#7d8ba0]">DTE:</span> {analysis.daysToExpiry}d</div>
-          <div><span className="text-[#7d8ba0]">Max Pain:</span> ₹{fmtInt(analysis.maxPain)}</div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
 
   // ─── Auto-register candidates ──────────────────────────────────
@@ -1753,11 +1829,9 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
       <FIIFlowPanel flowData={flowData} />
       <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
         <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px] flex items-center justify-between">
-          <div>Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">SMC India Edition</span></div>
+          <div>Smart Money Scanner <span className="text-[#7d8ba0] font-mono text-[11px]">Unified Scoring Engine</span></div>
           <div className="flex items-center gap-2">
-            {smcResult?.rejected && (
-              <span className="text-[#e8a33d] text-[10px] font-mono">{smcResult.rejectionReasons?.join(", ")}</span>
-            )}
+            <span className="text-[#7d8ba0] text-[10px] font-mono">{smcCandidates.length} candidates</span>
           </div>
         </div>
         <div className="p-2.5 overflow-x-auto">

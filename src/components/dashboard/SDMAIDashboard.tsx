@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { getLotSize } from '@/lib/symbol-config';
+import { scoreTrade, type MarketDataInput, type StrategyProfile, SCORING_VERSION } from '@/lib/unified-scoring-engine';
 
 const W = { htf: 15, oi: 15, pcr: 8, greeks: 12, vwap: 8, volume: 8, sweep: 5, bos: 3, choch: 3, fiidii: 8, mss: 10, supertrend: 8 };
 const MAX_TRADES = 4;
@@ -243,29 +244,46 @@ export function SDMAIDashboard() {
 
   const buildTradesFromSignal = (sig: SDMSignal | null, spotPrice: number, atmStrike: number, sym: string, lotSize: number): TradeData[] => {
     if (!sig) return [];
-    const trades: TradeData[] = [];
     const bias = sig.action === 'BUY CALL' ? 'BULLISH' : sig.action === 'BUY PUT' ? 'BEARISH' : 'NEUTRAL';
     if (bias === 'NEUTRAL') return [];
 
+    // Use unified scoring engine instead of hardcoded scores
+    const input: MarketDataInput = {
+      symbol: sym,
+      strategy: "FO" as StrategyProfile,
+      direction: bias,
+      spot: spotPrice,
+      pcr: pcr || undefined,
+      maxPain: maxPain || undefined,
+      vix: vix || undefined,
+      lotSize,
+      entryPrice: sig.entryPrice,
+      stopLoss: sig.stopLoss,
+      target1: sig.tp1,
+      target2: sig.tp2,
+      target3: sig.tp3,
+      historicalWinRate: 0.65,
+      historicalRR: 2.0,
+    };
+
+    const decision = scoreTrade(input);
     const dist = sig.strike - atmStrike;
     const moneyness = (sig.strike >= atmStrike && bias === 'BULLISH') || (sig.strike <= atmStrike && bias === 'BEARISH') ? 'ITM' :
       dist === 0 ? 'ATM' : 'OTM';
 
-    const components = {
-      htf: 75, oi: 70, pcr: 80, greeks: 65, vwap: 60, volume: 65,
-      sweep: 80, bos: 75, choch: 60, fiidii: 70, mss: 78, supertrend: 72
-    };
-
-    const score = Math.min(98, 70 + (Math.abs(strike - spotPrice) / spotPrice) * 500);
-    const reasons = REASON_BANK[bias === 'BULLISH' ? 'BULLISH' : 'BEARISH'].slice(0, 8);
+    // Build components from unified score breakdown
+    const components: any = {};
+    for (const f of decision.scoreBreakdown) {
+      components[f.factor] = f.score;
+    }
 
     return [{
       id: `trade-${Date.now()}`,
-      instrument: symbol,
+      instrument: sym,
       strike: sig.strike,
       premium: sig.entryPrice,
       bias: bias,
-      score: +score.toFixed(1),
+      score: decision.score,
       components,
       pcr: pcr,
       vix: vix,
@@ -279,19 +297,19 @@ export function SDMAIDashboard() {
       lotSize: lotSize,
       moneyness: moneyness,
       dist: dist,
-      reasons,
-      grade: grade(score),
+      reasons: decision.reasons,
+      grade: decision.grade,
       direction: bias === 'BULLISH' ? 'BUY CE' : 'BUY PE',
       optType: bias === 'BULLISH' ? 'CE' : 'PE',
       expiry: expiryDate || 'Current Weekly Expiry',
-      entry: sig.entryPrice,
-      slPts: Math.round(sig.entryPrice - sig.stopLoss),
-      sl: sig.stopLoss,
-      tp1: sig.tp1,
-      tp2: sig.tp2,
-      tp3: sig.tp3,
-      riskPerLot: Math.round((sig.entryPrice - sig.stopLoss) * lotSize),
-      rewardTP2: Math.round((sig.tp2 - sig.entryPrice) * lotSize),
+      entry: decision.entry,
+      slPts: Math.round(decision.entry - decision.stopLoss),
+      sl: decision.stopLoss,
+      tp1: decision.target1,
+      tp2: decision.target2,
+      tp3: decision.target3 ?? decision.target2,
+      riskPerLot: Math.round((decision.entry - decision.stopLoss) * lotSize),
+      rewardTP2: Math.round((decision.target2 - decision.entry) * lotSize),
     }];
   };
 
@@ -686,12 +704,12 @@ function OCPanel({ chain, atm, symbol }: { chain: ChainRow[]; atm: number; symbo
 }
 
 function SPanel({ components }: { components: any }) {
-  const lb: any = { htf: 'HTF Trend', oi: 'OI Analysis', pcr: 'PCR', greeks: 'Greeks / Delta', vwap: 'VWAP Position', volume: 'Volume Profile', sweep: 'Liquidity Sweep', bos: 'Break of Structure', choch: 'Change of Character', fiidii: 'FII / DII Flow', mss: 'MSS Sweep-Gate', supertrend: 'SuperTrend Filter' };
+  const lb: any = { structure: 'Market Structure', mssBos: 'MSS / BOS', supertrend: 'SuperTrend', oiDelta: 'OI Delta', volume: 'Volume Profile', vwap: 'VWAP Position', historical: 'Historical Edge', orderBlock: 'Order Block', fvg: 'Fair Value Gap', liquidity: 'Liquidity', pcr: 'PCR', vix: 'VIX Regime', greeksIv: 'Greeks / IV' };
   return (
     <div className="glass glow-none rounded-2xl p-5 rise">
-      <div className="text-xs font-semibold text-slate-300 mb-4">AI Scoring Engine</div>
-      {Object.keys(W).map(k => (
-        <SBar key={k} label={lb[k] || k} value={components[k] || 0} weight={W[k as keyof typeof W]} />
+      <div className="text-xs font-semibold text-slate-300 mb-4">Unified Scoring Engine <span className="text-slate-600 font-mono">v{SCORING_VERSION}</span></div>
+      {Object.keys(components).map(k => (
+        <SBar key={k} label={lb[k] || k} value={components[k] || 0} weight={Math.round(100 / Object.keys(components).length)} />
       ))}
     </div>
   );
