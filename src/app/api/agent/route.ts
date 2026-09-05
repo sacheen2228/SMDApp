@@ -6,6 +6,7 @@ import { agentRespondLLM } from "@/lib/agent-brain";
 import { db } from "@/lib/db";
 import { getCurrentSession } from "@/lib/market-session";
 import { sendTradeAlert } from "@/lib/telegram";
+import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import type { LLMMessage } from "@/lib/llm-client";
 
 // In-memory conversation store (per symbol, last 20 messages, max 50 symbols)
@@ -198,6 +199,32 @@ Support: ${dashSupport} | Resistance: ${dashResistance}
 ${dashSignal ? `Bias: ${dashSignal.marketBias} | Action: ${dashSignal.recommendation?.action} | Confidence: ${dashSignal.confidence?.total || 0}% | Strike: ${dashSignal.recommendation?.strike} | Entry: ${dashSignal.recommendation?.entry} | SL: ${dashSignal.recommendation?.stopLoss} | TP1: ${dashSignal.recommendation?.target1} | TP2: ${dashSignal.recommendation?.target2} | TP3: ${dashSignal.recommendation?.target3} | Reasons: ${dashSignal.recommendation?.reasons?.join(", ")}` : "No signal available"}
 ` : "";
 
+    // Compute unified score for agent context
+    let unifiedScoreText = "";
+    try {
+      const direction = dashSignal?.marketBias === "BULLISH" ? "BULLISH" : dashSignal?.marketBias === "BEARISH" ? "BEARISH" : "NEUTRAL";
+      if (direction !== "NEUTRAL" && dashSpot > 0) {
+        const input: MarketDataInput = {
+          symbol: detectedSymbol,
+          strategy: "OPTIONS" as StrategyProfile,
+          direction,
+          spot: dashSpot,
+          vix: dashVix || undefined,
+          pcr: dashPcr || undefined,
+          maxPain: dashMaxPain || undefined,
+        };
+        const decision = scoreTrade(input);
+        unifiedScoreText = `\n=== UNIFIED SCORING ENGINE ===
+Score: ${decision.score}/100 (${decision.grade})
+Direction: ${decision.direction}
+Hard Gates: ${decision.hardGateStatus.passed ? "ALL PASSED" : `FAILED: ${decision.hardGateStatus.failedGates.join(", ")}`}
+Top Factors: ${decision.scoreBreakdown.filter(f => f.available && f.score >= 60).map(f => `${f.factor}=${f.score}`).join(", ")}
+Decision: ${decision.decision}
+Note: Score = setup quality (0-100), NOT probability.
+`;
+      }
+    } catch {}
+
     try {
       const llmResult = await agentRespondLLM(message, {
         symbol: detectedSymbol,
@@ -214,7 +241,7 @@ ${dashSignal ? `Bias: ${dashSignal.marketBias} | Action: ${dashSignal.recommenda
         scanner,
         apiBase: origin,
         // Dashboard data
-        dashboardContext,
+        dashboardContext: dashboardContext + unifiedScoreText,
         dashboardTrades: dashTrades,
         dashboardChain: dashChain,
         dashboardSignal: dashSignal,
