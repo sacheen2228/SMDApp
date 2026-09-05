@@ -3,7 +3,7 @@
 
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { SDMOptionStrike, SDMRecommendation, CandleData } from "@/types/sdm";
 import {
   generateTradeRecommendation,
@@ -15,6 +15,7 @@ import {
 } from "@/lib/data-health";
 import * as tracker from "@/lib/sdm-trade-tracker";
 import { getLotSize } from "@/lib/symbol-config";
+import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { SDMExpiryMode } from "./SDMExpiryMode";
 import { SDMNormalMode } from "./SDMNormalMode";
 import { SDMScoresPanel } from "./SDMScoresPanel";
@@ -67,6 +68,36 @@ export function SDMBot({
   const validationIssuesRef = useRef<string[]>([]);
   const healthReportRef = useRef<DataHealthReport | null>(null);
   const recommendationRef = useRef<SDMRecommendation | null>(null);
+
+  // Unified scoring from recommendation
+  const unifiedScoring = useMemo(() => {
+    if (!recommendation) return null;
+    try {
+      const direction = recommendation.direction === "CALL" || recommendation.direction === "BUY_CALL" ? "BULLISH" :
+                        recommendation.direction === "PUT" || recommendation.direction === "BUY_PUT" ? "BEARISH" : "NEUTRAL";
+      if (direction === "NEUTRAL") return null;
+      const input: MarketDataInput = {
+        symbol: "NIFTY",
+        strategy: "OPTIONS" as StrategyProfile,
+        direction,
+        spot: recommendation.marketContext?.spot || 0,
+        entryPrice: recommendation.entry,
+        stopLoss: recommendation.sl,
+        target1: recommendation.tp1,
+        target2: recommendation.tp2,
+        target3: recommendation.tp3,
+        riskReward: recommendation.riskReward,
+        vix: recommendation.marketContext?.vix || undefined,
+        pcr: recommendation.marketContext?.pcr || undefined,
+        maxPain: recommendation.marketContext?.maxPain || undefined,
+        lotSize: getLotSize("NIFTY"),
+      };
+      const decision = scoreTrade(input);
+      return { score: decision.score, grade: decision.grade };
+    } catch {
+      return null;
+    }
+  }, [recommendation]);
 
   // Process option chain data into SDM format (handles both simulation + Breeze)
   const processOptionChain = useCallback(
@@ -669,6 +700,8 @@ export function SDMBot({
               scores={recommendation.sdmScores}
               confidence={recommendation.confidence}
               direction={recommendation.direction}
+              unifiedScore={unifiedScoring?.score}
+              unifiedGrade={unifiedScoring?.grade}
             />
 
             <SDMTradeHistory

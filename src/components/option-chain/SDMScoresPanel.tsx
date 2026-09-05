@@ -9,9 +9,11 @@ interface SDMScoresPanelProps {
   scores: SDMScores;
   confidence: number;
   direction?: string;
+  unifiedScore?: number;
+  unifiedGrade?: string;
 }
 
-export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanelProps) {
+export function SDMScoresPanel({ scores, confidence, direction, unifiedScore, unifiedGrade }: SDMScoresPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const scoreEntries: { label: string; value: number; highlight?: boolean; weight?: string }[] = [
@@ -77,6 +79,21 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
           {confidence.toFixed(1)}% — {getScoreLabel(confidence)}
         </span>
       </div>
+
+      {/* Unified Score (when available) */}
+      {unifiedScore != null && unifiedGrade && (
+        <div className="flex items-center justify-between px-2 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded text-[10px]">
+          <span className="text-blue-400 font-medium">Unified Score</span>
+          <span className={`font-bold ${
+            unifiedGrade === "A+" ? "text-emerald-400" :
+            unifiedGrade === "A" ? "text-green-400" :
+            unifiedGrade === "B" ? "text-yellow-400" :
+            "text-red-400"
+          }`}>
+            {unifiedScore}/100 <span className="opacity-70">({unifiedGrade})</span>
+          </span>
+        </div>
+      )}
 
       {/* Toggle */}
       <button
