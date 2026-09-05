@@ -48,6 +48,7 @@ import { runMLAnalysis } from '@/lib/ml-engine';
 import HedgePanel from '@/components/dashboard/HedgePanel';
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
+import { CommodityDashboard } from '@/components/dashboard/CommodityDashboard';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
 import { IndexComparison } from '@/components/dashboard/IndexComparison';
 import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
@@ -326,7 +327,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge' | 'commodity'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -774,6 +775,11 @@ return (
               onClick={() => { setViewMode('futures'); setDisplayMode('pro'); }}>
               <Zap className="h-2.5 w-2.5 mr-0.5" /> Futures
             </Button>
+            <Button variant={viewMode === 'commodity' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'commodity' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('commodity'); setDisplayMode('pro'); }}>
+              <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> MCX
+            </Button>
             <Button variant={viewMode === 'india' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'india' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
               onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
@@ -1024,6 +1030,11 @@ return (
         /* ═══════ FUTURES DASHBOARD ═══════ */
         <div className="flex-1 overflow-hidden">
           <FuturesDashboard />
+        </div>
+        ) : viewMode === 'commodity' ? (
+        /* ═══════ MCX COMMODITY ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <CommodityDashboard />
         </div>
         ) : viewMode === 'india' ? (
         /* ═══════ INDIA MARKET CHART ═══════ */

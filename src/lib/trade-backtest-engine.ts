@@ -12,6 +12,11 @@ function getYahooSymbol(symbol: string): string {
   const map: Record<string, string> = {
     NIFTY: '^NSEI', BANKNIFTY: '^NSEBANK', FINNIFTY: '^CNXFIN',
     MIDCPNIFTY: '^NSEMDCP50', SENSEX: '^BSESN', BANKEX: '^BSESN',
+    // MCX Commodity → Yahoo US futures equivalents
+    CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
+    NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
+    GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
+    SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
   };
   return map[symbol.toUpperCase()] || `${symbol.toUpperCase()}.NS`;
 }

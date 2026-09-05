@@ -15,7 +15,7 @@ export const SCORING_VERSION = "2.0";
 
 // ─── Strategy Profiles ─────────────────────────────────────────────
 
-export type StrategyProfile = "EQUITY_SWING" | "FO" | "OPTIONS" | "CAS" | "HERO_ZERO";
+export type StrategyProfile = "EQUITY_SWING" | "FO" | "OPTIONS" | "CAS" | "HERO_ZERO" | "MCX_COMMODITY";
 
 export interface FactorWeights {
   structure: number;
@@ -58,6 +58,11 @@ export const STRATEGY_PROFILES: Record<StrategyProfile, FactorWeights> = {
     structure: 15, mssBos: 12, supertrend: 0, oiDelta: 15, volume: 20,
     vwap: 5, historical: 3, orderBlock: 5, fvg: 5, liquidity: 10,
     pcr: 2, vix: 3, greeksIv: 5,
+  },
+  MCX_COMMODITY: {
+    structure: 20, mssBos: 15, supertrend: 5, oiDelta: 15, volume: 15,
+    vwap: 10, historical: 0, orderBlock: 0, fvg: 5, liquidity: 8,
+    pcr: 0, vix: 0, greeksIv: 0,
   },
 };
 

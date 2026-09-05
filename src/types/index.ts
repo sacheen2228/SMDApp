@@ -4,7 +4,7 @@
 // ─── Market Data Types ────────────────────────────────────────────
 export interface MarketQuote {
   symbol: string;
-  exchange: 'NSE' | 'NFO' | 'BSE';
+  exchange: 'NSE' | 'NFO' | 'BSE' | 'MCX';
   ltp: number;
   open: number;
   high: number;
@@ -52,12 +52,12 @@ export interface OptionChainData {
 // ─── Order Types ──────────────────────────────────────────────────
 export type OrderAction = 'buy' | 'sell';
 export type OrderType = 'limit' | 'stoploss';
-export type ProductType = 'cash' | 'futures' | 'options' | 'btst';
+export type ProductType = 'cash' | 'futures' | 'options' | 'btst' | 'commodity' | 'commodity_options';
 export type Validity = 'day' | 'ioc';
 
 export interface OrderRequest {
   stockCode: string;
-  exchangeCode: 'NSE' | 'NFO';
+  exchangeCode: 'NSE' | 'NFO' | 'MCX';
   product: ProductType;
   action: OrderAction;
   orderType: OrderType;
