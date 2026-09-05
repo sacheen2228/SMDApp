@@ -163,10 +163,18 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
         {/* Score Bar */}
         <div className="space-y-1">
           <div className="flex justify-between text-[10px]">
-            <span className="text-muted-foreground">Probability Score</span>
+            <span className="text-muted-foreground">Scanner Score</span>
             <span className="font-bold">{stock.totalScore}/100</span>
           </div>
           <Progress value={stock.totalScore} className="h-1.5" />
+          {(stock as any).unifiedScore != null && (
+            <div className="flex justify-between text-[10px] mt-1">
+              <span className="text-muted-foreground">Unified Score</span>
+              <span className={`font-bold ${(stock as any).unifiedGrade === "A+" || (stock as any).unifiedGrade === "A" ? "text-emerald-500" : (stock as any).unifiedGrade === "B" ? "text-blue-500" : "text-muted-foreground"}`}>
+                {(stock as any).unifiedScore}/100 <span className="text-[9px] opacity-70">{(stock as any).unifiedGrade}</span>
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Quick Stats */}

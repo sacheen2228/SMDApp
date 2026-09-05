@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runIntradayScan, recordIntradayScannerResults, recordIntradayScannerSignals, type ScannerConfig } from "@/lib/intraday-scanner";
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
+import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 
 // NIFTY 50 stock symbols for scanning
 const NIFTY50_SYMBOLS = [
@@ -318,6 +319,43 @@ export async function GET(request: NextRequest) {
     if (!result.candidates || result.candidates.length === 0) {
       result.candidates = [];
       result.dataQuality = "UNAVAILABLE";
+    }
+
+    // Add unified scoring to each candidate
+    if (result.candidates && result.candidates.length > 0) {
+      result.candidates = result.candidates.map((candidate) => {
+        try {
+          const direction = (candidate.direction || "NEUTRAL") as "BULLISH" | "BEARISH" | "NEUTRAL";
+          const input: MarketDataInput = {
+            symbol: candidate.symbol,
+            strategy: "EQUITY_SWING" as StrategyProfile,
+            direction,
+            spot: candidate.currentPrice || spotPrice,
+            vix,
+            pcr,
+            avgVolume: candidate.avgVolume || undefined,
+            currentVolume: candidate.currentVolume || undefined,
+            relativeVolume: candidate.relativeVolume || undefined,
+            rsi: candidate.rsi || undefined,
+            adx: candidate.adx || undefined,
+            vwap: candidate.vwap || undefined,
+            ema9: candidate.ema9 || undefined,
+            ema21: candidate.ema21 || undefined,
+            historicalWinRate: candidate.historicalWinRate || undefined,
+            historicalRR: candidate.historicalRR || undefined,
+          };
+          const decision = scoreTrade(input);
+          return {
+            ...candidate,
+            unifiedScore: decision.score,
+            unifiedGrade: decision.grade,
+            unifiedDecision: decision.decision,
+            hardGatesPassed: decision.hardGateStatus.passed,
+          };
+        } catch {
+          return candidate;
+        }
+      });
     }
 
     dataSource = result.dataQuality === "LIVE" || result.dataQuality === "PARTIAL" ? "Yahoo Finance" : null;
