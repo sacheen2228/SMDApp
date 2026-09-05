@@ -2,7 +2,11 @@
 // Market Intelligence Context — Unified Data Layer
 // Aggregates ALL existing SMD data sources into a single context object
 // that feeds all three trade modes (Index F&O, Stock F&O, Equity Swing).
+// Extended with MSS sweep-gated signals and SuperTrend filter.
 // ═══════════════════════════════════════════════════════════════════════════
+
+import { analyzeMSS, type MSSCandle } from "@/lib/mss-engine";
+import { computeSuperTrend, type SuperTrendCandle } from "@/lib/supertrend-engine";
 
 // ── Types ──
 
@@ -98,6 +102,12 @@ export interface TechnicalSnapshot {
   swingLow: number;
   support: number[];
   resistance: number[];
+  mssBias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  mssSweepGated: boolean;
+  mssScore: number;
+  supertrendDirection: "UP" | "DOWN" | "NEUTRAL";
+  supertrendScore: number;
+  supertrendAligned: boolean;
 }
 
 export interface RegimeData {
@@ -154,6 +164,56 @@ export interface MarketIntelligenceContext {
   isMarketOpen: boolean;
   dataQuality: "REAL" | "PARTIAL" | "DEGRADED";
   sourcesUsed: string[];
+}
+
+// ── MSS/SuperTrend helper ──
+export function computeMSSSuperTrend(
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>,
+  direction: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL"
+): { mssBias: "BULLISH" | "BEARISH" | "NEUTRAL"; mssSweepGated: boolean; mssScore: number; supertrendDirection: "UP" | "DOWN" | "NEUTRAL"; supertrendScore: number; supertrendAligned: boolean } {
+  const defaults = {
+    mssBias: "NEUTRAL" as const, mssSweepGated: false, mssScore: 50,
+    supertrendDirection: "NEUTRAL" as const, supertrendScore: 50, supertrendAligned: false,
+  };
+
+  if (!candles || candles.length < 20) return defaults;
+
+  try {
+    const mssCandles: MSSCandle[] = candles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+    }));
+    const mss = analyzeMSS(mssCandles);
+
+    const stCandles: SuperTrendCandle[] = candles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+    }));
+    const st = computeSuperTrend(stCandles);
+
+    const aligned = (direction === "BULLISH" && st.currentDirection === "UP") ||
+                    (direction === "BEARISH" && st.currentDirection === "DOWN");
+
+    return {
+      mssBias: mss.currentBias,
+      mssSweepGated: mss.lastSignal?.sweepGated ?? false,
+      mssScore: mss.lastSignal?.confidence ?? 50,
+      supertrendDirection: st.currentDirection,
+      supertrendScore: st.bars.length > 0 ? (aligned ? 80 : 30) : 50,
+      supertrendAligned: aligned,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function defaultTechnical(): TechnicalSnapshot {
+  return {
+    rsi: 50, ema9: 0, ema21: 0, ema50: 0, adx: 0, atr: 0,
+    macd: 0, macdSignal: 0, bollingerUpper: 0, bollingerLower: 0, bollingerMid: 0,
+    volumeProfile: { poc: 0, vah: 0, val: 0 },
+    marketStructure: "NEUTRAL", swingHigh: 0, swingLow: 0, support: [], resistance: [],
+    mssBias: "NEUTRAL", mssSweepGated: false, mssScore: 50,
+    supertrendDirection: "NEUTRAL", supertrendScore: 50, supertrendAligned: false,
+  };
 }
 
 // ── Cache ──
@@ -525,7 +585,9 @@ export async function buildMarketIntelligenceContext(
     regime: regimeData,
     news: newsData,
     stockQuotes: stockQuotesData,
-    technicals: {},
+    technicals: Object.fromEntries(
+      stockQuotesData.map((q: any) => [q.symbol, defaultTechnical()])
+    ),
     giftNifty: giftNiftyData,
     indiaVix: (regimeData as any).vix || 0,
     fiiDii: fiiData,

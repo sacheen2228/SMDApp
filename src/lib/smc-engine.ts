@@ -16,8 +16,9 @@ import {
 import { detectFVG, detectOrderBlocks } from "@/lib/market/canonical";
 import { computeVolumeProfile, findPOC } from "@/lib/volume-analysis";
 import { getStandardizedExpiry } from "@/lib/expiry-calculator";
+import { analyzeMSS, mssToScore, type MSSCandle } from "@/lib/mss-engine";
+import { computeSuperTrend, supertrendToScore, supertrendFilter, type SuperTrendCandle } from "@/lib/supertrend-engine";
 import type { SDMOptionStrike, CandleData, VolumeProfileLevel } from "@/types/sdm";
-import type { VolumeProfileLevel } from "@/lib/volume-analysis";
 
 export type Direction = "BULLISH" | "BEARISH" | "NEUTRAL";
 export type ConfidenceLabel = "VERY_HIGH" | "HIGH" | "MEDIUM" | "LOW";
@@ -108,6 +109,12 @@ export interface SMCAnalysis {
   vixRegime: string;
   pcrTrend: string;
   volumePoc: number;
+  mssScore: number;
+  mssBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  mssSweepGated: boolean;
+  supertrendDirection: 'UP' | 'DOWN' | 'NEUTRAL';
+  supertrendScore: number;
+  supertrendAligned: boolean;
 }
 
 export interface SMCOutput {
@@ -566,6 +573,37 @@ function scoreHistorical(winRate?: number): number {
   return Math.min(100, Math.round(winRate * 100));
 }
 
+// ─── MSS Scoring ──────────────────────────────────────────────────
+
+function scoreMSS(candles: CandleData[], direction: Direction): { score: number; bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL'; sweepGated: boolean } {
+  if (!candles || candles.length < 20) {
+    return { score: 50, bias: 'NEUTRAL', sweepGated: false };
+  }
+  const mssCandles: MSSCandle[] = candles.map(c => ({
+    time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+  }));
+  const mss = analyzeMSS(mssCandles);
+  const score = mssToScore(mss, direction as 'BULLISH' | 'BEARISH');
+  const sweepGated = mss.lastSignal?.sweepGated ?? false;
+  return { score, bias: mss.currentBias, sweepGated };
+}
+
+// ─── SuperTrend Scoring ───────────────────────────────────────────
+
+function scoreSuperTrend(candles: CandleData[], direction: Direction): { score: number; direction: 'UP' | 'DOWN' | 'NEUTRAL'; aligned: boolean } {
+  if (!candles || candles.length < 20) {
+    return { score: 50, direction: 'NEUTRAL', aligned: false };
+  }
+  const stCandles: SuperTrendCandle[] = candles.map(c => ({
+    time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+  }));
+  const st = computeSuperTrend(stCandles);
+  const score = supertrendToScore(st, direction as 'BULLISH' | 'BEARISH', stCandles);
+  const aligned = (direction === 'BULLISH' && st.currentDirection === 'UP') ||
+                  (direction === 'BEARISH' && st.currentDirection === 'DOWN');
+  return { score, direction: st.currentDirection, aligned };
+}
+
 // ─── Institutional Filters ──────────────────────────────────────
 
 interface FilterResult {
@@ -843,18 +881,25 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
   const vixScoreVal = scoreVIX(vix);
   const historicalScoreVal = scoreHistorical(historicalWinRate);
 
-  // Weights: Trend+Structure 25%, OI 15%, Volume 10%, VWAP 10%, Historical 10%, OB 10%, Liquidity 5%, FVG 5%, PCR 5%, VIX 5%, Greeks 5%
+  // MSS sweep-gated scoring
+  const mssResult = scoreMSS(candles || [], direction);
+  // SuperTrend scoring
+  const stResult = scoreSuperTrend(candles || [], direction);
+
+  // Weights: Structure 18%, MSS/BOS 12%, OI 12%, Volume 11%, VWAP 8%, Liquidity 8%, Historical 7%, OB 6%, FVG 5%, PCR 4%, VIX 4%, Greeks 3%, SuperTrend 2%
   const confidence = Math.min(100, Math.round(
-    structureScore * 0.25 +
-    liquidityScore * 0.05 +
-    orderBlockScore * 0.10 +
+    structureScore * 0.18 +
+    mssResult.score * 0.12 +
+    oiScore * 0.12 +
+    volumeScore * 0.11 +
+    vwapScore * 0.08 +
+    liquidityScore * 0.08 +
+    historicalScoreVal * 0.07 +
+    orderBlockScore * 0.06 +
     fvgScore * 0.05 +
-    volumeScore * 0.10 +
-    oiScore * 0.15 +
-    vwapScore * 0.10 +
-    pcrScore * 0.05 +
-    vixScoreVal * 0.05 +
-    historicalScoreVal * 0.10
+    pcrScore * 0.04 +
+    vixScoreVal * 0.04 +
+    stResult.score * 0.02
   ));
 
   const minConf = computeMinConfidence(ms, vix, daysToExpiry);
@@ -884,6 +929,12 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
     vixRegime: vixRegime.regime,
     pcrTrend,
     volumePoc: vpResult.poc,
+    mssScore: mssResult.score,
+    mssBias: mssResult.bias,
+    mssSweepGated: mssResult.sweepGated,
+    supertrendDirection: stResult.direction,
+    supertrendScore: stResult.score,
+    supertrendAligned: stResult.aligned,
   };
 
   // Early rejection if basic structure missing
@@ -918,17 +969,19 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
 
       // Per-strike confidence with per-strike Greeks
       const perStrikeConf = Math.min(100, Math.round(
-        structureScore * 0.25 +
-        liquidityScore * 0.05 +
-        orderBlockScore * 0.10 +
+        structureScore * 0.18 +
+        mssResult.score * 0.12 +
+        oiScore * 0.12 +
+        volumeScore * 0.11 +
+        strikeGreeksScore * 0.03 +
+        vwapScore * 0.08 +
+        liquidityScore * 0.08 +
+        historicalScoreVal * 0.07 +
+        orderBlockScore * 0.06 +
         fvgScore * 0.05 +
-        volumeScore * 0.10 +
-        oiScore * 0.15 +
-        strikeGreeksScore * 0.05 +
-        vwapScore * 0.10 +
-        pcrScore * 0.05 +
-        vixScoreVal * 0.05 +
-        historicalScoreVal * 0.10
+        pcrScore * 0.04 +
+        vixScoreVal * 0.04 +
+        stResult.score * 0.02
       ));
 
       // Volume profile check: reject entry into LVN
@@ -976,6 +1029,9 @@ export function runSMCAnalysis(input: SMCInput): SMCOutput {
       if (ms.bos) reasons.push("BOS confirmed");
       if (ms.choch) reasons.push("CHoCH confirmed");
       if (ms.liquiditySweep) reasons.push("Liquidity sweep detected");
+      if (mssResult.sweepGated) reasons.push("MSS sweep-gated signal");
+      if (mssResult.bias === direction) reasons.push(`MSS bias ${mssResult.bias}`);
+      if (stResult.aligned) reasons.push(`SuperTrend ${stResult.direction} aligned`);
       if (!isTradeDirection) reasons.push("Direction opposite primary trend");
       if (ms.orderBlocks.length > 0) reasons.push(`${ms.orderBlocks.length} order block(s)`);
       if (ms.fvgs.length > 0) reasons.push(`${ms.fvgs.length} FVG(s)`);

@@ -1718,6 +1718,8 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           <div><span className="text-[#7d8ba0]">Confidence:</span> <span className={analysis.confidence >= (analysis.minConfidence || 75) ? "text-[#1fbf75]" : "text-[#e8a33d]"}>{analysis.confidence}%</span></div>
           <div><span className="text-[#7d8ba0]">Min Conf:</span> <span className="text-[#4f8ff7]">{analysis.minConfidence}%</span></div>
           <div><span className="text-[#7d8ba0]">Trend Score:</span> {analysis.trendScore}/100</div>
+          <div><span className="text-[#7d8ba0]">MSS:</span> <span className={analysis.mssBias === "BULLISH" ? "text-[#1fbf75]" : analysis.mssBias === "BEARISH" ? "text-[#f2495c]" : "text-[#7d8ba0]"}>{analysis.mssBias} {analysis.mssSweepGated ? "🔒" : ""}</span> <span className="text-[#7d8ba0]">({analysis.mssScore})</span></div>
+          <div><span className="text-[#7d8ba0]">SuperTrend:</span> <span className={analysis.supertrendDirection === "UP" ? "text-[#1fbf75]" : analysis.supertrendDirection === "DOWN" ? "text-[#f2495c]" : "text-[#7d8ba0]"}>{analysis.supertrendDirection}</span> {analysis.supertrendAligned ? "✓" : ""}</div>
         </div>
         <div className="bg-[#0c111a] rounded p-2">
           <div className="font-bold mb-1 text-[#a78bfa]">India Context</div>

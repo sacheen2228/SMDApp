@@ -216,6 +216,40 @@ function scoreIndex(
     reasoning.push(`Declining OI — unwinding`);
   }
 
+  // Factor 11: MSS sweep-gated signal (0-15 points)
+  totalFactors += 15;
+  const mss = ctx.technicals[symbol] || ctx.technicals['NIFTY'];
+  if (mss && mss.mssBias !== 'NEUTRAL') {
+    if (mss.mssBias === 'BULLISH') {
+      bullScore += mss.mssSweepGated ? 15 : 10;
+      reasoning.push(`MSS ${mss.mssSweepGated ? 'sweep-gated ' : ''}bullish bias (score ${mss.mssScore})`);
+    } else if (mss.mssBias === 'BEARISH') {
+      bearScore += mss.mssSweepGated ? 15 : 10;
+      reasoning.push(`MSS ${mss.mssSweepGated ? 'sweep-gated ' : ''}bearish bias (score ${mss.mssScore})`);
+    }
+  } else {
+    bullScore += 5;
+    bearScore += 5;
+  }
+
+  // Factor 12: SuperTrend alignment (0-10 points)
+  totalFactors += 10;
+  if (mss && mss.supertrendDirection !== 'NEUTRAL') {
+    if (mss.supertrendAligned) {
+      bullScore += 10;
+      reasoning.push(`SuperTrend ${mss.supertrendDirection} aligned — trend confirmed`);
+    } else if (mss.supertrendDirection === 'UP') {
+      bearScore += 5;
+      reasoning.push(`SuperTrend UP but trade is bearish — counter-trend risk`);
+    } else {
+      bullScore += 5;
+      reasoning.push(`SuperTrend DOWN but trade is bullish — counter-trend risk`);
+    }
+  } else {
+    bullScore += 5;
+    bearScore += 5;
+  }
+
   // Determine direction
   const netScore = bullScore - bearScore;
   const maxScore = totalFactors;

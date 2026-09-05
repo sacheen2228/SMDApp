@@ -63,6 +63,8 @@ export interface SDMScores {
   volume: number;
   maxPain: number;
   liquidity: number;
+  mss: number;
+  supertrend: number;
 }
 
 // ─── Seller SL Zone ──────────────────────────────────────────────

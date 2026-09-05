@@ -258,6 +258,33 @@ function scoreSwingStock(
     reasoning.push(`Weak breadth confirms decline`);
   }
 
+  // Factor 9: MSS sweep-gated structure (0-12 points)
+  const stockTech = ctx.technicals[quote.symbol];
+  if (stockTech && stockTech.mssBias !== 'NEUTRAL') {
+    if (stockTech.mssBias === 'BULLISH' && changePercent > 0) {
+      bullScore += stockTech.mssSweepGated ? 12 : 8;
+      reasoning.push(`MSS ${stockTech.mssSweepGated ? 'sweep-gated ' : ''}bullish structure`);
+    } else if (stockTech.mssBias === 'BEARISH' && changePercent < 0) {
+      bearScore += stockTech.mssSweepGated ? 12 : 8;
+      reasoning.push(`MSS ${stockTech.mssSweepGated ? 'sweep-gated ' : ''}bearish structure`);
+    } else if (stockTech.mssBias !== 'NEUTRAL') {
+      bullScore += 4;
+      bearScore += 4;
+      reasoning.push(`MSS ${stockTech.mssBias} — mixed with price action`);
+    }
+  }
+
+  // Factor 10: SuperTrend filter (0-8 points)
+  if (stockTech && stockTech.supertrendDirection !== 'NEUTRAL') {
+    if (stockTech.supertrendAligned) {
+      bullScore += 8;
+      reasoning.push(`SuperTrend ${stockTech.supertrendDirection} confirms trend`);
+    } else {
+      bearScore += 4;
+      reasoning.push(`SuperTrend counter to trade — caution`);
+    }
+  }
+
   // Determine direction
   const totalScore = bullScore + bearScore;
   const netBias = bullScore - bearScore;

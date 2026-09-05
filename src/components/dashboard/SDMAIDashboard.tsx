@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { getLotSize } from '@/lib/symbol-config';
 
-const W = { htf: 20, oi: 20, pcr: 10, greeks: 15, vwap: 10, volume: 10, sweep: 5, bos: 5, choch: 5, fiidii: 10 };
+const W = { htf: 15, oi: 15, pcr: 8, greeks: 12, vwap: 8, volume: 8, sweep: 5, bos: 3, choch: 3, fiidii: 8, mss: 10, supertrend: 8 };
 const MAX_TRADES = 4;
 const MIN_CONF = 78;
 
@@ -21,13 +21,15 @@ const REASON_BANK = {
     'FII Net Buying', 'PCR Bullish (>1.0)', 'Positive Gamma Exposure', 'Delta > 0.60',
     'Call OI Unwinding at Resistance', 'Fresh Long Build-up at Support', 'BOS Confirmed (Higher High)',
     'Liquidity Sweep Completed', 'Volume Spike on Breakout', 'Price Above VWAP',
-    'Strong Put Writing at Lower Strikes', 'HTF Bullish Structure', 'Max Pain Above Spot'
+    'Strong Put Writing at Lower Strikes', 'HTF Bullish Structure', 'Max Pain Above Spot',
+    'MSS Sweep-Gated Bullish Signal', 'SuperTrend UP — Trend Confirmed'
   ],
   BEARISH: [
     'FII Net Selling', 'PCR Bearish (<0.8)', 'Negative Gamma Exposure', 'Delta < -0.60',
     'Put OI Unwinding at Support', 'Fresh Short Build-up at Resistance', 'CHOCH Confirmed (Lower Low)',
     'Liquidity Sweep Completed', 'Volume Spike on Breakdown', 'Price Below VWAP',
-    'Strong Call Writing at Upper Strikes', 'HTF Bearish Structure', 'Max Pain Below Spot'
+    'Strong Call Writing at Upper Strikes', 'HTF Bearish Structure', 'Max Pain Below Spot',
+    'MSS Sweep-Gated Bearish Signal', 'SuperTrend DOWN — Trend Confirmed'
   ]
 };
 
@@ -251,7 +253,7 @@ export function SDMAIDashboard() {
 
     const components = {
       htf: 75, oi: 70, pcr: 80, greeks: 65, vwap: 60, volume: 65,
-      sweep: 80, bos: 75, choch: 60, fiidii: 70
+      sweep: 80, bos: 75, choch: 60, fiidii: 70, mss: 78, supertrend: 72
     };
 
     const score = Math.min(98, 70 + (Math.abs(strike - spotPrice) / spotPrice) * 500);
@@ -684,7 +686,7 @@ function OCPanel({ chain, atm, symbol }: { chain: ChainRow[]; atm: number; symbo
 }
 
 function SPanel({ components }: { components: any }) {
-  const lb: any = { htf: 'HTF Trend', oi: 'OI Analysis', pcr: 'PCR', greeks: 'Greeks / Delta', vwap: 'VWAP Position', volume: 'Volume Profile', sweep: 'Liquidity Sweep', bos: 'Break of Structure', choch: 'Change of Character', fiidii: 'FII / DII Flow' };
+  const lb: any = { htf: 'HTF Trend', oi: 'OI Analysis', pcr: 'PCR', greeks: 'Greeks / Delta', vwap: 'VWAP Position', volume: 'Volume Profile', sweep: 'Liquidity Sweep', bos: 'Break of Structure', choch: 'Change of Character', fiidii: 'FII / DII Flow', mss: 'MSS Sweep-Gate', supertrend: 'SuperTrend Filter' };
   return (
     <div className="glass glow-none rounded-2xl p-5 rise">
       <div className="text-xs font-semibold text-slate-300 mb-4">AI Scoring Engine</div>

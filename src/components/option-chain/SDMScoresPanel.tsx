@@ -25,6 +25,8 @@ export function SDMScoresPanel({ scores, confidence, direction }: SDMScoresPanel
     { label: "Volume", value: scores.volume, weight: "5%" },
     { label: "Max Pain", value: scores.maxPain, weight: "5-8%" },
     { label: "Liquidity", value: scores.liquidity, weight: "3-5%" },
+    { label: "MSS Gate", value: scores.mss, weight: "5%" },
+    { label: "SuperTrend", value: scores.supertrend, weight: "4%" },
   ];
 
   const getBarColor = (score: number) => {

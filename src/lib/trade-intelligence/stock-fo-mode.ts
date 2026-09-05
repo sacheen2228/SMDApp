@@ -186,6 +186,29 @@ function scoreStock(
     reasoning.push(`FII outflow pressures stock`);
   }
 
+  // Factor 8: MSS sweep-gated structure (0-12 points)
+  const stockTech = ctx.technicals[quote.symbol];
+  if (stockTech && stockTech.mssBias !== 'NEUTRAL') {
+    if (stockTech.mssBias === 'BULLISH') {
+      bullScore += stockTech.mssSweepGated ? 12 : 8;
+      reasoning.push(`MSS ${stockTech.mssSweepGated ? 'sweep-gated ' : ''}bullish (score ${stockTech.mssScore})`);
+    } else if (stockTech.mssBias === 'BEARISH') {
+      bearScore += stockTech.mssSweepGated ? 12 : 8;
+      reasoning.push(`MSS ${stockTech.mssSweepGated ? 'sweep-gated ' : ''}bearish (score ${stockTech.mssScore})`);
+    }
+  }
+
+  // Factor 9: SuperTrend filter (0-8 points)
+  if (stockTech && stockTech.supertrendDirection !== 'NEUTRAL') {
+    if (stockTech.supertrendAligned) {
+      bullScore += 8;
+      reasoning.push(`SuperTrend ${stockTech.supertrendDirection} confirms trend`);
+    } else {
+      bearScore += 4;
+      reasoning.push(`SuperTrend counter to direction — caution`);
+    }
+  }
+
   // Determine direction
   const totalScore = bullScore + bearScore;
   const netBias = bullScore - bearScore;
