@@ -140,29 +140,100 @@ async function fetchMCXBatchFromMotilal(
   return results;
 }
 
-// ── Fallback: Yahoo Finance for MCX commodities (US futures equivalents) ──
+// ── Yahoo Finance mapping: which MCX symbols share which Yahoo ticker ──
+const MCX_TO_YAHOO: Record<MCXCommodity, string> = {
+  CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
+  NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
+  GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
+  SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
+};
+
+// Reverse map: Yahoo ticker → MCX symbols
+const YAHOO_TO_MCX: Record<string, MCXCommodity[]> = {};
+for (const [mcx, yahoo] of Object.entries(MCX_TO_YAHOO)) {
+  if (!YAHOO_TO_MCX[yahoo]) YAHOO_TO_MCX[yahoo] = [];
+  YAHOO_TO_MCX[yahoo].push(mcx as MCXCommodity);
+}
+
+// ── Batch fetch ALL MCX quotes from Yahoo in ONE request ──
+async function fetchAllMCXFromYahoo(): Promise<Map<MCXCommodity, MCXQuote>> {
+  const results = new Map<MCXCommodity, MCXQuote>();
+  const uniqueYahooTickers = [...new Set(Object.values(MCX_TO_YAHOO))]; // CL=F, NG=F, GC=F, SI=F
+
+  // Fetch each unique ticker via v8/chart endpoint (4 requests total)
+  const fetchPromises = uniqueYahooTickers.map(async (yahooSym) => {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      if (!res.ok) return { yahooSym, data: null };
+      const json = await res.json();
+      return { yahooSym, data: json?.chart?.result?.[0] || null };
+    } catch {
+      return { yahooSym, data: null };
+    }
+  });
+
+  const fetched = await Promise.all(fetchPromises);
+
+  for (const { yahooSym, data } of fetched) {
+    if (!data?.meta?.regularMarketPrice) continue;
+    const meta = data.meta;
+    const ltp = meta.regularMarketPrice;
+    const prevClose = meta.chartPreviousClose || ltp;
+    const change = ltp - prevClose;
+    const changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
+    const mcxSymbols = YAHOO_TO_MCX[yahooSym] || [];
+
+    for (const mcxSym of mcxSymbols) {
+      const spec = MCX_CONTRACT_SPECS[mcxSym];
+      const q = data.indicators?.quote?.[0];
+      results.set(mcxSym, {
+        symbol: mcxSym,
+        exchange: 'MCX',
+        assetClass: 'COMMODITY',
+        ltp,
+        open: q?.open?.[0] ?? null,
+        high: q?.high?.[0] ?? null,
+        low: q?.low?.[0] ?? null,
+        previousClose: prevClose,
+        change,
+        changePercent,
+        volume: meta.regularMarketVolume ?? q?.volume?.[0] ?? null,
+        openInterest: null,
+        changeInOI: null,
+        bid: null,
+        ask: null,
+        bidQty: null,
+        askQty: null,
+        timestamp: new Date().toISOString(),
+        dataStatus: 'DELAYED',
+        dataSource: 'YAHOO',
+        lotSize: spec?.lotSize || 0,
+        tickSize: spec?.tickSize || 1,
+        expiry: '',
+      });
+    }
+  }
+
+  return results;
+}
+
+// ── Fallback: single-symbol Yahoo fetch (kept for edge cases) ──
 async function fetchMCXFromYahoo(
   symbol: MCXCommodity
 ): Promise<MCXQuote | null> {
-  const yahooSymbols: Record<MCXCommodity, string> = {
-    CRUDEOIL: 'CL=F',
-    CRUDEOILM: 'CL=F',
-    NATURALGAS: 'NG=F',
-    NATGASMINI: 'NG=F',
-    GOLD: 'GC=F',
-    GOLDM: 'GC=F',
-    GOLDGUINEA: 'GC=F',
-    SILVER: 'SI=F',
-    SILVERM: 'SI=F',
-    SILVERMIC: 'SI=F',
-  };
-
-  const yahooSym = yahooSymbols[symbol];
+  const yahooSym = MCX_TO_YAHOO[symbol];
   if (!yahooSym) return null;
 
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(5000),
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
     if (!res.ok) return null;
 
     const data = await res.json();
@@ -193,7 +264,7 @@ async function fetchMCXFromYahoo(
       bidQty: null,
       askQty: null,
       timestamp: new Date().toISOString(),
-      dataStatus: 'DELAYED', // Yahoo data is delayed
+      dataStatus: 'DELAYED',
       dataSource: 'YAHOO',
       lotSize: spec?.lotSize || 0,
       tickSize: spec?.tickSize || 1,
@@ -268,12 +339,14 @@ export async function fetchAllMCXQuotes(): Promise<Map<MCXCommodity, MCXQuote>> 
     uncachedSymbols = uncachedSymbols.filter(s => !cachedQuotes.has(s));
   }
 
-  // Yahoo fallback for remaining symbols (with rate limiting)
-  for (const sym of uncachedSymbols.slice(0, 3)) { // Max 3 Yahoo fetches per cycle
-    const yahooQuote = await fetchMCXFromYahoo(sym);
-    if (yahooQuote) {
-      cachedQuotes.set(sym, yahooQuote);
-      quoteCache.set(sym, { quote: yahooQuote, ts: now });
+  // Yahoo fallback: fetch ALL 4 unique tickers in ONE batch request
+  if (uncachedSymbols.length > 0) {
+    const yahooQuotes = await fetchAllMCXFromYahoo();
+    for (const [sym, quote] of yahooQuotes) {
+      if (uncachedSymbols.includes(sym)) {
+        cachedQuotes.set(sym, quote);
+        quoteCache.set(sym, { quote, ts: now });
+      }
     }
   }
 
