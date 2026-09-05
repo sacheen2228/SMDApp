@@ -231,8 +231,7 @@ export function SDMBot({
     // Self-validation
     const validation = validateOptionChain(chain, spotPrice, symbol);
     const issues = [...validation.issues, ...validation.warnings];
-    // Use ref to avoid cascading renders from synchronous setState in effect
-    validationIssuesRef.current = issues;
+    setValidationIssues(issues);
 
     // Extract V2 inputs from optionChainData
     const source = optionChainData?.source || "simulation";
@@ -274,6 +273,7 @@ export function SDMBot({
       source,
     });
     healthReportRef.current = hr;
+    setHealthReport(hr);
 
     // Anti-repaint: same 5-min candle → use cached recommendation
     const nowMs = Date.now();
@@ -286,6 +286,7 @@ export function SDMBot({
       lastRecRef.current
     ) {
       recommendationRef.current = lastRecRef.current;
+      setRecommendation(lastRecRef.current);
 
       // Still update active trades with current LTP
       const selectedData = chain.find(
@@ -339,6 +340,7 @@ export function SDMBot({
             currentCandleStart === candleTimeRef.current
           ) {
       recommendationRef.current = lastRecRef.current;
+      setRecommendation(lastRecRef.current);
       onRecommendation?.(lastRecRef.current);
             return;
           }
@@ -347,6 +349,7 @@ export function SDMBot({
         candleTimeRef.current = currentCandleStart;
         lastRecRef.current = rec;
         recommendationRef.current = rec;
+        setRecommendation(rec);
         onRecommendation?.(rec);
 
         // Auto-add trade only if it's a new signal (not duplicate of last trade)
@@ -406,25 +409,6 @@ export function SDMBot({
       cancelled = true;
     };
   }, [optionChainData, spotPrice, symbol, expiryDate, processOptionChain]);
-
-  // Sync refs to state (avoids cascading renders in effect)
-  useEffect(() => {
-    if (validationIssuesRef.current.length > 0) {
-      setValidationIssues(validationIssuesRef.current);
-    }
-  });
-
-  useEffect(() => {
-    if (healthReportRef.current) {
-      setHealthReport(healthReportRef.current);
-    }
-  });
-
-  useEffect(() => {
-    if (recommendationRef.current) {
-      setRecommendation(recommendationRef.current);
-    }
-  });
 
   // No data state
   if (!optionChainData || spotPrice <= 0) {

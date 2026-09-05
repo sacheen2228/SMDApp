@@ -676,8 +676,9 @@ function runHardGates(input: MarketDataInput): HardGateResult {
 
   // 1. DATA VALIDATION
   const dataIssues: string[] = [];
+  const dataWarnings: string[] = [];
   if (!input.spot || input.spot <= 0) dataIssues.push("spot price missing");
-  if (!input.candles || input.candles.length < 5) dataIssues.push("insufficient candles");
+  if (!input.candles || input.candles.length < 5) dataWarnings.push("insufficient candles");
   if (input.dataLatencyMs && input.dataLatencyMs > 30000) dataIssues.push("data stale (>30s)");
   if (input.dataTimestamp) {
     const age = Date.now() - input.dataTimestamp;
@@ -685,9 +686,9 @@ function runHardGates(input: MarketDataInput): HardGateResult {
   }
   gates.push({
     name: "DATA_VALIDATION",
-    status: dataIssues.length > 0 ? "FAIL" : "PASS",
-    reason: dataIssues.length > 0 ? dataIssues.join("; ") : "Data valid",
-    required: true,
+    status: dataIssues.length > 0 ? "FAIL" : dataWarnings.length > 0 ? "WARN" : "PASS",
+    reason: dataIssues.length > 0 ? dataIssues.join("; ") : dataWarnings.length > 0 ? dataWarnings.join("; ") : "Data valid",
+    required: dataIssues.length > 0,
   });
 
   // 2. LIQUIDITY

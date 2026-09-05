@@ -1706,7 +1706,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalRR: 2.0,
         };
         const ceDecision = scoreTrade(ceInput);
-        if (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH") {
+        if (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH" || ceDecision.score >= 50) {
           results.push({
             strike: row.strike,
             type: "CE",
@@ -1745,7 +1745,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalRR: 2.0,
         };
         const peDecision = scoreTrade(peInput);
-        if (peDecision.decision === "TRADE" || peDecision.grade === "WATCH") {
+        if (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 50) {
           results.push({
             strike: row.strike,
             type: "PE",
