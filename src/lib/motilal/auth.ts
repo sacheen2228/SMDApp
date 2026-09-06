@@ -366,5 +366,21 @@ export async function logout(): Promise<void> {
 
 // ── Auto-login with env credentials ──
 export async function autoLogin(): Promise<boolean> {
-  return false;
+  const userid = process.env.MOTILAL_USERID;
+  const password = process.env.MOTILAL_PASSWORD;
+  const dob = process.env.MOTILAL_DOB;
+
+  if (!userid || !password || !dob) return false;
+
+  try {
+    const result = await loginWithOTP(userid, password, dob);
+    if (result.success) {
+      console.log('[Motilal] Auto-login successful');
+      return true;
+    }
+    console.warn('[Motilal] Auto-login failed:', result.error);
+    return false;
+  } catch {
+    return false;
+  }
 }
