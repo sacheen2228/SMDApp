@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  loginWithTOTP,
+  loginWithOTP,
+  resendOTP,
+  verifyOTP,
   isSessionValid,
   getSessionToken,
+  getSessionInfo,
   logout,
   MOTILAL_CONFIG,
 } from "@/lib/motilal/auth";
-import { getLTP, getIndexLTP, KNOWN_SCRIPS } from "@/lib/motilal/market";
 
-// ── POST /api/motilal — login, test connection, get data ──
+// ── POST /api/motilal — login, verify, test connection ──
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { action, userid, password, dob } = body;
+    const { action, userid, password, dob, otp } = body;
 
     switch (action) {
       case "login": {
@@ -23,20 +25,17 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        const result = await loginWithTOTP(userid, password, dob);
+        const result = await loginWithOTP(userid, password, dob);
 
         if (result.success) {
-          // Test by fetching NIFTY LTP
-          const token = getSessionToken();
-          if (token) {
-            const niftyLtp = await getLTP("NSEFO", 26000, token);
-            return NextResponse.json({
-              success: true,
-              message: "Login successful",
-              nifty: niftyLtp,
-            });
-          }
-          return NextResponse.json({ success: true, message: "Login successful" });
+          return NextResponse.json({
+            success: true,
+            message: result.needsVerification
+              ? "OTP sent to registered mobile/email. Call verify-otp with the 6-digit code."
+              : "Login successful and verified",
+            token: result.token,
+            needsVerification: result.needsVerification || false,
+          });
         }
 
         return NextResponse.json(
@@ -45,44 +44,43 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      case "resend-otp": {
+        const result = await resendOTP();
+        if (result.success) {
+          return NextResponse.json({ success: true, message: "OTP sent" });
+        }
+        return NextResponse.json({ error: result.error }, { status: 400 });
+      }
+
+      case "verify-otp": {
+        if (!otp) {
+          return NextResponse.json(
+            { error: "otp required (6-digit code)" },
+            { status: 400 }
+          );
+        }
+
+        const result = await verifyOTP(otp);
+        if (result.success) {
+          const info = getSessionInfo();
+          return NextResponse.json({
+            success: true,
+            message: "OTP verified, session active",
+            session: info,
+          });
+        }
+        return NextResponse.json({ error: result.error }, { status: 400 });
+      }
+
       case "status": {
+        const info = getSessionInfo();
         return NextResponse.json({
-          valid: isSessionValid(),
+          ...info,
           hasApiKey: !!MOTILAL_CONFIG.API_KEY,
           hasSecret: !!MOTILAL_CONFIG.SECRET_KEY,
-          hasTotp: !!MOTILAL_CONFIG.TOTP_KEY,
+          vendorId: MOTILAL_CONFIG.VENDOR_ID,
           primaryIp: MOTILAL_CONFIG.PRIMARY_IP,
         });
-      }
-
-      case "test": {
-        const token = getSessionToken();
-        if (!token) {
-          return NextResponse.json(
-            { error: "Not logged in" },
-            { status: 401 }
-          );
-        }
-
-        // Test with NIFTY LTP
-        const niftyLtp = await getLTP("NSEFO", 26000, token);
-        return NextResponse.json({
-          success: true,
-          nifty: niftyLtp,
-        });
-      }
-
-      case "indices": {
-        const token = getSessionToken();
-        if (!token) {
-          return NextResponse.json(
-            { error: "Not logged in" },
-            { status: 401 }
-          );
-        }
-
-        const indices = await getIndexLTP(token);
-        return NextResponse.json({ success: true, indices });
       }
 
       case "logout": {
@@ -103,18 +101,19 @@ export async function POST(request: NextRequest) {
 
 // ── GET /api/motilal — quick status check ──
 export async function GET() {
+  const info = getSessionInfo();
   return NextResponse.json({
     service: "Motilal Oswal API",
-    valid: isSessionValid(),
+    ...info,
     hasCredentials: !!(
       MOTILAL_CONFIG.API_KEY &&
       MOTILAL_CONFIG.SECRET_KEY &&
-      MOTILAL_CONFIG.TOTP_KEY
+      MOTILAL_CONFIG.VENDOR_ID
     ),
     endpoints: {
       login: "POST /api/motilal { action: 'login', userid, password, dob }",
-      test: "POST /api/motilal { action: 'test' }",
-      indices: "POST /api/motilal { action: 'indices' }",
+      "resend-otp": "POST /api/motilal { action: 'resend-otp' }",
+      "verify-otp": "POST /api/motilal { action: 'verify-otp', otp: '123456' }",
       status: "POST /api/motilal { action: 'status' }",
       logout: "POST /api/motilal { action: 'logout' }",
     },

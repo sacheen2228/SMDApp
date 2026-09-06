@@ -1,4 +1,4 @@
-import { MOTILAL_CONFIG } from "./auth";
+import { MOTILAL_CONFIG, getSessionToken, getAccessTokenValue } from "./auth";
 
 // ── Types ──
 export interface MotilalLTP {
@@ -25,6 +25,9 @@ export interface MotilalScrip {
 
 // ── Common headers ──
 function getHeaders(authToken?: string): Record<string, string> {
+  const session = getSessionToken();
+  const access = getAccessTokenValue();
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -35,7 +38,7 @@ function getHeaders(authToken?: string): Record<string, string> {
     clientlocalip: MOTILAL_CONFIG.SECONDARY_IP,
     clientpublicip: MOTILAL_CONFIG.PRIMARY_IP,
     sourceid: "WEB",
-    vendorinfo: "T0000",
+    vendorinfo: MOTILAL_CONFIG.VENDOR_ID,
     osname: "Ubuntu 20.04",
     osversion: "20.04",
     installedappid: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -48,12 +51,9 @@ function getHeaders(authToken?: string): Record<string, string> {
     sdkversion: "Node 1.0",
     latitude: "19.0760",
     longitude: "72.8777",
+    Authorization: authToken || session || "",
+    accesstoken: access || "",
   };
-
-  if (authToken) {
-    headers.Authorization = authToken;
-    headers.accesstoken = authToken;
-  }
 
   return headers;
 }
@@ -154,7 +154,7 @@ export async function getScrips(
       {
         method: "POST",
         headers: getHeaders(authToken),
-        body: JSON.stringify({ exchange }),
+        body: JSON.stringify({ exchangename: exchange }),
       }
     );
 
@@ -162,16 +162,20 @@ export async function getScrips(
 
     if (data.status === "SUCCESS" && Array.isArray(data.data)) {
       return data.data.map((item: any) => ({
-        symbol: item.symbol || "",
-        name: item.name || item.symbolname || "",
-        scripcode: item.scripcode || item.symboltoken || 0,
-        exchange,
-        instrumenttype: item.instrumenttype || "",
-        series: item.series || "",
-        expirydate: item.expirydate || "",
+        symbol: item.scripshortname || item.symbol || "",
+        name: item.scripname || item.scripfullname || "",
+        scripcode: item.scripcode || 0,
+        exchange: item.exchangename || exchange,
+        instrumenttype: item.instrumentname || "",
+        series: item.markettype || "",
+        expirydate: item.expirydate
+          ? typeof item.expirydate === "number"
+            ? new Date((item.expirydate + 315360000) * 1000).toISOString().split("T")[0] // +10 years (Motilal API quirk)
+            : String(item.expirydate)
+          : "",
         strikeprice: item.strikeprice || 0,
-        optiontype: item.optiontype || "",
-        lotsize: item.lotsize || 0,
+        optiontype: item.optiontype === "XX" ? "" : (item.optiontype || "").trim(),
+        lotsize: item.marketlot || 0,
       }));
     }
 
@@ -232,3 +236,8 @@ export const KNOWN_SCRIPS: Record<string, number> = {
   TATAMOTORS: 3456,
   SUNPHARMA: 3499,
 };
+
+// ── Get current session token (from auth module) ──
+export function getCurrentAuthToken(): string | null {
+  return getSessionToken();
+}

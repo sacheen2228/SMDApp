@@ -2,7 +2,7 @@
 // Fetches MCX commodity options from Motilal API
 // Only for approved contracts: CRUDEOIL, GOLD, SILVER, NATURALGAS
 
-import { getScrips } from '@/lib/motilal/market';
+import { getScrips, getLTP } from '@/lib/motilal/market';
 import { getSessionToken } from '@/lib/motilal/auth';
 import type { MCXCommodity } from './types';
 import { MCX_APPROVED_CONTRACTS } from './types';
@@ -63,13 +63,15 @@ export async function loadMCXOptionChain(
     const scrips = await getScrips('MCX', token);
     if (!scrips || scrips.length === 0) return null;
 
-    const spec = MCX_CONTRACT_SPECS[symbol];
     const now = new Date();
+
+    // Try exact match first, then startsWith (handles CRUDEOIL vs CRUDEOILM)
+    const filterSymbol = (sName: string) => sName === symbol || sName.startsWith(symbol);
 
     // Filter options for this symbol with valid expiry
     const optionScrips = scrips.filter(s => {
-      const sName = (s.symbol || '').toUpperCase().replace(/[^A-Z]/g, '');
-      const matchesSymbol = sName.includes(symbol);
+      const sName = (s.symbol || '').toUpperCase();
+      const matchesSymbol = filterSymbol(sName);
       const isOption = s.optiontype === 'CE' || s.optiontype === 'PE' || s.optiontype === 'CA' || s.optiontype === 'PA';
       const hasExpiry = s.expirydate && s.expirydate !== '0000-00-00';
       const notExpired = hasExpiry && new Date(s.expirydate) > now;
@@ -94,10 +96,32 @@ export async function loadMCXOptionChain(
 
     // Get futures price for spot reference
     const futureScrip = scrips.find(s => {
-      const sName = (s.symbol || '').toUpperCase().replace(/[^A-Z]/g, '');
-      return sName.includes(symbol) && !s.optiontype && s.expirydate === targetExpiry;
+      const sName = (s.symbol || '').toUpperCase();
+      return filterSymbol(sName) && !s.optiontype && s.expirydate === targetExpiry;
     });
-    const spotPrice = futureScrip ? (futureScrip.strikeprice || 0) : 0;
+    
+    let spotPrice = 0;
+    if (futureScrip) {
+      const futLtp = await getLTP('MCX', futureScrip.scripcode, token);
+      spotPrice = futLtp?.ltp || 0;
+    }
+
+    // Fetch LTP for each option scrip (batch, max 50)
+    const scripsToFetch = expiryOptions.slice(0, 50);
+    const ltpMap = new Map<number, number>();
+    
+    for (let i = 0; i < scripsToFetch.length; i += 5) {
+      const batch = scripsToFetch.slice(i, i + 5);
+      const results = await Promise.all(
+        batch.map(async (s) => {
+          const ltp = await getLTP('MCX', s.scripcode, token);
+          return { scripcode: s.scripcode, ltp: ltp?.ltp || 0 };
+        })
+      );
+      for (const r of results) {
+        if (r.ltp > 0) ltpMap.set(r.scripcode, r.ltp);
+      }
+    }
 
     // Group by strike
     const strikeMap = new Map<number, MCXOptionStrike>();
@@ -111,7 +135,7 @@ export async function loadMCXOptionChain(
       const entry = strikeMap.get(strike)!;
 
       const optionData = {
-        ltp: 0,
+        ltp: ltpMap.get(s.scripcode) || 0,
         bid: 0,
         ask: 0,
         volume: 0,
