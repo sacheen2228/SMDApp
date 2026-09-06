@@ -13,7 +13,10 @@ COPY prisma ./prisma
 RUN npm install --no-audit --no-fund
 
 COPY . .
-RUN npx prisma generate || true
+
+# Create db directory + generate Prisma + push schema
+RUN mkdir -p db && npx prisma generate && DATABASE_URL="file:./db/custom.db" npx prisma db push --skip-generate || true
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
@@ -26,7 +29,7 @@ ENV HOSTNAME=0.0.0.0
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL=file:/tmp/custom.db
 
-RUN mkdir -p /app/.next/static /app/public
+RUN mkdir -p /app/.next/static /app/public /app/db
 
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/standalone/.next/static ./.next/static
