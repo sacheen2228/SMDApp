@@ -89,9 +89,58 @@ export async function GET(request: NextRequest) {
         }
       }
     } catch (breezeError) {
-      console.warn('[API] ICICI Breeze failed, trying NSE API:', breezeError);
+      console.warn('[API] ICICI Breeze failed, trying Motilal API:', breezeError);
     }
-    
+
+    // Fallback to Motilal API (NIFTY, BANKNIFTY, FINNIFTY, SENSEX)
+    if (!chainData) {
+      try {
+        const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
+        const motilalChain = await getMotilalOptionChain(symbol, expiry);
+        if (motilalChain?.data?.length) {
+          chainData = {
+            data: motilalChain.data.map((row) => ({
+              strike: row.strike,
+              ce: row.ce ? {
+                ltp: row.ce.ltp || 0,
+                oi: row.ce.oi || 0,
+                oiChg: 0,
+                volume: row.ce.volume || 0,
+                iv: row.ce.iv || 0,
+                delta: row.ce.delta || 0,
+                gamma: row.ce.gamma || 0,
+                theta: row.ce.theta || 0,
+                vega: row.ce.vega || 0,
+                bid: row.ce.bid || 0,
+                ask: row.ce.ask || 0,
+              } : null,
+              pe: row.pe ? {
+                ltp: row.pe.ltp || 0,
+                oi: row.pe.oi || 0,
+                oiChg: 0,
+                volume: row.pe.volume || 0,
+                iv: row.pe.iv || 0,
+                delta: row.pe.delta || 0,
+                gamma: row.pe.gamma || 0,
+                theta: row.pe.theta || 0,
+                vega: row.pe.vega || 0,
+                bid: row.pe.bid || 0,
+                ask: row.pe.ask || 0,
+              } : null,
+            })),
+            spotPrice: motilalChain.spotPrice,
+            expiries: motilalChain.expiries.map((e) => ({ date: e, label: e, daysToExpiry: 0 })),
+            selectedExpiry: motilalChain.selectedExpiry,
+            summary: motilalChain.summary,
+          };
+          source = 'motilal-api';
+          console.log(`[API] Motilal API data fetched for ${symbol}`);
+        }
+      } catch (motilalError) {
+        console.warn('[API] Motilal API also failed:', motilalError);
+      }
+    }
+
     // Fallback to NSE API
     if (!chainData) {
       try {
@@ -222,7 +271,7 @@ export async function GET(request: NextRequest) {
       } else {
         return NextResponse.json({
           success: false,
-          error: "No option chain data available for this symbol. Breeze, NSE, and Yahoo Finance all failed.",
+          error: "No option chain data available for this symbol. Breeze, Motilal, NSE, and Yahoo Finance all failed.",
         }, { status: 503 });
       }
     }
