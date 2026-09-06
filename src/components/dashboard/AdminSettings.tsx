@@ -33,10 +33,19 @@ export function AdminSettings() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Edit mode for credentials
-  const [editing, setEditing] = useState<string | null>(null);
-  const [creds, setCreds] = useState<Record<string, string>>({});
+  // Edit state
+  const [editingBroker, setEditingBroker] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
+  // Separate state for each credential field
+  const [breezeCreds, setBreezeCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '' });
+  const [motilalCreds, setMotilalCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '', dob: '', vendorId: '', totpKey: '' });
+
+  const getCreds = (broker: string) => broker === 'MOTILAL' ? motilalCreds : breezeCreds;
+  const setCreds = (broker: string, updater: (prev: any) => any) => {
+    if (broker === 'MOTILAL') setMotilalCreds(prev => updater(prev));
+    else setBreezeCreds(prev => updater(prev));
+  };
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -62,6 +71,7 @@ export function AdminSettings() {
     setLoading(true);
     setMessage('Encrypting and saving...');
     try {
+      const creds = getCreds(broker);
       const res = await fetch('/api/broker-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,8 +80,7 @@ export function AdminSettings() {
       const data = await res.json();
       if (data.success) {
         setMessage(`${broker} credentials saved (encrypted)`);
-        setEditing(null);
-        setCreds({});
+        setEditingBroker(null);
         fetchStatus();
       } else {
         setMessage(data.error || 'Save failed');
@@ -127,91 +136,104 @@ export function AdminSettings() {
     }
   };
 
-  const renderBrokerCard = (name: string, label: string, status: BrokerStatus | null, fields: string[]) => (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium">{label}</CardTitle>
-          {status ? getStatusBadge(status.status) : getStatusBadge('NOT_CONFIGURED')}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {status?.configured && status.maskedCredentials && (
-          <div className="text-xs text-muted-foreground space-y-1">
-            {Object.entries(status.maskedCredentials).map(([key, val]) => (
-              <div key={key} className="flex justify-between">
-                <span>{key}:</span>
-                <span className="font-mono">{val}</span>
+  const renderBrokerCard = (
+    brokerName: string,
+    label: string,
+    status: BrokerStatus | null,
+    fields: { key: string; label: string; isPassword?: boolean }[],
+  ) => {
+    const isEditing = editingBroker === brokerName;
+    const creds = getCreds(brokerName);
+
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium">{label}</CardTitle>
+            {status ? getStatusBadge(status.status) : getStatusBadge('NOT_CONFIGURED')}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {status?.configured && status.maskedCredentials && (
+              <div className="text-xs text-muted-foreground space-y-1">
+                {Object.entries(status.maskedCredentials).map(([key, val]) => (
+                  <div key={key} className="flex justify-between">
+                    <span>{key}:</span>
+                    <span className="font-mono">{val}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
+            )}
 
-        {status?.lastConnectedAt && (
-          <div className="text-xs text-muted-foreground">
-            Last connected: {new Date(status.lastConnectedAt).toLocaleString()}
-          </div>
-        )}
+            {status?.lastConnectedAt && (
+              <div className="text-xs text-muted-foreground">
+                Last connected: {new Date(status.lastConnectedAt).toLocaleString()}
+              </div>
+            )}
 
-        {status?.lastError && (
-          <div className="text-xs text-red-500">Error: {status.lastError}</div>
-        )}
+            {status?.lastError && (
+              <div className="text-xs text-red-500">Error: {status.lastError}</div>
+            )}
 
-        <Separator />
+            <Separator />
 
-        {editing === name ? (
-          <div className="space-y-2">
-            {fields.map(field => (
-              <div key={field} className="space-y-1">
-                <Label className="text-xs">{field}</Label>
-                <div className="flex gap-1">
-                  <Input
-                    type={showPasswords[field] ? 'text' : 'password'}
-                    placeholder={field}
-                    value={creds[field] || ''}
-                    onChange={e => setCreds(prev => ({ ...prev, [field]: e.target.value }))}
-                    className="h-7 text-xs"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 px-0"
-                    onClick={() => setShowPasswords(prev => ({ ...prev, [field]: !prev[field] }))}
-                  >
-                    {showPasswords[field] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+            {isEditing ? (
+              <div className="space-y-3">
+                {fields.map(({ key, label: fieldLabel, isPassword }) => (
+                  <div key={key} className="space-y-1">
+                    <Label className="text-xs">{fieldLabel}</Label>
+                    <div className="flex gap-1">
+                      <input
+                        type={isPassword && !showPasswords[key] ? 'password' : 'text'}
+                        placeholder={fieldLabel}
+                        value={creds[key] || ''}
+                        onChange={e => setCreds(brokerName, prev => ({ ...prev, [key]: e.target.value }))}
+                        className="flex h-7 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-xs transition-colors file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+                      />
+                      {isPassword && (
+                        <button
+                          type="button"
+                          className="flex h-7 w-7 items-center justify-center rounded-md border border-input hover:bg-accent hover:text-accent-foreground"
+                          onClick={() => setShowPasswords(prev => ({ ...prev, [key]: !prev[key] }))}
+                        >
+                          {showPasswords[key] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <Button size="sm" className="h-7 text-xs" onClick={() => handleSaveCredentials(brokerName)} disabled={loading}>
+                    Save Encrypted
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setEditingBroker(null); }}>
+                    Cancel
                   </Button>
                 </div>
               </div>
-            ))}
-            <div className="flex gap-2">
-              <Button size="sm" className="h-7 text-xs" onClick={() => handleSaveCredentials(name)} disabled={loading}>
-                Save Encrypted
-              </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setEditing(null); setCreds({}); }}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditing(name)}>
-              {status?.configured ? 'Update Credentials' : 'Configure'}
-            </Button>
-            {status?.configured && (
-              <>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleConnect(name)} disabled={loading}>
-                  <Wifi className="h-3 w-3 mr-1" /> Connect
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditingBroker(brokerName)}>
+                  {status?.configured ? 'Update Credentials' : 'Configure'}
                 </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleDisconnect(name)}>
-                  <WifiOff className="h-3 w-3 mr-1" /> Disconnect
-                </Button>
-              </>
+                {status?.configured && (
+                  <>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleConnect(brokerName)} disabled={loading}>
+                      <Wifi className="h-3 w-3 mr-1" /> Connect
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleDisconnect(brokerName)}>
+                      <WifiOff className="h-3 w-3 mr-1" /> Disconnect
+                    </Button>
+                  </>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </CardContent>
-    </Card>
-  );
+        </CardContent>
+      </Card>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -228,14 +250,22 @@ export function AdminSettings() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {renderBrokerCard('ICICI_BREEZE', 'ICICI Direct Breeze', breezeStatus, [
-          'apiKey', 'secretKey', 'username', 'password',
+          { key: 'apiKey', label: 'API Key' },
+          { key: 'secretKey', label: 'API Secret', isPassword: true },
+          { key: 'username', label: 'Username' },
+          { key: 'password', label: 'Password', isPassword: true },
         ])}
         {renderBrokerCard('MOTILAL', 'Motilal Oswal', motilalStatus, [
-          'apiKey', 'secretKey', 'username', 'password', 'dob', 'vendorId', 'totpKey',
+          { key: 'apiKey', label: 'API Key' },
+          { key: 'secretKey', label: 'API Secret', isPassword: true },
+          { key: 'username', label: 'User ID' },
+          { key: 'password', label: 'Password', isPassword: true },
+          { key: 'dob', label: 'Date of Birth (DD/MM/YYYY)' },
+          { key: 'vendorId', label: 'Vendor ID' },
+          { key: 'totpKey', label: 'TOTP Key', isPassword: true },
         ])}
       </div>
 
-      {/* System Health */}
       {health && (
         <Card>
           <CardHeader className="pb-3">
