@@ -55,13 +55,19 @@ export async function GET(request: NextRequest) {
       liveVix = vixRes?.value ?? null;
     } catch {}
 
-    // Previous close: NSE client market status (has variation field)
+    // Previous close: direct NSE API fetch (no client needed)
     try {
-      const { getNSEClient } = await import('@/lib/nse-api');
-      const client = getNSEClient();
-      const marketStatus = await client.market.getStatus().catch(() => null);
-      if (Array.isArray(marketStatus)) {
-        const niftyIdx = marketStatus.find((i: any) => i.index === 'NIFTY 50');
+      const nseRes = await fetch('https://www.nseindia.com/api/marketStatus', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (nseRes.ok) {
+        const nseData = await nseRes.json();
+        const states = nseData?.marketState || [];
+        const niftyIdx = states.find((i: any) => i.index === 'NIFTY 50');
         if (niftyIdx) {
           const variation = parseFloat(niftyIdx.variation) || 0;
           const last = parseFloat(niftyIdx.last) || 0;
