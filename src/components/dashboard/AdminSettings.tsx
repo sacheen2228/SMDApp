@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { Shield, ShieldCheck, ShieldAlert, RefreshCw, Wifi, WifiOff, Eye, EyeOff } from 'lucide-react';
+import { Shield, ShieldCheck, ShieldAlert, RefreshCw, Wifi, WifiOff, Eye, EyeOff, MessageSquare, Send, RotateCcw } from 'lucide-react';
 
 interface BrokerStatus {
   broker: string;
@@ -36,6 +36,10 @@ export function AdminSettings() {
   // Edit state
   const [editingBroker, setEditingBroker] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
+  // OTP state for Motilal
+  const [otpStep, setOtpStep] = useState<'idle' | 'sent' | 'verifying' | 'verified'>('idle');
+  const [otpCode, setOtpCode] = useState('');
 
   // Separate state for each credential field
   const [breezeCreds, setBreezeCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '' });
@@ -91,7 +95,83 @@ export function AdminSettings() {
     setLoading(false);
   };
 
+  const handleSendOtp = async (broker: string) => {
+    setLoading(true);
+    setMessage('Sending OTP...');
+    try {
+      const res = await fetch('/api/broker-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send-otp', broker }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage('OTP sent to your phone');
+        setOtpStep('sent');
+        setOtpCode('');
+      } else {
+        setMessage(data.error || 'Failed to send OTP');
+      }
+    } catch {
+      setMessage('Network error');
+    }
+    setLoading(false);
+  };
+
+  const handleVerifyOtp = async (broker: string) => {
+    if (!otpCode || otpCode.length !== 6) {
+      setMessage('Enter 6-digit OTP');
+      return;
+    }
+    setLoading(true);
+    setMessage('Verifying OTP...');
+    try {
+      const res = await fetch('/api/broker-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify-otp', broker, otp: otpCode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage('Motilal connected!');
+        setOtpStep('verified');
+        fetchStatus();
+      } else {
+        setMessage(data.error || 'Invalid OTP');
+      }
+    } catch {
+      setMessage('Network error');
+    }
+    setLoading(false);
+  };
+
+  const handleResendOtp = async (broker: string) => {
+    setLoading(true);
+    setMessage('Resending OTP...');
+    try {
+      const res = await fetch('/api/broker-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resend-otp', broker }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage('OTP resent');
+        setOtpCode('');
+      } else {
+        setMessage(data.error || 'Failed to resend');
+      }
+    } catch {
+      setMessage('Network error');
+    }
+    setLoading(false);
+  };
+
   const handleConnect = async (broker: string) => {
+    if (broker === 'MOTILAL') {
+      await handleSendOtp(broker);
+      return;
+    }
     setLoading(true);
     setMessage(`Connecting to ${broker}...`);
     try {
@@ -118,6 +198,7 @@ export function AdminSettings() {
         body: JSON.stringify({ action: 'disconnect', broker }),
       });
       setMessage(`${broker} disconnected`);
+      setOtpStep('idle');
       fetchStatus();
     } catch {
       setMessage('Network error');
@@ -144,6 +225,7 @@ export function AdminSettings() {
   ) => {
     const isEditing = editingBroker === brokerName;
     const creds = getCreds(brokerName);
+    const isMotilal = brokerName === 'MOTILAL';
 
     return (
       <Card>
@@ -177,6 +259,38 @@ export function AdminSettings() {
             )}
 
             <Separator />
+
+            {/* OTP Flow for Motilal */}
+            {isMotilal && otpStep !== 'idle' && otpStep !== 'verified' && (
+              <div className="space-y-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-blue-500" />
+                  <span className="text-sm font-medium text-blue-500">OTP Verification</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Enter the 6-digit OTP sent to your registered phone number
+                </p>
+                <div className="flex gap-1">
+                  <input
+                    type="text"
+                    placeholder="Enter 6-digit OTP"
+                    value={otpCode}
+                    onChange={e => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="flex h-7 w-full rounded-md border border-input bg-transparent px-3 py-1 text-lg text-center tracking-widest shadow-xs transition-colors file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+                    maxLength={6}
+                    autoFocus
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" className="h-7 text-xs flex-1" onClick={() => handleVerifyOtp(brokerName)} disabled={loading || otpCode.length !== 6}>
+                    <Send className="h-3 w-3 mr-1" /> Verify OTP
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => handleResendOtp(brokerName)} disabled={loading}>
+                    <RotateCcw className="h-3 w-3 mr-1" /> Resend
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {isEditing ? (
               <div className="space-y-3">
@@ -220,7 +334,7 @@ export function AdminSettings() {
                 {status?.configured && (
                   <>
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleConnect(brokerName)} disabled={loading}>
-                      <Wifi className="h-3 w-3 mr-1" /> Connect
+                      <Wifi className="h-3 w-3 mr-1" /> {isMotilal && otpStep === 'idle' ? 'Send OTP' : 'Connect'}
                     </Button>
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleDisconnect(brokerName)}>
                       <WifiOff className="h-3 w-3 mr-1" /> Disconnect

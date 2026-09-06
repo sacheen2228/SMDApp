@@ -6,6 +6,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { encryptCredentials, decryptCredentials, maskValue } from "@/lib/encryption";
 import { brokerSessionManager } from "@/lib/broker-session-manager";
 
+// In-memory OTP state (per broker)
+const otpState = new Map<string, { sentAt: number; verified: boolean }>();
+
 interface BrokerCredentials {
   apiKey?: string;
   secretKey?: string;
@@ -175,6 +178,113 @@ export async function POST(req: NextRequest) {
           latencyMs: result.latencyMs,
           error: result.error,
         });
+      }
+
+      case "send-otp": {
+        if (broker !== "MOTILAL") {
+          return NextResponse.json({ error: "OTP only for Motilal" }, { status: 400 });
+        }
+        const config = brokerConfigs.get(broker);
+        if (!config) {
+          return NextResponse.json({ error: "No credentials configured" }, { status: 400 });
+        }
+        const creds = decryptCredentials<BrokerCredentials>({
+          encrypted: config.encrypted,
+          iv: config.iv,
+          tag: config.tag,
+        });
+
+        // Set env vars for Motilal
+        if (creds.apiKey) process.env.MOTILAL_API_KEY = creds.apiKey;
+        if (creds.secretKey) process.env.MOTILAL_SECRET_KEY = creds.secretKey;
+        if (creds.username) process.env.MOTILAL_USERID = creds.username;
+        if (creds.password) process.env.MOTILAL_PASSWORD = creds.password;
+        if (creds.dob) process.env.MOTILAL_DOB = creds.dob;
+        if (creds.vendorId) process.env.MOTILAL_VENDOR_ID = creds.vendorId;
+        if (creds.totpKey) process.env.MOTILAL_TOTP_KEY = creds.totpKey;
+
+        const { loginWithOTP } = await import("@/lib/motilal/auth");
+        const result = await loginWithOTP(creds.username || "", creds.password || "", creds.dob || "");
+
+        if (result.success) {
+          otpState.set(broker, { sentAt: Date.now(), verified: false });
+        }
+        return NextResponse.json(result);
+      }
+
+      case "verify-otp": {
+        const body = await req.json();
+        const { otp } = body;
+        if (!otp || otp.length !== 6) {
+          return NextResponse.json({ error: "6-digit OTP required" }, { status: 400 });
+        }
+        if (broker !== "MOTILAL") {
+          return NextResponse.json({ error: "OTP only for Motilal" }, { status: 400 });
+        }
+
+        const config = brokerConfigs.get(broker);
+        if (!config) {
+          return NextResponse.json({ error: "No credentials configured" }, { status: 400 });
+        }
+        const creds = decryptCredentials<BrokerCredentials>({
+          encrypted: config.encrypted,
+          iv: config.iv,
+          tag: config.tag,
+        });
+
+        if (creds.username) process.env.MOTILAL_USERID = creds.username;
+        if (creds.password) process.env.MOTILAL_PASSWORD = creds.password;
+        if (creds.dob) process.env.MOTILAL_DOB = creds.dob;
+        if (creds.vendorId) process.env.MOTILAL_VENDOR_ID = creds.vendorId;
+
+        const { verifyOTP } = await import("@/lib/motilal/auth");
+        const result = await verifyOTP(otp);
+
+        if (result.success) {
+          otpState.set(broker, { sentAt: Date.now(), verified: true });
+          // Get access token
+          const { getAccessToken } = await import("@/lib/motilal/auth");
+          const tokenResult = await getAccessToken();
+          if (tokenResult.success) {
+            // Update session
+            const config = brokerConfigs.get(broker);
+            if (config) {
+              config.status = "CONNECTED";
+              config.lastConnectedAt = new Date();
+            }
+          }
+        }
+        return NextResponse.json(result);
+      }
+
+      case "resend-otp": {
+        if (broker !== "MOTILAL") {
+          return NextResponse.json({ error: "OTP only for Motilal" }, { status: 400 });
+        }
+        const config = brokerConfigs.get(broker);
+        if (!config) {
+          return NextResponse.json({ error: "No credentials configured" }, { status: 400 });
+        }
+        const creds = decryptCredentials<BrokerCredentials>({
+          encrypted: config.encrypted,
+          iv: config.iv,
+          tag: config.tag,
+        });
+
+        if (creds.apiKey) process.env.MOTILAL_API_KEY = creds.apiKey;
+        if (creds.secretKey) process.env.MOTILAL_SECRET_KEY = creds.secretKey;
+        if (creds.username) process.env.MOTILAL_USERID = creds.username;
+        if (creds.password) process.env.MOTILAL_PASSWORD = creds.password;
+        if (creds.dob) process.env.MOTILAL_DOB = creds.dob;
+        if (creds.vendorId) process.env.MOTILAL_VENDOR_ID = creds.vendorId;
+        if (creds.totpKey) process.env.MOTILAL_TOTP_KEY = creds.totpKey;
+
+        const { resendOTP } = await import("@/lib/motilal/auth");
+        const result = await resendOTP();
+        if (result.success) {
+          otpState.set(broker, { sentAt: Date.now(), verified: false });
+        }
+        return NextResponse.json(result);
       }
 
       default:
