@@ -59,11 +59,16 @@ export async function GET(request: NextRequest) {
     try {
       const { getNSEClient } = await import('@/lib/nse-api');
       const client = getNSEClient();
-      const marketData = await client.market.getStatus().catch(() => null);
-      if (marketData?.index) {
-        const niftyIdx = marketData.index.find((i: any) => i.index === 'NIFTY 50' || i.last?.includes('NIFTY'));
-        if (niftyIdx?.previousClose) {
-          livePrevClose = parseFloat(niftyIdx.previousClose);
+      const marketStatus = await client.market.getStatus().catch(() => null);
+      if (Array.isArray(marketStatus)) {
+        const niftyIdx = marketStatus.find((i: any) => i.index === 'NIFTY 50');
+        if (niftyIdx) {
+          // NSE market status provides variation and percentChange directly
+          const spot = niftyIdx.last || 0;
+          const variation = niftyIdx.variation || 0;
+          if (spot > 0 && variation !== 0) {
+            livePrevClose = spot - variation;
+          }
         }
       }
     } catch {}
@@ -430,8 +435,8 @@ export async function GET(request: NextRequest) {
 
       chainData.summary = {
         spotPrice,
-        spotChange: 0,
-        spotChangePct: 0,
+        spotChange: livePrevClose ? Math.round((spotPrice - livePrevClose) * 100) / 100 : 0,
+        spotChangePct: livePrevClose ? Math.round(((spotPrice - livePrevClose) / livePrevClose) * 10000) / 100 : 0,
         indiaVIX: liveVix,
         prevClose: livePrevClose,
         vixLive: liveVix != null,
