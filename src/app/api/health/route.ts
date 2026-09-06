@@ -1,30 +1,65 @@
-import { NextResponse } from "next/server";
+// /api/health — comprehensive system health check
 
-// Simple liveness endpoint for Render's health check + container healthcheck.
-// Also probes the two sidecars so a broken sidecar is visible in /health.
-export const dynamic = "force-dynamic";
+import { NextResponse } from "next/server";
+import { brokerSessionManager } from "@/lib/broker-session-manager";
+import { marketDataManager } from "@/lib/market-data-manager";
 
 export async function GET() {
-  const checks: Record<string, "up" | "down"> = {};
+  const checks: Record<string, { status: string; message?: string; latencyMs?: number }> = {};
 
-  const probe = async (url: string): Promise<"up" | "down"> => {
-    try {
-      const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3000) });
-      return res.ok ? "up" : "down";
-    } catch {
-      return "down";
-    }
+  // Backend
+  checks.backend = { status: "OK", message: `Node ${process.version}` };
+
+  // Database
+  try {
+    const { PrismaClient } = await import("@prisma/client");
+    const prisma = new PrismaClient();
+    await prisma.$queryRaw`SELECT 1`;
+    await prisma.$disconnect();
+    checks.database = { status: "OK" };
+  } catch (error: any) {
+    checks.database = { status: "ERROR", message: error.message };
+  }
+
+  // Broker sessions
+  const brokerStates = brokerSessionManager.getAllStates();
+  for (const [broker, state] of Object.entries(brokerStates)) {
+    checks[`broker_${broker}`] = {
+      status: state.state,
+      message: state.lastError,
+    };
+  }
+
+  // Market data sources
+  const sources = marketDataManager.getAllSources();
+  for (const source of sources) {
+    checks[`data_${source.name}`] = {
+      status: source.status,
+      message: source.error,
+      latencyMs: source.latencyMs,
+    };
+  }
+
+  // WebSocket
+  checks.websocket = { status: "OK", message: "Socket.io server" };
+
+  // Memory usage
+  const mem = process.memoryUsage();
+  checks.memory = {
+    status: mem.heapUsed < 400 * 1024 * 1024 ? "OK" : "WARNING",
+    message: `${Math.round(mem.heapUsed / 1024 / 1024)}MB used`,
   };
 
-  const ta = process.env.TRADE_AUDIT_BASE ?? "http://localhost:4001";
-  const mh = process.env.MARKET_HISTORY_BASE ?? "http://localhost:4002";
+  const overallStatus = Object.values(checks).every(c => c.status === "OK" || c.status === "CONNECTED")
+    ? "HEALTHY"
+    : Object.values(checks).some(c => c.status === "ERROR")
+      ? "DEGRADED"
+      : "PARTIAL";
 
-  const [taStatus, mhStatus] = await Promise.all([
-    probe(ta),
-    probe(mh),
-  ]);
-  checks["trade-audit"] = taStatus;
-  checks["market-history"] = mhStatus;
-
-  return NextResponse.json({ ok: true, checks }, { status: 200 });
+  return NextResponse.json({
+    status: overallStatus,
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    checks,
+  });
 }

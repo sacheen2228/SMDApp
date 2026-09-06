@@ -149,3 +149,81 @@ model ParticipantOI {
   @@index([date])
   @@index([participant])
 }
+
+// ── Broker Configuration (encrypted credentials) ──
+model BrokerConfig {
+  id                String   @id @default(cuid())
+  broker            String   // "ICICI_BREEZE" | "MOTILAL"
+  credentials       String   // AES-256-GCM encrypted JSON
+  iv                String   // encryption IV
+  tag               String   // auth tag for GCM
+  status            String   @default("NOT_CONFIGURED") // NOT_CONFIGURED | CONFIGURED | CONNECTED | DISCONNECTED | AUTH_ERROR
+  lastConnectedAt   DateTime?
+  lastError         String?
+  connectionState   String   @default("NOT_CONFIGURED")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([broker])
+}
+
+// ── Central Trade Ledger (single source of truth) ──
+model CentralTrade {
+  id                String   @id @default(cuid())
+  tradeId           String   @unique
+  symbol            String
+  exchange          String   @default("NSE")
+  instrument        String   @default("equity") // equity | index_fo | stock_fo | options | mcx
+  strike            Float?
+  optionType        String?  // CE | PE
+  expiry            String?
+  direction         String   // BUY | SELL
+  strategy          String
+  strategyProfile   String   // EQUITY_SWING | FO | OPTIONS | CAS | HERO_ZERO | MCX_COMMODITY
+  scoringVersion    String   @default("v2.0")
+  entryPrice        Float
+  stopLoss          Float
+  target1           Float?
+  target2           Float?
+  target3           Float?
+  riskReward        Float?
+  quantity          Int
+  riskPerTrade      Float
+  positionCost      Float
+  maxLoss           Float
+  score             Float
+  scoreBreakdown    Json     // frozen score at entry
+  hardGateStatus    Json     // frozen hard gate status at entry
+  marketRegime      String?
+  entryReason       String?
+  entryTime         DateTime
+  exitPrice         Float?
+  exitTime          DateTime?
+  exitReason        String?
+  pnl               Float?
+  pnlPercent        Float?
+  charges           Float?
+  slippage          Float?
+  holdingPeriodMin  Float?
+  status            String   @default("OPEN") // OPEN | CLOSED | EXPIRED | CANCELLED
+  source            String   @default("paper") // paper | live | backtest
+  isDuplicate       Boolean  @default(false)
+  signalCreatedAt   DateTime?
+  signalExpiresAt   DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([symbol])
+  @@index([strategy])
+  @@index([status])
+  @@index([entryTime])
+}
+
+// ── User Settings ──
+model UserSettings {
+  id                String   @id @default(cuid())
+  key               String   @unique
+  value             Json
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}

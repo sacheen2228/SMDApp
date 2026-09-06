@@ -6,16 +6,18 @@ import TradeJournal from "./admin/TradeJournal";
 import ConnectionManager from "./admin/ConnectionManager";
 import ConfigProfiles from "./admin/ConfigProfiles";
 import StrategyConfig from "./admin/StrategyConfig";
+import { AdminSettings } from "./AdminSettings";
 
 interface AdminPanelProps {
   onConfigChange?: (config: any) => void;
 }
 
 export function AdminPanel({ onConfigChange }: AdminPanelProps) {
-  const [section, setSection] = useState("dashboard");
+  const [section, setSection] = useState("broker");
 
   const sections = [
-    { id: "dashboard", label: "Dashboard", icon: "📊" },
+    { id: "broker", label: "Broker", icon: "🔐" },
+    { id: "dashboard", label: "Health", icon: "📊" },
     { id: "trades", label: "Trades", icon: "📋" },
     { id: "connections", label: "Connections", icon: "🔌" },
     { id: "profiles", label: "Profiles", icon: "💾" },
@@ -44,6 +46,7 @@ export function AdminPanel({ onConfigChange }: AdminPanelProps) {
 
       {/* Section Content */}
       <div className="min-h-[400px]">
+        {section === "broker" && <AdminSettings />}
         {section === "dashboard" && <SystemHealth />}
         {section === "trades" && <TradeJournal />}
         {section === "connections" && <ConnectionManager />}
