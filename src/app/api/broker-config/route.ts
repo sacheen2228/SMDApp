@@ -291,7 +291,6 @@ export async function POST(req: NextRequest) {
         if (broker !== "ICICI_BREEZE") {
           return NextResponse.json({ error: "Token update only for Breeze" }, { status: 400 });
         }
-        const body = await req.json();
         const { sessionToken } = body;
         if (!sessionToken) {
           return NextResponse.json({ error: "Session token required" }, { status: 400 });
