@@ -35,6 +35,7 @@ import ScannerView from '@/components/dashboard/ScannerView';
 import { NewsPanel } from '@/components/dashboard/NewsPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
+import { MotilalStatus } from '@/components/dashboard/MotilalStatus';
 import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
@@ -912,6 +913,8 @@ return (
                 {breezeStatus.loginInProgress ? breezeStatus.message || 'Connecting...' : 'Connect to Breeze'}
               </Button>
             )}
+            {/* Motilal Connection Status */}
+            <MotilalStatus />
           </div>
         )}
       </header>

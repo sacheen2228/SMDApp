@@ -7,6 +7,7 @@ import {
   getSessionToken,
   getSessionInfo,
   logout,
+  autoLogin,
   MOTILAL_CONFIG,
 } from "@/lib/motilal/auth";
 
@@ -18,20 +19,25 @@ export async function POST(request: NextRequest) {
 
     switch (action) {
       case "login": {
-        if (!userid || !password || !dob) {
+        // If no creds provided, use env vars (auto-login)
+        const uid = userid || process.env.MOTILAL_USERID;
+        const pw = password || process.env.MOTILAL_PASSWORD;
+        const dobVal = dob || process.env.MOTILAL_DOB;
+
+        if (!uid || !pw || !dobVal) {
           return NextResponse.json(
-            { error: "userid, password, dob required" },
+            { error: "userid, password, dob required (or set in .env)" },
             { status: 400 }
           );
         }
 
-        const result = await loginWithOTP(userid, password, dob);
+        const result = await loginWithOTP(uid, pw, dobVal);
 
         if (result.success) {
           return NextResponse.json({
             success: true,
             message: result.needsVerification
-              ? "OTP sent to registered mobile/email. Call verify-otp with the 6-digit code."
+              ? "OTP sent to registered mobile/email. Enter the 6-digit code."
               : "Login successful and verified",
             token: result.token,
             needsVerification: result.needsVerification || false,
@@ -40,6 +46,21 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json(
           { error: result.error },
+          { status: 401 }
+        );
+      }
+
+      case "auto-login": {
+        const result = await autoLogin();
+        if (result) {
+          return NextResponse.json({
+            success: true,
+            message: "Auto-login successful. OTP sent to registered mobile/email.",
+            needsVerification: true,
+          });
+        }
+        return NextResponse.json(
+          { error: "Auto-login failed. Check .env credentials." },
           { status: 401 }
         );
       }
@@ -111,7 +132,8 @@ export async function GET() {
       MOTILAL_CONFIG.VENDOR_ID
     ),
     endpoints: {
-      login: "POST /api/motilal { action: 'login', userid, password, dob }",
+      login: "POST /api/motilal { action: 'login' } — uses .env creds",
+      "auto-login": "POST /api/motilal { action: 'auto-login' }",
       "resend-otp": "POST /api/motilal { action: 'resend-otp' }",
       "verify-otp": "POST /api/motilal { action: 'verify-otp', otp: '123456' }",
       status: "POST /api/motilal { action: 'status' }",
