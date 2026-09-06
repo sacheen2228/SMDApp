@@ -287,6 +287,53 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(result);
       }
 
+      case "update-breeze-token": {
+        if (broker !== "ICICI_BREEZE") {
+          return NextResponse.json({ error: "Token update only for Breeze" }, { status: 400 });
+        }
+        const body = await req.json();
+        const { sessionToken } = body;
+        if (!sessionToken) {
+          return NextResponse.json({ error: "Session token required" }, { status: 400 });
+        }
+
+        // Update env var immediately
+        process.env.BREEZE_SESSION_TOKEN = sessionToken;
+
+        // Also update the stored config
+        const config = brokerConfigs.get(broker);
+        if (config) {
+          // Re-encrypt with new session token
+          const creds = decryptCredentials<BrokerCredentials>({
+            encrypted: config.encrypted,
+            iv: config.iv,
+            tag: config.tag,
+          });
+          creds.sessionToken = sessionToken;
+          const encrypted = encryptCredentials(creds);
+          config.encrypted = encrypted.encrypted;
+          config.iv = encrypted.iv;
+          config.tag = encrypted.tag;
+          config.status = "CONFIGURED";
+          config.lastError = undefined;
+
+          // Persist to disk
+          const { writeFileSync } = await import("fs");
+          const { join } = await import("path");
+          writeFileSync(join(process.cwd(), "data", "broker", `${broker}.json`), JSON.stringify({
+            encrypted: encrypted.encrypted,
+            iv: encrypted.iv,
+            tag: encrypted.tag,
+            status: "CONFIGURED",
+          }, null, 2));
+        }
+
+        // Reset connection state to force reconnect
+        brokerSessionManager.disconnect(broker);
+
+        return NextResponse.json({ success: true, message: "Session token updated. Click Connect to re-auth." });
+      }
+
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }

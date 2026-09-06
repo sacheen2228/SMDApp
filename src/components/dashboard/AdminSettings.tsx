@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { Shield, ShieldCheck, ShieldAlert, RefreshCw, Wifi, WifiOff, Eye, EyeOff, MessageSquare, Send, RotateCcw } from 'lucide-react';
+import { Shield, ShieldCheck, ShieldAlert, RefreshCw, Wifi, WifiOff, Eye, EyeOff, MessageSquare, Send, RotateCcw, Key } from 'lucide-react';
 
 interface BrokerStatus {
   broker: string;
@@ -42,7 +42,7 @@ export function AdminSettings() {
   const [otpCode, setOtpCode] = useState('');
 
   // Separate state for each credential field
-  const [breezeCreds, setBreezeCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '' });
+  const [breezeCreds, setBreezeCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '', sessionToken: '' });
   const [motilalCreds, setMotilalCreds] = useState({ apiKey: '', secretKey: '', username: '', password: '', dob: '', vendorId: '', totpKey: '' });
 
   const getCreds = (broker: string) => broker === 'MOTILAL' ? motilalCreds : breezeCreds;
@@ -206,6 +206,29 @@ export function AdminSettings() {
     setLoading(false);
   };
 
+  const handleUpdateBreezeToken = async (broker: string) => {
+    const token = breezeCreds.sessionToken;
+    if (!token || token.trim() === '') {
+      setMessage('Enter session token first');
+      return;
+    }
+    setLoading(true);
+    setMessage('Updating token...');
+    try {
+      const res = await fetch('/api/broker-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update-breeze-token', broker, sessionToken: token }),
+      });
+      const data = await res.json();
+      setMessage(data.success ? 'Token updated. Click Connect to re-auth.' : data.error || 'Failed to update');
+      if (data.success) fetchStatus();
+    } catch {
+      setMessage('Network error');
+    }
+    setLoading(false);
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'CONNECTED': return <Badge className="bg-green-500/10 text-green-500"><ShieldCheck className="h-3 w-3 mr-1" />CONNECTED</Badge>;
@@ -336,6 +359,11 @@ export function AdminSettings() {
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleConnect(brokerName)} disabled={loading}>
                       <Wifi className="h-3 w-3 mr-1" /> {isMotilal && otpStep === 'idle' ? 'Send OTP' : 'Connect'}
                     </Button>
+                    {brokerName === 'ICICI_BREEZE' && (
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleUpdateBreezeToken(brokerName)} disabled={loading}>
+                        <Key className="h-3 w-3 mr-1" /> Update Token
+                      </Button>
+                    )}
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleDisconnect(brokerName)}>
                       <WifiOff className="h-3 w-3 mr-1" /> Disconnect
                     </Button>
@@ -368,6 +396,7 @@ export function AdminSettings() {
           { key: 'secretKey', label: 'API Secret', isPassword: true },
           { key: 'username', label: 'Username' },
           { key: 'password', label: 'Password', isPassword: true },
+          { key: 'sessionToken', label: 'Session Token (daily)', isPassword: true },
         ])}
         {renderBrokerCard('MOTILAL', 'Motilal Oswal', motilalStatus, [
           { key: 'apiKey', label: 'API Key' },
