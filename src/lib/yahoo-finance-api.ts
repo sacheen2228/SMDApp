@@ -34,6 +34,10 @@ const YAHOO_SYMBOL_MAP: Record<string, string> = {
 let yahooCache: Map<string, { data: YahooIndexData; timestamp: number }> = new Map();
 const CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
 
+// Separate cache for prev close (1 hour — doesn't change during the day)
+let prevCloseCache: Map<string, { value: number; timestamp: number }> = new Map();
+const PREV_CLOSE_CACHE_DURATION = 60 * 60 * 1000; // 1 hour
+
 // Rate limiter: max 1 request per 2 seconds
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 2000; // 2 seconds
@@ -148,4 +152,22 @@ export async function fetchIndiaVIX(): Promise<{ value: number; change: number }
     console.error('[Yahoo] Error fetching India VIX:', error);
     return null;
   }
+}
+
+// Fetch previous close with 1-hour cache (doesn't change during the day)
+export async function fetchPrevClose(symbol: string): Promise<number | null> {
+  const cached = prevCloseCache.get(symbol);
+  if (cached && Date.now() - cached.timestamp < PREV_CLOSE_CACHE_DURATION) {
+    return cached.value;
+  }
+
+  try {
+    const data = await fetchYahooIndexData(symbol);
+    if (data?.previousClose) {
+      prevCloseCache.set(symbol, { value: data.previousClose, timestamp: Date.now() });
+      return data.previousClose;
+    }
+  } catch {}
+
+  return null;
 }

@@ -68,12 +68,11 @@ export async function GET(request: NextRequest) {
       }
     } catch {}
 
-    // Yahoo fallback for prev close (with longer cache)
+    // Yahoo fallback for prev close (cached 1 hour)
     if (!livePrevClose) {
       try {
-        const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
-        const yahooIdx = await fetchYahooIndexData(symbol).catch(() => null);
-        livePrevClose = yahooIdx?.previousClose ?? null;
+        const { fetchPrevClose } = await import('@/lib/yahoo-finance-api');
+        livePrevClose = await fetchPrevClose(symbol).catch(() => null);
       } catch {}
     }
 
