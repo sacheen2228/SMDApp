@@ -44,21 +44,44 @@ export async function GET(request: NextRequest) {
       await initSession().catch(() => {});
     }
 
-    // Fetch live India VIX + previous close (real market data from Yahoo).
-    // Independent of the option-chain source — may succeed even when
-    // Breeze/NSE are down. We NEVER fabricate VIX or prevClose; when the
-    // live feed is unavailable we leave them null so the UI can show "—".
+    // Fetch live India VIX + previous close (real market data).
+    // NSE primary (no rate limit), Yahoo fallback. When unavailable we
+    // leave them null so the UI can show "—".
     let liveVix: number | null = null;
     let livePrevClose: number | null = null;
     try {
-      const { fetchIndiaVIX, fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
-      const [vixRes, yahooIdx] = await Promise.all([
-        fetchIndiaVIX().catch(() => null),
-        fetchYahooIndexData(symbol).catch(() => null),
-      ]);
+      const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
+      const vixRes = await fetchIndiaVIX().catch(() => null);
       liveVix = vixRes?.value ?? null;
-      livePrevClose = yahooIdx?.previousClose ?? null;
     } catch {}
+
+    // Previous close: try NSE equity indices API first
+    try {
+      const nseRes = await fetch('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://www.nseindia.com/market-data/live-equity-market',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (nseRes.ok) {
+        const nseData = await nseRes.json();
+        const niftyData = nseData?.data?.find((d: any) => d.symbol === 'NIFTY 50' || d.index === 'NIFTY 50');
+        if (niftyData?.previousClose) {
+          livePrevClose = niftyData.previousClose;
+        }
+      }
+    } catch {}
+
+    // Yahoo fallback for prev close
+    if (!livePrevClose) {
+      try {
+        const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
+        const yahooIdx = await fetchYahooIndexData(symbol).catch(() => null);
+        livePrevClose = yahooIdx?.previousClose ?? null;
+      } catch {}
+    }
 
     let chainData: any = null;
     let source = 'simulation';
