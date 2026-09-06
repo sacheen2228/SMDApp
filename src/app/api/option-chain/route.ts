@@ -600,6 +600,13 @@ export async function GET(request: NextRequest) {
     if (analysis?.greeks && typeof analysis.greeks === 'object') {
       analysis.greeks.vix = liveVix != null ? liveVix : analysis.greeks.vix;
     }
+
+    // Fix spot change (sdm-engine hardcodes 0, we have real prevClose)
+    if (analysis?.spot && livePrevClose) {
+      const spotChg = spotPrice - livePrevClose;
+      analysis.spot.change = Math.round(spotChg * 100) / 100;
+      analysis.spot.changePct = livePrevClose > 0 ? Math.round((spotChg / livePrevClose) * 10000) / 100 : 0;
+    }
     
     return NextResponse.json({
       success: true,
