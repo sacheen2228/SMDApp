@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
       liveVix = vixRes?.value ?? null;
     } catch {}
 
-    // Previous close: use NSE client (handles cookies), then Yahoo fallback
+    // Previous close: NSE client market status (has variation field)
     try {
       const { getNSEClient } = await import('@/lib/nse-api');
       const client = getNSEClient();
@@ -63,11 +63,10 @@ export async function GET(request: NextRequest) {
       if (Array.isArray(marketStatus)) {
         const niftyIdx = marketStatus.find((i: any) => i.index === 'NIFTY 50');
         if (niftyIdx) {
-          // NSE market status provides variation and percentChange directly
-          const spot = niftyIdx.last || 0;
-          const variation = niftyIdx.variation || 0;
-          if (spot > 0 && variation !== 0) {
-            livePrevClose = spot - variation;
+          const variation = parseFloat(niftyIdx.variation) || 0;
+          const last = parseFloat(niftyIdx.last) || 0;
+          if (last > 0 && variation !== 0) {
+            livePrevClose = last - variation;
           }
         }
       }
