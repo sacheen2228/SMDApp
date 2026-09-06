@@ -74,47 +74,62 @@ class BrokerSessionManagerImpl {
   }
 
   private async connectBreeze(creds: BrokerCredentials, state: SessionState): Promise<{ success: boolean; error?: string }> {
-    // Delegate to existing Breeze auth module
-    const { initBreezeSession } = await import("@/lib/icici-breeze/auth");
+    // Breeze SDK reads from process.env — set them from decrypted creds
+    if (creds.apiKey) process.env.BREEZE_APP_KEY = creds.apiKey;
+    if (creds.secretKey) process.env.BREEZE_SECRET_KEY = creds.secretKey;
+    if (creds.sessionToken) process.env.BREEZE_SESSION_TOKEN = creds.sessionToken;
+    if (creds.username) process.env.BREEZE_USERNAME = creds.username;
+    if (creds.password) process.env.BREEZE_PASSWORD = creds.password;
 
-    const result = await initBreezeSession({
-      api_key: creds.apiKey || "",
-      access_token: creds.sessionToken || "",
-    });
+    const { initSession } = await import("@/lib/icici-breeze/auth");
 
-    if (result.success) {
-      state.state = "CONNECTED";
-      state.connectedAt = new Date();
-      state.lastActivity = new Date();
-      return { success: true };
-    } else {
+    try {
+      const result = await initSession();
+      if (result) {
+        state.state = "CONNECTED";
+        state.connectedAt = new Date();
+        state.lastActivity = new Date();
+        return { success: true };
+      } else {
+        state.state = "AUTH_ERROR";
+        state.lastError = "Session init returned false";
+        return { success: false, error: "Session init returned false" };
+      }
+    } catch (error: any) {
       state.state = "AUTH_ERROR";
-      state.lastError = result.error || "Connection failed";
-      return { success: false, error: result.error };
+      state.lastError = error.message;
+      return { success: false, error: error.message };
     }
   }
 
   private async connectMotilal(creds: BrokerCredentials, state: SessionState): Promise<{ success: boolean; error?: string }> {
+    // Motilal reads from process.env
+    if (creds.apiKey) process.env.MOTILAL_API_KEY = creds.apiKey;
+    if (creds.secretKey) process.env.MOTILAL_SECRET_KEY = creds.secretKey;
+    if (creds.username) process.env.MOTILAL_USERID = creds.username;
+    if (creds.password) process.env.MOTILAL_PASSWORD = creds.password;
+    if (creds.dob) process.env.MOTILAL_DOB = creds.dob;
+    if (creds.vendorId) process.env.MOTILAL_VENDOR_ID = creds.vendorId;
+    if (creds.totpKey) process.env.MOTILAL_TOTP_KEY = creds.totpKey;
+
     const { autoLogin } = await import("@/lib/motilal/auth");
 
-    const result = await autoLogin({
-      apiKey: creds.apiKey,
-      secretKey: creds.secretKey,
-      userId: creds.username || creds.vendorId,
-      password: creds.password,
-      dob: creds.dob,
-      primaryIp: creds.totpKey, // repurposed for IP in env
-    });
-
-    if (result.success) {
-      state.state = "CONNECTED";
-      state.connectedAt = new Date();
-      state.lastActivity = new Date();
-      return { success: true };
-    } else {
+    try {
+      const result = await autoLogin();
+      if (result) {
+        state.state = "CONNECTED";
+        state.connectedAt = new Date();
+        state.lastActivity = new Date();
+        return { success: true };
+      } else {
+        state.state = "AUTH_ERROR";
+        state.lastError = "Auto-login failed - OTP verification may be needed";
+        return { success: false, error: "Auto-login failed" };
+      }
+    } catch (error: any) {
       state.state = "AUTH_ERROR";
-      state.lastError = result.error || "Login failed";
-      return { success: false, error: result.error };
+      state.lastError = error.message;
+      return { success: false, error: error.message };
     }
   }
 
