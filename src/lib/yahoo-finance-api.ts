@@ -113,8 +113,28 @@ export async function fetchYahooIndexData(ourSymbol: string): Promise<YahooIndex
   }
 }
 
-// Fetch India VIX
+// Fetch India VIX — NSE primary, Yahoo fallback
 export async function fetchIndiaVIX(): Promise<{ value: number; change: number } | null> {
+  // Try NSE API first (no rate limit)
+  try {
+    const res = await fetch('https://www.nseindia.com/api/allIndices', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.nseindia.com/market-data/live-equity-market',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const vix = data?.data?.find((i: any) => i.index === 'INDIA VIX');
+      if (vix) {
+        return { value: vix.last || vix.percChange || 0, change: vix.percChange || 0 };
+      }
+    }
+  } catch {}
+
+  // Yahoo fallback
   try {
     const vixData = await fetchYahooIndexData('INDIAVIX');
     if (vixData) {

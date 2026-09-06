@@ -417,12 +417,15 @@ export default function TradingDashboard() {
             Math.abs(r.strike - spot) < Math.abs(b.strike - spot) ? r : b
           ).strike
         : 0);
+    const prevClose = typeof chainSummary.prevClose === 'number' ? chainSummary.prevClose : null;
+    const spotChange = prevClose ? spot - prevClose : 0;
+    const spotChangePct = prevClose ? ((spot - prevClose) / prevClose) * 100 : 0;
     return {
       spotPrice: spot,
-      spotChange: 0,
-      spotChangePct: 0,
+      spotChange,
+      spotChangePct,
       indiaVIX: (typeof chainSummary.indiaVIX === 'number' ? chainSummary.indiaVIX : null),
-      prevClose: (typeof chainSummary.prevClose === 'number' ? chainSummary.prevClose : null),
+      prevClose,
       vixLive: chainSummary.vixLive ?? false,
       prevCloseLive: chainSummary.prevCloseLive ?? false,
       pcr: chainSummary.pcr ?? 1,
