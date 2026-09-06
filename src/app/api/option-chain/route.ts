@@ -55,26 +55,20 @@ export async function GET(request: NextRequest) {
       liveVix = vixRes?.value ?? null;
     } catch {}
 
-    // Previous close: try NSE equity indices API first
+    // Previous close: use NSE client (handles cookies), then Yahoo fallback
     try {
-      const nseRes = await fetch('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Referer': 'https://www.nseindia.com/market-data/live-equity-market',
-        },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (nseRes.ok) {
-        const nseData = await nseRes.json();
-        const niftyData = nseData?.data?.find((d: any) => d.symbol === 'NIFTY 50' || d.index === 'NIFTY 50');
-        if (niftyData?.previousClose) {
-          livePrevClose = niftyData.previousClose;
+      const { getNSEClient } = await import('@/lib/nse-api');
+      const client = getNSEClient();
+      const marketData = await client.market.getStatus().catch(() => null);
+      if (marketData?.index) {
+        const niftyIdx = marketData.index.find((i: any) => i.index === 'NIFTY 50' || i.last?.includes('NIFTY'));
+        if (niftyIdx?.previousClose) {
+          livePrevClose = parseFloat(niftyIdx.previousClose);
         }
       }
     } catch {}
 
-    // Yahoo fallback for prev close
+    // Yahoo fallback for prev close (with longer cache)
     if (!livePrevClose) {
       try {
         const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
