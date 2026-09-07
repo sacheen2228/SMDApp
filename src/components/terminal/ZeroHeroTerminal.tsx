@@ -20,6 +20,7 @@ import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { getLotSize } from "@/lib/symbol-config";
 import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
+import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -109,11 +110,12 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
+type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
   { id: "options", icon: <Link2 size={19} />, label: "Option Chain" },
+  { id: "optionsedge", icon: <Target size={19} />, label: "Options Edge" },
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "straddle", icon: <Crosshair size={19} />, label: "CAS Straddle" },
@@ -1189,6 +1191,9 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "options" && (
             <EnhancedOptionChain chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain} openTrade={openTrade} />
+          )}
+          {activeTab === "optionsedge" && (
+            <OptionsEdgePanel symbol={symbol} onTrade={openTrade} />
           )}
           {activeTab === "smartmoney" && (
             <SmartMoneyTab flowData={flowData} chain={chain} spot={spot} vix={vix} pcr={pcr} maxPain={maxPain} candles={candles} openTrade={openTrade} symbol={symbol} setSymbol={setSymbol} />
