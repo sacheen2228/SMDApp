@@ -11,6 +11,8 @@ import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
 import { createTrade, updateTrade } from "./tradeStore";
 import { recordScannerResult } from "./market/record-scanner";
+import { validateCandidateTrade } from "@/lib/trade-validator-gate";
+import { acquireTradeLock, releaseTradeLock } from "@/lib/active-trade-lock";
 
 export interface BTSTScanResult {
   timestamp: string;
@@ -212,7 +214,7 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
       volume: c.volume,
       avgVolume: c.avgVolume,
       oiChangePct: isFNO ? (c.oiChange || 0) : 0,
-      pcr: isFNO ? (c.pcr || 1) : 1,
+      pcr: isFNO ? (c.pcr ?? null) : null,
       iv: isFNO ? (c.iv || 0) : 0,
       sectorStrength: (c.sectorScore ?? 50) * 2 - 100,
       relativeStrength: c.changePct,
@@ -316,6 +318,47 @@ export async function recordBTSTSignals(candidates: BTSTAnalysis[]): Promise<num
   const ymd = istYmd();
   let recorded = 0;
   for (const a of candidates) {
+    // SAFETY: Validate through canonical validator
+    const candidate = {
+      symbol: a.symbol,
+      exchange: 'NSE' as const,
+      instrument: 'EQUITY' as const,
+      entry: a.entry,
+      stopLoss: a.sl,
+      target1: a.tp1,
+      target2: a.tp2,
+      direction: 'BUY' as const,
+      strategy: 'BTST',
+      score: a.confidence,
+      premium: a.entry,
+      spot: a.price,
+    };
+    const validation = validateCandidateTrade(candidate);
+    if (!validation.valid) {
+      console.log(`[BTST] BLOCKED ${a.symbol}: ${validation.reasons.join('; ')}`);
+      continue;
+    }
+
+    // SAFETY: Acquire active trade lock
+    const tradeId = `${a.symbol}-BTST-${ymd}`;
+    const lockResult = await acquireTradeLock({
+      tradeId,
+      strategy: 'BTST',
+      underlying: a.symbol,
+      exchange: 'NSE',
+      optionType: 'EQ',
+      strike: 0,
+      expiry: '',
+      entry: a.entry,
+      stopLoss: a.sl,
+      target1: a.tp1,
+      target2: a.tp2,
+    });
+    if ('blocked' in lockResult) {
+      console.log(`[BTST] BLOCKED ${a.symbol}: Active trade ${lockResult.activeTrade.tradeId}`);
+      continue;
+    }
+
     const ok = await recordSignal({
       tradeId: `${a.symbol}-BTST-${ymd}`,
       strategyId: "BTST",

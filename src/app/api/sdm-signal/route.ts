@@ -31,32 +31,66 @@ export async function GET(request: NextRequest) {
       await initSession().catch(() => {});
     }
 
-    // Fetch real option chain data: Breeze → NSE → Simulation fallback
+    // Fetch real option chain data: MOAPI → Breeze → NSE → BSE
     let chainData: any = null;
     let source = "simulation";
 
-    // Try Breeze first
+    // 1. Try MOAPI first (preferred primary provider)
     try {
-      const expiries = expiry ? [expiry] : await getOptionChainExpiries(symbol);
-      for (const exp of expiries.slice(0, 3)) {
-        const chain = await getOptionChain(symbol, exp);
-        if (chain) {
-          chainData = {
-            spotPrice: chain.spotPrice,
-            data: chain.strikes.map((strike) => ({
-              strike,
-              ce: chain.calls.find((c) => c.strikePrice === strike) || null,
-              pe: chain.puts.find((p) => p.strikePrice === strike) || null,
-            })),
-            expiries: expiries.map((e) => ({ date: e })),
-            selectedExpiry: exp,
-          };
-          source = "icici-breeze";
-          break;
-        }
+      const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
+      const motilalChain = await Promise.race([
+        getMotilalOptionChain(symbol, expiry),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 8000))
+      ]);
+      if (motilalChain?.data?.length) {
+        chainData = {
+          spotPrice: motilalChain.spotPrice,
+          data: motilalChain.data.map((row: any) => ({
+            strike: row.strike,
+            ce: row.ce ? {
+              ltp: row.ce.ltp || 0, oi: row.ce.oi || 0,
+              oiChg: 0, volume: row.ce.volume || 0,
+              iv: row.ce.iv || 0,
+            } : null,
+            pe: row.pe ? {
+              ltp: row.pe.ltp || 0, oi: row.pe.oi || 0,
+              oiChg: 0, volume: row.pe.volume || 0,
+              iv: row.pe.iv || 0,
+            } : null,
+          })),
+          expiries: motilalChain.expiries.map((e: string) => ({ date: e })),
+          selectedExpiry: motilalChain.selectedExpiry,
+        };
+        source = "moapi";
       }
     } catch (e) {
-      console.warn("[SDM Signal] Breeze failed:", e);
+      console.warn("[SDM Signal] MOAPI failed:", e);
+    }
+
+    // 2. Try Breeze if MOAPI failed
+    if (!chainData) {
+      try {
+        const expiries = expiry ? [expiry] : await getOptionChainExpiries(symbol);
+        for (const exp of expiries.slice(0, 3)) {
+          const chain = await getOptionChain(symbol, exp);
+          if (chain) {
+            chainData = {
+              spotPrice: chain.spotPrice,
+              data: chain.strikes.map((strike) => ({
+                strike,
+                ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+                pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+              })),
+              expiries: expiries.map((e) => ({ date: e })),
+              selectedExpiry: exp,
+            };
+            source = "icici-breeze";
+            break;
+          }
+        }
+      } catch (e) {
+        console.warn("[SDM Signal] Breeze failed:", e);
+      }
     }
 
     // Try NSE if Breeze failed
@@ -232,6 +266,21 @@ export async function GET(request: NextRequest) {
       new Date().toISOString(),
       dir || undefined
     );
+
+    // Attach Greeks for the selected strike to the signal
+    const selectedStrike = signal.strike || spotPrice;
+    const strikeRow = chain.find((s: any) => s.strike === selectedStrike);
+    const isCall = signal.direction === "CALL";
+    const optionLeg = isCall ? strikeRow?.ce : strikeRow?.pe;
+    if (optionLeg) {
+      (signal as any).greeks = {
+        delta: optionLeg.delta || 0,
+        gamma: optionLeg.gamma || 0,
+        theta: optionLeg.theta || 0,
+        vega: optionLeg.vega || 0,
+        iv: optionLeg.iv || 0,
+      };
+    }
 
     // Send Telegram alert when data is real (not simulation) and confidence is high
     const rec = signal.recommendation || signal;

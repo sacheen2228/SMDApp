@@ -4,10 +4,12 @@
 // Persists all trades to SQLite via tradeStore for reporting and export.
 // The intraday scanner checks this before generating new trades.
 // When SL is hit the trade is closed and the next scan can pick a new setup.
+// SAFETY: Integrates with active-trade-lock for one-trade-per-underlying.
 
 import { createTrade, updateTrade } from "./tradeStore";
 import { recordSignal, closeTrade, updatePrice } from "./trade-audit-client";
 import { istSession } from "./audit-recorders";
+import { acquireTradeLock, releaseTradeLock, updateTradeStatus as updateLockStatus, isTradeActive } from "./active-trade-lock";
 
 export interface ActiveTrade {
   id: string;
@@ -54,6 +56,25 @@ function getHoldingMins(trade: ActiveTrade): number {
 }
 
 export async function addTrade(trade: ActiveTrade): Promise<void> {
+  // SAFETY: Acquire active trade lock before creating trade
+  const lockResult = await acquireTradeLock({
+    tradeId: trade.id,
+    strategy: trade.source,
+    underlying: trade.symbol,
+    exchange: 'NFO',
+    optionType: (trade.optionType as 'CE' | 'PE' | 'FUT' | 'EQ') ?? 'CE',
+    strike: trade.strike,
+    expiry: '',
+    entry: trade.entry,
+    stopLoss: trade.sl,
+    target1: trade.tp1,
+    target2: trade.tp2,
+  });
+  if ('blocked' in lockResult) {
+    console.log(`[ActiveTrade] BLOCKED: ${trade.symbol} — active trade ${lockResult.activeTrade.tradeId} exists`);
+    return;
+  }
+
   activeTrades.set(trade.id, trade);
 
   // Persist to database (idempotent — trade-journal route upserts on tradeId)
@@ -143,8 +164,22 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
   const now = new Date().toISOString();
   if (status === 'TP1_HIT') trade.tp1HitAt = now;
   else if (status === 'TP2_HIT') trade.tp2HitAt = now;
-  else if (status === 'TP3_HIT') trade.tp3HitAt = now;
+  else if (status === 'TP3_HIT') trade.tp2HitAt = now;
   else if (status === 'SL_HIT') trade.slHitAt = now;
+
+  // SAFETY: Update active trade lock status
+  const lockStatus = updateLockStatus(id, trade.symbol, 'NFO', status);
+  
+  // TRAILING SL: After TP1 hit, move SL to breakeven (entry price)
+  if (status === 'TP1_HIT' && trade.side === 'BUY') {
+    const oldSL = trade.sl;
+    trade.sl = trade.entry;
+    console.log(`[ActiveTrade] Trailing SL: ${trade.symbol} SL moved from ${oldSL} → ${trade.entry} (breakeven) after TP1 hit`);
+  } else if (status === 'TP1_HIT' && trade.side === 'SELL') {
+    const oldSL = trade.sl;
+    trade.sl = trade.entry;
+    console.log(`[ActiveTrade] Trailing SL: ${trade.symbol} SL moved from ${oldSL} → ${trade.entry} (breakeven) after TP1 hit`);
+  }
 
   // Calculate P&L at hit price
   const hitPrice = status === 'SL_HIT' ? trade.sl
@@ -182,6 +217,13 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
   // 3. Remove from the in-memory active list so it no longer appears as open
   //    and cannot block a fresh entry for the same symbol.
   activeTrades.delete(id);
+
+  // 4. SAFETY: Release active trade lock on terminal events
+  const terminalStatuses = ['TP2_HIT', 'TP3_HIT', 'SL_HIT'];
+  if (terminalStatuses.includes(status)) {
+    releaseTradeLock(trade.symbol, 'NFO');
+    console.log(`[ActiveTrade] Lock released for ${trade.symbol} — trade ${id} closed (${status})`);
+  }
 }
 
 /** Human-friendly status label for dashboards, Telegram and Agent outputs. */
@@ -203,7 +245,10 @@ export function formatTradeStatus(status: string | undefined): string {
 }
 
 export function hasActiveTrade(symbol: string): boolean {
-  return getActiveTrades().some(t => t.symbol === symbol);
+  // Check both in-memory tracker AND active trade lock
+  const inTracker = getActiveTrades().some(t => t.symbol === symbol);
+  const inLock = isTradeActive(symbol, 'NFO') !== null;
+  return inTracker || inLock;
 }
 
 export interface SLTPCheckResult {
@@ -230,13 +275,13 @@ export async function checkSLTP(
         if (currentPrice <= trade.sl && trade.status !== 'SL_HIT') {
           await updateTradeStatus(trade.id, 'SL_HIT');
           hitSL.push({ ...trade, status: 'SL_HIT' });
-        } else if (currentPrice >= (trade.tp3 ?? Infinity) && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'TP2_HIT' && currentPrice >= (trade.tp3 ?? Infinity)) {
           await updateTradeStatus(trade.id, 'TP3_HIT');
           hitTP3.push({ ...trade, status: 'TP3_HIT' });
-        } else if (currentPrice >= trade.tp2 && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'TP1_HIT' && currentPrice >= trade.tp2) {
           await updateTradeStatus(trade.id, 'TP2_HIT');
           hitTP2.push({ ...trade, status: 'TP2_HIT' });
-        } else if (currentPrice >= trade.tp1 && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'ACTIVE' && currentPrice >= trade.tp1) {
           await updateTradeStatus(trade.id, 'TP1_HIT');
           hitTP1.push({ ...trade, status: 'TP1_HIT' });
         }
@@ -244,13 +289,13 @@ export async function checkSLTP(
         if (currentPrice >= trade.sl && trade.status !== 'SL_HIT') {
           await updateTradeStatus(trade.id, 'SL_HIT');
           hitSL.push({ ...trade, status: 'SL_HIT' });
-        } else if (currentPrice <= (trade.tp3 ?? -Infinity) && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'TP2_HIT' && currentPrice <= (trade.tp3 ?? -Infinity)) {
           await updateTradeStatus(trade.id, 'TP3_HIT');
           hitTP3.push({ ...trade, status: 'TP3_HIT' });
-        } else if (currentPrice <= trade.tp2 && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'TP1_HIT' && currentPrice <= trade.tp2) {
           await updateTradeStatus(trade.id, 'TP2_HIT');
           hitTP2.push({ ...trade, status: 'TP2_HIT' });
-        } else if (currentPrice <= trade.tp1 && trade.status === 'ACTIVE') {
+        } else if (trade.status === 'ACTIVE' && currentPrice <= trade.tp1) {
           await updateTradeStatus(trade.id, 'TP1_HIT');
           hitTP1.push({ ...trade, status: 'TP1_HIT' });
         }
@@ -260,7 +305,7 @@ export async function checkSLTP(
     }
   }
 
-  return { hitSL, hitTP1, hitTP2 };
+  return { hitSL, hitTP1, hitTP2, hitTP3 };
 }
 
 // Format SL/TP hit message for Telegram

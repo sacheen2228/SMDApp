@@ -109,6 +109,7 @@ function sdmSignalToAlert(symbol: string, signal: any): any {
     rationale: reasons + extra || "SDM V2 engine recommendation",
     expiry: expiryLabel,
     generatedAt: new Date().toISOString(),
+    greeks: signal.greeks || null,
   };
 }
 
@@ -118,6 +119,12 @@ function formatSDMMessage(alert: any): string {
   const direction = isCall ? "Bullish" : "Bearish";
   const pnlRisk = alert.entry > 0 ? Math.abs((alert.entry - alert.sl) / alert.entry * 100).toFixed(1) : "—";
   const pnlReward = alert.entry > 0 ? Math.abs((alert.tp1 - alert.entry) / alert.entry * 100).toFixed(1) : "—";
+
+  // Greeks section
+  const g = alert.greeks;
+  const greeksLine = g && (g.delta || g.gamma || g.theta || g.vega)
+    ? `\nΔ ${g.delta?.toFixed(2) || "—"} · Γ ${g.gamma?.toFixed(4) || "—"} · Θ ${g.theta?.toFixed(2) || "—"} · ν ${g.vega?.toFixed(2) || "—"} · IV ${g.iv?.toFixed(1) || "—"}%`
+    : "";
 
   return `⚡ SDM Signal — ${alert.symbol}
 
@@ -129,7 +136,7 @@ Entry: ₹${alert.entry.toFixed(2)}
 Stop: ₹${alert.sl.toFixed(2)} (${pnlRisk}% risk)
 Target 1: ₹${alert.tp1.toFixed(2)} (${pnlReward}% gain)
 Target 2: ₹${alert.tp2.toFixed(2)}
-R:R 1:${alert.rr}
+R:R 1:${alert.rr}${greeksLine}
 
 ${alert.rationale}
 

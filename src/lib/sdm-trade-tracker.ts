@@ -1,8 +1,11 @@
 // SDM Trade Tracker
 // Persistent trade journal using Prisma + SQLite with in-memory cache
+// SAFETY: Uses canonical validator + active trade lock
 
 import type { TradeRecord, TradeGrade } from "@/types/sdm";
 import { db } from "@/lib/db";
+import { validateCandidateTrade } from "@/lib/trade-validator-gate";
+import { acquireTradeLock, releaseTradeLock } from "@/lib/active-trade-lock";
 
 // ─── State (module-level) ────────────────────────────────────────
 let trades: TradeRecord[] = [];
@@ -88,8 +91,8 @@ function mapStatusToDb(
 }
 
 // ─── Add Trade ───────────────────────────────────────────────────
-export function addTrade(
-  direction: "CALL" | "PUT" | "SELL_CALL" | "SELL_PUT",
+export async function addTrade(
+  direction: "CALL" | "PUT",
   strike: number,
   entry: number,
   tp1: number,
@@ -100,8 +103,58 @@ export function addTrade(
   grade: TradeGrade = "C",
   confidence: number = 50,
   reason: string = ""
-): TradeRecord | null {
+): Promise<TradeRecord | null> {
+  // SAFETY: Option selling is forbidden — reject sell directions at runtime
+  if (direction === "SELL_CALL" || direction === "SELL_PUT") {
+    console.error(`[SDM Trade Tracker] REJECTED: ${direction} — option selling is not allowed`);
+    return null;
+  }
   if (isExpiryDay && trades.length >= MAX_TRADES_EXPIRY) {
+    return null;
+  }
+
+  // SAFETY: Validate through canonical validator
+  const candidate = {
+    symbol: currentSymbol,
+    exchange: 'NFO' as const,
+    instrument: 'CALL' as const,
+    optionType: direction === 'CALL' ? 'CE' as const : 'PE' as const,
+    strike,
+    entry,
+    stopLoss: sl,
+    target1: tp1,
+    target2: tp2,
+    direction: direction === 'CALL' ? 'BUY_CE' : 'BUY_PE',
+    strategy: 'SDM',
+    score: confidence,
+    premium: entry,
+    spot: 0,
+    volume: 0,
+    oi: 0,
+  };
+  const validation = validateCandidateTrade(candidate);
+  if (!validation.valid) {
+    console.log(`[SDM Trade Tracker] BLOCKED: ${validation.reasons.join('; ')}`);
+    return null;
+  }
+
+  // SAFETY: Acquire active trade lock
+  const tradeId = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+  const lockResult = await acquireTradeLock({
+    tradeId,
+    strategy: 'SDM',
+    underlying: currentSymbol,
+    exchange: 'NFO',
+    optionType: direction === 'CALL' ? 'CE' : 'PE',
+    strike,
+    expiry: '',
+    entry,
+    stopLoss: sl,
+    target1: tp1,
+    target2: tp2,
+  });
+  if ('blocked' in lockResult) {
+    console.log(`[SDM Trade Tracker] BLOCKED: Active trade ${lockResult.activeTrade.tradeId} on ${currentSymbol}`);
     return null;
   }
 

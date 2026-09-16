@@ -368,7 +368,7 @@ export function SDMBot({
           isNewSignal
         ) {
           const tradeDir = rec.direction as "CALL" | "PUT";
-          tracker.addTrade(
+          await tracker.addTrade(
             tradeDir,
             rec.strike,
             rec.entry,
