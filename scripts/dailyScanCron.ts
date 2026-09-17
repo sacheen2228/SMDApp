@@ -32,7 +32,7 @@ function loadEnv(): void {
 loadEnv();
 
 import cron from "node-cron";
-import { sendDailyDigest } from "../src/lib/sendDailyDigest";
+import { sendDailyDigest } from "../src/lib/dailyDigest";
 import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";

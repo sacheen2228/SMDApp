@@ -148,10 +148,12 @@ export async function getOptionChain(
         timestamp: new Date().toISOString(),
       };
     });
-  } catch (err) {
-    // Catch SDK errors (which are thrown as strings) and return null for fallback chain
-    const msg = typeof err === 'string' ? err : err?.message || String(err);
-    console.warn('[Breeze SDK] getOptionChain failed for', stockCode, expiryDate, ':', msg.substring(0, 100));
+  } catch (err: any) {
+    // SDK throws broken error strings like "getOptionChainQuotes() Errorundefined"
+    // Extract the meaningful part
+    const raw = typeof err === 'string' ? err : String(err?.message || err || '');
+    const meaningful = raw.includes('Errorundefined') ? 'SDK internal error (likely Unauthorized User or timeout)' : raw.substring(0, 120);
+    console.warn('[Breeze SDK] getOptionChain failed for', stockCode, expiryDate, ':', meaningful);
     return null;
   }
 }

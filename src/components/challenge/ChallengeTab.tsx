@@ -101,6 +101,25 @@ interface ScanResult {
   noTradeReason?: string;
 }
 
+interface TigerState {
+  timeWindow: string;
+  vixRegime: string;
+  vix: number;
+  trendDay: { checks: Record<string, boolean>; score: number; isTrendDay: boolean };
+  risk: {
+    tradesToday: number;
+    lossesToday: number;
+    maxTradesPerDay: number;
+    dailyStopHit: boolean;
+    weeklyStopHit: boolean;
+    canTrade: boolean;
+    capitalDeployedPct: number;
+  };
+  session: string;
+  isMarketOpen: boolean;
+  allowedInstruments: string[];
+}
+
 interface TradeFeedEntry {
   id: string;
   timestamp: string;
@@ -164,6 +183,7 @@ function instrumentIcon(inst: string) {
 export default function ChallengeTab() {
   const [challenge, setChallenge] = useState<ChallengeState | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
+  const [tiger, setTiger] = useState<TigerState | null>(null);
   const [tradeFeed, setTradeFeed] = useState<TradeFeedEntry[]>([]);
   const [tradeStats, setTradeStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -187,6 +207,7 @@ export default function ChallengeTab() {
       if (data.success) {
         setChallenge(data.challenge);
         setScan(data.scan);
+        setTiger(data.tiger || null);
         setTradeFeed(data.tradeFeed);
         setTradeStats(data.tradeStats);
         if (data.autoExecute) setAutoExec(data.autoExecute);
@@ -341,6 +362,124 @@ export default function ChallengeTab() {
         </div>
       </div>
 
+      {/* ── TIGER Intelligence Panel ── */}
+      {tiger && (
+        <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="w-4 h-4 text-amber-400" />
+            <h3 className="text-sm font-semibold text-neutral-300">TIGER System — Live Intelligence</h3>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+              tiger.isMarketOpen ? "bg-emerald-400/10 text-emerald-400" : "bg-red-400/10 text-red-400"
+            }`}>
+              {tiger.session}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+            {/* Time Window */}
+            <div className={`rounded-lg p-2 text-center border ${
+              tiger.timeWindow === "WINDOW_1" || tiger.timeWindow === "WINDOW_2"
+                ? "bg-emerald-400/5 border-emerald-400/20"
+                : tiger.timeWindow === "GAP_TRAP" || tiger.timeWindow === "LUNCH_CHOP"
+                ? "bg-red-400/5 border-red-400/20"
+                : "bg-neutral-800 border-neutral-700"
+            }`}>
+              <div className="text-[10px] text-neutral-500">Time Window</div>
+              <div className={`text-xs font-bold ${
+                tiger.timeWindow === "WINDOW_1" || tiger.timeWindow === "WINDOW_2" ? "text-emerald-400" :
+                tiger.timeWindow === "GAP_TRAP" || tiger.timeWindow === "LUNCH_CHOP" ? "text-red-400" :
+                "text-neutral-400"
+              }`}>{tiger.timeWindow.replace("_", " ")}</div>
+            </div>
+
+            {/* VIX Regime */}
+            <div className={`rounded-lg p-2 text-center border ${
+              tiger.vixRegime === "COMPLACENT" || tiger.vixRegime === "CALM"
+                ? "bg-emerald-400/5 border-emerald-400/20"
+                : tiger.vixRegime === "ELEVATED" || tiger.vixRegime === "FEAR"
+                ? "bg-red-400/5 border-red-400/20"
+                : "bg-neutral-800 border-neutral-700"
+            }`}>
+              <div className="text-[10px] text-neutral-500">VIX Regime</div>
+              <div className={`text-xs font-bold ${
+                tiger.vixRegime === "COMPLACENT" || tiger.vixRegime === "CALM" ? "text-emerald-400" :
+                tiger.vixRegime === "ELEVATED" || tiger.vixRegime === "FEAR" ? "text-red-400" :
+                "text-amber-400"
+              }`}>{tiger.vixRegime} ({tiger.vix.toFixed(1)})</div>
+            </div>
+
+            {/* Trend Day */}
+            <div className={`rounded-lg p-2 text-center border ${
+              tiger.trendDay.isTrendDay
+                ? "bg-emerald-400/5 border-emerald-400/20"
+                : "bg-neutral-800 border-neutral-700"
+            }`}>
+              <div className="text-[10px] text-neutral-500">Trend Day</div>
+              <div className={`text-xs font-bold ${
+                tiger.trendDay.isTrendDay ? "text-emerald-400" : "text-neutral-400"
+              }`}>{tiger.trendDay.score}/5 {tiger.trendDay.isTrendDay ? "✓" : ""}</div>
+            </div>
+
+            {/* Risk Status */}
+            <div className={`rounded-lg p-2 text-center border ${
+              tiger.risk.dailyStopHit || tiger.risk.weeklyStopHit
+                ? "bg-red-400/5 border-red-400/20"
+                : "bg-neutral-800 border-neutral-700"
+            }`}>
+              <div className="text-[10px] text-neutral-500">Risk</div>
+              <div className={`text-xs font-bold ${
+                tiger.risk.dailyStopHit || tiger.risk.weeklyStopHit ? "text-red-400" : "text-neutral-300"
+              }`}>
+                {tiger.risk.dailyStopHit ? "DAILY STOP" :
+                 tiger.risk.weeklyStopHit ? "WEEKLY STOP" :
+                 `${tiger.risk.tradesToday}/${tiger.risk.maxTradesPerDay} trades`}
+              </div>
+            </div>
+
+            {/* Capital Deployed */}
+            <div className="rounded-lg p-2 text-center border bg-neutral-800 border-neutral-700">
+              <div className="text-[10px] text-neutral-500">Deployed</div>
+              <div className={`text-xs font-bold ${
+                tiger.risk.capitalDeployedPct > 50 ? "text-amber-400" : "text-neutral-300"
+              }`}>{tiger.risk.capitalDeployedPct}%</div>
+            </div>
+
+            {/* Can Trade */}
+            <div className={`rounded-lg p-2 text-center border ${
+              tiger.risk.canTrade && scan.decision === "TRADE"
+                ? "bg-emerald-400/5 border-emerald-400/20"
+                : "bg-neutral-800 border-neutral-700"
+            }`}>
+              <div className="text-[10px] text-neutral-500">Status</div>
+              <div className={`text-xs font-bold ${
+                tiger.risk.canTrade && scan.decision === "TRADE" ? "text-emerald-400" :
+                !tiger.risk.canTrade ? "text-red-400" : "text-neutral-400"
+              }`}>
+                {!tiger.risk.canTrade ? "BLOCKED" :
+                 scan.decision === "TRADE" ? "HUNT ON" :
+                 "STANDS DOWN"}
+              </div>
+            </div>
+          </div>
+
+          {/* Trend Day Checklist */}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Object.entries(tiger.trendDay.checks).map(([key, passed]) => (
+              <div key={key} className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full ${
+                passed ? "bg-emerald-400/10 text-emerald-400" : "bg-neutral-800 text-neutral-500"
+              }`}>
+                {passed ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                {key === "orbBreak" ? "ORB Break" :
+                 key === "straddleExpanding" ? "Straddle" :
+                 key === "oiUnwinding" ? "OI Unwind" :
+                 key === "pcrShift" ? "PCR Shift" :
+                 "Breadth"}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Progress Bar (FIXED: shows negative) ── */}
       <div className="bg-neutral-900 rounded-xl border border-neutral-800 p-4">
         <div className="flex items-center justify-between mb-2">
@@ -412,6 +551,13 @@ export default function ChallengeTab() {
           </span>
         </div>
 
+        {/* DataStamp banner — stale data warning */}
+        {scan.topOpportunities.some(o => o.dataStamp === 'PREV_CLOSE') && (
+          <div className="text-xs text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-lg px-3 py-2 mb-3 font-medium">
+            ⚠️ YESTERDAY'S SCAN — NOT LIVE — Execute buttons disabled
+          </div>
+        )}
+
         {scan.noTradeReason && (
           <div className="text-xs text-neutral-500 bg-neutral-800/50 rounded-lg px-3 py-2 mb-3">
             {scan.noTradeReason}
@@ -421,7 +567,7 @@ export default function ChallengeTab() {
         <div className="space-y-2">
           {scan.topOpportunities.map((opp, i) => {
             const isExpanded = expandedOpp === i;
-            const canExec = opp.position.canTrade && scan.decision === "TRADE";
+            const canExec = opp.tradeable && opp.position.canTrade && scan.decision === "TRADE";
             const isCopied = copiedIds.has(opp.symbol + opp.timestamp);
 
             return (
@@ -439,9 +585,12 @@ export default function ChallengeTab() {
                           : "bg-red-400/10 text-red-400"
                       }`}>{opp.direction}</span>
                       <span className="text-xs text-neutral-500">{opp.instrument}</span>
+                      {opp.dataStamp === 'PREV_CLOSE' && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-amber-400/10 text-amber-400">STALE</span>
+                      )}
                     </div>
                     <div className="text-xs text-neutral-400 mt-0.5">
-                      ₹{opp.entry} • SL ₹{opp.stopLoss} • TP ₹{opp.target1} • R:R 1:{opp.riskReward.toFixed(1)}
+                      ₹{opp.entry.toFixed(2)} • SL ₹{opp.stopLoss.toFixed(2)} • TP ₹{opp.target1.toFixed(2)} • R:R 1:{opp.riskReward.toFixed(1)}
                     </div>
                   </div>
                   <div className="text-right">
@@ -459,6 +608,11 @@ export default function ChallengeTab() {
                       <div><span className="text-neutral-500">Strategy:</span> {opp.strategy}</div>
                       <div><span className="text-neutral-500">Volume:</span> {(opp.volume / 100000).toFixed(1)}L • R:R 1:{opp.riskReward.toFixed(1)}</div>
                       <div><span className="text-neutral-500">Qty:</span> {opp.position.quantity} {opp.position.lotSize > 1 ? `(lot ${opp.position.lotSize})` : ""}</div>
+                      {opp.blockedReasons.length > 0 && (
+                        <div className="text-amber-400">
+                          <span className="text-neutral-500">Blocked:</span> {opp.blockedReasons.join('; ')}
+                        </div>
+                      )}
                       {opp.reasoning.map((r, j) => (
                         <div key={j} className="flex items-center gap-1.5">
                           <ArrowRight className="w-3 h-3 text-amber-400" />
@@ -613,7 +767,11 @@ export default function ChallengeTab() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MiniCard label="Regime" value={scan.marketContext.regime || "N/A"} />
         <MiniCard label="VIX" value={scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"} />
-        <MiniCard label="Breadth" value={scan.marketContext.breadth || "N/A"} />
+        <MiniCard label="Breadth" value={
+          scan.marketContext.breadth && scan.marketContext.breadth !== "N/A"
+            ? `${scan.marketContext.breadth} (NSE 50)`
+            : "N/A"
+        } />
         <MiniCard label="Data" value={scan.summary.dataSource} />
       </div>
     </div>

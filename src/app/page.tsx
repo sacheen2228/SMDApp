@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -30,6 +30,7 @@ import { SDMDashboard } from '@/components/dashboard/SDMDashboard';
 import { SimpleMode } from '@/components/dashboard/SimpleMode';
 import { GapAnalysis } from '@/components/dashboard/GapAnalysis';
 import { AgentChat } from '@/components/dashboard/AgentChat';
+import { AgentIntelligence } from '@/components/agent-intelligence/AgentIntelligence';
 import { AdminPanel } from '@/components/dashboard/AdminPanel';
 import ScannerView from '@/components/dashboard/ScannerView';
 import { NewsPanel } from '@/components/dashboard/NewsPanel';
@@ -63,6 +64,8 @@ import { CASPanel } from '@/components/dashboard/CASPanel';
 import { StockAnalysisDrawer } from '@/components/dashboard/StockAnalysisDrawer';
 import InstitutionalPositioningPanel from '@/components/terminal/InstitutionalPositioningPanel';
 import ChallengeTab from '@/components/challenge/ChallengeTab';
+import PaperTradingTab from '@/components/dashboard/PaperTradingTab';
+import IntelTab from '@/components/dashboard/IntelTab';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -329,7 +332,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge' | 'commodity'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge' | 'commodity' | 'paper'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -365,18 +368,24 @@ export default function TradingDashboard() {
   const { data, isLoading, refetch, isFetching } = useQuery<any>({
     queryKey: ['option-chain', symbol, selectedExpiry],
     queryFn: async () => {
-      const params = new URLSearchParams({ symbol });
-      if (selectedExpiry) params.set('expiry', selectedExpiry);
-      const res = await fetch(`/api/option-chain?${params}`);
-      if (!res.ok) throw new Error('Failed to fetch');
-      const json = await res.json();
-      // Merge top-level analysis into the payload so downstream consumers
-      // that read `data.analysis` / `data.data.…` get both summary and rec.
-      const base = json.data || json;
-      return { ...base, analysis: json.analysis };
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const params = new URLSearchParams({ symbol });
+        if (selectedExpiry) params.set('expiry', selectedExpiry);
+        const res = await fetch(`/api/option-chain?${params}`, { signal: controller.signal });
+        if (!res.ok) throw new Error('Failed to fetch');
+        const json = await res.json();
+        const base = json.data || json;
+        return { ...base, analysis: json.analysis };
+      } finally {
+        clearTimeout(timeout);
+      }
     },
     refetchInterval: autoRefresh ? 900000 : false,
     staleTime: 5000,
+    retry: 1,
+    retryDelay: 2000,
   });
 
   // Sync analysis from query data (not inside queryFn to avoid infinite loops)
@@ -645,11 +654,29 @@ export default function TradingDashboard() {
   };
   
   if (isLoading) {
-return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center">
-          <RefreshCw className="h-8 w-8 animate-spin text-primary mx-auto mb-2" />
-          <p className="text-sm text-muted-foreground">Loading trading dashboard...</p>
+    return (
+      <div className="min-h-screen flex flex-col bg-background">
+        {/* Show header + tabs immediately so user can navigate */}
+        <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur-md">
+          <div className="flex items-center justify-between px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-md">
+                <Zap className="h-3.5 w-3.5 text-white" />
+              </div>
+              <h1 className="font-bold text-sm tracking-tight">SMDApp</h1>
+            </div>
+            <div className="flex items-center gap-1">
+              <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+              <span className="text-[9px] text-muted-foreground">Loading data...</span>
+            </div>
+          </div>
+        </header>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <RefreshCw className="h-6 w-6 animate-spin text-primary mx-auto mb-2" />
+            <p className="text-xs text-muted-foreground">Fetching market data...</p>
+            <p className="text-[9px] text-muted-foreground/60 mt-1">This may take a few seconds</p>
+          </div>
         </div>
       </div>
     );
@@ -785,6 +812,11 @@ return (
               onClick={() => { setViewMode('commodity'); setDisplayMode('pro'); }}>
               <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> MCX
             </Button>
+            <Button variant={viewMode === 'paper' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'paper' ? 'bg-gradient-to-r from-amber-500 to-yellow-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
+              onClick={() => { setViewMode('paper'); setDisplayMode('pro'); }}>
+              <FileText className="h-2.5 w-2.5 mr-0.5" /> Paper
+            </Button>
             <Button variant={viewMode === 'india' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'india' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
               onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
@@ -815,6 +847,7 @@ return (
                 { mode: 'institutional', label: 'Institutional', icon: Users, color: 'rose' },
                 { mode: 'news', label: 'News', icon: Newspaper, color: 'orange' },
                 { mode: 'agent', label: 'Agent Chat', icon: Bot, color: 'purple' },
+                { mode: 'agent-intel', label: 'Agent Intel', icon: Users, color: 'cyan' },
                 { mode: 'backtest', label: 'Backtest Audit', icon: LineChart, color: 'amber' },
                 { mode: 'admin', label: 'Admin Panel', icon: Settings2, color: 'gray' },
               ].map((item) => (
@@ -978,6 +1011,11 @@ return (
             sentiment={analysis?.sentiment}
           />
         </div>
+        ) : viewMode === 'agent-intel' ? (
+        /* ═══════ AGENT INTELLIGENCE ═══════ */
+        <div className="flex-1 overflow-auto p-2">
+          <AgentIntelligence />
+        </div>
         ) : viewMode === 'admin' ? (
         /* ═══════ ADMIN PANEL ═══════ */
         <div className="flex-1 overflow-auto p-2">
@@ -1056,24 +1094,19 @@ return (
           <IndexComparison />
         </div>
         ) : viewMode === 'intelligence' ? (
-        /* ═══════ MARKET INTELLIGENCE ═══════ */
-        <div className="flex-1 overflow-auto p-2">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            <MarketRegimePanel />
-            <MarketBreadth />
-            <SectorRotation />
-            <CASPanel />
-            <AlertCenter />
-            <BestTradesNow />
-            <div className="md:col-span-2 lg:col-span-3">
-              <MarketHeatmap onStockClick={setSelectedAnalysisStock} />
-            </div>
-          </div>
+        /* ═══════ MARKET DECISION INTELLIGENCE CENTER ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <IntelTab onStockClick={setSelectedAnalysisStock} />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
         <div className="flex flex-1 overflow-hidden">
           <ZeroHeroTerminal />
+        </div>
+        ) : viewMode === 'paper' ? (
+        /* ═══════ HERMES PAPER TRADING ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <PaperTradingTab />
         </div>
         ) : (
         /* ═══════ CHAIN VIEW (default) ═══════ */

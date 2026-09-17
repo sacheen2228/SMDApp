@@ -1,9 +1,11 @@
 // ICICI Breeze API - Authentication using official SDK
 // Uses breezeconnect npm package
+// Enhanced with concurrent refresh lock + health tracking
 
 import { BreezeConnect } from 'breezeconnect';
 import fs from 'fs';
 import path from 'path';
+import { providerHealth } from '../provider-health';
 
 // ─── Session Cache ────────────────────────────────────────────────
 const SESSION_FILE = path.join(process.cwd(), '.breeze-session.json');
@@ -14,9 +16,30 @@ interface CachedSession {
   expiresAt: number;
 }
 
+// ─── Session State ────────────────────────────────────────────────
+export type BreezeStatus = "LIVE" | "EXPIRED" | "ERROR" | "UNKNOWN" | "NOT_CONFIGURED";
+
+interface BreezeSessionState {
+  status: BreezeStatus;
+  authenticated: boolean;
+  sessionToken?: string;
+  createdAt?: string;
+  expiresAt?: string;
+  lastSuccessfulRequest?: string;
+  consecutiveAuthFailures: number;
+}
+
 // ─── Singleton Breeze Client ──────────────────────────────────────
 let breezeClient: BreezeConnect | null = null;
 let currentApiSession: string | null = null;
+let sessionState: BreezeSessionState = {
+  status: "UNKNOWN",
+  authenticated: false,
+  consecutiveAuthFailures: 0,
+};
+
+// ─── Concurrent Refresh Lock ──────────────────────────────────────
+let refreshPromise: Promise<boolean> | null = null;
 
 // ─── Get Config ───────────────────────────────────────────────────
 export function getConfig() {
@@ -31,19 +54,47 @@ export function getConfig() {
   return { appKey, secretKey, sessionToken };
 }
 
+// ─── Get Session State ────────────────────────────────────────────
+export function getSessionState(): BreezeSessionState {
+  return { ...sessionState };
+}
+
 // ─── Validate Session ─────────────────────────────────────────────
 export async function validateSession(): Promise<boolean> {
   try {
     const breeze = getBreezeClient();
     await breeze.getCustomerDetails();
+    sessionState.status = "LIVE";
+    sessionState.authenticated = true;
+    sessionState.lastSuccessfulRequest = new Date().toISOString();
+    sessionState.consecutiveAuthFailures = 0;
+    providerHealth.recordSuccess("breeze", 0);
     return true;
   } catch {
+    sessionState.status = "ERROR";
+    sessionState.authenticated = false;
     return false;
   }
 }
 
-// ─── Initialize Session ───────────────────────────────────────────
+// ─── Initialize Session (with concurrent refresh protection) ──────
 export async function initSession(): Promise<boolean> {
+  // If a refresh is already in progress, wait for it
+  if (refreshPromise) {
+    console.log('[Breeze] Waiting for existing refresh...');
+    return refreshPromise;
+  }
+
+  // Start a new refresh
+  refreshPromise = doInitSession();
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
+  }
+}
+
+async function doInitSession(): Promise<boolean> {
   try {
     // Try loading cached session from disk
     try {
@@ -59,6 +110,12 @@ export async function initSession(): Promise<boolean> {
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 8_000)),
           ]);
         }
+        sessionState.status = "LIVE";
+        sessionState.authenticated = true;
+        sessionState.sessionToken = cached.apiSession.substring(0, 10) + '...';
+        sessionState.createdAt = new Date(cached.createdAt).toISOString();
+        sessionState.expiresAt = new Date(cached.expiresAt).toISOString();
+        providerHealth.recordSuccess("breeze", 0);
         return true;
       }
     } catch {
@@ -72,9 +129,15 @@ export async function initSession(): Promise<boolean> {
       return true;
     }
 
+    sessionState.status = "NOT_CONFIGURED";
+    sessionState.authenticated = false;
     return false;
-  } catch (err) {
+  } catch (err: any) {
     console.error('[Breeze SDK] initSession error:', err);
+    sessionState.status = "ERROR";
+    sessionState.authenticated = false;
+    sessionState.consecutiveAuthFailures++;
+    providerHealth.recordFailure("breeze", "AUTH", err.message);
     return false;
   }
 }
@@ -101,6 +164,10 @@ export async function generateSession(apiSession?: string): Promise<any> {
   if (result && (result as any)?.Status === 401) {
     const errMsg = (result as any)?.Error || 'Authentication failed — token may be expired';
     console.error('[Breeze SDK] Session generation failed:', errMsg);
+    sessionState.status = "EXPIRED";
+    sessionState.authenticated = false;
+    sessionState.consecutiveAuthFailures++;
+    providerHealth.recordFailure("breeze", "AUTH", errMsg);
     throw new Error(`Breeze auth failed: ${errMsg}. Please generate a new session token at https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(config.appKey)}`);
   }
 
@@ -115,6 +182,14 @@ export async function generateSession(apiSession?: string): Promise<any> {
   try {
     fs.writeFileSync(SESSION_FILE, JSON.stringify(cached, null, 2));
   } catch {}
+
+  sessionState.status = "LIVE";
+  sessionState.authenticated = true;
+  sessionState.sessionToken = session.substring(0, 10) + '...';
+  sessionState.createdAt = new Date(cached.createdAt).toISOString();
+  sessionState.expiresAt = new Date(cached.expiresAt).toISOString();
+  sessionState.consecutiveAuthFailures = 0;
+  providerHealth.recordSuccess("breeze", 0);
 
   console.log('[Breeze SDK] Session generated successfully');
   return result;
@@ -134,14 +209,15 @@ export function getBreezeClient(): BreezeConnect {
 // ─── Export BreezeConnect class ────────────────────────────────────
 export { BreezeConnect };
 
-// ─── Auto-Retry Wrapper ────────────────────────────────────────────
+// ─── Auto-Retry Wrapper (with concurrent refresh protection) ──────
 // Wraps any Breeze SDK call and retries once on auth errors (401/403/token expired).
-// Re-initializes session before retry. User must update .env token if it's truly expired.
+// Uses shared refresh promise to prevent duplicate refresh attempts.
 const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED'];
 
 export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>): Promise<T> {
   if (!currentApiSession) {
-    await initSession();
+    const ok = await initSession();
+    if (!ok) throw new Error('Breeze session not available. Update .env BREEZE_SESSION_TOKEN.');
   }
   const client = getBreezeClient();
   try {
@@ -155,10 +231,17 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
     const isAuthErr = AUTH_ERROR_PATTERNS.some(p => msg.toUpperCase().includes(String(p).toUpperCase()));
     if (isAuthErr) {
       console.warn('[Breeze Auth] Auth error detected, re-initializing session...');
+      // Reset state
       currentApiSession = null;
       breezeClient = null;
+      sessionState.status = "EXPIRED";
+      sessionState.authenticated = false;
+
+      // Use shared refresh lock
       const ok = await initSession();
       if (!ok) throw new Error('Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN.');
+
+      // Retry original request ONCE
       return await Promise.race([
         fn(getBreezeClient()),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK call timeout')), 10_000)),

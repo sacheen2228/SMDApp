@@ -61,6 +61,19 @@ export async function fetchLiveOptionChain(
     await initSession().catch(() => {});
   }
 
+  // 1) MOAPI spot price (primary for spot)
+  let moapiSpot: number | null = null;
+  try {
+    const { getLTPBySymbol, getCurrentAuthToken } = await import('@/lib/motilal/market');
+    const token = getCurrentAuthToken();
+    if (token) {
+      const ltpResult = await getLTPBySymbol(symbol, token);
+      if (ltpResult?.ltp && ltpResult.ltp > 0) {
+        moapiSpot = ltpResult.ltp;
+      }
+    }
+  } catch {}
+
   let liveVix: number | null = null;
   try {
     const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
@@ -68,25 +81,57 @@ export async function fetchLiveOptionChain(
   } catch {}
 
   let chainData: any = null;
-  let source = 'none';
+  let chainSource = 'none';
 
-  // 1) Try Breeze
+  // 1) Try scraped NSE data first (from local scraper, updated hourly)
+  try {
+    const scrapedRes = await fetch(`http://localhost:3000/api/nse-data?symbol=${symbol}`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (scrapedRes.ok) {
+      const scraped = await scrapedRes.json();
+      if (scraped.latest && scraped.latest.strikes?.length > 0) {
+        const snap = scraped.latest;
+        chainData = {
+          data: snap.strikes,
+          spotPrice: snap.spotPrice,
+          expiries: snap.expiries?.map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })) || [],
+          selectedExpiry: snap.selectedExpiry,
+          summary: {
+            spotPrice: snap.spotPrice,
+            indiaVIX: snap.indiaVIX,
+            maxPain: snap.maxPain,
+            pcr: snap.pcr,
+            totalCallOI: snap.totalCallOI,
+            totalPutOI: snap.totalPutOI,
+            callOiChange: snap.callOiChange,
+            putOiChange: snap.putOiChange,
+            atmStrike: snap.atmStrike,
+          },
+        };
+        chainSource = `nse-scraped(${Math.round((scraped.ageMs || 0) / 60000)}m ago)`;
+        if (snap.indiaVIX) liveVix = snap.indiaVIX;
+      }
+    }
+  } catch {}
+
+  // 2) Try Breeze for option chain (MOAPI doesn't provide option chains)
   try {
     if (expiry) {
       const chain = await getOptionChain(symbol, expiry);
-      if (chain) { chainData = chain; source = 'icici-breeze'; }
+      if (chain) { chainData = chain; chainSource = 'icici-breeze'; }
     } else {
       const expiries = await getOptionChainExpiries(symbol);
       for (const exp of expiries.slice(0, 3)) {
         try {
           const chain = await getOptionChain(symbol, exp);
-          if (chain) { chainData = { ...chain, expiries }; source = 'icici-breeze'; break; }
+          if (chain) { chainData = { ...chain, expiries }; chainSource = 'icici-breeze'; break; }
         } catch {}
       }
     }
   } catch {}
 
-  // 2) NSE fallback
+  // 3) NSE fallback for option chain
   if (!chainData) {
     try {
       const nseData = await getNSEOptionChain(symbol);
@@ -122,7 +167,7 @@ export async function fetchLiveOptionChain(
           selectedExpiry: nseData.records?.expiryDates?.[0] || '',
           summary: { spotPrice: nseData.records?.underlyingValue || 0 },
         };
-        source = 'nse-api';
+        chainSource = 'nse-api';
       }
     } catch {}
   }
@@ -131,8 +176,12 @@ export async function fetchLiveOptionChain(
     return { success: false, source: 'none', error: 'No option chain data available' };
   }
 
+  // Merge spot: prefer MOAPI over chain's own spot
+  const chainSpotPrice = chainData.spotPrice || chainData.summary?.spotPrice || 0;
+  const spotPrice = moapiSpot && moapiSpot > 0 ? moapiSpot : chainSpotPrice;
+  const source = moapiSpot && moapiSpot > 0 ? `moapi+${chainSource}` : chainSource;
+
   const rawStrikes = chainData.data || [];
-  const spotPrice = chainData.spotPrice || chainData.summary?.spotPrice || 0;
   const selectedExpiry = expiry || chainData.selectedExpiry || chainData.expiries?.[0]?.date || '';
 
   // Calculate Greeks if missing
@@ -145,6 +194,7 @@ export async function fetchLiveOptionChain(
     const baseIV = 0.15 + moneyness * 2 + (daysToExpiry < 7 ? 0.05 : 0);
     if (strike.ce) {
       const iv = strike.ce.iv > 0 ? strike.ce.iv / 100 : baseIV;
+      if (strike.ce.iv === 0 || !strike.ce.iv) strike.ce.iv = Math.round(baseIV * 10000) / 100; // store estimated IV as percentage
       const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, true);
       strike.ce.delta = greeks.delta;
       strike.ce.gamma = greeks.gamma;
@@ -153,6 +203,7 @@ export async function fetchLiveOptionChain(
     }
     if (strike.pe) {
       const iv = strike.pe.iv > 0 ? strike.pe.iv / 100 : baseIV;
+      if (strike.pe.iv === 0 || !strike.pe.iv) strike.pe.iv = Math.round(baseIV * 10000) / 100; // store estimated IV as percentage
       const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, false);
       strike.pe.delta = greeks.delta;
       strike.pe.gamma = greeks.gamma;
@@ -174,7 +225,7 @@ export async function fetchLiveOptionChain(
     const dist = Math.abs(s.strike - spotPrice);
     if (dist < bestAtmDist) { bestAtmDist = dist; atmStrike = s.strike; }
   }
-  const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+  const pcr = totalCallOI > 0 && totalPutOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : null;
 
   return {
     success: true,

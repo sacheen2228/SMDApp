@@ -1,10 +1,17 @@
 // Shared stock data fetcher for all NIFTY 50 stocks.
+// Tier 0: NSE India API (single call, fast, all stocks at once)
 // Tier 1: Moneycontrol priceapi (per-stock, batches of 5)
-// Tier 2: Yahoo Finance batch quote (all missing stocks in one call via v7/finance/quote)
+// Tier 2: Yahoo Finance batch quote (all stocks in one call via v7/finance/quote)
 // Tier 3: Yahoo Finance per-stock chart (final fallback for stragglers)
 // Returns whatever data was successfully fetched — never throws.
 
 import { fetchWithFallback, FallbackSource } from "./fetch-with-fallback";
+
+const NSE_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 
 export interface NSEStockQuote {
   symbol: string;
@@ -86,6 +93,58 @@ const NIFTY50 = [
   "DIVISLAB", "EICHERMOT", "GRASIM", "HEROMOTOCO", "HINDALCO", "INDUSINDBK",
   "BAJAJFINSV", "COALINDIA", "BPCL", "TRENT", "APOLLOHOSP", "LTIM", "HDFCAMC", "PIDILITIND",
 ];
+
+// ─── TIER 0: NSE India API (single call, all NIFTY 50 stocks) ───
+let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
+
+async function getNSECookie(): Promise<string> {
+  if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
+  try {
+    const res = await fetch("https://www.nseindia.com", {
+      headers: NSE_HEADERS,
+      signal: AbortSignal.timeout(8000),
+    });
+    const setCookie = res.headers.get("set-cookie") || "";
+    const cookie = setCookie.split(";")[0] || "";
+    nseCookieCache = { cookie, expiresAt: Date.now() + 5 * 60 * 1000 };
+    return cookie;
+  } catch {
+    return "";
+  }
+}
+
+async function fetchFromNSEIndia(): Promise<NSEStockQuote[]> {
+  try {
+    const cookie = await getNSECookie();
+    const res = await fetch("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050", {
+      headers: { ...NSE_HEADERS, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const data = json?.data || [];
+    return data
+      .filter((d: any) => d.symbol && d.lastPrice > 0)
+      .map((d: any) => ({
+        symbol: d.symbol,
+        name: NAME_MAP[d.symbol] || d.meta?.companyName || d.symbol,
+        ltp: d.lastPrice,
+        change: parseFloat((d.pChange !== undefined ? (d.lastPrice * d.pChange) / 100 : 0).toFixed(2)),
+        changePct: parseFloat((d.pChange || 0).toFixed(2)),
+        weeklyChangePct: 0,
+        volume: d.totalTradedVolume || 0,
+        avgVolume: d.averageDailyVolume || 0,
+        prevClose: d.previousClose || d.lastPrice,
+        dayHigh: d.high || d.lastPrice,
+        dayLow: d.low || d.lastPrice,
+        weekHigh52: d.high52 || 0,
+        weekLow52: d.low52 || 0,
+        sector: SECTOR_MAP[d.symbol] || "Other",
+      }));
+  } catch {
+    return [];
+  }
+}
 
 // ─── TIER 1: Moneycontrol priceapi (per-stock) ───
 async function fetchFromMoneycontrol(mcId: string): Promise<NSEStockQuote | null> {
@@ -229,8 +288,14 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
   try {
     const resultMap = new Map<string, NSEStockQuote>();
 
-    // ── Tier 1: Moneycontrol (batches of 5) ──
-    const mcEntries = NIFTY50.filter(s => MC_ID_MAP[s]);
+    // ── Tier 0: NSE India API (single call, fast) ──
+    const nseStocks = await fetchFromNSEIndia();
+    for (const s of nseStocks) {
+      if (NIFTY50.includes(s.symbol)) resultMap.set(s.symbol, s);
+    }
+
+    // ── Tier 1: Moneycontrol (batches of 5) — only for stocks NSE missed ──
+    const mcEntries = NIFTY50.filter(s => !resultMap.has(s) && MC_ID_MAP[s]);
     for (let i = 0; i < mcEntries.length; i += 5) {
       const batch = mcEntries.slice(i, i + 5);
       const results = await Promise.allSettled(
@@ -262,10 +327,13 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
 
     const results = NIFTY50.map(s => resultMap.get(s)).filter(Boolean) as NSEStockQuote[];
     if (results.length > 0) {
-      // Fetch weekly data for all stocks
-      const weeklyData = await fetchWeeklyData(results.map(s => s.symbol));
-      for (const stock of results) {
-        stock.weeklyChangePct = weeklyData.get(stock.symbol) || 0;
+      // Fetch weekly data from Yahoo (slow — skip if NSE was primary source for speed)
+      const nseSourced = resultMap.has("RELIANCE") && resultMap.has("TCS") && resultMap.has("HDFCBANK");
+      if (!nseSourced) {
+        const weeklyData = await fetchWeeklyData(results.map(s => s.symbol));
+        for (const stock of results) {
+          stock.weeklyChangePct = weeklyData.get(stock.symbol) || 0;
+        }
       }
       cache = { data: results, ts: Date.now() };
     }

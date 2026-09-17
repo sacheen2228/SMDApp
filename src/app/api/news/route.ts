@@ -94,6 +94,7 @@ async function getStockNews(source: any, symbol: string): Promise<any> {
 // Fetch news from multiple RSS feeds (reliable fallback)
 async function fetchRSSFeeds(symbol: string): Promise<any> {
   const rssUrls = [
+    { name: "Investing.com", url: "https://in.investing.com/rss/news.rss", pattern: "" },
     { name: "Moneycontrol", url: "https://www.moneycontrol.com/rss/marketstrends.xml", pattern: `(?:\\b${symbol}\\b|\\bNIFTY\\b|\\bBANKNIFTY\\b|\\bFINNIFTY\\b|\\bMIDCPNIFTY\\b|\\bSENSEX\\b)` },
     { name: "Economic Times", url: "https://economictimes.indiatimes.com/rssfeedstopstories.cms", pattern: `(?:\\b${symbol}\\b|\\bNIFTY\\b|\\bBANKNIFTY\\b|\\bFINNIFTY\\b|\\bMIDCPNIFTY\\b|\\bSENSEX\\b)` },
     { name: "LiveMint", url: "https://www.livemint.com/rss/markets", pattern: `(?:\\b${symbol}\\b|\\bNIFTY\\b|\\bBANKNIFTY\\b|\\bFINNIFTY\\b|\\bMIDCPNIFTY\\b|\\bSENSEX\\b)` },
@@ -165,6 +166,7 @@ async function fetchRSSFeeds(symbol: string): Promise<any> {
 // Legacy RSS fetch for market-wide news (simplified)
 async function fetchRSSFeedsForMarket(): Promise<any> {
   const feedUrls = [
+    "https://in.investing.com/rss/news.rss",
     "https://www.moneycontrol.com/rss/marketstrends.xml",
     "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
     "https://www.livemint.com/rss/markets",

@@ -2,9 +2,65 @@
 // Evaluates Delta, Gamma, Theta, Vega, IV and underlying movement to
 // determine optimal strike (ITM/ATM/OTM), direction, and trade edge.
 // Does NOT replace existing engines — extends analysis layer.
+//
+// V2 FIX: Added data validation, directional consistency, hard quality gates,
+// and expiry/market-closed protection to prevent false signals.
 
 import { calculateGreeks } from '@/lib/greeks';
 import { isExpiryDay, getNearestExpiry } from '@/lib/expiry-calculator';
+
+// ─── Data Validation ────────────────────────────────────────────────
+
+export interface DataValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export function validateOptionChainData(input: DynamicOptionsInput): DataValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (input.spot <= 0 || isNaN(input.spot)) errors.push('Invalid spot price');
+  if (input.vix <= 0 || isNaN(input.vix)) errors.push('Invalid VIX');
+  if (!input.strikes || input.strikes.length === 0) errors.push('No strikes provided');
+  if (input.pcr < 0 || input.pcr > 5 || isNaN(input.pcr)) errors.push('Invalid PCR');
+  if (input.atmStrike <= 0) errors.push('Invalid ATM strike');
+  if (input.totalCallOI <= 0 && input.totalPutOI <= 0) errors.push('Total OI both zero');
+
+  const atm = input.strikes.find(s => s.strike === input.atmStrike);
+  if (!atm) {
+    errors.push('ATM strike not found in chain');
+  } else {
+    if (atm.ce.ltp <= 0 && atm.pe.ltp <= 0) errors.push('ATM CE and PE premiums both zero — no tradeable data');
+    if (Math.abs(atm.ce.delta) < 0.01 && Math.abs(atm.pe.delta) < 0.01) warnings.push('ATM Greeks near zero — data may be stale');
+    if (atm.ce.iv <= 0 && atm.pe.iv <= 0) warnings.push('ATM IV both zero — using fallback');
+  }
+
+  const strikesWithPremium = input.strikes.filter(s => s.ce.ltp > 0 || s.pe.ltp > 0);
+  if (strikesWithPremium.length < 3) errors.push(`Only ${strikesWithPremium.length} strikes with valid premiums (need ≥3)`);
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+function isMarketOpenNow(): boolean {
+  const now = new Date();
+  const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+  const day = ist.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const hhmm = ist.getUTCHours() * 100 + ist.getUTCMinutes();
+  return hhmm >= 915 && hhmm <= 1530;
+}
+
+function isMCXOpenNow(): boolean {
+  const now = new Date();
+  const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+  const day = ist.getUTCDay();
+  if (day === 0) return false;
+  if (day === 6 && ist.getUTCHours() < 1) return true;
+  const hhmm = ist.getUTCHours() * 100 + ist.getUTCMinutes();
+  return hhmm >= 900 && hhmm <= 2330;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -633,6 +689,54 @@ function evaluateHeroZero(
   };
 }
 
+// ─── Directional Consistency Enforcement ────────────────────────────
+
+function enforceDirectionalConsistency(
+  trend: 'bullish' | 'bearish' | 'neutral',
+  recommendedDirection: 'CE' | 'PE' | 'BOTH' | 'NO_TRADE',
+  pcr: number,
+  spot: number,
+  atmStrike: number
+): 'CE' | 'PE' | 'BOTH' | 'NO_TRADE' {
+  if (trend === 'bullish' && recommendedDirection === 'PE') {
+    return 'CE';
+  }
+  if (trend === 'bearish' && recommendedDirection === 'CE') {
+    return 'PE';
+  }
+  if (trend === 'neutral') {
+    if (pcr > 1.3) return 'PE';
+    if (pcr < 0.7) return 'CE';
+  }
+  return recommendedDirection;
+}
+
+// ─── Hard Data Quality Gates ────────────────────────────────────────
+
+function passesQualityGates(
+  candidate: StrikeCandidate,
+  trend: 'bullish' | 'bearish' | 'neutral',
+  expiryMode: boolean,
+  marketOpen: boolean
+): { passes: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+
+  if (!marketOpen) reasons.push('Market is closed');
+  if (candidate.premium < 1) reasons.push('Premium < ₹1');
+  if (Math.abs(candidate.delta) < 0.05) reasons.push('Delta too low (<0.05)');
+  if (candidate.premium > 0 && candidate.spread > candidate.premium * 0.5) reasons.push('Spread >50% of premium');
+  if (candidate.theta < -5) reasons.push('Theta decay too high');
+  if (candidate.iv > 60) reasons.push('IV too high (>60%)');
+  if (candidate.iv < 1 && candidate.iv > 0) reasons.push('IV too low (<1%)');
+  if (candidate.volume <= 0 && candidate.oi <= 0) reasons.push('Zero volume and OI');
+  if (expiryMode && Math.abs(candidate.delta) < 0.3) reasons.push('Expiry day + low delta');
+
+  if (trend === 'bearish' && candidate.optionType === 'CE') reasons.push('CE rejected in bearish market');
+  if (trend === 'bullish' && candidate.optionType === 'PE') reasons.push('PE rejected in bullish market');
+
+  return { passes: reasons.length === 0, reasons };
+}
+
 // ─── 9. CE/PE Direction Engine ────────────────────────────────────────
 
 function evaluateDirection(
@@ -831,6 +935,9 @@ function computeOptionsEdgeScore(
 export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOptionsResult {
   const { symbol, spot, vix, pcr, maxPain, atmStrike, strikes, totalCallOI, totalPutOI, callOiChg, putOiChg, expiryDate, lotSize = 50 } = input;
 
+  // ── V2: Data validation ──
+  const dataValidation = validateOptionChainData(input);
+
   const today = new Date();
   let daysToExpiry = 7;
   if (expiryDate) {
@@ -839,7 +946,9 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   }
   const timeToExpiry = daysToExpiry / 365;
   const expiryMode = isExpiryDay(symbol, today);
+  const marketOpen = isMarketOpenNow();
 
+  // ── V2: Enhanced trend detection with spot-to-ATM relationship ──
   const trend: 'bullish' | 'bearish' | 'neutral' =
     pcr < 0.85 && spot >= atmStrike ? 'bullish'
     : pcr > 1.2 && spot <= atmStrike ? 'bearish'
@@ -989,6 +1098,11 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const directionResult = evaluateDirection(strikes, spot, currentATM, vix, pcr, vix / 100, trend, timeToExpiry);
 
+  // ── V2: Enforce directional consistency ──
+  directionResult.recommendedDirection = enforceDirectionalConsistency(
+    trend, directionResult.recommendedDirection, pcr, spot, atmStrike
+  );
+
   const heroZeroAnalysis = otmCandidate
     ? evaluateHeroZero(otmCandidate.strike, spot, 'CE', otmCandidate.delta, otmCandidate.gamma, otmCandidate.iv, otmCandidate.premium, otmCandidate.premium, 0, otmCandidate.premium, otmCandidate.premium, otmCandidate.premium, vix, trend, expiryMode)
     : { qualifies: false, reasons: [], rejectionReasons: ['No OTM candidate'], momentumStrength: 0, gammaStrength: 0, deltaAdequacy: false, volumeConfirmation: false, oiConfirmation: false, ivConfirmation: false, liquidityOk: false, spreadOk: false };
@@ -1006,7 +1120,14 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     allCandidates.push(buildCandidate(a, a.moneyness === 'ATM' ? 'ATM' : a.moneyness.includes('ITM') ? 'ITM' : 'OTM', 'PE'));
   }
 
-  for (const c of allCandidates) {
+  // ── V2: Filter candidates by direction and quality gates ──
+  const directionFiltered = allCandidates.filter(c => {
+    if (directionResult.recommendedDirection === 'CE') return c.optionType === 'CE';
+    if (directionResult.recommendedDirection === 'PE') return c.optionType === 'PE';
+    return true;
+  });
+
+  for (const c of directionFiltered) {
     if (c.edgeScore > bestEdge) {
       bestEdge = c.edgeScore;
       bestStrike = c.strike;
@@ -1017,19 +1138,46 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const bestLeg = allCandidates.find(c => c.strike === bestStrike && c.optionType === bestType);
 
-  const action: TradeDecision['action'] = bestEdge < 40 ? 'NO_TRADE'
-    : directionResult.recommendedDirection === 'BOTH' ? 'BUY_BOTH'
-    : directionResult.recommendedDirection === 'CE' ? 'BUY_CE'
-    : directionResult.recommendedDirection === 'PE' ? 'BUY_PE'
-    : bestType === 'CE' ? 'BUY_CE' : 'BUY_PE';
+  // ── V2: Apply quality gates ──
+  const qualityResult = bestLeg
+    ? passesQualityGates(bestLeg, trend, expiryMode, marketOpen)
+    : { passes: false, reasons: ['No candidate found'] };
+
+  // ── V2: Fixed action decision — NO fallback to bestType when NO_TRADE ──
+  let action: TradeDecision['action'] = 'NO_TRADE';
+  const actionReasons: string[] = [];
+
+  if (!dataValidation.valid) {
+    action = 'NO_TRADE';
+    actionReasons.push(...dataValidation.errors);
+  } else if (!qualityResult.passes) {
+    action = 'NO_TRADE';
+    actionReasons.push(...qualityResult.reasons);
+  } else if (bestEdge < 40) {
+    action = 'NO_TRADE';
+    actionReasons.push(`Edge too low: ${bestEdge}/100`);
+  } else if (directionResult.recommendedDirection === 'BOTH') {
+    action = 'BUY_BOTH';
+  } else if (directionResult.recommendedDirection === 'CE') {
+    action = 'BUY_CE';
+  } else if (directionResult.recommendedDirection === 'PE') {
+    action = 'BUY_PE';
+  } else {
+    action = 'NO_TRADE';
+    actionReasons.push('No clear directional signal');
+  }
 
   const reasoning: string[] = [];
+  if (!marketOpen) reasoning.push('Market closed — signal blocked');
   if (expiryMode) reasoning.push('Expiry day mode active');
+  if (!dataValidation.valid) reasoning.push(...dataValidation.errors);
+  if (!qualityResult.passes) reasoning.push(...qualityResult.reasons);
   if (trend !== 'neutral') reasoning.push(`Market trend: ${trend}`);
   if (directionResult.recommendedDirection !== 'NO_TRADE') reasoning.push(`Direction: ${directionResult.recommendedDirection}`);
   reasoning.push(`Best edge: ${bestEdge}/100 at ${bestStrike} ${bestType}`);
   if (heroZeroAnalysis.qualifies) reasoning.push('Hero-Zero qualifies');
   reasoning.push(...directionResult.reasoning);
+  if (actionReasons.length > 0) reasoning.push(`Block reasons: ${actionReasons.join('; ')}`);
 
   const premiumMeltAlert = detectPremiumMeltAlert(
     bestLeg ? bestLeg.theta : 0,

@@ -11,7 +11,7 @@ export type MCXCategory = 'ENERGY' | 'PRECIOUS_METALS';
 
 export type MCXInstrumentType = 'FUTURES' | 'OPTIONS';
 
-export type MCXDataStatus = 'LIVE' | 'DELAYED' | 'STALE' | 'DATA_UNAVAILABLE';
+export type MCXDataStatus = 'LIVE' | 'DELAYED' | 'STALE' | 'DATA_UNAVAILABLE' | 'GLOBAL_REFERENCE';
 
 export type MCXSessionState =
   | 'MCX_SESSION_CLOSED'
@@ -121,7 +121,7 @@ export interface MCXMarketData {
   session: MCXSessionState;
   lastUpdate: string;
   dataHealth: {
-    moapi: 'CONNECTED' | 'DISCONNECTED';
+    moapi: string;
     breeze: 'CONNECTED' | 'DISCONNECTED';
     websocket: 'CONNECTED' | 'DISCONNECTED';
     lastTickAge: number; // seconds

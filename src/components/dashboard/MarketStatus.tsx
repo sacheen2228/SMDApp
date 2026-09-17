@@ -8,6 +8,11 @@ import { useTradingStore } from '@/stores/useTradingStore';
 import { Badge } from '@/components/ui/badge';
 import { Wifi, WifiOff, Clock, TrendingUp, TrendingDown } from 'lucide-react';
 
+const NSE_HOLIDAYS_2026 = new Set([
+  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
+  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
+]);
+
 export function MarketStatus() {
   const { spotPrice, selectedSymbol, isConnected } = useTradingStore();
   const [marketOpen, setMarketOpen] = useState(false);
@@ -20,13 +25,18 @@ export function MarketStatus() {
       const minutes = now.getMinutes();
       const day = now.getDay();
       
-      // Market hours: Mon-Fri, 9:15 AM - 3:30 PM IST
-      const isWeekday = day >= 1 && day <= 5;
-      const timeMinutes = hours * 60 + minutes;
-      const marketOpenTime = 9 * 60 + 15; // 9:15 AM
-      const marketCloseTime = 15 * 60 + 30; // 3:30 PM
+      // Convert to IST
+      const istMs = now.getTime() + 5.5 * 3600000;
+      const ist = new Date(istMs);
+      const iso = ist.toISOString().split('T')[0];
       
-      setMarketOpen(isWeekday && timeMinutes >= marketOpenTime && timeMinutes <= marketCloseTime);
+      const isWeekday = day >= 1 && day <= 5;
+      const isHoliday = NSE_HOLIDAYS_2026.has(iso);
+      const timeMinutes = hours * 60 + minutes;
+      const marketOpenTime = 9 * 60 + 15;
+      const marketCloseTime = 15 * 60 + 30;
+      
+      setMarketOpen(isWeekday && !isHoliday && timeMinutes >= marketOpenTime && timeMinutes <= marketCloseTime);
       setCurrentTime(now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     };
     

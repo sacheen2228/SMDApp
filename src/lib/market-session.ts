@@ -37,6 +37,7 @@ export interface SessionInfo {
   label: string;
   description: string;
   confidenceMultiplier: number;  // 0.0 - 1.0
+  isMarketOpen: boolean;         // true when session allows live trading
   allowedActions: ('BUY_CALL' | 'BUY_PUT' | 'WAIT')[];
   notes: string[];
 }
@@ -57,6 +58,11 @@ function timeStr(minutes: number): string {
   const h = Math.floor(minutes / 60).toString().padStart(2, '0');
   const m = (minutes % 60).toString().padStart(2, '0');
   return `${h}:${m}`;
+}
+
+/** Add isMarketOpen to any SessionInfo — single source of truth */
+function withMarketOpen(info: SessionInfo): SessionInfo {
+  return { ...info, isMarketOpen: info.confidenceMultiplier > 0 };
 }
 
 // ─── Session Lookup Helpers ──────────────────────────────────────
@@ -239,12 +245,12 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
   const minutes = getISTMinutes();
 
   // All instruments share the same pre-15:00 schedule
-  if (minutes < 900) return baseSession(minutes);
+  if (minutes < 900) return withMarketOpen(baseSession(minutes));
 
   // Index / derivatives: trade until 15:40
   if (instrument === 'index') {
     if (minutes < 940) { // 15:00 - 15:40
-      return {
+      return withMarketOpen({
         session: 'closing',
         label: 'Closing Session',
         description: 'Derivatives trade until 15:40. Manage exits carefully.',
@@ -255,29 +261,29 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
           'Focus on managing existing positions',
           'Avoid new entries — volatility spikes',
         ],
-      };
+      });
     }
     if (minutes < 950) { // 15:40 - 15:50
-      return {
+      return withMarketOpen({
         session: 'closed',
         label: 'Market Closed',
         description: 'Derivatives closed. Cash post-close pending.',
         confidenceMultiplier: 0,
         allowedActions: ['WAIT'],
         notes: ['Next session starts at 09:15 IST'],
-      };
+      });
     }
     if (minutes < 960) { // 15:50 - 16:00
-      return {
+      return withMarketOpen({
         session: 'post_close',
         label: 'Post-Close Session',
         description: 'Cash segment post-close trades at closing price. Derivatives stay closed.',
         confidenceMultiplier: 0,
         allowedActions: ['WAIT'],
         notes: ['Cash trades at CAS/closing price', 'Not for new F&O positions'],
-      };
+      });
     }
-    return {
+    return withMarketOpen({
       session: 'closed',
       label: 'Market Closed',
       description: 'Market closed. Use EOD data for review and learning.',
@@ -288,46 +294,46 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
         'Use this time for trade journal review',
         'Analyze today\'s signals for learning',
       ],
-    };
+    });
   }
 
   // F&O-eligible cash stock: enters CAS at 15:15
   if (instrument === 'fno-stock') {
-    if (minutes < 915) return casStockSession(minutes); // 15:00-15:15 reference
-    if (minutes < 935) return casStockSession(minutes); // CAS phases
+    if (minutes < 915) return withMarketOpen(casStockSession(minutes)); // 15:00-15:15 reference
+    if (minutes < 935) return withMarketOpen(casStockSession(minutes)); // CAS phases
     if (minutes < 950) {
-      return {
+      return withMarketOpen({
         session: 'closed',
         label: 'Market Closed',
         description: 'CAS done. Stock closed.',
         confidenceMultiplier: 0,
         allowedActions: ['WAIT'],
         notes: ['Closing price set by CAS auction'],
-      };
+      });
     }
     if (minutes < 960) {
-      return {
+      return withMarketOpen({
         session: 'post_close',
         label: 'Post-Close Session',
         description: 'Cash post-close trades at the CAS closing price.',
         confidenceMultiplier: 0,
         allowedActions: ['WAIT'],
         notes: ['Trades execute at CAS closing price'],
-      };
+      });
     }
-    return {
+    return withMarketOpen({
       session: 'closed',
       label: 'Market Closed',
       description: 'Market closed. Use EOD data for review and learning.',
       confidenceMultiplier: 0,
       allowedActions: ['WAIT'],
       notes: ['No live trading possible', 'Use this time for trade journal review'],
-    };
+    });
   }
 
   // Non-CAS cash stock: trade until 15:30, close = 15:00-15:30 VWAP
   if (minutes < 930) {
-    return {
+    return withMarketOpen({
       session: 'closing',
       label: 'Closing Session',
       description: 'Final 30 minutes of continuous trading. Closing price = VWAP of this window.',
@@ -338,29 +344,29 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
         'Focus on managing existing positions',
         'Square off before 15:30',
       ],
-    };
+    });
   }
   if (minutes < 950) {
-    return {
+    return withMarketOpen({
       session: 'closed',
       label: 'Market Closed',
       description: 'Market closed.',
       confidenceMultiplier: 0,
       allowedActions: ['WAIT'],
       notes: ['Closing price set by VWAP 15:00-15:30'],
-    };
+    });
   }
   if (minutes < 960) {
-    return {
+    return withMarketOpen({
       session: 'post_close',
       label: 'Post-Close Session',
       description: 'Cash post-close trades at closing price.',
       confidenceMultiplier: 0,
       allowedActions: ['WAIT'],
       notes: ['Trades execute at closing price'],
-    };
+    });
   }
-  return {
+  return withMarketOpen({
     session: 'closed',
     label: 'Market Closed',
     description: 'Market closed. Use EOD data for review and learning.',
@@ -371,7 +377,7 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
       'Use this time for trade journal review',
       'Analyze today\'s signals for learning',
     ],
-  };
+  });
 }
 
 // ─── Adjust Confidence for Session ───────────────────────────────

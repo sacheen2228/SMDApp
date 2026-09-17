@@ -33,7 +33,7 @@ async function buildContext(symbol = "NIFTY 50"): Promise<SDMContext> {
   return {
     symbol,
     spot: liveData?.spot ?? 24206.9,
-    pcr: liveData?.pcr ?? 1.0,
+    pcr: liveData?.pcr ?? null,
     vix: liveData?.vix ?? 15,
     chain: liveData?.chain ?? [],
     expiryLabel: liveData?.expiryLabel,

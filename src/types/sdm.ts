@@ -540,6 +540,9 @@ export interface ValidationInput {
   spot: number;
   riskState: RiskState;
   direction?: 'CALL' | 'PUT';
+  // NEW: High-probability filters
+  mtfResult?: { bias: string; tf: string }[] | null;
+  newsSentiment?: { score: number } | null;
 }
 
 export interface RiskState {

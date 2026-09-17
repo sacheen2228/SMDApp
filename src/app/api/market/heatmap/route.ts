@@ -126,6 +126,13 @@ export async function GET(request: Request) {
       market,
       stockCount: filteredStocks.length,
       timestamp: new Date().toISOString(),
+      provenance: {
+        source: 'NSE India',
+        retrievedAt: new Date().toISOString(),
+        freshness: 'LIVE',
+        isLive: true,
+        status: filteredStocks.length > 0 ? 'AVAILABLE' : 'UNAVAILABLE',
+      },
     });
   } catch (error: any) {
     return NextResponse.json({ stocks: [], sectors: [], error: error.message || "Heatmap fetch failed" });

@@ -4,6 +4,8 @@
 import { NextResponse } from "next/server";
 import { fetchWithFallback, FallbackSource } from "@/lib/fetch-with-fallback";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import { buildFreshnessMeta } from "@/lib/api-freshness";
+import { getNSEIndiaVIX, getNSEIndices } from "@/lib/nse-api";
 
 const INDICES = [
   { key: "NIFTY", yahoo: "^NSEI", mcId: "NIFTY 50", name: "NIFTY 50" },
@@ -172,65 +174,57 @@ export async function GET() {
     // Step 1: Fetch stocks first (needed for index fallback)
     const stocks = await fetchNIFTY50Stocks();
 
-    // Step 2: Fetch indices with stock fallback, and VIX in parallel
+    // Step 2: Fetch indices + VIX in parallel (NSE primary, Moneycontrol/Yahoo fallback)
     const [indexData, vixData] = await Promise.all([
-      // Fetch indices with fallback to stock estimation
+      // Fetch indices — NSE primary
       (async () => {
+        const nseIndices = await getNSEIndices();
+        if (nseIndices.length > 0) {
+          // NSE returned data — use it directly
+          const result = [];
+          for (const idx of INDICES) {
+            const nseIdx = nseIndices.find(n => n.key === idx.key);
+            if (nseIdx) {
+              result.push(nseIdx);
+            } else if (idx.key === "FINNIFTY") {
+              // FINNIFTY not on NSE allIndices — estimate from stocks
+              const estimated = estimateIndexFromStocks(idx.key, stocks);
+              if (estimated) result.push({ key: idx.key, name: idx.name, ltp: estimated.ltp, change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)), changePct: parseFloat(estimated.changePct.toFixed(2)), prevClose: estimated.prev, estimated: true });
+            }
+          }
+          return result;
+        }
+        // NSE failed — fallback to Moneycontrol/Yahoo
         const indexData: any[] = [];
         for (const idx of INDICES) {
           const sources: FallbackSource<{ ltp: number; prev: number }>[] = [];
-          if (idx.mcId) {
-            sources.push({ name: `MC:${idx.key}`, fetch: () => fetchIndexMC(idx.mcId) });
-          }
+          if (idx.mcId) sources.push({ name: `MC:${idx.key}`, fetch: () => fetchIndexMC(idx.mcId) });
           sources.push({ name: `YF:${idx.key}`, fetch: () => fetchIndexYahoo(idx.yahoo) });
-
           const { data } = await fetchWithFallback(sources);
           if (data) {
-            indexData.push({
-              key: idx.key,
-              name: idx.name,
-              ltp: data.ltp,
-              change: parseFloat((data.ltp - data.prev).toFixed(2)),
-              changePct: parseFloat((((data.ltp - data.prev) / data.prev) * 100).toFixed(2)),
-              prevClose: data.prev,
-            });
+            indexData.push({ key: idx.key, name: idx.name, ltp: data.ltp, change: parseFloat((data.ltp - data.prev).toFixed(2)), changePct: parseFloat((((data.ltp - data.prev) / data.prev) * 100).toFixed(2)), prevClose: data.prev });
           } else {
-            // Fallback: estimate from constituent stocks
             const estimated = estimateIndexFromStocks(idx.key, stocks);
-            if (estimated) {
-              indexData.push({
-                key: idx.key,
-                name: idx.name,
-                ltp: estimated.ltp,
-                change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)),
-                changePct: parseFloat(estimated.changePct.toFixed(2)),
-                prevClose: estimated.prev,
-                estimated: true,
-              });
-            }
+            if (estimated) indexData.push({ key: idx.key, name: idx.name, ltp: estimated.ltp, change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)), changePct: parseFloat(estimated.changePct.toFixed(2)), prevClose: estimated.prev, estimated: true });
           }
         }
         return indexData;
       })(),
 
-      // Fetch VIX
+      // Fetch VIX — NSE primary, Yahoo fallback
       (async () => {
+        const nseVix = await getNSEIndiaVIX();
+        if (nseVix && nseVix.value > 0) return nseVix;
         const vixSources: FallbackSource<{ value: number; change: number }>[] = [{
           name: "YF:VIX",
           fetch: async () => {
-            const res = await fetch(
-              "https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d",
-              { signal: AbortSignal.timeout(8000) },
-            );
+            const res = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d", { signal: AbortSignal.timeout(8000) });
             if (!res.ok) return null;
             const data = await res.json();
             const meta = data?.chart?.result?.[0]?.meta;
             if (!meta?.regularMarketPrice) return null;
             const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-            return {
-              value: parseFloat(meta.regularMarketPrice.toFixed(2)),
-              change: parseFloat((meta.regularMarketPrice - prev).toFixed(2)),
-            };
+            return { value: parseFloat(meta.regularMarketPrice.toFixed(2)), change: parseFloat((meta.regularMarketPrice - prev).toFixed(2)) };
           },
         }];
         const { data } = await fetchWithFallback(vixSources);
@@ -306,6 +300,11 @@ export async function GET() {
     // 9. F&O Positioning (placeholder - would need real OI data)
     const foPositioning = 0; // placeholder
 
+    // 10. ADX estimation from stock momentum spread (proxy for trend strength)
+    const absChanges = breadthStocks.map(s => Math.abs(s.changePct));
+    const avgAbsChange = absChanges.length > 0 ? absChanges.reduce((a, b) => a + b, 0) / absChanges.length : 0;
+    const avgAdx = Math.min(50, Math.max(10, avgAbsChange * 8 + 10)); // rough proxy: big moves = high ADX
+
     const factors: RegimeFactors = {
       indexTrend,
       breadth,
@@ -327,20 +326,40 @@ export async function GET() {
     const mins = ist.getMinutes();
     const day = ist.getDay();
     const timeNum = hours * 100 + mins;
+    const iso = ist.toISOString().split('T')[0];
+
+    const NSE_HOLIDAYS = new Set([
+      '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
+      '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
+    ]);
 
     let session: string;
     if (day === 0 || day === 6) session = "CLOSED";
+    else if (NSE_HOLIDAYS.has(iso)) session = "CLOSED";
     else if (timeNum < 915) session = "PRE_OPEN";
     else if (timeNum < 930) session = "OPEN";
     else if (timeNum < 1530) session = "REGULAR";
     else if (timeNum < 1600) session = "POST_MARKET";
     else session = "CLOSED";
 
+    const freshness = buildFreshnessMeta({
+      provider: indexData.some((i: any) => !i.estimated) ? "nse-india" : "moneycontrol+yahoo",
+      dataTimestamp: new Date(),
+      dataType: "regime",
+    });
+
     const result = {
       regime: regimeResult.regime,
       bias: regimeResult.bias,
       tradeEnv: regimeResult.tradeEnv,
       regimeScore: regimeResult.score,
+      freshness,
+      // VIX Regime for Option Buyers (Section 5C)
+      vixBuyerRegime: vix < 12 ? 'COMPLACENT' : vix < 15 ? 'CALM' : vix < 20 ? 'NORMAL' : vix < 25 ? 'ELEVATED' : 'FEAR',
+      vixBuyerAction: vix < 12 ? 'BEST buying zone — premiums cheap' : vix < 15 ? 'Good directional buys with confluence' : vix < 20 ? 'Only score >= 75 setups' : vix < 25 ? 'Half size, ATM/ITM only' : 'NO TRADE — expensive premiums + whipsaw',
+      // ADX Regime (Section 5F)
+      adxRegime: avgAdx > 25 ? 'TRENDING' : avgAdx < 20 ? 'CHOPPY' : 'MODERATE',
+      adxAction: avgAdx > 25 ? 'Directional CE/PE buying allowed' : avgAdx < 20 ? 'NO TRADE unless extreme + rejection' : 'Selective buying with higher confluence',
       factors: {
         indexTrend: Math.round(indexTrend),
         breadth: Math.round(breadth),

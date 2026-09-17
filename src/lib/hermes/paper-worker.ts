@@ -14,6 +14,7 @@ import { PaperPerformanceEngine } from "./paper-performance";
 import { getEventBus, emitTradeCreated, emitTP1Hit, emitTP2Hit, emitSLHit, emitTradeClosed, emitTrailingSL, emitThesisInvalidated, emitTimeExit, emitExpiryExit } from "./event-bus";
 import { randomBytes } from "crypto";
 import { releaseTradeLock } from "../active-trade-lock";
+import { recordSignalOutcome } from "@/lib/agents/reputation";
 
 // ── Singleton State ─────────────────────────────────────────────────────
 
@@ -703,6 +704,19 @@ class PaperWorkerSingleton {
       exitReason: updated.exitSource,
       holdingTime: `${((now.getTime() - new Date(trade.createdAt).getTime()) / 3600_000).toFixed(1)}h`,
     });
+
+    // ── Record to Agent Reputation ────────────────────────────────────
+    try {
+      const rMultiple = trade.entryPrice > 0 ? netPnl / trade.entryPrice : 0;
+      const isWin = netPnl > 0;
+      recordSignalOutcome(trade.signalId || trade.underlying, {
+        valid: true,
+        tradeResult: isWin ? 'WIN' : netPnl === 0 ? 'BREAKEVEN' : 'LOSS',
+        rMultiple,
+      });
+    } catch {
+      // Non-critical
+    }
 
     console.log(`[PaperWorker] CLOSED: ${trade.underlying} ${trade.strike} ${trade.optionType} | ${exitSource} | P&L: ₹${netPnl.toFixed(2)}`);
   }

@@ -247,37 +247,9 @@ function generateMonthlyOptionTrade(
     };
   }
 
-  // No real chain (Breeze unavailable) — use a conservative estimate so the
-  // UI still renders, but clearly label it as an estimate.
-  const step = getStrikeStep(price);
-  let atmStrike = Math.round(price / step) * step;
-  if (atmStrike <= 0) atmStrike = step;
-
-  const iv = 0.25; // estimated IV for stock options
-  const daysToExpiry = monthly.daysToExpiry || 14;
-  const annualFactor = Math.sqrt(daysToExpiry / 365);
-  const premium = Math.round(price * iv * annualFactor * 100) / 100;
-  if (premium <= 0) return undefined;
-
-  const sl = Math.round(premium * 0.85 * 100) / 100;
-  const target1 = Math.round(premium * 1.15 * 100) / 100;
-  const target2 = Math.round(premium * 1.25 * 100) / 100;
-  const target3 = Math.round(premium * 1.35 * 100) / 100;
-
-  const label = monthly.label || monthly.date;
-  const summary = `Buy ${symbol} ${atmStrike} ${optionType} (${label}) EST @ ₹${premium} | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
-
-  return {
-    strike: atmStrike,
-    optionType,
-    expiry: monthly.date,
-    expiryLabel: label,
-    premium,
-    stopLoss: sl,
-    targets: [target1, target2, target3],
-    direction: "BUY",
-    summary,
-  };
+  // No real chain (Breeze unavailable) — CANNOT fabricate premium for trade decisions
+  // Return undefined so the scanner skips this symbol rather than using fake prices
+  return undefined;
 }
 
 // ─── Market Direction Analysis ────────────────────────────────────
@@ -430,135 +402,138 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
   const CONCURRENCY = 10;
   const DEADLINE = Date.now() + 25_000;
 
-  // Group 5m bars into their IST trading day and return the most recent
-  // session's bars (real intraday data — the engine's native timeframe).
-  const pickLatestIntradayDay = (bars: Candle[]): Candle[] | null => {
-    const byDay = new Map<string, Candle[]>();
-    for (const b of bars) {
-      const ist = new Date(b.time * 1000 + 5.5 * 60 * 60 * 1000);
-      const day = ist.toISOString().slice(0, 10);
-      const arr = byDay.get(day) || [];
-      arr.push(b);
-      byDay.set(day, arr);
-    }
-    const days = [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-    for (const [day, arr] of days) {
-      if (arr.length >= 5) return arr; // prefer the latest full-ish session
-    }
-    return null;
+  // ─── MONEYCONTROL: Primary quote source (fast, per-stock) ───
+  const MC_ID_MAP: Record<string, string> = {
+    RELIANCE: "RI", TCS: "TCS", HDFCBANK: "HDF01", INFY: "IT",
+    ICICIBANK: "ICI02", HINDUNILVR: "HL", ITC: "ITC", SBIN: "SBI",
+    BHARTIARTL: "BTV", KOTAKBANK: "KMF", LT: "LT",
+    AXISBANK: "UTI10", BAJFINANCE: "BAF", ASIANPAINT: "API",
+    MARUTI: "MU01", SUNPHARMA: "SPI", TITAN: "TI01", ULTRACEMCO: "UTC",
+    NESTLEIND: "NI", TATAMOTORS: "TM01", WIPRO: "W", "M&M": "MM",
+    HCLTECH: "HCL02", POWERGRID: "PGC", NTPC: "NTP", ONGC: "ONG",
+    TATASTEEL: "TIS", JSWSTEEL: "JVS", ADANIENT: "AE01",
+    ADANIPORTS: "MPS", TECHM: "TM4", HDFCLIFE: "HSL01",
+    SBILIFE: "SLI03", BRITANNIA: "BI", CIPLA: "C", DRREDDY: "DRL",
+    DIVISLAB: "DL03", EICHERMOT: "EM", GRASIM: "GI01",
+    HEROMOTOCO: "HHM", HINDALCO: "H", INDUSINDBK: "IIB",
+    BAJAJFINSV: "BF04", COALINDIA: "CI29", BPCL: "BPC",
+    TRENT: "TREN", APOLLOHOSP: "AHE", LTIM: "LTIM1", HDFCAMC: "HAM02", PIDILITIND: "PI11",
   };
 
-  // Batch fetch quotes via Yahoo v7/finance/quote (1 request for all symbols)
-  const fetchBatchQuotes = async (syms: string[]) => {
+  const mcEntries = symbols.filter(s => MC_ID_MAP[s]);
+  for (let i = 0; i < mcEntries.length; i += 5) {
+    const batch = mcEntries.slice(i, i + 5);
+    const results = await Promise.allSettled(
+      batch.map(async (sym) => {
+        try {
+          const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/${MC_ID_MAP[sym]}`, { signal: AbortSignal.timeout(8000) });
+          if (!res.ok) return null;
+          const json = await res.json();
+          if (json.code !== "200" || !json.data) return null;
+          const d = json.data;
+          const ltp = parseFloat(d.pricecurrent) || 0;
+          if (!ltp) return null;
+          const prev = parseFloat(d.priceprevclose) || ltp;
+          return {
+            sym, quote: {
+              last_price: String(ltp),
+              change: String((ltp - prev).toFixed(2)),
+              change_percent: String(((ltp - prev) / prev * 100).toFixed(2)),
+              volume: String(d.VOL || 0),
+              open: String(d.priceopen || ltp),
+              day_high: String(d.HP || ltp),
+              day_low: String(d.LP || ltp),
+              fifty_two_week_high: String(d["52H"] || ltp),
+              fifty_two_week_low: String(d["52L"] || ltp),
+              previous_close: String(prev),
+            }
+          };
+        } catch { return null; }
+      })
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) quotes.set(r.value.sym, r.value.quote);
+    }
+    if (i + 5 < mcEntries.length) await new Promise(r => setTimeout(r, 200));
+  }
+
+  // ─── YAHOO BATCH: Fallback for stocks Moneycontrol missed ───
+  if (quotes.size < symbols.length) {
+    const missing = symbols.filter(s => !quotes.has(s));
     try {
-      const yahooSyms = syms.map(s => `${s}.NS`);
+      const yahooSyms = missing.map(s => `${s}.NS`);
       const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSyms.join(","))}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) return;
-      const data = await res.json();
-      const results = data?.quoteResponse?.result || [];
-      for (const q of results) {
-        const sym = q.symbol?.replace(".NS", "");
-        if (!sym || !q.regularMarketPrice) continue;
-        const prevClose = q.regularMarketPreviousClose || q.regularMarketPrice;
-        quotes.set(sym, {
-          last_price: String(q.regularMarketPrice),
-          change: String((q.regularMarketPrice - prevClose).toFixed(2)),
-          change_percent: String(((q.regularMarketPrice - prevClose) / prevClose * 100).toFixed(2)),
-          volume: String(q.regularMarketVolume || 0),
-        });
+      if (res.ok) {
+        const data = await res.json();
+        for (const q of data?.quoteResponse?.result || []) {
+          const sym = q.symbol?.replace(".NS", "");
+          if (!sym || !q.regularMarketPrice) continue;
+          const prev = q.regularMarketPreviousClose || q.regularMarketPrice;
+          quotes.set(sym, {
+            last_price: String(q.regularMarketPrice),
+            change: String((q.regularMarketPrice - prev).toFixed(2)),
+            change_percent: String(((q.regularMarketPrice - prev) / prev * 100).toFixed(2)),
+            volume: String(q.regularMarketVolume || 0),
+          });
+        }
       }
     } catch {}
-  };
+  }
 
-  // Probe batch quotes first — if Yahoo is unreachable, bail fast
-  await fetchBatchQuotes(symbols);
   if (quotes.size === 0) return { quotes, candles, intradayCandles };
 
-  // Only fetch chart data (daily + intraday candles) for stocks that have quotes
-  // This reduces Yahoo requests from 100 to ~50 and avoids rate limiting
-  const fetchChart = async (sym: string) => {
-    const yahooSym = `${sym}.NS`;
-    // 3mo daily bars for trend/technical context + the last trading day's real
-    // 5m bars for the intraday signal engine. Both come from the same free
-    // Yahoo chart endpoint (no auth).
-    const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
-    const intradayUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`;
-    try {
-      const [dailyRes, intradayRes] = await Promise.all([
-        fetch(dailyUrl, { signal: AbortSignal.timeout(4000) }),
-        fetch(intradayUrl, { signal: AbortSignal.timeout(4000) }),
-      ]);
-      if (!dailyRes.ok) return;
-      const [dailyData, intradayData] = await Promise.all([
-        dailyRes.json(),
-        intradayRes.ok ? intradayRes.json() : Promise.resolve(null),
-      ]);
-      const result = dailyData?.chart?.result?.[0];
-      if (!result) return;
-      const meta = result.meta;
-      const ts = result.timestamp;
-      const q = result.indicators?.quote?.[0];
-
-      if (meta?.regularMarketPrice) {
-        const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
-        quotes.set(sym, {
-          last_price: String(meta.regularMarketPrice),
-          change: String((meta.regularMarketPrice - prevClose).toFixed(2)),
-          change_percent: String(((meta.regularMarketPrice - prevClose) / prevClose * 100).toFixed(2)),
-          volume: String(meta.regularMarketVolume || 0),
-        });
-      }
-
-      if (ts && q?.close) {
-        const cs: Candle[] = [];
-        for (let i = 0; i < ts.length; i++) {
-          const close = q.close[i];
-          if (close == null) continue;
-          cs.push({
-            time: ts[i],
-            open: q.open?.[i] ?? close,
-            high: q.high?.[i] ?? close,
-            low: q.low?.[i] ?? close,
-            close,
-            volume: q.volume?.[i] || 0,
-          });
-        }
-        if (cs.length >= 2) candles.set(sym, cs);
-      }
-
-      // Real 5m bars → keep the latest trading day for the engine.
-      const iResult = intradayData?.chart?.result?.[0];
-      if (iResult?.timestamp && iResult?.indicators?.quote?.[0]?.close) {
-        const iTs = iResult.timestamp;
-        const iQ = iResult.indicators.quote[0];
-        const ics: Candle[] = [];
-        for (let i = 0; i < iTs.length; i++) {
-          const close = iQ.close[i];
-          if (close == null) continue;
-          ics.push({
-            time: iTs[i],
-            open: iQ.open?.[i] ?? close,
-            high: iQ.high?.[i] ?? close,
-            low: iQ.low?.[i] ?? close,
-            close,
-            volume: iQ.volume?.[i] || 0,
-          });
-        }
-        const session = pickLatestIntradayDay(ics);
-        if (session) intradayCandles.set(sym, session);
-      }
-    } catch (e) {
-      // skip unavailable symbol rather than fabricate data
+  // ─── YAHOO CHART: Daily + intraday candles (best effort, non-blocking) ───
+  // Skip if deadline approaching or Yahoo is rate-limited
+  if (Date.now() < DEADLINE - 5000) {
+    const stocksWithQuotes = symbols.filter(s => quotes.has(s));
+    for (let i = 0; i < stocksWithQuotes.length; i += CONCURRENCY) {
+      if (Date.now() >= DEADLINE) break;
+      const batch = stocksWithQuotes.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(batch.map(async (sym) => {
+        const yahooSym = `${sym}.NS`;
+        try {
+          const [dailyRes, intradayRes] = await Promise.all([
+            fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`, { signal: AbortSignal.timeout(4000) }),
+            fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`, { signal: AbortSignal.timeout(4000) }),
+          ]);
+          if (dailyRes.ok) {
+            const dailyData = await dailyRes.json();
+            const result = dailyData?.chart?.result?.[0];
+            const timestamps = result?.timestamp || [];
+            const ohlc = result?.indicators?.quote?.[0] || {};
+            const dailyCandles: Candle[] = [];
+            for (let j = 0; j < timestamps.length; j++) {
+              if (ohlc.open?.[j] != null && ohlc.close?.[j] != null) {
+                dailyCandles.push({
+                  time: timestamps[j],
+                  open: ohlc.open[j], high: ohlc.high[j], low: ohlc.low[j],
+                  close: ohlc.close[j], volume: ohlc.volume?.[j] || 0,
+                });
+              }
+            }
+            if (dailyCandles.length > 0) candles.set(sym, dailyCandles);
+          }
+          if (intradayRes.ok) {
+            const intraData = await intradayRes.json();
+            const intraResult = intraData?.chart?.result?.[0];
+            const intraTs = intraResult?.timestamp || [];
+            const intraOhlc = intraResult?.indicators?.quote?.[0] || {};
+            const intraCandles: Candle[] = [];
+            for (let j = 0; j < intraTs.length; j++) {
+              if (intraOhlc.open?.[j] != null) {
+                intraCandles.push({
+                  time: intraTs[j],
+                  open: intraOhlc.open[j], high: intraOhlc.high[j], low: intraOhlc.low[j],
+                  close: intraOhlc.close[j], volume: intraOhlc.volume?.[j] || 0,
+                });
+              }
+            }
+            if (intraCandles.length > 0) intradayCandles.set(sym, intraCandles);
+          }
+        } catch {}
+      }));
     }
-  };
-
-  // Batch quotes already fetched above — now fetch chart candles only for stocks with quotes
-  // This reduces Yahoo requests from 100 to ~30 and avoids rate limiting
-  const symbolsWithQuotes = symbols.filter(s => quotes.has(s));
-  for (let i = 0; i < symbolsWithQuotes.length && Date.now() < DEADLINE; i += CONCURRENCY) {
-    const batch = symbolsWithQuotes.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(fetchChart));
   }
 
   const data: YahooData = { quotes, candles, intradayCandles };
@@ -767,7 +742,7 @@ export async function generateCandidates(
     let stockOIChange = 0;
     let stockIV = 20;
     if (chain) {
-      stockPCR = chain.pcr || 1.0;
+      stockPCR = chain.pcr ?? null;
       stockIV = chain.atmIV || 0;
       for (const v of chain.callOiMap.values()) stockOI += v;
       for (const v of chain.putOiMap.values()) stockOI += v;

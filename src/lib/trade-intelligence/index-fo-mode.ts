@@ -55,7 +55,7 @@ function scoreIndex(
   let totalFactors = 0;
 
   // Factor 1: PCR (0-15 points)
-  const pcr = chain?.pcr || 1;
+  const pcr = chain?.pcr ?? null;
   totalFactors += 15;
   if (pcr > 1.2) {
     bullScore += 15;

@@ -50,6 +50,7 @@ interface SDMResponse {
   text: string;
   language: "en" | "hi";
   alert: TradeAlert | null;
+  hermesDecision?: any | null;
 }
 
 interface Message {
@@ -59,6 +60,7 @@ interface Message {
   timestamp: Date;
   loading?: boolean;
   alert?: TradeAlert | null;
+  hermesDecision?: any | null;
   language?: "en" | "hi";
 }
 
@@ -70,8 +72,7 @@ interface AgentChatProps {
   sentiment?: string;
 }
 
-// Quick prompts — the bot now answers trades (all indices), news,
-// gap (Gift Nifty) and correlation (Nifty–Sensex).
+// Quick prompts — Hermes Agent quick commands
 const QUICK_ACTIONS = [
   { label: "NIFTY", icon: Bot, query: "NIFTY option trade now" },
   { label: "BANKNIFTY", icon: Bot, query: "BANKNIFTY option trade now" },
@@ -81,6 +82,12 @@ const QUICK_ACTIONS = [
   { label: "Gap", icon: TrendingUp, query: "What's the Gift Nifty gap for tomorrow's open?" },
   { label: "Correlation", icon: Link2, query: "Nifty vs Sensex correlation signal?" },
   { label: "बताओ", icon: Bot, query: "mujhe ek trade do" },
+  { label: "FII/DII", icon: TrendingUp, query: "What are FII and DII doing today? Show me the flows." },
+  { label: "Regime", icon: Sparkles, query: "What's the current market regime? Trending or ranging?" },
+  { label: "VIX", icon: AlertTriangle, query: "What's India VIX doing? Volatility regime?" },
+  { label: "Risk", icon: AlertTriangle, query: "Show me my current risk status and open positions." },
+  { label: "Memory", icon: Bot, query: "What's in my trade memory? Best setups?" },
+  { label: "CAS", icon: Sparkles, query: "What's the CAS straddle analysis for today?" },
 ];
 
 // ─── Markdown (lightweight, escaped) ─────────────────────────────
@@ -101,6 +108,45 @@ function renderMarkdown(text: string): string {
     .replace(/^• /gm, '<span class="text-primary mr-1">•</span> ')
     .replace(/^---$/gm, '<hr class="border-border my-2" />')
     .replace(/\n/g, '<br />');
+}
+
+// ─── Provider / Freshness Badge ──────────────────────────────────────
+function ProviderBadge({ provider, freshness, fallbackUsed, fallbackReason, ageMs }: {
+  provider?: string;
+  freshness?: string;
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+  ageMs?: number;
+}) {
+  const freshnessColor = freshness === "LIVE"
+    ? "bg-emerald-500"
+    : freshness === "FRESH"
+    ? "bg-blue-500"
+    : freshness === "DELAYED"
+    ? "bg-amber-500"
+    : freshness === "STALE"
+    ? "bg-red-500"
+    : "bg-gray-500";
+
+  const freshnessLabel = freshness || "UNKNOWN";
+  const providerLabel = provider?.toUpperCase() || "—";
+  const ageLabel = ageMs != null ? (ageMs < 60000 ? `${Math.round(ageMs / 1000)}s ago` : `${Math.round(ageMs / 60000)}m ago`) : "";
+
+  return (
+    <div className="flex items-center gap-1.5 text-[9px]">
+      <span className={`h-1.5 w-1.5 rounded-full ${freshnessColor}`} />
+      <span className="text-muted-foreground font-medium">{freshnessLabel}</span>
+      <span className="text-muted-foreground">·</span>
+      <span className="text-muted-foreground">{providerLabel}</span>
+      {fallbackUsed && (
+        <>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-amber-400">Fallback</span>
+        </>
+      )}
+      {ageLabel && <span className="text-muted-foreground/60">{ageLabel}</span>}
+    </div>
+  );
 }
 
 // ─── Trade Alert Card ─────────────────────────────────────────────
@@ -173,6 +219,152 @@ function TradeCard({ alert }: { alert: TradeAlert }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Hermes Decision Card ──────────────────────────────────────────
+function HermesDecisionCard({ decision }: { decision: any }) {
+  if (!decision) return null;
+
+  const isBuy = decision.decision === "BUY_CE" || decision.decision === "BUY_PE";
+  const isNoTrade = decision.decision === "NO_TRADE";
+  const isResearch = decision.decision === "RESEARCH_ONLY";
+
+  const decisionColor = isBuy
+    ? "bg-emerald-600"
+    : isNoTrade
+    ? "bg-amber-600"
+    : "bg-blue-600";
+
+  const decisionLabel = isBuy
+    ? decision.decision === "BUY_CE" ? "BUY CE" : "BUY PE"
+    : isNoTrade ? "NO TRADE" : "RESEARCH";
+
+  const freshnessColor = decision.dataQuality?.freshness === "LIVE"
+    ? "bg-emerald-500"
+    : decision.dataQuality?.freshness === "FRESH"
+    ? "bg-blue-500"
+    : "bg-amber-500";
+
+  return (
+    <div className="bg-card border border-violet-500/30 rounded-xl p-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-3 w-3 text-violet-400" />
+          <span className="text-[10px] font-bold text-violet-400 tracking-wider">HERMES PRO</span>
+        </div>
+        <div className={`h-5 px-2 rounded-md flex items-center text-[10px] font-bold text-white ${decisionColor}`}>
+          {decisionLabel}
+        </div>
+      </div>
+
+      {/* Trade details */}
+      {isBuy && decision.entry && (
+        <>
+          <div className="grid grid-cols-2 gap-1 text-[9px]">
+            <div><span className="text-muted-foreground">Instrument:</span> <span className="font-mono font-bold">{decision.symbol || "NIFTY"}</span></div>
+            <div><span className="text-muted-foreground">Expiry:</span> <span className="font-mono">{decision.expiry || "—"}</span></div>
+            <div><span className="text-muted-foreground">Strike:</span> <span className="font-mono font-bold">₹{decision.strike?.toLocaleString("en-IN") || "—"}</span></div>
+            <div><span className="text-muted-foreground">Side:</span> <span className="font-mono">{decision.decision === "BUY_CE" ? "CE" : "PE"}</span></div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-1 text-center">
+            <div className="bg-muted/30 rounded-lg p-1.5">
+              <p className="text-[7px] text-muted-foreground">ENTRY</p>
+              <p className="text-[10px] font-bold font-mono">₹{decision.entry?.toFixed(2) || "—"}</p>
+            </div>
+            <div className="bg-red-500/5 rounded-lg p-1.5 border border-red-500/10">
+              <p className="text-[7px] text-red-400">SL</p>
+              <p className="text-[10px] font-bold font-mono text-red-400">₹{decision.sl?.toFixed(2) || "—"}</p>
+            </div>
+            <div className="bg-emerald-500/5 rounded-lg p-1.5 border border-emerald-500/10">
+              <p className="text-[7px] text-emerald-400">TP1</p>
+              <p className="text-[10px] font-bold font-mono text-emerald-400">₹{decision.tp1?.toFixed(2) || "—"}</p>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-1.5">
+              <p className="text-[7px] text-muted-foreground">TP2</p>
+              <p className="text-[10px] font-bold font-mono">₹{decision.tp2?.toFixed(2) || "—"}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1 text-[9px]">
+            <div><span className="text-muted-foreground">Score:</span> <span className="font-bold">{decision.score}/100</span></div>
+            <div><span className="text-muted-foreground">Grade:</span> <span className="font-bold">{decision.grade || "—"}</span></div>
+            <div><span className="text-muted-foreground">R:R:</span> <span className="font-bold">{decision.riskReward?.toFixed(1) || "—"}</span></div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1 text-[9px]">
+            <div><span className="text-muted-foreground">Regime:</span> <span className="font-mono">{decision.regime || "—"}</span></div>
+            <div><span className="text-muted-foreground">Risk:</span> <span className="font-mono">₹{decision.riskAmount?.toLocaleString("en-IN") || "—"}</span></div>
+          </div>
+        </>
+      )}
+
+      {/* NO_TRADE details */}
+      {isNoTrade && (
+        <div className="space-y-1">
+          <p className="text-[10px] text-amber-400 font-bold">Deterministic NO TRADE</p>
+          {decision.reasons?.map((r: string, i: number) => (
+            <p key={i} className="text-[9px] text-muted-foreground">→ {r}</p>
+          ))}
+        </div>
+      )}
+
+      {/* RESEARCH details */}
+      {isResearch && (
+        <div className="space-y-1">
+          <p className="text-[10px] text-blue-400 font-bold">RESEARCH ONLY — delayed data</p>
+          {decision.reasons?.map((r: string, i: number) => (
+            <p key={i} className="text-[9px] text-muted-foreground">→ {r}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Provider + Freshness badge */}
+      <div className="flex items-center gap-2 text-[9px]">
+        <div className="flex items-center gap-1">
+          <span className={`h-1.5 w-1.5 rounded-full ${freshnessColor}`} />
+          <span className="text-muted-foreground">{decision.dataQuality?.freshness || "UNKNOWN"}</span>
+        </div>
+        <span className="text-muted-foreground">|</span>
+        <span className="text-muted-foreground">{decision.dataQuality?.provider?.toUpperCase() || "—"}</span>
+        {decision.dataQuality?.fallbackUsed && (
+          <>
+            <span className="text-muted-foreground">|</span>
+            <span className="text-amber-400">Fallback: {decision.dataQuality?.fallbackReason || "yes"}</span>
+          </>
+        )}
+      </div>
+
+      {/* Why / Reasons */}
+      {decision.explanation?.why?.length > 0 && (
+        <div className="space-y-0.5">
+          <p className="text-[8px] text-muted-foreground font-bold">WHY:</p>
+          {decision.explanation.why.slice(0, 3).map((r: string, i: number) => (
+            <p key={i} className="text-[9px] text-muted-foreground">→ {r}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Invalidation */}
+      {decision.explanation?.invalidation?.length > 0 && (
+        <div className="space-y-0.5">
+          <p className="text-[8px] text-red-400/70 font-bold">INVALIDATION:</p>
+          {decision.explanation.invalidation.map((r: string, i: number) => (
+            <p key={i} className="text-[9px] text-red-400/70">⚠ {r}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Validation */}
+      <div className="flex items-center gap-1 text-[9px]">
+        <span className="text-muted-foreground">Validation:</span>
+        <span className={decision.validation?.passed ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>
+          {decision.validation?.passed ? "PASS" : "FAIL"}
+        </span>
+      </div>
     </div>
   );
 }
@@ -355,6 +547,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
       text: data.response || data.text || "Sorry, I couldn't process that.",
       language: data.language || "en",
       alert: data.alert ?? null,
+      hermesDecision: data.hermesDecision ?? null,
     };
   };
 
@@ -382,7 +575,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
       clearTimeout(timeout);
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === loadingMsg.id ? { ...m, loading: false, content: reply.text, alert: reply.alert, language: reply.language } : m
+          m.id === loadingMsg.id ? { ...m, loading: false, content: reply.text, alert: reply.alert, hermesDecision: reply.hermesDecision, language: reply.language } : m
         )
       );
       setLoading(false);
@@ -449,6 +642,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
             {pcr != null && <> • PCR {pcr.toFixed(2)}</>}
             {vix != null && <> • VIX {vix.toFixed(1)}</>}
           </p>
+          <ProviderBadge provider="MOAPI" freshness="LIVE" />
         </div>
         {voiceMode !== "off" ? (
           <Badge variant="outline" className={`text-[8px] border-0 text-white animate-pulse ${
@@ -491,7 +685,9 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
                   </div>
                 ) : (
                   <>
-                    {msg.alert ? (
+                    {msg.hermesDecision ? (
+                      <HermesDecisionCard decision={msg.hermesDecision} />
+                    ) : msg.alert ? (
                       <TradeCard alert={msg.alert} />
                     ) : (
                       <div

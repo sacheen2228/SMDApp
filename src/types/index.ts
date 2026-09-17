@@ -314,3 +314,32 @@ export interface OptionChainResponse {
   summary: MarketSummary;
   timestamp: string;
 }
+
+// ─── Data Provenance ─────────────────────────────────────────────
+// Every dataset carries its provenance. Yahoo is NEVER option-chain fallback.
+// Yahoo global futures (CL=F, NG=F, GC=F, SI=F) are GLOBAL_REFERENCE only.
+export type DataFreshness = 'LIVE' | 'FRESH' | 'DELAYED' | 'STALE' | 'HISTORICAL' | 'RECOVERED' | 'UNAVAILABLE' | 'GLOBAL_REFERENCE';
+export type DataStatus = 'AVAILABLE' | 'PARTIAL' | 'STALE' | 'ERROR' | 'UNAVAILABLE';
+
+export interface DataProvenance {
+  source: string;
+  dataDate?: string;
+  publishedAt?: string;
+  retrievedAt: string;
+  freshness: DataFreshness;
+  isLive: boolean;
+  ageSeconds?: number;
+  status: DataStatus;
+}
+
+// Data source hierarchy (from AGENTS.md FINAL PROVIDER TREE):
+//
+// OPTION CHAIN:    Breeze → MOAPI → NSE/BSE → (NO Yahoo)
+// STOCK PRICES:    Moneycontrol → Yahoo Batch → Yahoo Per-Stock
+// FII/DII:         NSE → MrChartist
+// PARTICIPANT OI:  NSE → MrChartist
+// NEWS:            RSS feeds (Moneycontrol, Investing, ET, BS, Google, LiveMint)
+// INDIA VIX:       NSE → Yahoo fallback
+// PREVIOUS CLOSE:  NSE → Yahoo fallback
+// MCX:             MOAPI → MCX Website (blocked) → Yahoo (GLOBAL_REFERENCE only)
+// MCX OPTIONS:     BhaavBrief → MOAPI → (NO Yahoo)

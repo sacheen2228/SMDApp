@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchLiveOptionChain } from '@/lib/live-option-chain';
-import { runDynamicOptionsEngine, type DynamicOptionsInput } from '@/lib/dynamic-options-engine';
+import { runDynamicOptionsEngine, type DynamicOptionsInput, validateOptionChainData } from '@/lib/dynamic-options-engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,12 +62,23 @@ export async function GET(req: NextRequest) {
       lotSize: symbol === 'SENSEX' ? 15 : 50,
     };
 
+    // V2: Validate option chain data before scoring
+    const validation = validateOptionChainData(input);
+    if (!validation.valid) {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid option chain data',
+        details: validation.errors,
+      }, { status: 503 });
+    }
+
     const result = runDynamicOptionsEngine(input);
 
     return NextResponse.json({
       success: true,
       source: chainResult.source,
       data: result,
+      validation: { warnings: validation.warnings },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

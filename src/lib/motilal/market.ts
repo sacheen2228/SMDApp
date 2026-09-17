@@ -8,6 +8,9 @@ export interface MotilalLTP {
   changePercent: number;
   exchange: string;
   scripcode: number;
+  volume: number;         // LTP_Qty (tick volume) or LTP_Cumulative Qty (total day volume)
+  openInterest: number;   // LTP_Open Interest
+  avgTradePrice: number;  // LTP_AvgTradePrice
 }
 
 export interface MotilalScrip {
@@ -87,6 +90,9 @@ export async function getLTP(
         changePercent: data.data.changepercent || 0,
         exchange,
         scripcode,
+        volume: data.data.volume || data.data["LTP_Cumulative Qty"] || data.data["LTP_Qty"] || 0,
+        openInterest: data.data.openinterest || data.data["LTP_Open Interest"] || 0,
+        avgTradePrice: data.data["LTP_AvgTradePrice"] || 0,
       };
     }
 
@@ -213,31 +219,62 @@ export async function getDPR(
   }
 }
 
-// ── Well-known NSE F&O scrip codes ──
-export const KNOWN_SCRIPS: Record<string, number> = {
-  NIFTY: 26000,
-  BANKNIFTY: 26001,
-  FINNIFTY: 26029,
-  RELIANCE: 1660,
-  TCS: 11536,
-  INFY: 1594,
-  HDFCBANK: 1333,
-  ICICIBANK: 4963,
-  WIPRO: 10726,
-  SBIN: 3045,
-  BHARTIARTL: 10604,
-  ITC: 1138,
-  KOTAKBANK: 1922,
-  LT: 11630,
-  AXISBANK: 5900,
-  ASIANPAINT: 604,
-  MARUTI: 10988,
-  HCLTECH: 14044,
-  TATAMOTORS: 3456,
-  SUNPHARMA: 3499,
+// ── Well-known BSE scrip codes (MOAPI BSE works, NSE does not for LTP) ──
+export const KNOWN_SCRIPS: Record<string, { code: number; exchange: string }> = {
+  RELIANCE: { code: 500325, exchange: 'BSE' },
+  TCS: { code: 532540, exchange: 'BSE' },
+  INFY: { code: 500209, exchange: 'BSE' },
+  HDFCBANK: { code: 500180, exchange: 'BSE' },
+  ICICIBANK: { code: 532174, exchange: 'BSE' },
+  WIPRO: { code: 507685, exchange: 'BSE' },
+  SBIN: { code: 500112, exchange: 'BSE' },
+  BHARTIARTL: { code: 532493, exchange: 'BSE' },
+  ITC: { code: 500875, exchange: 'BSE' },
+  KOTAKBANK: { code: 500247, exchange: 'BSE' },
+  LT: { code: 500203, exchange: 'BSE' },
+  AXISBANK: { code: 532215, exchange: 'BSE' },
+  ASIANPAINT: { code: 500820, exchange: 'BSE' },
+  MARUTI: { code: 532500, exchange: 'BSE' },
+  HCLTECH: { code: 532281, exchange: 'BSE' },
+  TATAMOTORS: { code: 500570, exchange: 'BSE' },
+  SUNPHARMA: { code: 524715, exchange: 'BSE' },
 };
+
+// Legacy flat map for backward compat (all BSE)
+export const KNOWN_SCRIPS_LEGACY: Record<string, number> = Object.fromEntries(
+  Object.entries(KNOWN_SCRIPS).map(([k, v]) => [k, v.code])
+);
 
 // ── Get current session token (from auth module) ──
 export function getCurrentAuthToken(): string | null {
   return getSessionToken();
+}
+
+// ── Get LTP by symbol name (auto-resolves exchange + scripcode) ──
+export async function getLTPBySymbol(
+  symbol: string,
+  authToken?: string
+): Promise<MotilalLTP | null> {
+  const entry = KNOWN_SCRIPS[symbol.toUpperCase()];
+  if (!entry) return null;
+  const token = authToken || getSessionToken();
+  if (!token) return null;
+  return getLTP(entry.exchange, entry.code, token);
+}
+
+// ── Get LTP for known equities (batch) ──
+export async function getKnownEquityLTP(
+  authToken?: string
+): Promise<Map<string, MotilalLTP>> {
+  const results = new Map<string, MotilalLTP>();
+  const token = authToken || getSessionToken();
+  if (!token) return results;
+
+  for (const [symbol, entry] of Object.entries(KNOWN_SCRIPS)) {
+    const ltp = await getLTP(entry.exchange, entry.code, token);
+    if (ltp) {
+      results.set(symbol, ltp);
+    }
+  }
+  return results;
 }

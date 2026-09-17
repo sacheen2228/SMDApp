@@ -24,8 +24,8 @@ interface MCXQuote {
 
 interface MCXOptionStrike {
   strike: number;
-  ce: { ltp: number; bid: number; ask: number; volume: number; oi: number; token: number; expiry: string } | null;
-  pe: { ltp: number; bid: number; ask: number; volume: number; oi: number; token: number; expiry: string } | null;
+  ce: { ltp: number; bid: number; ask: number; volume: number; oi: number; oiChange: number; iv: number; token: number; expiry: string } | null;
+  pe: { ltp: number; bid: number; ask: number; volume: number; oi: number; oiChange: number; iv: number; token: number; expiry: string } | null;
 }
 
 interface MCXOptionChain {
@@ -36,7 +36,11 @@ interface MCXOptionChain {
   atmStrike: number;
   totalCEVolume: number;
   totalPEVolume: number;
+  totalCEOI: number;
+  totalPEOI: number;
   pcr: number;
+  maxPain: number;
+  ivix: number;
   timestamp: string;
   dataSource: string;
 }
@@ -100,7 +104,7 @@ export function CommodityDashboard() {
       const [mcxRes, scannerRes, optionRes] = await Promise.all([
         fetch('/api/mcx'),
         fetch('/api/mcx/scanner?mode=full'),
-        fetch('/api/mcx/option-chain'),
+        fetch(`/api/mcx/option-chain?symbol=${selectedOptionSymbol}`),
       ]);
 
       if (mcxRes.ok) {
@@ -115,7 +119,15 @@ export function CommodityDashboard() {
 
       if (optionRes.ok) {
         const optionJson = await optionRes.json();
-        if (optionJson.success) setOptionChains(optionJson.chains || {});
+        if (optionJson.success) {
+          if (optionJson.chain) {
+            // Single-symbol response: { symbol, chain }
+            setOptionChains(prev => ({ ...prev, [optionJson.symbol]: optionJson.chain }));
+          } else {
+            // All-chains response: { chains: Record }
+            setOptionChains(optionJson.chains || {});
+          }
+        }
       }
 
       setLastRefresh(new Date());
@@ -124,7 +136,7 @@ export function CommodityDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedOptionSymbol]);
 
   useEffect(() => {
     fetchData();
@@ -181,7 +193,10 @@ export function CommodityDashboard() {
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>MOAPI: {health?.moapi === 'CONNECTED' ? '✅' : '❌'}</span>
+          <span className={health?.status === 'LIVE' ? 'text-green-500' : health?.status === 'GLOBAL_REFERENCE' ? 'text-yellow-500' : 'text-red-500'}>
+            {health?.status === 'LIVE' ? 'LIVE' : health?.status === 'GLOBAL_REFERENCE' ? 'GLOBAL REF' : health?.status || 'UNKNOWN'}
+          </span>
+          <span>MOAPI: {health?.moapi?.startsWith('CONNECTED') ? '✅' : '❌'}</span>
           <span>Last: {health?.lastTickAge}s ago</span>
           <Button variant="ghost" size="sm" onClick={fetchData}>
             <RefreshCw className="h-3 w-3" />
@@ -347,11 +362,10 @@ export function CommodityDashboard() {
 function OptionChainTable({ chain }: { chain: MCXOptionChain }) {
   const spot = chain.spotPrice;
   const atm = chain.atmStrike;
-  // Show strikes near ATM (±5 strikes or all if fewer)
-  const atmIndex = chain.strikes.findIndex(s => s.strike === atm);
-  const start = Math.max(0, atmIndex - 5);
-  const end = Math.min(chain.strikes.length, atmIndex + 6);
-  const visibleStrikes = chain.strikes.slice(start, end);
+  const visibleStrikes = chain.strikes;
+
+  const fmtOI = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n > 0 ? String(n) : '-';
+  const oiChgColor = (n: number) => n > 0 ? 'text-green-500' : n < 0 ? 'text-red-500' : 'text-muted-foreground';
 
   return (
     <div>
@@ -361,29 +375,39 @@ function OptionChainTable({ chain }: { chain: MCXOptionChain }) {
           <span className="text-muted-foreground">Spot: <span className="font-mono font-bold">{spot > 0 ? spot.toFixed(1) : '-'}</span></span>
           <span className="text-muted-foreground">ATM: <span className="font-mono font-bold">{atm > 0 ? atm.toFixed(1) : '-'}</span></span>
           <span className="text-muted-foreground">PCR: <span className="font-mono">{chain.pcr > 0 ? chain.pcr.toFixed(2) : '-'}</span></span>
+          {chain.maxPain > 0 && <span className="text-muted-foreground">MaxPain: <span className="font-mono text-amber-500">{chain.maxPain}</span></span>}
+          {chain.ivix > 0 && <span className="text-muted-foreground">iVIX: <span className="font-mono text-cyan-400">{chain.ivix.toFixed(1)}%</span></span>}
         </div>
-        <span className="text-muted-foreground">Expiry: {chain.expiry}</span>
+        <div className="flex items-center gap-3 text-[10px]">
+          <span className="text-muted-foreground">CE OI: <span className="font-mono text-green-500">{fmtOI(chain.totalCEOI || 0)}</span></span>
+          <span className="text-muted-foreground">PE OI: <span className="font-mono text-red-500">{fmtOI(chain.totalPEOI || 0)}</span></span>
+          <span className="text-muted-foreground">Expiry: {chain.expiry}</span>
+        </div>
       </div>
       {/* Column headers */}
       <div className="flex items-center px-3 py-1 border-b text-[10px] text-muted-foreground font-medium">
-        <span className="w-16 text-right">CE VOL</span>
-        <span className="w-16 text-right">CE OI</span>
-        <span className="w-16 text-right">CE LTP</span>
+        <span className="w-12 text-right">CE VOL</span>
+        <span className="w-14 text-right">CE OI</span>
+        <span className="w-10 text-right">CHG</span>
+        <span className="w-14 text-right">CE LTP</span>
         <span className="flex-1 text-center font-bold">STRIKE</span>
-        <span className="w-16 text-right">PE LTP</span>
-        <span className="w-16 text-right">PE OI</span>
-        <span className="w-16 text-right">PE VOL</span>
+        <span className="w-14 text-right">PE LTP</span>
+        <span className="w-10 text-right">CHG</span>
+        <span className="w-14 text-right">PE OI</span>
+        <span className="w-12 text-right">PE VOL</span>
       </div>
       <div className="divide-y">
         {visibleStrikes.map(s => (
           <div key={s.strike} className={`flex items-center px-3 py-1.5 text-xs ${s.strike === atm ? 'bg-amber-500/10 font-bold' : ''}`}>
-            <span className="w-16 text-right text-green-600">{s.ce?.volume ? s.ce.volume.toLocaleString() : '-'}</span>
-            <span className="w-16 text-right text-muted-foreground">{s.ce?.oi ? s.ce.oi.toLocaleString() : '-'}</span>
-            <span className="w-16 text-right font-mono">{s.ce?.ltp ? s.ce.ltp.toFixed(1) : '-'}</span>
+            <span className="w-12 text-right text-green-600">{s.ce?.volume ? s.ce.volume.toLocaleString() : '-'}</span>
+            <span className="w-14 text-right text-muted-foreground">{s.ce?.oi ? fmtOI(s.ce.oi) : '-'}</span>
+            <span className={`w-10 text-right text-[9px] ${oiChgColor(s.ce?.oiChange || 0)}`}>{s.ce?.oiChange ? (s.ce.oiChange > 0 ? '+' : '') + fmtOI(s.ce.oiChange) : ''}</span>
+            <span className="w-14 text-right font-mono">{s.ce?.ltp ? s.ce.ltp.toFixed(1) : '-'}</span>
             <span className={`flex-1 text-center font-mono ${s.strike === atm ? 'text-amber-500' : ''}`}>{s.strike}</span>
-            <span className="w-16 text-right font-mono">{s.pe?.ltp ? s.pe.ltp.toFixed(1) : '-'}</span>
-            <span className="w-16 text-right text-muted-foreground">{s.pe?.oi ? s.pe.oi.toLocaleString() : '-'}</span>
-            <span className="w-16 text-right text-red-600">{s.pe?.volume ? s.pe.volume.toLocaleString() : '-'}</span>
+            <span className="w-14 text-right font-mono">{s.pe?.ltp ? s.pe.ltp.toFixed(1) : '-'}</span>
+            <span className={`w-10 text-right text-[9px] ${oiChgColor(s.pe?.oiChange || 0)}`}>{s.pe?.oiChange ? (s.pe.oiChange > 0 ? '+' : '') + fmtOI(s.pe.oiChange) : ''}</span>
+            <span className="w-14 text-right text-muted-foreground">{s.pe?.oi ? fmtOI(s.pe.oi) : '-'}</span>
+            <span className="w-12 text-right text-red-600">{s.pe?.volume ? s.pe.volume.toLocaleString() : '-'}</span>
           </div>
         ))}
       </div>
@@ -395,6 +419,7 @@ function QuoteRow({ quote }: { quote: MCXQuote }) {
   const isUp = (quote.change || 0) > 0;
   const isDown = (quote.change || 0) < 0;
   const noData = quote.dataStatus === 'DATA_UNAVAILABLE';
+  const isGlobalRef = quote.dataStatus === 'GLOBAL_REFERENCE';
 
   return (
     <div className="flex items-center justify-between px-3 py-2">
@@ -402,6 +427,8 @@ function QuoteRow({ quote }: { quote: MCXQuote }) {
         <span className="font-medium text-sm w-24">{quote.symbol}</span>
         {noData ? (
           <Badge variant="secondary" className="text-xs">DATA UNAVAILABLE</Badge>
+        ) : isGlobalRef ? (
+          <Badge variant="outline" className="text-xs border-yellow-500/50 text-yellow-500">GLOBAL REF</Badge>
         ) : (
           <>
             {isUp && <TrendingUp className="h-3 w-3 text-green-500" />}
@@ -421,7 +448,7 @@ function QuoteRow({ quote }: { quote: MCXQuote }) {
           {quote.volume !== null ? quote.volume.toLocaleString() : '-'}
         </span>
         <span className="text-muted-foreground w-8 text-right text-xs">
-          {quote.dataSource}
+          {isGlobalRef ? 'Yahoo' : quote.dataSource}
         </span>
       </div>
     </div>

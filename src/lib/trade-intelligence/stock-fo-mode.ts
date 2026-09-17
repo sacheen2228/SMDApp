@@ -122,7 +122,7 @@ function scoreStock(
   // Factor 4: Option chain analysis (0-20 points)
   const chain = chainData?.summary;
   if (chain) {
-    const pcr = chain.pcr || 1;
+    const pcr = chain.pcr ?? null;
     if (pcr > 1.3) {
       bullScore += 20;
       reasoning.push(`PCR ${pcr.toFixed(2)} — heavy put writing, support building`);

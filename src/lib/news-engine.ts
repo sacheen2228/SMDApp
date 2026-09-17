@@ -49,6 +49,7 @@ export interface MarketSentiment {
 
 // ─── RSS Feed Sources ───────────────────────────────────────────
 const RSS_FEEDS = [
+  { name: "Investing.com", url: "https://in.investing.com/rss/news.rss", weight: 0.9 },
   { name: "Moneycontrol", url: "https://www.moneycontrol.com/rss/marketstrends.xml", weight: 1.0 },
   { name: "Economic Times", url: "https://economictimes.indiatimes.com/rssfeedstopstories.cms", weight: 0.9 },
   { name: "LiveMint", url: "https://www.livemint.com/rss/markets", weight: 0.9 },

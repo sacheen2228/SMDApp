@@ -58,8 +58,19 @@ bun run dev        # starts on :3000
 | `src/lib/orca-backtest.ts` | ORCA backtest (uses fake option chains) |
 | `src/lib/sdm-trade-tracker.ts` | Trade lifecycle: add/update/expire, DB persistence |
 | `src/stores/useTradingStore.ts` | Zustand store for trading state |
-| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 13 tools |
-| `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode — calls `/api/agent` |
+| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 38 tools, SMDContext, memory, logging |
+| `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode, 15 quick commands — calls `/api/agent` |
+| `src/lib/smd-context.ts` | SMDContext — centralized market context builder for Hermes (aggregates all data sources) |
+| `src/lib/agent-memory.ts` | Agent Memory — persistent trade patterns, setup memory, predictions, preferences |
+| `src/lib/agent-logger.ts` | Agent Logger — tool call, LLM call, error, conversation observability (JSONL) |
+| `src/app/api/agent-memory/route.ts` | Agent Memory REST API — CRUD for trades, setups, predictions, preferences |
+| `src/lib/signalTracker.ts` | Full-day signal deduplication — prevents same trade from being re-sent |
+| `src/lib/morningSignalGenerator.ts` | Morning signal generator — scans NIFTY/SENSEX/Equity/MCX for high-accuracy trades |
+| `src/lib/dailyDigest.ts` | End-of-day digest — sends summary of signals, active trades, market data |
+| `src/app/api/morning-signals/route.ts` | Morning Signals API — call at 9:20 AM IST for daily trade recommendations |
+| `src/app/api/daily-digest/route.ts` | Daily Digest API — call at 3:25 PM IST for end-of-day summary |
+| `src/lib/telegram.ts` | Telegram sender — HTML messages, full-day dedup, trade alerts |
+| `src/lib/telegramSend.ts` | Telegram sender — Markdown messages, used by cron/digest modules |
 | `src/lib/option-acceleration-engine.ts` | Option Acceleration Engine (10 sub-engines: delta accel, gamma explosion, OI absorption, volume momentum, institutional flow, premium elasticity, historical memory, time decay, regime + premium velocity + TP1/TP2/TP3) |
 | `src/lib/greek-flow-engine.ts` | **@deprecated** — old Greek Flow scoring engine, replaced by option-acceleration-engine.ts |
 | `src/app/api/greek-flow/route.ts` | Greek Flow API endpoint → runs acceleration engine |
@@ -141,6 +152,70 @@ cd trade-audit && ./start.sh        # starts Node + ts-node-dev engine on port 4
 - `ZERO_HERO_AI` / `SMC` — from the Terminal tab's **Zero Hero** / **Smart Money** scanners
   (`src/components/terminal/ZeroHeroTerminal.tsx`); live premium fed as tracking ticks.
 - Any strategy can record via `recordSignal()` (`src/lib/trade-audit-client.ts`).
+
+### Hermes Pro Agent Architecture
+
+```
+User Input
+    │
+    ▼
+┌─────────────────────┐
+│  Intent / Task Router│  ← TOOL_ROUTER selects 8-14 tools per query
+└──────────┬──────────┘
+           │
+    ┌──────┼──────┐
+    │      │      │
+Market  Trade  System
+Research Research Tasks
+    │      │      │
+    ▼      ▼      ▼
+NSE/Breeze OI/Greeks Backtest
+MOAPI      Structure  Journal
+Yahoo      CAS       Health
+News       Gamma     Telegram
+FII/DII    Vol Profile
+VIX        S/R, Expiry
+    │      │
+    ▼      ▼
+┌─────────────────────┐
+│  HERMES DECISION    │  ← Groq openai/gpt-oss-120b (128K context)
+│  ENGINE             │     41 tools total
+└──────────┬──────────┘
+           │
+    ┌──────┴──────┐
+    │             │
+TRADE        NO TRADE
+CANDIDATE    / WAIT
+    │
+    ▼
+Risk Validation → Entry/SL/TP → Telegram Alert
+```
+
+### 41 Hermes Tools (36 original + 5 new)
+
+**NEW TOOLS (added this session):**
+| Tool | Purpose |
+|---|---|
+| `send_telegram_signal` | Push trade signal to Telegram phone |
+| `scan_all_instruments` | Scan NIFTY/SENSEX/Equity/MCX all at once |
+| `get_mcx_data` | MCX commodity data (CRUDEOIL/GOLD/SILVER/GAS) |
+| `morning_scan` | Run morning signal generator → Telegram |
+| `get_trade_recommendation` | Full structured trade card with entry/SL/TP |
+
+**ORIGINAL 36 TOOLS:**
+Market Data: `get_option_chain`, `get_sdm_signal`, `get_market_structure`, `get_vix`, `get_atm_straddle`, `get_gift_nifty`, `get_historical_data`
+OI & Greeks: `get_options_edge`, `get_expiry_liquidity`, `get_cas_analysis`
+Flow & Intelligence: `get_fii_dii`, `get_institutional_positioning`, `get_market_regime`, `get_market_breadth`, `get_correlation_signal`
+Scanners: `get_scanner_picks`, `get_breakout_signals`, `get_unified_ranking`, `get_index_fo`, `get_stock_fo`, `get_equity_swing`
+Risk & Portfolio: `get_risk_status`, `get_portfolio`, `get_challenge_status`, `calculate_position_size`, `get_trade_tracking`
+Trade & Journal: `get_trade_history`, `get_trade_post_mortem`, `get_backtest_results`, `get_news_sentiment`
+Memory: `search_memory`, `get_memory_summary`, `record_trade_memory`
+System: `get_agent_analytics`, `answer_trading_question`
+
+### Signal Deduplication (3 levels)
+1. **signalTracker.ts** — Full-day signature dedup (same signal never sent twice per day)
+2. **telegram.ts** — 5-minute short-term throttle
+3. **intradayState.ts** — Per-day signature tracking for intraday alerts
 
 ## Known Issues
 
@@ -238,7 +313,8 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/option-chain` | GET | Option chain data (Breeze → NSE fallback) |
-| `/api/agent` | POST | AI Agent with LLM + 13 tools |
+| `/api/agent` | POST | AI Agent with LLM + 38 tools |
+| `/api/agent-memory` | GET/POST/PATCH | Agent Memory — CRUD for trades, setups, predictions, preferences |
 | `/api/breeze-connect` | GET/POST | Breeze session management |
 | `/api/sdm-signal` | GET | SDM scoring signals |
 | `/api/trade-journal` | GET/POST/PATCH/DELETE | Trade CRUD with Prisma DB |

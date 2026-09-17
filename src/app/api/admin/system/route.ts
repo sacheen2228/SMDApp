@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateSession } from "@/lib/icici-breeze/auth";
+import { providerHealth } from "@/lib/provider-health";
 
 export async function GET() {
   try {
@@ -17,10 +18,13 @@ export async function GET() {
     const totalPnL = closed.reduce((sum: number, t: any) => sum + (t.pnl ?? 0), 0);
     const winRate = closed.length > 0 ? (winners.length / closed.length) * 100 : 0;
 
+    const providerHealthData = providerHealth.getAllHealth();
+
     return NextResponse.json({
       success: true,
       data: {
         breeze: { connected: isBreezeConnected },
+        providerHealth: providerHealthData,
         trades: {
           total: allTrades.length,
           open: allTrades.filter((t: any) => t.status === "OPEN").length,

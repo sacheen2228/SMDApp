@@ -163,3 +163,65 @@ export function cleanupNSE() {
     nseClient = null;
   }
 }
+
+// ─── NSE India direct API helpers (for VIX, indices) ───
+
+const NSE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
+
+async function getNSECookie(): Promise<string> {
+  if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
+  try {
+    const res = await fetch("https://www.nseindia.com", {
+      headers: { "User-Agent": NSE_UA, Accept: "text/html" },
+      signal: AbortSignal.timeout(8000),
+    });
+    const cookie = res.headers.get("set-cookie")?.split(";")[0] || "";
+    nseCookieCache = { cookie, expiresAt: Date.now() + 5 * 60 * 1000 };
+    return cookie;
+  } catch { return ""; }
+}
+
+export async function getNSEIndiaVIX(): Promise<{ value: number; change: number } | null> {
+  try {
+    const cookie = await getNSECookie();
+    const res = await fetch("https://www.nseindia.com/api/allIndices", {
+      headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const vix = (json?.data || []).find((i: any) => i.index === "INDIA VIX");
+    if (!vix) return null;
+    return {
+      value: parseFloat((vix.last || vix.percentChange || 15).toFixed(2)),
+      change: parseFloat((vix.percentChange || 0).toFixed(2)),
+    };
+  } catch { return null; }
+}
+
+export async function getNSEIndices(): Promise<Array<{ key: string; name: string; ltp: number; change: number; changePct: number; prevClose: number }>> {
+  try {
+    const cookie = await getNSECookie();
+    const res = await fetch("https://www.nseindia.com/api/allIndices", {
+      headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const data = json?.data || [];
+    const mapping: Record<string, string> = {
+      "NIFTY 50": "NIFTY", "NIFTY Bank": "BANKNIFTY", "SENSEX": "SENSEX", "NIFTY Bank": "BANKNIFTY",
+    };
+    return data
+      .filter((i: any) => ["NIFTY 50", "NIFTY Bank", "SENSEX"].includes(i.index))
+      .map((i: any) => ({
+        key: mapping[i.index] || i.index,
+        name: i.index === "NIFTY 50" ? "NIFTY 50" : i.index === "NIFTY Bank" ? "BANK NIFTY" : "SENSEX",
+        ltp: i.last || 0,
+        change: parseFloat(((i.last || 0) - (i.previousClose || i.last || 0)).toFixed(2)),
+        changePct: parseFloat((i.percentChange || 0).toFixed(2)),
+        prevClose: i.previousClose || i.last || 0,
+      }));
+  } catch { return []; }
+}

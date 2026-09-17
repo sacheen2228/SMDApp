@@ -29,7 +29,7 @@ async function fetchIndexChain(symbol: string, base: string): Promise<IndexChain
     return {
       symbol,
       spot: d.spotPrice || d.summary?.spotPrice || 0,
-      pcr: d.summary?.pcr ?? 1,
+      pcr: d.summary?.pcr ?? null,
       vix: d.summary?.indiaVIX ?? 15,
       expiryLabel: d.expiries?.[0]?.label || d.summary?.selectedExpiry,
       chain: (d.data || []).map((row: any) => ({
@@ -101,7 +101,7 @@ function mapCorr(json: any): CorrInfo | null {
 
 async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
   let spot = 0;
-  let pcr = 1;
+  let pcr: number | null = null;
   let vix = 15;
   let expiryLabel: string | undefined;
   let chain: OptionChainRow[] = [];
@@ -114,7 +114,7 @@ async function buildContext(symbol: string, base = BASE): Promise<SDMContext> {
     const d = json?.data;
     if (d) {
       spot = d.spotPrice || d.summary?.spotPrice || 0;
-      pcr = d.summary?.pcr ?? 1;
+      pcr = d.summary?.pcr ?? null;
       vix = d.summary?.indiaVIX ?? 15;
       expiryLabel = d.expiries?.[0]?.label || d.summary?.selectedExpiry;
       chain = (d.data || []).map((row: any) => ({

@@ -9,6 +9,7 @@ import {
   MarketContext,
 } from "@/lib/option-acceleration-engine";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { getNearestExpiry, isExpiryDay } from "@/lib/expiry-calculator";
 
 export const dynamic = "force-dynamic";
 
@@ -62,10 +63,12 @@ export async function GET(request: Request) {
     const elapsed = Math.max(0, Math.min(totalSession, (now.getTime() - marketOpen.getTime()) / 60000));
     const sessionMinutes = Math.max(0, totalSession - elapsed);
 
-    const Thursday = 4;
-    const daysToThu = (Thursday - now.getDay() + 7) % 7 || 7;
-    const minutesToExpiry = daysToThu * totalSession + sessionMinutes;
-    const isExpiryDay = now.getDay() === Thursday;
+    // Use canonical expiry calculator — NOT hardcoded Thursday
+    const nearestExpiry = getNearestExpiry(symbol);
+    const expiryDayOfWeek = nearestExpiry?.dateObj?.getDay() ?? 4; // fallback to Thu only if no data
+    const daysToExpiry = nearestExpiry?.daysToExpiry ?? 7;
+    const minutesToExpiry = daysToExpiry * totalSession + sessionMinutes;
+    const isExpiryDayCalc = isExpiryDay(symbol, now);
 
     const callOI = strikes.reduce((s, x) => s + (x.ce?.oi || 0), 0);
     const putOI = strikes.reduce((s, x) => s + (x.pe?.oi || 0), 0);
@@ -86,7 +89,7 @@ export async function GET(request: Request) {
       callOiChg, putOiChg,
       expectedMove: Math.round(expectedMove * 100) / 100,
       sessionMinutes: Math.round(sessionMinutes),
-      minutesToExpiry, isExpiryDay,
+      minutesToExpiry, isExpiryDay: isExpiryDayCalc,
       atr: Math.round(intradayRange * 100) / 100,
       trend,
     };

@@ -257,7 +257,7 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   // Lower when trend strong, volume confirmed, sector supportive, no overbought
   let gapRiskScore = 0;
   if (inp.rsi > 72) gapRiskScore += 2;     // overbought → gap-down risk
-  if (inp.pcr > 1.4 && inp.isFNO) gapRiskScore += 1; // heavy puts
+  if (inp.pcr != null && inp.pcr > 1.4 && inp.isFNO) gapRiskScore += 1; // heavy puts
   if (sector < 5) gapRiskScore += 1;
   if (vrm < 1.0) gapRiskScore += 1;
   if (inp.changePct < -0.5) gapRiskScore += 1;
@@ -279,7 +279,7 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   const trendLabel = factors.trend >= 20 ? "Strong Bullish" : factors.trend >= 12 ? "Bullish" : "Weak";
   const sectorLabel = factors.sector >= 8 ? "Strong" : factors.sector >= 5 ? "Neutral" : "Weak";
   const deliveryLabel = inp.deliveryPct >= 60 ? "High" : inp.deliveryPct >= 45 ? "Medium" : "Low";
-  const oiLabel = !inp.isFNO ? "N/A" : inp.pcr < 1.2 && inp.oiChangePct >= 0 ? "Bullish" : inp.pcr < 1.4 ? "Neutral" : "Bearish";
+  const oiLabel = !inp.isFNO ? "N/A" : inp.pcr != null && inp.pcr < 1.2 && inp.oiChangePct >= 0 ? "Bullish" : inp.pcr != null && inp.pcr < 1.4 ? "Neutral" : "Bearish";
   const smartMoneyLabel: "Active" | "Building" | "Absent" =
     factors.smartMoney >= 15 ? "Active" : factors.smartMoney >= 9 ? "Building" : "Absent";
 

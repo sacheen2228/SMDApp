@@ -215,7 +215,7 @@ export async function GET(request: NextRequest) {
       if (strike.pe) totalPutOI += strike.pe.oi || 0;
     }
 
-    const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+    const pcr = totalCallOI > 0 && totalPutOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : null;
     const maxPain = summary.maxPain || spotPrice;
     const vix = summary.indiaVIX || 15;
 

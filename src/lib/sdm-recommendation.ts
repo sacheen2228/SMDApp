@@ -55,6 +55,7 @@ import {
   type SessionInfo,
 } from './market-session';
 import { getLotSize } from './symbol-config';
+import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
 
 // ─── Constants ────────────────────────────────────────────────────
 // Lot sizes now come from src/lib/symbol-config.ts (single source of
@@ -861,6 +862,9 @@ export async function generateTradeRecommendation(
     spot,
     riskState: DEFAULT_RISK_STATE,
     direction: tempDirection,
+    // NEW: High-probability filters
+    mtfResult: consensus?.multiTimeframe || null,
+    newsSentiment: consensus?.newsSentiment || null,
   };
   const validation = validateTrade(validationInput);
 
@@ -1047,6 +1051,32 @@ export async function generateTradeRecommendation(
     else if (sessionConfidence < threshold) {
       direction = 'WAIT';
     }
+    // ── Buyer Confluence Gate (Section 7) ──
+    else if (direction === 'CALL' || direction === 'PUT') {
+      const now = new Date();
+      const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const confluenceInput: ConfluenceInput = {
+        fiiNet: 0, diiNet: 0, fiiFutLongRatio: 0.5, fiiNet5dAvg: 0,
+        pcr: pcr, maxPain: maxPain, spotPrice: spotPrice,
+        ceOIBuildup: false, peOIBuildup: false, oiPattern: 'NEUTRAL',
+        ivRank: 50, atmIV: atmIV || 15, ivTrend: 'STABLE',
+        atmStraddlePrice: 0, expectedMove: 0,
+        gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
+        indiaVix: vix, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
+        currentHour: ist.getHours(), currentMinute: ist.getMinutes(),
+        isExpiryDay: session?.isExpiryDay || false,
+        daysToExpiry: session?.daysToExpiry || 7,
+        dayOfWeek: ist.getDay(),
+        rsi: 50, adxTechnical: 25, ema20Above50: true, higherHighs: true,
+        gapPercent: 0,
+        direction: direction === 'CALL' ? 'CE' : 'PE',
+      };
+      const confluence: ConfluenceResult = scoreBuyerConfluence(confluenceInput);
+      // Block if confluence says NO_TRADE (score below threshold) OR hardBlocks exist
+      if (confluence.action === 'NO_TRADE' || confluence.hardBlocks.length > 0) {
+        direction = 'WAIT';
+      }
+    }
   }
 
   // Risk:Reward
@@ -1080,7 +1110,7 @@ export async function generateTradeRecommendation(
   // Market context
   const totalCEOI = optionChain.reduce((sum, s) => sum + (s.ce?.oi ?? 0), 0);
   const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
 
   const marketContext: MarketContext = {
@@ -1527,7 +1557,7 @@ function generateRecommendationSync(
 
   const totalCEOI = optionChain.reduce((sum, s) => sum + (s.ce?.oi ?? 0), 0);
   const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
 
   const marketContext: MarketContext = {

@@ -1,8 +1,11 @@
 // /api/health — comprehensive system health check
+// Includes: AI providers, market data sources, Breeze session, database, memory
 
 import { NextResponse } from "next/server";
 import { brokerSessionManager } from "@/lib/broker-session-manager";
 import { marketDataManager } from "@/lib/market-data-manager";
+import { providerHealth } from "@/lib/provider-health";
+import { getSessionState as getBreezeState } from "@/lib/icici-breeze/auth";
 
 export async function GET() {
   const checks: Record<string, { status: string; message?: string; latencyMs?: number }> = {};
@@ -21,7 +24,30 @@ export async function GET() {
     checks.database = { status: "ERROR", message: error.message };
   }
 
-  // Broker sessions
+  // ─── AI Providers ───────────────────────────────────────────────
+  const aiHealth = providerHealth.exportHealth();
+  for (const [provider, health] of Object.entries(aiHealth)) {
+    checks[`ai_${provider}`] = {
+      status: health.status,
+      message: health.lastError || undefined,
+      latencyMs: health.avgLatencyMs || undefined,
+    };
+  }
+
+  // ─── Breeze Session ─────────────────────────────────────────────
+  try {
+    const breezeState = getBreezeState();
+    checks.breeze = {
+      status: breezeState.status,
+      message: breezeState.authenticated
+        ? `Session active, expires: ${breezeState.expiresAt || "unknown"}`
+        : "Not authenticated",
+    };
+  } catch {
+    checks.breeze = { status: "UNKNOWN", message: "Could not get Breeze state" };
+  }
+
+  // ─── Broker Sessions (existing) ─────────────────────────────────
   const brokerStates = brokerSessionManager.getAllStates();
   for (const [broker, state] of Object.entries(brokerStates)) {
     checks[`broker_${broker}`] = {
@@ -30,14 +56,15 @@ export async function GET() {
     };
   }
 
-  // Market data sources
-  const sources = marketDataManager.getAllSources();
-  for (const source of sources) {
-    checks[`data_${source.name}`] = {
-      status: source.status,
-      message: source.error,
-      latencyMs: source.latencyMs,
+  // ─── Market Data Sources (existing) ─────────────────────────────
+  try {
+    const sourceStatus = marketDataManager.getStatusSummary();
+    checks.marketData = {
+      status: sourceStatus ? 'OK' : 'UNKNOWN',
+      message: JSON.stringify(sourceStatus),
     };
+  } catch {
+    checks.marketData = { status: 'UNKNOWN', message: 'Could not get market data status' };
   }
 
   // WebSocket
@@ -50,9 +77,10 @@ export async function GET() {
     message: `${Math.round(mem.heapUsed / 1024 / 1024)}MB used`,
   };
 
-  const overallStatus = Object.values(checks).every(c => c.status === "OK" || c.status === "CONNECTED")
+  // ─── Overall Status ─────────────────────────────────────────────
+  const overallStatus = Object.values(checks).every(c => c.status === "OK" || c.status === "CONNECTED" || c.status === "ready")
     ? "HEALTHY"
-    : Object.values(checks).some(c => c.status === "ERROR")
+    : Object.values(checks).some(c => c.status === "ERROR" || c.status === "offline")
       ? "DEGRADED"
       : "PARTIAL";
 

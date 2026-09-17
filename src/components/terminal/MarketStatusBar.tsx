@@ -43,10 +43,17 @@ function getISTTime(): Date {
   return new Date(now.getTime() + istOffset + now.getTimezoneOffset() * 60 * 1000);
 }
 
+const NSE_HOLIDAYS_2026 = new Set([
+  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
+  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
+]);
+
 function isMarketOpen(): boolean {
   const ist = getISTTime();
   const day = ist.getDay();
   if (day === 0 || day === 6) return false;
+  const iso = ist.toISOString().split('T')[0];
+  if (NSE_HOLIDAYS_2026.has(iso)) return false;
   const hours = ist.getHours();
   const minutes = ist.getMinutes();
   const timeMinutes = hours * 60 + minutes;

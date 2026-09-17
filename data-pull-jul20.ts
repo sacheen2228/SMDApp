@@ -40,7 +40,7 @@ async function pullChain(symbol: string) {
   return {
     symbol, spot: s.spotPrice, atm, vix: s.indiaVIX, pcr: s.pcr,
     maxPain: s.maxPain, futures: s.futuresPrice, strikes: strikes.length,
-    oi: { ceOI, peOI, ceVol, peVol, ceChg, peChg, pcrOI: +(peOI / (ceOI || 1)).toFixed(2), pcrVol: +(peVol / (ceVol || 1)).toFixed(2) },
+    oi: { ceOI, peOI, ceVol, peVol, ceChg, peChg, pcrOI: ceOI > 0 && peOI > 0 ? +(peOI / ceOI).toFixed(2) : null, pcrVol: ceVol > 0 && peVol > 0 ? +(peVol / ceVol).toFixed(2) : null },
     ceWalls: ceWalls.slice(0, 8).map(w => `${w.strike} OI:${(w.oi/1000).toFixed(0)}K Chg:${w.chg >= 0 ? '+' : ''}${(w.chg/1000).toFixed(0)}K LTP:₹${w.ltp} Vol:${(w.vol/1000).toFixed(0)}K`),
     peWalls: peWalls.slice(0, 8).map(w => `${w.strike} OI:${(w.oi/1000).toFixed(0)}K Chg:${w.chg >= 0 ? '+' : ''}${(w.chg/1000).toFixed(0)}K LTP:₹${w.ltp} Vol:${(w.vol/1000).toFixed(0)}K`),
     straddle: near.filter((x: any) => x.strike === atm).map((x: any) => ({

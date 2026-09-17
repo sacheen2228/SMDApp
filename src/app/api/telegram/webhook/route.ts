@@ -16,10 +16,25 @@ import { getHistory, appendTurn } from "@/lib/historyStore";
 import { processMessage } from "@/lib/telegram-bot";
 import type { OptionChainRow } from "@/lib/tradeAlertEngine";
 
-import { isTelegramSendWindow } from "@/lib/marketHours";
-
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+
+// ── Update dedup: prevent Telegram retries + poll overlap from processing same message twice ──
+const processedUpdates = new Map<number, number>(); // update_id → timestamp
+const DEDUP_TTL = 5 * 60 * 1000; // 5 minutes
+
+function isDuplicate(updateId: number): boolean {
+  const now = Date.now();
+  // Cleanup old entries
+  if (processedUpdates.size > 500) {
+    for (const [id, ts] of processedUpdates) {
+      if (now - ts > DEDUP_TTL) processedUpdates.delete(id);
+    }
+  }
+  if (processedUpdates.has(updateId)) return true;
+  processedUpdates.set(updateId, now);
+  return false;
+}
 
 async function sendTelegramMessage(chatId: number, text: string) {
   // No time gate for inbound replies — users expect a response when they message the bot.
@@ -27,14 +42,14 @@ async function sendTelegramMessage(chatId: number, text: string) {
   await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
   });
 }
 
 // Build live SDMContext from the real option-chain + news APIs that
 // the dashboard already uses.
 async function buildContext(chatId: number | string, symbol = "NIFTY", base = ""): Promise<SDMContext> {
-  let spot = 0, pcr = 1, vix = 15;
+  let spot = 0, pcr: number | null = null, vix = 15;
   let expiryLabel: string | undefined;
   let chain: OptionChainRow[] = [];
 
@@ -44,7 +59,7 @@ async function buildContext(chatId: number | string, symbol = "NIFTY", base = ""
     const d = json?.data;
     if (d) {
       spot = d.spotPrice || d.summary?.spotPrice || 0;
-      pcr = d.summary?.pcr ?? 1;
+      pcr = d.summary?.pcr ?? null;
       vix = d.summary?.indiaVIX ?? 15;
       expiryLabel = d.expiries?.[0]?.label || d.summary?.selectedExpiry;
       chain = (d.data || []).map((row: any) => ({
@@ -111,11 +126,17 @@ async function buildContext(chatId: number | string, symbol = "NIFTY", base = ""
 
 export async function POST(req: NextRequest) {
   const update = await req.json();
+  const updateId = update?.update_id as number | undefined;
   const message = update?.message?.text as string | undefined;
   const chatId = update?.message?.chat?.id as number | undefined;
 
   if (!message || !chatId) {
     return NextResponse.json({ ok: true }); // ignore non-text updates
+  }
+
+  // Dedup: skip if this update was already processed (Telegram retry or poll overlap)
+  if (updateId != null && isDuplicate(updateId)) {
+    return NextResponse.json({ ok: true });
   }
 
   const base = process.env.INTERNAL_API_BASE || new URL(req.url).origin;

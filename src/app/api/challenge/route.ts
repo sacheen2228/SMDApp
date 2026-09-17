@@ -23,6 +23,8 @@ import {
   getOpenTrades,
   type ExecutionMode,
 } from "@/lib/challenge/auto-executor";
+import { getCurrentSession } from "@/lib/market-session";
+import { getNSEIndiaVIX } from "@/lib/nse-api";
 
 // ── Scan cache ──
 let lastScan: ChallengeScanResult | null = null;
@@ -84,6 +86,55 @@ export async function GET(req: NextRequest) {
       autoExecResult = await tryAutoExecute(scan);
     }
 
+    // TIGER system context
+    const session = getCurrentSession();
+    const now = new Date();
+    const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const hour = ist.getHours();
+    const minute = ist.getMinutes();
+    const dayOfWeek = ist.getDay();
+
+    // Time window
+    let timeWindow = "CLOSED";
+    if (hour === 9 && minute >= 15 && minute < 30) timeWindow = "GAP_TRAP";
+    else if (hour === 9 && minute >= 30 || hour === 10 && minute <= 30) timeWindow = "WINDOW_1";
+    else if (hour === 11 && minute >= 30 || hour === 12) timeWindow = "LUNCH_CHOP";
+    else if (hour === 13 && minute >= 30 || hour === 14 && minute <= 45) timeWindow = "WINDOW_2";
+    else if (hour === 14 && minute > 45 || hour === 15 && minute <= 15) timeWindow = "EXIT_ZONE";
+    else if (hour >= 9 && hour < 15) timeWindow = "ACTIVE";
+
+    // VIX regime — fetch real VIX if scan didn't provide it
+    let vix = scan.marketContext.vix || 0;
+    if (vix <= 0) {
+      try {
+        const vixData = await getNSEIndiaVIX();
+        if (vixData && vixData.value > 0) vix = vixData.value;
+      } catch { /* VIX fetch failed — leave as 0 */ }
+    }
+    let vixRegime = "UNKNOWN";
+    if (vix > 0 && vix < 12) vixRegime = "COMPLACENT";
+    else if (vix >= 12 && vix < 15) vixRegime = "CALM";
+    else if (vix >= 15 && vix < 20) vixRegime = "NORMAL";
+    else if (vix >= 20 && vix < 25) vixRegime = "ELEVATED";
+    else if (vix >= 25) vixRegime = "FEAR";
+
+    // Trend-day checks (from scan data)
+    const trendChecks = {
+      orbBreak: scan.decision === "TRADE",
+      straddleExpanding: vix >= 12 && vix < 20,
+      oiUnwinding: scan.bestTrade?.score >= 70,
+      pcrShift: scan.marketContext.regime === "BULLISH" || scan.marketContext.regime === "BEARISH",
+      breadthAligned: scan.marketContext.breadth === "BULLISH" || scan.marketContext.breadth === "BEARISH",
+    };
+    const trendScore = Object.values(trendChecks).filter(Boolean).length;
+    const isTrendDay = trendScore >= 3;
+
+    // Risk status
+    const tradesToday = tradeStats?.total || 0;
+    const lossesToday = tradeStats?.losses || 0;
+    const dailyStopHit = lossesToday >= 2;
+    const weeklyStopHit = ch.maxDrawdownPct >= 12;
+
     return NextResponse.json({
       success: true,
       challenge: {
@@ -107,6 +158,24 @@ export async function GET(req: NextRequest) {
         todayPnL: getTodayPnL(),
         drawdown: ch.currentDrawdown,
         equityCurve: ch.equityCurve.slice(-50),
+      },
+      tiger: {
+        timeWindow,
+        vixRegime,
+        vix,
+        trendDay: { checks: trendChecks, score: trendScore, isTrendDay },
+        risk: {
+          tradesToday,
+          lossesToday,
+          maxTradesPerDay: 2,
+          dailyStopHit,
+          weeklyStopHit,
+          canTrade: !dailyStopHit && !weeklyStopHit && (session?.isMarketOpen ?? false),
+          capitalDeployedPct: openTrades.length > 0 ? Math.round((openTrades.reduce((s: number, t: any) => s + (t.entry * t.quantity), 0) / ch.currentCapital) * 100) : 0,
+        },
+        session: session?.session || "UNKNOWN",
+        isMarketOpen: session?.isMarketOpen ?? false,
+        allowedInstruments: ["NIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY", "BANKNIFTY"],
       },
       scan,
       tradeFeed: tradeLog,

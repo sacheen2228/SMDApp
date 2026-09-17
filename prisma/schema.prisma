@@ -228,3 +228,445 @@ model UserSettings {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
+
+// ── Hermes Paper Trading ──
+model HermesPaperTrade {
+  id                String   @id @default(cuid())
+  signalId          String   @unique
+
+  createdAt         DateTime @default(now())
+  mode              String   @default("PAPER")
+
+  decision          String   // BUY_CE | BUY_PE
+  exchange          String   @default("NSE")
+  instrument        String   @default("index")
+  underlying        String
+
+  spotAtSignal      Float
+  expiry            String
+  strike            Float
+  optionType        String   // CE | PE
+  moneyness         String   // ITM | ATM | OTM
+
+  optionLtpAtSignal Float
+  bidAtSignal       Float?
+  askAtSignal       Float?
+  entrySource       String   @default("ASK") // ASK | LTP
+
+  entryPrice        Float
+  stopLoss          Float
+  target1           Float
+  target2           Float?
+  target3           Float?
+
+  quantity          Int
+  lotSize           Int
+
+  score             Float
+  grade             String?
+  confidence        Float?
+
+  regime            String
+  provider          String
+  freshness         String
+  dataTimestamp      DateTime
+
+  // Greeks at signal
+  gamma             Float?
+  delta             Float?
+  theta             Float?
+  vega              Float?
+  iv                Float?
+
+  // Market context at signal
+  pcr               Float?
+  maxPain           Float?
+  gammaWall         Float?
+  gammaFlip         Float?
+  expectedMove      Float?
+  vix               Float?
+  fiiNet            Float?
+  diiNet            Float?
+  marketStructure   String?
+
+  // Trade status
+  status            String   @default("OPEN")
+  // OPEN | TP1_HIT | TP2_HIT | TP3_HIT | SL_HIT | TIME_EXIT | EXPIRED | CANCELLED
+
+  exitPrice         Float?
+  exitTime          DateTime?
+  exitSource        String?  // SL | TP1 | TP2 | TP3 | TIME | EXPIRY
+
+  // P&L
+  realizedPnL       Float?
+  realizedPnLPercent Float?
+
+  // MFE/MAE
+  maxFavorableExcursion     Float?
+  maxFavorableExcursionPct  Float?
+  maxAdverseExcursion       Float?
+  maxAdverseExcursionPct    Float?
+
+  // Tracking
+  highestPremium    Float?
+  lowestPremium     Float?
+  spotAtExit        Float?
+  spotMove          Float?
+  optionMove        Float?
+  holdingTimeMs     Float?
+
+  // Premium tracking history (JSON array of {timestamp, premium, spot})
+  premiumHistory    String   @default("[]")
+
+  // Validation snapshot
+  validation        String?  // JSON
+  reasons           String?  // JSON array
+  invalidation      String?
+  dataSources       String?  // JSON array
+
+  // Risk snapshot
+  riskAmount        Float?
+  riskReward        Float?
+  charges           Float?
+  slippageBps       Float?
+
+  createdBy         String   @default("HERMES")
+
+  @@index([underlying])
+  @@index([status])
+  @@index([createdAt])
+  @@index([decision])
+}
+
+// ── Hermes NO_TRADE Observations ──
+model HermesNoTradeObservation {
+  id                String   @id @default(cuid())
+
+  createdAt         DateTime @default(now())
+
+  underlying        String
+  spotAtObservation Float
+  decision          String   @default("NO_TRADE")
+
+  score             Float
+  grade             String?
+  regime            String
+
+  blockingConditions String  // JSON array of reasons
+  provider          String
+  freshness         String
+  dataTimestamp      DateTime
+
+  // Post-observation tracking
+  optionLtpAtObservation    Float?
+  optionLtpAfter30Min       Float?
+  optionLtpAfter60Min       Float?
+  spotAfter30Min            Float?
+  spotAfter60Min            Float?
+
+  // Classification
+  classification    String?  // GOOD_AVOIDANCE | MISSED_OPPORTUNITY | NEUTRAL
+  avoidedLossPct    Float?
+  missedGainPct     Float?
+
+  // Context
+  vix               Float?
+  pcr               Float?
+  marketStructure   String?
+
+  createdBy         String   @default("HERMES")
+
+  @@index([underlying])
+  @@index([createdAt])
+  @@index([classification])
+}
+
+// ── Hermes Paper Account ──
+model HermesPaperAccount {
+  id                String   @id @default(cuid())
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  startingCapital   Float    @default(100000)
+  currentCapital    Float    @default(100000)
+  availableCapital  Float    @default(100000)
+
+  realizedPnL       Float    @default(0)
+  unrealizedPnL     Float    @default(0)
+  dailyPnL          Float    @default(0)
+  maxDrawdown       Float    @default(0)
+  maxDrawdownPct    Float    @default(0)
+
+  totalSignals      Int      @default(0)
+  totalTrades       Int      @default(0)
+  totalWins         Int      @default(0)
+  totalLosses       Int      @default(0)
+  totalNoTrade      Int      @default(0)
+
+  openTrades        Int      @default(0)
+  isActive          Boolean  @default(true)
+
+  @@unique([id])
+}
+
+model HermesEvent {
+  id                String   @id @default(cuid())
+  eventId           String   @unique
+  eventType         String
+  symbol            String?
+  tradeId           String?
+  payload           String   @default("{}")
+  delivered         Boolean  @default(false)
+  deliveredAt       DateTime?
+  retryCount        Int      @default(0)
+  lastError         String?
+  createdAt         DateTime @default(now())
+
+  @@index([eventType])
+  @@index([delivered])
+  @@index([createdAt])
+}
+
+model NousState {
+  id                String   @id @default("nous-main")
+  currentMode       String   @default("BOOT")
+  previousMode      String?
+  lastHeartbeat     DateTime @default(now())
+  lastCycleAt       DateTime?
+  lastShutdownAt    DateTime?
+  lastRecoveryAt    DateTime?
+  processId         Int?
+  isRecovering      Boolean  @default(false)
+  offlineGapSeconds Int      @default(0)
+  recoveryStatus    String?  // NONE | IN_PROGRESS | COMPLETE | PARTIAL
+  recoveryData      String   @default("{}") // JSON: what was recovered
+  marketSnapshot    String   @default("{}") // JSON: last known market state
+  pendingTasks      String   @default("[]") // JSON: tasks that need recovery
+  sessionHistory    String   @default("[]") // JSON: recent mode transitions
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([id])
+}
+
+model MarketSnapshot {
+  id                String   @id @default(cuid())
+  timestamp         DateTime @default(now())
+  session           String   // PRE_MARKET | MARKET_ACTIVE | POST_MARKET | etc
+  mode              String   // from NousState
+  indices           String   @default("{}") // JSON: NIFTY/BANKNIFTY/SENSEX state
+  breadth           String   @default("{}") // JSON: market breadth
+  vix               Float?
+  fiiDii            String   @default("{}") // JSON: FII/DII data
+  sectors           String   @default("[]") // JSON: sector rotation
+  mcx               String   @default("{}") // JSON: MCX state
+  news              String   @default("[]") // JSON: overnight/news events
+  providerHealth    String   @default("{}") // JSON: provider status
+  candidates        String   @default("[]") // JSON: trade candidates
+  dataHealthScore   Float    @default(0)
+  createdAt         DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([session])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Agent System — Registration, Heartbeat, Tasks, Signals, Events
+// ═══════════════════════════════════════════════════════════════════
+
+model Agent {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  type              String   // HERMES | SMDAPP_ENGINE | MARKET_RESEARCH | EXTERNAL_AGENT | HUMAN | SYSTEM
+  version           String
+  status            String   @default("ACTIVE") // ACTIVE | IDLE | BUSY | DEGRADED | OFFLINE | ERROR
+  capabilities      String   @default("{}") // JSON: AgentCapabilities
+  description       String
+  healthStatus      String   @default("HEALTHY") // HEALTHY | DEGRADED | UNHEALTHY
+  lastHeartbeatAt   DateTime?
+  lastTaskAt        DateTime?
+  lastSignalAt      DateTime?
+  metadata          String   @default("{}") // JSON: additional metadata
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  heartbeats        AgentHeartbeat[]
+  tasks             AgentTask[]
+  signals           AgentSignal[]
+  events            AgentEvent[]
+  performance       AgentPerformance[]
+  externalSignals   ExternalSignal[]
+
+  @@index([type])
+  @@index([status])
+  @@index([name])
+}
+
+model AgentHeartbeat {
+  id                String   @id @default(cuid())
+  agentId           String
+  status            String   // ACTIVE | IDLE | BUSY | DEGRADED | OFFLINE | ERROR
+  currentTask       String?
+  currentMarket     String?
+  currentUnderlying String?
+  currentStrategy   String?
+  lastSuccessfulToolCall String?
+  lastError         String?
+  latencyMs         Int      @default(0)
+  dataFreshness     String?
+  timestamp         DateTime @default(now())
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([timestamp])
+}
+
+model AgentTask {
+  id                String   @id @default(cuid())
+  agentId           String
+  taskType          String   // MARKET_SCAN | OPTION_SCAN | CE_PE_COMPARISON | etc
+  underlying        String
+  strategy          String
+  priority          String   @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  status            String   @default("QUEUED") // QUEUED | RUNNING | COMPLETED | FAILED | CANCELLED | EXPIRED
+  input             String   @default("{}") // JSON
+  output            String?  // JSON
+  startedAt         DateTime?
+  completedAt       DateTime?
+  error             String?
+  createdAt         DateTime @default(now())
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([status])
+  @@index([taskType])
+  @@index([createdAt])
+}
+
+model AgentSignal {
+  id                String   @id @default(cuid())
+  agentId           String
+  signalType        String   // RESEARCH | WATCH | CANDIDATE | FINAL | ENTRY | EXIT | POST_TRADE | EXTERNAL
+  direction         String   // BUY_CE | BUY_PE | WAIT | EXIT
+  optionType        String?  // CE | PE
+  underlying        String
+  market            String
+  exchange          String
+  strike            Float?
+  expiry            String?
+  entryPrice        Float?
+  stopLoss          Float?
+  target1           Float?
+  target2           Float?
+  confidence        Float
+  thesis            String
+  evidence          String   @default("{}") // JSON: SignalEvidence
+  marketSnapshotId  String?
+  canonicalSnapshotTimestamp String?
+  dataSource        String
+  dataFreshness     String
+  validationStatus  String   @default("PENDING") // PENDING | VALIDATED | REJECTED | STALE
+  executionStatus   String   @default("NONE") // NONE | READY | EXECUTED | BLOCKED
+  lifecycle         String   @default("RESEARCH") // RESEARCH → CANDIDATE → VALIDATING → FINAL → ACTIVE → CLOSED
+  expiresAt         DateTime?
+  validatedAt       DateTime?
+  executedAt        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([underlying])
+  @@index([direction])
+  @@index([lifecycle])
+  @@index([validationStatus])
+  @@index([createdAt])
+}
+
+model AgentEvent {
+  id                String   @id @default(cuid())
+  eventId           String   @unique
+  eventType         String   // AGENT_REGISTERED | AGENT_HEARTBEAT | TASK_CREATED | etc
+  agentId           String
+  data              String   @default("{}") // JSON
+  idempotencyKey    String   @unique
+  createdAt         DateTime @default(now())
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([eventType])
+  @@index([agentId])
+  @@index([createdAt])
+  @@index([idempotencyKey])
+}
+
+model AgentPerformance {
+  id                String   @id @default(cuid())
+  agentId           String
+  period            String   // YYYY-MM-DD
+  totalSignals      Int      @default(0)
+  validSignals      Int      @default(0)
+  closedTrades      Int      @default(0)
+  winners           Int      @default(0)
+  losers            Int      @default(0)
+  totalR            Float    @default(0)
+  averageR          Float    @default(0)
+  maxDrawdown       Float    @default(0)
+  staleSignals      Int      @default(0)
+  invalidSignals    Int      @default(0)
+  conflicts         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, period])
+  @@index([agentId])
+  @@index([period])
+}
+
+model ExternalSignal {
+  id                String   @id @default(cuid())
+  agentId           String
+  underlying        String
+  exchange          String   @default("NSE")
+  direction         String   // BUY_CE | BUY_PE | WAIT | EXIT
+  optionType        String?  // CE | PE
+  strike            Float?
+  expiry            String?
+  entryPrice        Float?
+  confidence        Float
+  thesis            String
+  rawPayload        String   @default("{}") // JSON
+  normalizedAt      DateTime @default(now())
+  validationStatus  String   @default("PENDING") // PENDING | VALIDATED | REJECTED
+  rejectionReason   String?
+  createdAt         DateTime @default(now())
+
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([underlying])
+  @@index([validationStatus])
+  @@index([createdAt])
+}
+
+model NotificationDelivery {
+  id                String   @id @default(cuid())
+  eventId           String
+  channel           String   // TELEGRAM | WEBSOCKET | UI
+  telegramMessageId String?
+  status            String   @default("PENDING") // PENDING | SENDING | SENT | FAILED | RETRYING
+  attempts          Int      @default(0)
+  sentAt            DateTime?
+  lastError         String?
+  createdAt         DateTime @default(now())
+
+  @@index([eventId])
+  @@index([channel])
+  @@index([status])
+}

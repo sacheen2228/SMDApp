@@ -143,6 +143,13 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
 
       <Card className="bg-black/50 border-gray-800">
         <CardContent className="p-3">
+          {td.action === 'NO_TRADE' ? (
+            <div className="text-center py-2">
+              <div className="text-xs text-gray-500">Action</div>
+              <Badge variant="outline" className="text-sm mt-1 text-gray-400 border-gray-600">NO TRADE</Badge>
+              <div className="text-xs text-gray-500 mt-2">Best candidate: {td.strike} {td.optionType} {td.strikeType} — edge {td.optionsEdgeScore}/100, but quality gates not passed.</div>
+            </div>
+          ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="text-center">
               <div className="text-xs text-gray-500">Action</div>
@@ -164,9 +171,12 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
               <div className="text-lg font-bold text-blue-400">1:{td.riskReward}</div>
             </div>
           </div>
+          )}
         </CardContent>
       </Card>
 
+      {td.action !== 'NO_TRADE' && (
+      <>
       <div className="grid grid-cols-4 md:grid-cols-7 gap-1 text-center">
         {[
           { label: 'Delta', value: fmtNum(td.delta, 4), icon: <ArrowUp className="h-3 w-3 inline" /> },
@@ -198,6 +208,8 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
           <div className="text-emerald-400 font-bold">{fmtRs(td.target1)}</div>
         </div>
       </div>
+      </>
+      )}
 
       <Tabs defaultValue="comparison">
         <TabsList className="grid grid-cols-5 h-7 text-xs bg-gray-900">

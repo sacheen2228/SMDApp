@@ -18,7 +18,7 @@ export function scorePCR(
     if (strike.pe) totalPEOI += strike.pe.oi;
   }
 
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
 
   if (pcr > 1.2) {
     const score = Math.min(100, 50 + (pcr - 1.2) * 100);
@@ -606,7 +606,7 @@ export function scoreExpiryGammaTheta(
     if (strike.ce) totalCEOI += strike.ce.oi;
     if (strike.pe) totalPEOI += strike.pe.oi;
   }
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   gammaBlastSignals.extremePCR = pcr < 0.7 || pcr > 1.3;
 
   const gammaBlastDetected =
@@ -1105,7 +1105,7 @@ export function runFullAnalysis(
     }
   }
 
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   const sentiment = pcr > 1.2 ? "bullish" : pcr < 0.8 ? "bearish" : "neutral";
   const confidence = Math.min(100, Math.max(20, pcr > 1.2 ? 50 + (pcr - 1.2) * 50 : pcr < 0.8 ? 50 + (0.8 - pcr) * 50 : 40));
 
@@ -1123,7 +1123,19 @@ export function runFullAnalysis(
   // Find ATM data for entry/tp/sl
   const atmData = strikes.find(s => s.strike === atmStrike);
   const isCall = direction === "CALL";
-  const entryPrice = isCall ? (atmData?.ce?.ltp || 0) : (atmData?.pe?.ltp || 0);
+  const rawEntry = isCall ? (atmData?.ce?.ltp || 0) : (atmData?.pe?.ltp || 0);
+
+  // Reject entries below minimum premium — stale/closing data produces unrealistic values
+  // NIFTY/BANKNIFTY/SENSEX options rarely trade below ₹5; anything below is likely stale
+  const MIN_ENTRY_PREMIUM = 5;
+  const entryPrice = rawEntry >= MIN_ENTRY_PREMIUM ? rawEntry : 0;
+
+  // If entry is invalid, force WAIT — don't generate signal from bad data
+  if (entryPrice === 0 && rawEntry > 0 && rawEntry < MIN_ENTRY_PREMIUM) {
+    action = "WAIT";
+    direction = "NEUTRAL";
+  }
+
   const stopLoss = entryPrice > 0 ? Math.round(entryPrice * 0.85) : 0;
   const tp1 = entryPrice > 0 ? Math.round(entryPrice * 1.15) : 0;
   const tp2 = entryPrice > 0 ? Math.round(entryPrice * 1.5) : 0;

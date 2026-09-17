@@ -335,7 +335,7 @@ export async function processMessage(chatId: number, text: string): Promise<void
       const symbol = detected.symbol || "NIFTY";
 
       // Build minimal SDMContext
-      let spot = 0, pcr = 1, vix = 15;
+      let spot = 0, pcr: number | null = null, vix = 15;
       let chain: any[] = [];
       try {
         const res = await fetch(`${base}/api/option-chain?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });

@@ -103,7 +103,7 @@ export async function GET(req: NextRequest) {
         casVelocity: 0, casAboveReference: true, casBuyQty: 0, casSellQty: 0, casImbalance: 0.5,
         atmStrike: matched.strike || spot, atmCE: 0, atmPE: 0,
         combinedPremium: 0, expectedMove: matched.target1 ? matched.target1 - spot : 0,
-        pcr: ctx.nifty?.pcr || 1, maxPain: ctx.nifty?.maxPain || 0, iv: 15, chain: [],
+        pcr: ctx.nifty?.pcr ?? null, maxPain: ctx.nifty?.maxPain ?? 0, iv: 15, chain: [],
         regime: "NORMAL_VOL", vix: 15, realizedVol: 15,
         futuresPrice: spot, futuresBasis: 0,
         currentVolume: 0, avgVolume: 0, volumeRatio: 1,
@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
       const signal = generateStrategySignalV2(snap, config);
       return NextResponse.json({
         success: true, symbol, signal,
-        snapshot: { spot, atmStrike: matched.strike || spot, cePremium: 0, pePremium: 0, combinedPremium: 0, pcr: ctx.nifty?.pcr || 1, iv: 15, maxPain: ctx.nifty?.maxPain || 0 },
+        snapshot: { spot, atmStrike: matched.strike || spot, cePremium: 0, pePremium: 0, combinedPremium: 0, pcr: ctx.nifty?.pcr ?? null, iv: 15, maxPain: ctx.nifty?.maxPain ?? 0 },
         source: "trade-intelligence-fallback",
         fallbackNote: "Live option chain unavailable",
       });

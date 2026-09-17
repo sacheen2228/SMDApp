@@ -24,7 +24,7 @@ export interface MLAnalysis {
   direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
   confidence: number
   reasons: string[]
-  action: 'BUY_CE' | 'BUY_PE' | 'SELL' | 'NO_TRADE'
+  action: 'BUY_CE' | 'BUY_PE' | 'NO_TRADE'
 }
 
 export function calculateRSI(candles: Candle[], period = 14): number {
@@ -294,10 +294,9 @@ export function runMLAnalysis(
     .sort((a, b) => b.confidence - a.confidence)
   const reasons = sorted.slice(0, 3).map((s) => `${s.source}: ${s.description}`)
   if (reasons.length === 0) reasons.push('No strong directional signals detected')
-  let action: 'BUY_CE' | 'BUY_PE' | 'SELL' | 'NO_TRADE'
+  let action: 'BUY_CE' | 'BUY_PE' | 'NO_TRADE'
   if (direction === 'BULLISH' && confidence > 40) action = 'BUY_CE'
   else if (direction === 'BEARISH' && confidence > 40) action = 'BUY_PE'
-  else if (confidence < 20) action = 'NO_TRADE'
-  else action = 'SELL'
+  else action = 'NO_TRADE'
   return { direction, confidence, reasons, action }
 }

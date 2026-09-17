@@ -1,0 +1,10 @@
+[
+  {
+    "defaultSymbol": "NIFTY",
+    "defaultCapital": 100000,
+    "riskPerTradePct": 2,
+    "preferredStrategies": [],
+    "ignoredAlerts": [],
+    "lastUpdated": "2026-09-09T16:42:04.502Z"
+  }
+]

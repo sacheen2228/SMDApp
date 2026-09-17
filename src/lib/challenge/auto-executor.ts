@@ -1,11 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Auto-Executor — Places real Breeze orders for Challenge Engine
 // FIXED: expiry on Thursday, unique trade IDs, audit close, square-off
+// SAFETY: All live orders pass through canonical trade validator first
+// SAFETY: Active trade lock prevents duplicate trades per underlying
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { placeOrder } from "@/lib/icici-breeze/orders";
 import { getBreezeClient } from "@/lib/icici-breeze/auth";
 import { recordSignal, closeTrade as auditClose } from "@/lib/trade-audit-client";
+import { validateCandidateTrade, type TradeCandidate } from "@/lib/trade-validator-gate";
+import { acquireTradeLock, releaseTradeLock, isTradeActive } from "@/lib/active-trade-lock";
 import type { ChallengeOpportunity } from "./challenge-engine";
 
 export type ExecutionMode = "LIVE" | "PAPER";
@@ -150,9 +154,42 @@ function executePaper(opp: ChallengeOpportunity): ExecutionResult {
   };
 }
 
-// ── Execute a live trade (real Breeze order) ──
+// ── Execute a live trade (real Breeze order) — SAFETY: must pass validation first ──
 async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> {
   const timestamp = new Date().toISOString();
+
+  // ── SAFETY: Validate before placing any live order ──
+  const candidate: TradeCandidate = {
+    symbol: opp.symbol,
+    exchange: "NFO",
+    instrument: opp.instrument as 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY',
+    entry: opp.entry,
+    stopLoss: opp.stopLoss,
+    target1: opp.target1,
+    direction: opp.direction,
+    strategy: opp.strategy,
+    score: opp.score,
+    premium: opp.entry,
+    spot: opp.data?.ltp ?? 0,
+    volume: opp.volume ?? 0,
+    oi: 0,
+    bid: null,
+    ask: null,
+  };
+  const validation = validateCandidateTrade(candidate);
+  if (!validation.allowed) {
+    const paper = executePaper(opp);
+    paper.message = `TRADE BLOCKED by validator: ${validation.blockedBy.join(', ')} — ${validation.reasons.join('; ')}`;
+    return paper;
+  }
+
+  // ── SAFETY: Check active trade lock — no duplicate trades per underlying ──
+  const existingLock = isTradeActive(opp.symbol, "NFO");
+  if (existingLock) {
+    const paper = executePaper(opp);
+    paper.message = `TRADE BLOCKED: Active ${existingLock.tradeId} on ${opp.symbol} (${existingLock.status}) — no duplicate trades allowed`;
+    return paper;
+  }
 
   const breezeAvailable = await isBreezeAvailable();
   if (!breezeAvailable) {
@@ -244,6 +281,21 @@ async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> 
     };
     addTrade(entry);
 
+    // ── Acquire active trade lock ──
+    acquireTradeLock({
+      tradeId,
+      strategy: opp.strategy,
+      underlying: opp.symbol,
+      exchange: "NFO",
+      optionType: opp.instrument === "CALL" ? "CE" : opp.instrument === "PUT" ? "PE" : "FUT",
+      strike: 0,
+      expiry: expiryDate,
+      entry: opp.entry,
+      stopLoss: opp.stopLoss,
+      target1: opp.target1,
+      target2: opp.target2,
+    });
+
     // Telegram alert
     try {
       const msg = `🟢 CHALLENGE AUTO-TRADE\n${action} ${quantity} ${opp.symbol} @ ₹${opp.entry}\nStrategy: ${opp.strategy} | Score: ${opp.score}/100\nSL: ₹${opp.stopLoss} | TP: ₹${opp.target1}\nR:R 1:${opp.riskReward.toFixed(1)}\nOrder ID: ${orderId}`;
@@ -281,11 +333,21 @@ async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> 
   }
 }
 
-// ── Main execute function ──
+// ── Main execute function — defaults to PAPER for safety ──
 export async function executeTrade(
   opp: ChallengeOpportunity,
   mode: ExecutionMode = "PAPER",
 ): Promise<ExecutionResult> {
+  // Gate check — must be tradeable
+  if (!opp.tradeable) {
+    return {
+      success: false, mode, tradeId: "", symbol: opp.symbol, strategy: opp.strategy,
+      direction: opp.direction, instrument: opp.instrument, entry: opp.entry,
+      stopLoss: opp.stopLoss, target: opp.target1, quantity: 0, lotSize: 0,
+      maxLoss: 0, score: opp.score, timestamp: new Date().toISOString(),
+      message: `BLOCKED: ${opp.blockedReasons.join('; ')}`,
+    };
+  }
   if (mode === "LIVE") return executeLive(opp);
   return executePaper(opp);
 }
@@ -320,6 +382,9 @@ export async function closeTradeExecution(
       await squareOff(trade.symbol, trade.quantity, "NFO");
     } catch {}
   }
+
+  // ── Release active trade lock ──
+  releaseTradeLock(trade.symbol, "NFO");
 
   return { success: true, pnl, message: `Closed ${trade.symbol}: P&L ₹${pnl}` };
 }

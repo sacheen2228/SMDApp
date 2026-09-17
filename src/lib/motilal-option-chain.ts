@@ -78,7 +78,16 @@ export async function getMotilalOptionChain(
   symbol: string,
   expiry?: string
 ): Promise<MotilalOptionChainResult | null> {
-  if (!isSessionValid()) return null;
+  if (!isSessionValid()) {
+    // Try auto-login with .env credentials
+    try {
+      const { autoLogin } = await import('@/lib/motilal/auth');
+      const loggedIn = await autoLogin();
+      if (!loggedIn) return null;
+    } catch {
+      return null;
+    }
+  }
 
   const cacheKey = `${symbol}_${expiry || 'nearest'}`;
   const cached = cache.get(cacheKey);
@@ -146,8 +155,10 @@ export async function getMotilalOptionChain(
     }
 
     // Fetch LTP for options (batch, max 80)
+    // Early bail: if first LTP returns null, MOAPI NSEFO LTP is broken — don't waste time on all 80
     const scripsToFetch = expiryOptions.slice(0, 80);
     const ltpMap = new Map<number, number>();
+    let consecutiveFailures = 0;
 
     for (let i = 0; i < scripsToFetch.length; i += 5) {
       const batch = scripsToFetch.slice(i, i + 5);
@@ -158,7 +169,17 @@ export async function getMotilalOptionChain(
         })
       );
       for (const r of results) {
-        if (r.ltp > 0) ltpMap.set(r.scripcode, r.ltp);
+        if (r.ltp > 0) {
+          ltpMap.set(r.scripcode, r.ltp);
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+        }
+      }
+      // If first 2 batches (10 calls) all fail, MOAPI F&O LTP is broken — bail
+      if (i === 0 && consecutiveFailures >= 5) {
+        console.warn('[Motilal] NSEFO LTP endpoint not responding — skipping MOAPI');
+        return null;
       }
     }
 
@@ -185,6 +206,10 @@ export async function getMotilalOptionChain(
         bid: 0,
         ask: 0,
         token: s.scripcode,
+        _dataSource: 'moapi-ltp-only',
+        _hasOI: false,
+        _hasVolume: false,
+        _hasGreeks: false,
       };
 
       if (s.optiontype === 'CE') {

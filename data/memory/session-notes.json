@@ -1,0 +1,17 @@
+{
+  "lastUpdated": "2026-09-14",
+  "pendingTasks": [
+    {
+      "task": "Fix MoAPI TOTP key",
+      "description": "Current TOTP key GL6RNUGN7XRHQV2U3HUKLPUVRD54AXJ7 produces invalid TOTP. Get correct Base32 secret from Motilal Oswal dashboard → Settings → 2FA.",
+      "priority": "high",
+      "status": "pending"
+    },
+    {
+      "task": "Fix BANKNIFTY scripcode for MoAPI",
+      "description": "Scripcode 26001 returns null. Need correct MoAPI BANKNIFTY index scripcode.",
+      "priority": "medium",
+      "status": "pending"
+    }
+  ]
+}

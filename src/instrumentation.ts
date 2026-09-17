@@ -21,5 +21,23 @@ export async function register() {
         console.warn(`[Telegram] Webhook auto-set failed: ${err.message}`);
       }
     }
+
+    // Auto-start Nous Orchestrator (24/7 background worker)
+    try {
+      const { startOrchestrator } = await import("@/lib/hermes/nous-orchestrator");
+      await startOrchestrator();
+      console.log("[Nous] Orchestrator auto-started");
+    } catch (err: any) {
+      console.warn(`[Nous] Orchestrator auto-start failed: ${err.message}`);
+    }
+
+    // Auto-start TIGER trade monitor (SL/TP/T trailing + Telegram alerts)
+    try {
+      const { startTigerMonitor } = await import("@/lib/tiger-monitor");
+      startTigerMonitor();
+      console.log("[TIGER] Trade monitor auto-started");
+    } catch (err: any) {
+      console.warn(`[TIGER] Monitor auto-start failed: ${err.message}`);
+    }
   }
 }

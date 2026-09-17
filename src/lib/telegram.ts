@@ -1,20 +1,21 @@
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
 import { isTelegramSendWindow } from "./marketHours";
+import {
+  buildSignalSignature,
+  isSignalAlreadySent,
+  markSignalSent,
+  isSignalDuplicateOrLowerQuality,
+} from "./signalTracker";
 
-// Dedup: trade signature → last send timestamp (5-minute cooldown)
+// Short-term throttle: prevent sending same signal within 5 minutes
 const recentAlerts = new Map<string, number>();
-const DEDUP_COOLDOWN_MS = 5 * 60 * 1000;
+const SHORT_COOLDOWN_MS = 5 * 60 * 1000;
 
-function makeAlertKey(params: { symbol: string; action: string; strike: number; type: string }): string {
-  return `${params.symbol}|${params.action}|${params.strike}|${params.type}`;
-}
-
-function isDuplicate(key: string): boolean {
+function shortTermThrottle(key: string): boolean {
   const last = recentAlerts.get(key);
-  if (last && Date.now() - last < DEDUP_COOLDOWN_MS) return true;
+  if (last && Date.now() - last < SHORT_COOLDOWN_MS) return true;
   recentAlerts.set(key, Date.now());
-  // Cleanup entries older than 1 hour
   if (recentAlerts.size > 200) {
     const cutoff = Date.now() - 3600000;
     for (const [k, v] of recentAlerts) { if (v < cutoff) recentAlerts.delete(k); }
@@ -82,8 +83,12 @@ export async function sendTelegramMessage(text: string, chatId?: string): Promis
   }
 }
 
+// Full-day dedup: check if same signal was sent today
 export function checkTradeDedup(symbol: string, action: string, strike: number, type: string): boolean {
-  return isDuplicate(makeAlertKey({ symbol, action, strike, type }));
+  const sig = buildSignalSignature({ symbol, strike, optionType: type, direction: action });
+  if (isSignalAlreadySent(sig)) return true;
+  // Also check short-term throttle
+  return shortTermThrottle(sig);
 }
 
 export async function sendTradeAlert(params: {
@@ -98,12 +103,25 @@ export async function sendTradeAlert(params: {
   target2?: number;
   source?: string;
 }): Promise<boolean> {
-  // Dedup: skip if same trade signature sent within 5 minutes
-  const alertKey = makeAlertKey(params);
-  if (isDuplicate(alertKey)) {
-    console.log(`[Telegram] Dedup: skipped ${alertKey} (sent <5min ago)`);
+  const sig = buildSignalSignature({
+    symbol: params.symbol,
+    strike: params.strike,
+    optionType: params.type,
+    direction: params.action,
+  });
+
+  // FULL-DAY dedup: skip if same signal sent today with >= confidence
+  if (isSignalDuplicateOrLowerQuality(sig, params.confidence)) {
+    console.log(`[Telegram] Dedup (full-day): skipped ${sig} — already sent with equal/higher confidence`);
     return false;
   }
+
+  // Short-term throttle: also skip if sent within 5 minutes
+  if (shortTermThrottle(sig)) {
+    console.log(`[Telegram] Dedup (short-term): skipped ${sig} (sent <5min ago)`);
+    return false;
+  }
+
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
   const sourceLabel = params.source || "SDM Engine";
   const msg = `
@@ -120,7 +138,12 @@ ${params.target2 ? `🎯 Target 2: ₹${params.target2}` : ""}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();
-  return sendTelegramMessage(msg);
+
+  const sent = await sendTelegramMessage(msg);
+  if (sent) {
+    markSignalSent(sig, params.confidence, params.source || "sdm-engine");
+  }
+  return sent;
 }
 
 export async function sendSignalAlert(params: {
@@ -129,6 +152,17 @@ export async function sendSignalAlert(params: {
   symbol: string;
   reasons: string[];
 }): Promise<boolean> {
+  const sig = buildSignalSignature({
+    symbol: params.symbol,
+    direction: params.direction,
+  });
+
+  // Full-day dedup for signals too
+  if (isSignalDuplicateOrLowerQuality(sig, params.confidence)) {
+    console.log(`[Telegram] Dedup: skipped signal ${sig}`);
+    return false;
+  }
+
   const emoji = params.direction === "BULLISH" ? "📈" : params.direction === "BEARISH" ? "📉" : "➡️";
   const msg = `
 ${emoji} <b>ML Signal — ${params.direction}</b>
@@ -140,7 +174,11 @@ ${params.reasons.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();
-  return sendTelegramMessage(msg);
+  const sent = await sendTelegramMessage(msg);
+  if (sent) {
+    markSignalSent(sig, params.confidence, "ml-signal");
+  }
+  return sent;
 }
 
 export async function sendSystemAlert(message: string): Promise<boolean> {

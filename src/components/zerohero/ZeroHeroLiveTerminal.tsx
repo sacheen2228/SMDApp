@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { validateCandidateTrade, type TradeCandidate } from "@/lib/trade-validator-gate";
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -34,6 +35,8 @@ interface ScannerRow {
   instFilter: string;
   instRetailTrap: boolean;
   instPrediction: string;
+  validated?: boolean;
+  blockReasons?: string[];
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -279,6 +282,32 @@ export default function ZeroHeroLiveTerminal() {
       const prev = prevChainRef.current;
       const sc = buildScanner(window, resStr, supStr, sp, prev, straddleRange, summary.indiaVIX || 0, instDataRef.current);
 
+      // SAFETY: Validate each scanner row through canonical trade validator
+      const validatedSc = sc.map((row) => {
+        const candidate: TradeCandidate = {
+          symbol,
+          exchange: "NFO",
+          instrument: row.type === "CE" ? "CALL" : "PUT",
+          strike: row.strike,
+          entry: row.entry,
+          stopLoss: row.sl,
+          target1: row.tp1,
+          direction: row.type === "CE" ? "BUY_CE" : "BUY_PE",
+          strategy: "ZERO_HERO",
+          score: row.tp1Prob,
+          premium: row.entry,
+          spot: sp,
+          volume: row.oi_rank,
+          oi: row.oi_rank,
+          bid: null,
+          ask: null,
+          dataTimestamp: new Date().toISOString(),
+          dataSource: source,
+        };
+        const validation = validateCandidateTrade(candidate);
+        return { ...row, validated: validation.allowed, blockReasons: validation.reasons };
+      });
+
       // Update prev snapshot
       const nextPrev = new Map<number, { ce: number; pe: number }>();
       for (const s of window) {
@@ -296,7 +325,7 @@ export default function ZeroHeroLiveTerminal() {
       setExpiry(exp);
       setSource(src);
       setFetchedAt(new Date().toISOString());
-      setScanner(sc);
+      setScanner(validatedSc);
       setChainCount(strikes.length);
       setError("");
       setLoading(false);
@@ -613,10 +642,11 @@ export default function ZeroHeroLiveTerminal() {
               <tbody>
                 {scanner.map((r, i) => (
                   <Fragment key={i}>
-                    <tr style={{ borderBottom: "1px solid #1B2531" }}>
+                    <tr style={{ borderBottom: "1px solid #1B2531", opacity: r.validated === false ? 0.5 : 1 }}>
                       <td className="px-1 py-0.5 text-left">
                         <span className="font-bold" style={{ fontFamily: "'Space Grotesk',sans-serif" }}>{fmtInt(r.strike)}</span>
                         <span className="ml-1 text-[10px]" style={{ color: r.type === "CE" ? "#33C98D" : "#F0566B" }}>{r.type}</span>
+                        {r.validated === false && <span className="ml-1 text-[8px] text-red-400">BLOCKED</span>}
                       </td>
                       <td className="px-1 py-0.5 text-right">{fmtOi(r.oi_rank)}</td>
                       <td className="px-1 py-0.5 text-right">₹{fmt(r.entry)}</td>
@@ -672,6 +702,8 @@ R:R (wall): ${r.rr}
 Expiry:     ${expiry || "current expiry"}
 Inst:       ${r.instFilter.toUpperCase()} · FII ${r.instFiiDir.toUpperCase()}(${r.instFiiScore}) · Pro ${r.instProDir.toUpperCase()}(${r.instProScore})
 Smart Bias: ${r.instBias.toUpperCase()} · Pred: ${r.instPrediction.toUpperCase()}${r.instRetailTrap ? ' · ⚠ TRAP' : ''}
+
+VALIDATION: ${r.validated === false ? 'BLOCKED' : 'PASSED'}${r.blockReasons && r.blockReasons.length > 0 ? '\nBlock Reasons: ' + r.blockReasons.join('; ') : ''}
 
 NOTE: This is a preview only. No order was sent.
 Place orders through your broker's terminal.`}

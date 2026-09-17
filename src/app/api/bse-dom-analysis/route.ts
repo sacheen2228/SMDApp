@@ -114,20 +114,29 @@ export async function GET(request: NextRequest) {
       } : null,
     }));
 
-    // Calculate metrics
+    // PCR — null when OI unavailable
     const totalCallOI = processedStrikes.reduce((sum, s) => sum + (s.ce?.oi || 0), 0);
     const totalPutOI = processedStrikes.reduce((sum, s) => sum + (s.pe?.oi || 0), 0);
-    const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+    const pcr = totalCallOI > 0 && totalPutOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : null;
     
     const totalCallVol = processedStrikes.reduce((sum, s) => sum + (s.ce?.volume || 0), 0);
     const totalPutVol = processedStrikes.reduce((sum, s) => sum + (s.pe?.volume || 0), 0);
 
-    // Max Pain
-    let maxPain = atmStrike;
-    let maxTotalOI = 0;
-    for (const s of processedStrikes) {
-      const total = (s.ce?.oi || 0) + (s.pe?.oi || 0);
-      if (total > maxTotalOI) { maxTotalOI = total; maxPain = s.strike; }
+    // Max Pain — strike where payout to option holders is MINIMUM
+    let maxPain: number | null = null;
+    if (processedStrikes.length > 0 && (totalCallOI > 0 || totalPutOI > 0)) {
+      const strikes = processedStrikes.map(s => s.strike).sort((a, b) => a - b);
+      const minS = strikes[0], maxS = strikes[strikes.length - 1];
+      let best = minS, minPayout = Infinity;
+      for (let p = minS; p <= maxS; p++) {
+        let payout = 0;
+        for (const s of processedStrikes) {
+          if (p > s.strike) payout += (p - s.strike) * (s.ce?.oi || 0);
+          if (p < s.strike) payout += (s.strike - p) * (s.pe?.oi || 0);
+        }
+        if (payout < minPayout) { minPayout = payout; best = p; }
+      }
+      maxPain = best;
     }
 
     // Resistance/Support

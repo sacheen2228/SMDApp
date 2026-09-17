@@ -1110,7 +1110,7 @@ export function analyzeOptionChain(data: {
   const totalCallOIChange = strikes.reduce((sum, s) => sum + s.callOIChange, 0);
   const totalPutOIChange = strikes.reduce((sum, s) => sum + s.putOIChange, 0);
 
-  const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
+  const pcr = totalCallOI > 0 && totalPutOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : null;
   const pcrChange = totalCallOIChange !== 0 ? totalPutOIChange / totalCallOIChange : 0;
 
   // Max Pain calculation

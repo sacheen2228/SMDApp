@@ -31,6 +31,17 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     
+    // ── SAFETY: Option selling is FORBIDDEN ──
+    // SMDApp is an OPTION BUYING system. Reject any sell order on options.
+    const action = String(body.action || '').toLowerCase();
+    const product = String(body.product || '').toLowerCase();
+    if (action === 'sell' && (product === 'options' || product === 'option')) {
+      return NextResponse.json(
+        { success: false, error: 'Option selling is not allowed. SMDApp is an option buying system.' },
+        { status: 403 }
+      );
+    }
+
     const orderRequest: OrderRequest = {
       stockCode: body.stockCode,
       exchangeCode: body.exchangeCode || 'NFO',

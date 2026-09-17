@@ -18,6 +18,8 @@ import { buildMarketIntelligenceContext, type MarketIntelligenceContext } from "
 import { analyzeEquitySwing } from "@/lib/trade-intelligence/equity-swing-mode";
 import { analyzeStockFO } from "@/lib/trade-intelligence/stock-fo-mode";
 import { analyzeIndexFO } from "@/lib/trade-intelligence/index-fo-mode";
+import { roundToTick, getTickSize } from "@/lib/symbol-config";
+import { getCurrentSession } from "@/lib/market-session";
 
 // ── Types ──
 export type TradeDecision = "TRADE" | "WATCH" | "NO_TRADE";
@@ -46,6 +48,10 @@ export interface ChallengeOpportunity {
   factors: Record<string, number>;
   position: any;
   data: { ltp: number; changePct: number; weekHigh52: number; weekLow52: number };
+  // Gate fields — inherited from session/status gate, NOT from raw score
+  tradeable: boolean;
+  blockedReasons: string[];
+  dataStamp: 'LIVE' | 'PREV_CLOSE';
 }
 
 export interface ChallengeScanResult {
@@ -168,11 +174,12 @@ function scoreNifty500Stock(
   factors.liquidity = liqScore;
   score += liqScore;
 
-  // Build entry/SL/TP with real R:R
-  const entry = quote.ltp;
-  const stopLoss = entry - slDist;
-  const target1 = entry + tpDist;
-  const target2 = entry + tpDist * 1.5;
+  // Build entry/SL/TP with real R:R — tick-rounded
+  const tick = getTickSize(quote.symbol);
+  const entry = roundToTick(quote.ltp, tick);
+  const stopLoss = roundToTick(entry - slDist, tick);
+  const target1 = roundToTick(entry + tpDist, tick);
+  const target2 = roundToTick(entry + tpDist * 1.5, tick);
 
   const finalScore = Math.min(100, Math.round(score));
 
@@ -198,7 +205,11 @@ function scoreNifty500Stock(
     reasoning,
     factors,
     position: { quantity: 0, lotSize: 1, lots: 0, totalCost: 0, maxLoss: 0, maxLossPct: 0, riskAmount: 0, canTrade: false },
-    data: { ltp: quote.ltp, changePct: quote.changePct, weekHigh52: quote.weekHigh52, weekLow52: quote.weekLow52 },
+    data: { ltp: entry, changePct: quote.changePct, weekHigh52: quote.weekHigh52, weekLow52: quote.weekLow52 },
+    // Gate fields — set by scan orchestrator after session check
+    tradeable: false,
+    blockedReasons: [],
+    dataStamp: 'LIVE',
   };
 }
 
@@ -344,13 +355,65 @@ export async function runChallengeScan(
     } catch {}
   }
 
-  // 7. Sort by score
-  allOpportunities.sort((a, b) => b.score - a.score);
+  // 7. Session gate — determine tradeability and dataStamp
+  const session = getCurrentSession();
+  const isMarketOpen = session.isMarketOpen;
+  const sessionPhase = session.session;
+  const blockedReasons: string[] = [];
+  if (!isMarketOpen) {
+    blockedReasons.push(`Session ${sessionPhase} — market not open`);
+  }
 
-  // 8. Take top 10 and assign ranks
-  const top10 = allOpportunities.slice(0, 10).map((opp, i) => ({ ...opp, rank: i + 1 }));
+  // 8. Capital gate — no FUTURES below ₹2L
+  const capitalBelow2L = ch.currentCapital < 200000;
 
-  // 9. Size the best trade for ₹15K capital
+  // 9. Apply tick rounding to F&O setups + add gate fields to ALL
+  for (const opp of allOpportunities) {
+    const tick = getTickSize(opp.symbol);
+    if (opp.instrument !== "EQUITY") {
+      opp.entry = roundToTick(opp.entry, tick);
+      opp.stopLoss = roundToTick(opp.stopLoss, tick);
+      opp.target1 = roundToTick(opp.target1, tick);
+      opp.target2 = roundToTick(opp.target2, tick);
+      opp.data.ltp = opp.entry;
+    }
+    // Set gate fields on every setup
+    const setupBlocked = [...blockedReasons];
+    if (capitalBelow2L && opp.instrument === "FUTURES") {
+      setupBlocked.push(`Capital ₹${ch.currentCapital.toFixed(0)} < ₹2L — FUTURES not tradeable`);
+    }
+    opp.tradeable = setupBlocked.length === 0;
+    opp.blockedReasons = setupBlocked;
+    opp.dataStamp = isMarketOpen ? 'LIVE' : 'PREV_CLOSE';
+  }
+
+  // 10. Dedupe per symbol — keep highest score, tag instrument type
+  const dedupedMap = new Map<string, ChallengeOpportunity>();
+  for (const opp of allOpportunities) {
+    const existing = dedupedMap.get(opp.symbol);
+    if (!existing || opp.score > existing.score) {
+      dedupedMap.set(opp.symbol, opp);
+    }
+  }
+  const deduped = Array.from(dedupedMap.values());
+
+  // 11. Sort by score
+  deduped.sort((a, b) => b.score - a.score);
+
+  // 12. Score distribution log (diagnostic)
+  if (deduped.length > 0) {
+    const scores = deduped.map(o => o.score).sort((a, b) => a - b);
+    const min = scores[0];
+    const max = scores[scores.length - 1];
+    const median = scores[Math.floor(scores.length / 2)];
+    const above75 = scores.filter(s => s >= 75).length;
+    console.log(`[Challenge] Score dist: count=${deduped.length} min=${min} median=${median} max=${max} above75=${above75}`);
+  }
+
+  // 13. Take top 10 and assign ranks
+  const top10 = deduped.slice(0, 10).map((opp, i) => ({ ...opp, rank: i + 1 }));
+
+  // 14. Size the best trade for current capital
   const bestTrade = top10[0];
   if (bestTrade) {
     const isFO = bestTrade.instrument !== "EQUITY";
@@ -358,9 +421,14 @@ export async function runChallengeScan(
       ? calculateFOPosition(ch.currentCapital, bestTrade.entry, bestTrade.stopLoss, bestTrade.symbol, false, config)
       : calculateEquityPosition(ch.currentCapital, bestTrade.entry, bestTrade.stopLoss, config);
     bestTrade.position = position;
+    // Re-check tradeable after sizing
+    if (!position.canTrade) {
+      bestTrade.tradeable = false;
+      bestTrade.blockedReasons.push(`Position sizing: ${position.reason}`);
+    }
   }
 
-  // 10. Decision
+  // 15. Decision — gate verdict is source of truth
   let decision: TradeDecision = "NO_TRADE";
   let noTradeReason: string | undefined;
 
@@ -372,6 +440,8 @@ export async function runChallengeScan(
     noTradeReason = "No setups found above threshold";
   } else if (bestTrade.score < 60) {
     noTradeReason = `Best score ${bestTrade.score}/100 below minimum (60)`;
+  } else if (!bestTrade.tradeable) {
+    noTradeReason = `Blocked: ${bestTrade.blockedReasons.join('; ')}`;
   } else if (!bestTrade.position.canTrade) {
     noTradeReason = `Position sizing failed: ${bestTrade.position.reason}`;
   } else {

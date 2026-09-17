@@ -164,3 +164,14 @@ export function getSymbolConfig(symbol: string): SymbolConfig {
 export function getLotSize(symbol: string): number {
   return getSymbolConfig(symbol).lotSize;
 }
+
+export function getTickSize(symbol: string): number {
+  return getSymbolConfig(symbol).tickSize;
+}
+
+/** Round price to nearest tick size (NSE default ₹0.05). Returns number with ≤2 decimals. */
+export function roundToTick(price: number, tickSize = 0.05): number {
+  if (!Number.isFinite(price) || price <= 0) return price;
+  const rounded = Math.round(price / tickSize) * tickSize;
+  return parseFloat(rounded.toFixed(2));
+}

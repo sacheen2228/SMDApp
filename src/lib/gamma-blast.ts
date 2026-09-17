@@ -80,7 +80,7 @@ export function detectGammaBlast(
     totalCEOI += s.ce?.oi || 0;
     totalPEOI += s.pe?.oi || 0;
   }
-  const pcr = totalCEOI > 0 ? totalPEOI / totalCEOI : 1;
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   result.signals.extremePCR = pcr > 1.5 || pcr < 0.5;
   if (result.signals.extremePCR) {
     result.reasons.push(`Extreme PCR (${pcr.toFixed(2)}) — asymmetric positioning`);

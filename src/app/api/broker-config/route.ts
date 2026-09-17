@@ -20,7 +20,7 @@ interface BrokerCredentials {
  totpKey?: string;
 }
 
-// In-memory store (survives until server restart; for SQLite persistence use BrokerConfig model)
+// In-memory store — loaded from disk on first access
 const brokerConfigs = new Map<string, {
   encrypted: string;
   iv: string;
@@ -30,7 +30,106 @@ const brokerConfigs = new Map<string, {
   lastError?: string;
 }>();
 
+// Load persisted broker configs from disk on startup
+let diskLoaded = false;
+async function loadPersistedConfigs() {
+  if (diskLoaded) return;
+  diskLoaded = true;
+  try {
+    const { readdirSync, readFileSync, mkdirSync, existsSync } = await import("fs");
+    const { join } = await import("path");
+    const configDir = join(process.cwd(), "data", "broker");
+    if (!existsSync(configDir)) {
+      mkdirSync(configDir, { recursive: true });
+    }
+    const files = readdirSync(configDir).filter((f: string) => f.endsWith(".json"));
+    for (const file of files) {
+      const broker = file.replace(".json", "");
+      const data = JSON.parse(readFileSync(join(configDir, file), "utf-8"));
+      brokerConfigs.set(broker, {
+        encrypted: data.encrypted,
+        iv: data.iv,
+        tag: data.tag,
+        status: data.status || "CONFIGURED",
+      });
+      console.log(`[BrokerConfig] Loaded persisted config for ${broker}`);
+    }
+  } catch (e) {
+    console.warn("[BrokerConfig] Disk load error:", e);
+  }
+
+  // Auto-detect from .env if no persisted config exists
+  try {
+    if (!brokerConfigs.has("ICICI_BREEZE") && process.env.BREEZE_API_KEY) {
+      const creds = {
+        apiKey: process.env.BREEZE_API_KEY,
+        secretKey: process.env.BREEZE_SECRET_KEY,
+        username: process.env.BREEZE_USERNAME,
+        password: process.env.BREEZE_PASSWORD,
+        sessionToken: process.env.BREEZE_SESSION_TOKEN,
+      };
+      const encrypted = encryptCredentials(creds);
+      brokerConfigs.set("ICICI_BREEZE", {
+        encrypted: encrypted.encrypted,
+        iv: encrypted.iv,
+        tag: encrypted.tag,
+        status: "CONFIGURED",
+      });
+      // Persist to disk
+      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+      const { join } = await import("path");
+      const configDir = join(process.cwd(), "data", "broker");
+      if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "ICICI_BREEZE.json"), JSON.stringify({
+        encrypted: encrypted.encrypted,
+        iv: encrypted.iv,
+        tag: encrypted.tag,
+        status: "CONFIGURED",
+      }, null, 2));
+      console.log("[BrokerConfig] Auto-configured ICICI_BREEZE from .env");
+    }
+  } catch (e) {
+    console.warn("[BrokerConfig] Auto-config ICICI_BREEZE failed:", e);
+  }
+
+  try {
+    if (!brokerConfigs.has("MOTILAL") && process.env.MOTILAL_API_KEY) {
+      const creds = {
+        apiKey: process.env.MOTILAL_API_KEY,
+        secretKey: process.env.MOTILAL_SECRET_KEY,
+        username: process.env.MOTILAL_USERID,
+        password: process.env.MOTILAL_PASSWORD,
+        dob: process.env.MOTILAL_DOB,
+        vendorId: process.env.MOTILAL_VENDOR_ID,
+        totpKey: process.env.MOTILAL_TOTP_KEY,
+      };
+      const encrypted = encryptCredentials(creds);
+      brokerConfigs.set("MOTILAL", {
+        encrypted: encrypted.encrypted,
+        iv: encrypted.iv,
+        tag: encrypted.tag,
+        status: "CONFIGURED",
+      });
+      // Persist to disk
+      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+      const { join } = await import("path");
+      const configDir = join(process.cwd(), "data", "broker");
+      if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "MOTILAL.json"), JSON.stringify({
+        encrypted: encrypted.encrypted,
+        iv: encrypted.iv,
+        tag: encrypted.tag,
+        status: "CONFIGURED",
+      }, null, 2));
+      console.log("[BrokerConfig] Auto-configured MOTILAL from .env");
+    }
+  } catch (e) {
+    console.warn("[BrokerConfig] Auto-config MOTILAL failed:", e);
+  }
+}
+
 export async function GET(req: NextRequest) {
+  await loadPersistedConfigs();
   const url = new URL(req.url);
   const broker = url.searchParams.get("broker") || "ICICI_BREEZE";
 

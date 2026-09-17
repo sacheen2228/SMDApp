@@ -42,12 +42,18 @@ export function initWebSocket(server: HTTPServer): Server {
   const broadcastLoop = setInterval(() => {
     if (!io) return;
 
+    // Use Intl to get IST time — no manual offset calculation
     const now = new Date();
-    const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000) - (now.getTimezoneOffset() * 60 * 1000));
-    const hours = ist.getHours();
-    const minutes = ist.getMinutes();
-    const day = ist.getDay();
-    const isWeekday = day >= 1 && day <= 5;
+    const istParts = new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: 'numeric', minute: 'numeric', weekday: 'short',
+      hour12: false,
+    }).formatToParts(now);
+    const get = (type: string) => istParts.find(p => p.type === type)?.value ?? '';
+    const hours = parseInt(get('hour') || '0', 10);
+    const minutes = parseInt(get('minute') || '0', 10);
+    const weekday = get('weekday');
+    const isWeekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday);
     const timeNum = hours * 60 + minutes;
     const isOpen = isWeekday && timeNum >= 555 && timeNum <= 930; // 9:15 - 15:30
 
@@ -55,7 +61,7 @@ export function initWebSocket(server: HTTPServer): Server {
     io.emit('market-status', {
       isOpen,
       vix: 0,
-      pcr: 1,
+      pcr: null,
     });
   }, 5_000);
 
