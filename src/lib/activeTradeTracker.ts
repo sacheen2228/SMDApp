@@ -77,6 +77,39 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<v
 
   activeTrades.set(trade.id, trade);
 
+  // Training: record trade snapshot in background (non-blocking)
+  try {
+    const { collectMarketSnapshot, recordTrade } = await import("./training/trade-trainer");
+    const instrumentType = (trade.optionType === "CE" || trade.optionType === "PE")
+      ? trade.optionType as "CE" | "PE"
+      : trade.optionType === "FUT" ? "FUT" : "EQ";
+
+    collectMarketSnapshot(trade.symbol, trade.strike, trade.optionType)
+      .then(snapshot => {
+        recordTrade({
+          id: trade.id,
+          symbol: trade.symbol,
+          side: trade.side,
+          instrumentType,
+          strike: trade.strike || undefined,
+          entryPrice: trade.entry,
+          sl: trade.sl,
+          tp1: trade.tp1,
+          tp2: trade.tp2,
+          tp3: trade.tp3,
+          source: trade.source,
+          confidence: trade.confidence || 0,
+          qualityScore: trade.qualityScore,
+          qualityGrade: trade.qualityGrade,
+          strategy: trade.source,
+          snapshot,
+          createdAt: trade.sentAt,
+        });
+        console.log(`[Training] Snapshot recorded for ${trade.symbol} (${trade.id})`);
+      })
+      .catch(() => { /* non-fatal */ });
+  } catch { /* training module not available — non-fatal */ }
+
   // TIGER alert: send Telegram notification for new trade (skip if caller already sent alert)
   if (!skipAlert) {
     try {
@@ -225,6 +258,19 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
   // 3. Remove from the in-memory active list so it no longer appears as open
   //    and cannot block a fresh entry for the same symbol.
   activeTrades.delete(id);
+
+  // Training: record trade outcome (non-blocking)
+  if (status === 'SL_HIT' || status === 'TP1_HIT' || status === 'TP2_HIT' || status === 'TP3_HIT') {
+    try {
+      const { resolveTrade } = await import("./training/trade-trainer");
+      const outcome = status === 'SL_HIT' ? 'LOSS'
+        : status === 'TP3_HIT' ? 'WIN'
+        : status === 'TP2_HIT' ? 'WIN'
+        : 'WIN'; // TP1 is treated as win ( trailed to breakeven)
+      resolveTrade(trade.id, outcome, hitPrice, status, undefined, undefined);
+      console.log(`[Training] Outcome recorded: ${trade.symbol} ${trade.id} → ${outcome}`);
+    } catch { /* training module not available — non-fatal */ }
+  }
 
   // 4. SAFETY: Release active trade lock on terminal events
   const terminalStatuses = ['TP2_HIT', 'TP3_HIT', 'SL_HIT'];

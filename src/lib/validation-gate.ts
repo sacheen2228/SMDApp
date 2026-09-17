@@ -18,6 +18,8 @@ const MIN_VOLUME = 10000;
 const MAX_SPREAD_PCT = 5;
 const MIN_HEALTH_PCT = 70;
 const MIN_CONFIDENCE_SCORE = 65;
+const MIN_VOLUME_RATIO = 1.5; // Require 1.5x average volume for high-prob trades
+const MIN_MTF_AGREEMENT = 2; // At least 2 of 3 timeframes must agree
 const GRADE_RANK: Record<TradeGrade, number> = {
   "A+": 5,
   A: 4,
@@ -150,6 +152,17 @@ function checkEntryValid(
   spot: number,
   direction?: 'CALL' | 'PUT'
 ): ValidationCheck {
+  // Minimum premium threshold — entries below this are stale/closing data, not tradeable
+  const MIN_PREMIUM = 5;
+
+  if (entryPrice > 0 && entryPrice < MIN_PREMIUM) {
+    return {
+      name: "entry_valid",
+      passed: false,
+      message: `Entry ₹${entryPrice} below minimum ₹${MIN_PREMIUM} — likely stale closing data`,
+    };
+  }
+
   const row = chain.find((s) => s.strike === strike);
   if (!row) {
     return {
@@ -173,8 +186,10 @@ function checkEntryValid(
   if (!hasBidAsk) {
     return {
       name: "entry_valid",
-      passed: true,
-      message: `Entry ${entryPrice} accepted — bid/ask not available for range check`,
+      passed: entryPrice >= MIN_PREMIUM,
+      message: entryPrice >= MIN_PREMIUM
+        ? `Entry ${entryPrice} accepted — bid/ask not available for range check`
+        : `Entry ₹${entryPrice} below minimum ₹${MIN_PREMIUM}`,
     };
   }
 
@@ -289,6 +304,104 @@ function checkDataIntegrity(health: DataHealthReport): ValidationCheck {
   };
 }
 
+// ── NEW: Multi-Timeframe Confirmation ──
+function checkMultiTimeframe(
+  mtfResult?: { bias: string; tf: string }[] | null,
+  direction?: 'CALL' | 'PUT'
+): ValidationCheck {
+  if (!mtfResult || mtfResult.length === 0) {
+    return {
+      name: "multi_timeframe",
+      passed: true,
+      message: "Multi-timeframe data not available — check skipped",
+    };
+  }
+
+  const dirLabel = direction === 'CALL' ? 'BULLISH' : direction === 'PUT' ? 'BEARISH' : 'BULLISH';
+  const agreeing = mtfResult.filter((tf) => tf.bias === dirLabel || tf.bias === 'NEUTRAL').length;
+  const passed = agreeing >= MIN_MTF_AGREEMENT;
+
+  return {
+    name: "multi_timeframe",
+    passed,
+    message: passed
+      ? `${agreeing}/${mtfResult.length} timeframes agree (${dirLabel})`
+      : `Only ${agreeing}/${mtfResult.length} timeframes agree — need ${MIN_MTF_AGREEMENT}+ for high-probability trade`,
+  };
+}
+
+// ── NEW: Volume Confirmation ──
+function checkVolumeConfirmation(
+  chain: SDMOptionStrike[],
+  strike: number,
+  direction?: 'CALL' | 'PUT'
+): ValidationCheck {
+  const row = chain.find((s) => s.strike === strike);
+  if (!row) {
+    return {
+      name: "volume_confirmation",
+      passed: false,
+      message: `Strike ${strike} not found in chain`,
+    };
+  }
+
+  const isCall = direction ? direction === 'CALL' : true;
+  const leg = isCall ? row.ce : row.pe;
+  if (!leg) {
+    return {
+      name: "volume_confirmation",
+      passed: false,
+      message: `No ${isCall ? "CE" : "PE"} data at strike ${strike}`,
+    };
+  }
+
+  // Volume ratio: current volume vs OI (proxy for average activity)
+  const volume = leg.volume || 0;
+  const oi = leg.oi || 0;
+  const avgActivity = oi > 0 ? oi / 20 : 0; // rough daily average from total OI
+  const volumeRatio = avgActivity > 0 ? volume / avgActivity : 1;
+  const passed = volumeRatio >= MIN_VOLUME_RATIO || volume >= MIN_VOLUME;
+
+  return {
+    name: "volume_confirmation",
+    passed,
+    message: passed
+      ? `Volume ${volume.toLocaleString()} (ratio ${volumeRatio.toFixed(1)}x) — confirmed`
+      : `Volume ${volume.toLocaleString()} (ratio ${volumeRatio.toFixed(1)}x) — need ${MIN_VOLUME_RATIO}x average or ${MIN_VOLUME}+ for high-probability entry`,
+  };
+}
+
+// ── NEW: News Sentiment Gate ──
+function checkNewsSentiment(
+  newsSentiment?: { score: number } | null,
+  direction?: 'CALL' | 'PUT'
+): ValidationCheck {
+  if (!newsSentiment || newsSentiment.score === undefined) {
+    return {
+      name: "news_sentiment",
+      passed: true,
+      message: "News sentiment not available — check skipped",
+    };
+  }
+
+  const score = newsSentiment.score; // -100 to +100
+  const isBullish = direction === 'CALL';
+  const isBearish = direction === 'PUT';
+
+  // Strong opposite sentiment is a red flag
+  const strongOpposite = (isBullish && score < -50) || (isBearish && score > 50);
+  const moderateOpposite = (isBullish && score < -25) || (isBearish && score > 25);
+
+  const passed = !strongOpposite;
+  return {
+    name: "news_sentiment",
+    passed,
+    message: passed
+      ? `News sentiment: ${score > 0 ? '+' : ''}${score} ${moderateOpposite ? '(caution: moderate opposite sentiment)' : '(favorable)'}`
+      : `News sentiment BLOCKED: ${score > 0 ? '+' : ''}${score} — strong ${isBullish ? 'bearish' : 'bullish'} sentiment opposes ${isBullish ? 'CALL' : 'PUT'} trade`,
+  };
+}
+
 // ─── Severity Classification ─────────────────────────────────────
 // Hard failures → NO_TRADE, soft failures → WAIT
 
@@ -299,6 +412,7 @@ const HARD_CHECKS = new Set([
   "no_stale_ticks",
   "risk_caps",
   "data_integrity_healthy",
+  "news_sentiment",
 ]);
 
 const SOFT_CHECKS = new Set([
@@ -306,6 +420,8 @@ const SOFT_CHECKS = new Set([
   "entry_valid",
   "liquidity_sufficient",
   "spread_acceptable",
+  "multi_timeframe",
+  "volume_confirmation",
 ]);
 
 // ─── Main Gate ───────────────────────────────────────────────────
@@ -322,6 +438,10 @@ export function validateTrade(input: ValidationInput): ValidationResult {
     checkLiquidity(input.optionChain, input.spot, input.direction),
     checkSpreadAcceptable(input.optionChain, input.selectedStrike, input.direction),
     checkDataIntegrity(input.healthReport),
+    // NEW: High-probability filters
+    checkMultiTimeframe(input.mtfResult, input.direction),
+    checkVolumeConfirmation(input.optionChain, input.selectedStrike, input.direction),
+    checkNewsSentiment(input.newsSentiment, input.direction),
   ];
 
   const failed = checks.filter((c) => !c.passed);
@@ -350,4 +470,65 @@ export function validateTrade(input: ValidationInput): ValidationResult {
   }
 
   return { passed: false, failedChecks: failed, action, reason };
+}
+
+// ─── Training-Enhanced Validation ────────────────────────────────
+// Uses learned data to adjust confidence thresholds and provide regime-aware validation
+
+export interface TrainingEnhancedResult extends ValidationResult {
+  regime?: string;
+  adjustedConfidence?: number;
+  regimeAdjustments?: string[];
+  learnedInsights?: string[];
+}
+
+export function validateTradeWithTraining(
+  input: ValidationInput,
+  regime?: string,
+  factors?: Record<string, number>
+): TrainingEnhancedResult {
+  // Run standard validation first
+  const baseResult = validateTrade(input);
+
+  // Try to apply training enhancements
+  try {
+    // Dynamic import to avoid circular dependencies
+    const { adjustConfidence } = require("./training/confidence-calibrator");
+    const { adaptScoreForRegime, getRegimeWeights } = require("./training/regime-learner");
+
+    const result: TrainingEnhancedResult = { ...baseResult, regime };
+    const learnedInsights: string[] = [];
+
+    // Adjust confidence based on calibration data
+    if (input.qualityScore) {
+      const adjusted = adjustConfidence(input.qualityScore, regime);
+      result.adjustedConfidence = adjusted;
+      if (adjusted !== input.qualityScore) {
+        learnedInsights.push(`Confidence adjusted: ${input.qualityScore} → ${adjusted} (calibration)`);
+      }
+    }
+
+    // Apply regime-specific adaptations
+    if (regime && factors) {
+      const adaptation = adaptScoreForRegime(input.qualityScore || 0, regime, factors);
+      result.regimeAdjustments = adaptation.adjustments;
+      if (adaptation.adjustments.length > 0) {
+        learnedInsights.push(`Regime ${regime}: applied ${adaptation.adjustments.length} factor adjustments`);
+      }
+    }
+
+    // Check regime-specific confidence threshold
+    if (regime) {
+      const regimeWeights = getRegimeWeights(regime);
+      if (regimeWeights.confidenceMultiplier !== 1.0) {
+        learnedInsights.push(`Regime ${regime}: confidence multiplier ${regimeWeights.confidenceMultiplier}`);
+      }
+    }
+
+    result.learnedInsights = learnedInsights;
+    return result;
+  } catch {
+    // Training module not available — return base result
+    return baseResult;
+  }
 }
