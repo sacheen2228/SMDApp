@@ -15,6 +15,8 @@ import {
   checkSLTP, addTrade, formatSLTPHit,
   hasActiveTrade
 } from "./activeTradeTracker";
+import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/registry";
+import { transitionSignal } from "@/lib/agents/signal-lifecycle";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 
@@ -248,7 +250,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
           status: "ACTIVE",
           sentAt: new Date().toISOString(),
           source: "sdm-v2-engine",
-        });
+        }, true); // skipAlert=true — SDM message already sent above
         // Migration: also record executed intraday trades to Trade Audit sidecar.
         await recordIntradayTrade({
           id: c.alert.id,
@@ -263,6 +265,47 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
           reason: c.alert.rationale,
           source: "sdm-v2-engine",
         });
+
+        // Record in Agent Signal Lifecycle
+        try {
+          let sdmAgent = getAgentByName('SDM_ENGINE');
+          if (!sdmAgent) {
+            sdmAgent = registerAgent({
+              name: 'SDM_ENGINE',
+              type: 'SMDAPP_ENGINE',
+              version: '2.0',
+              description: 'SDM V2 Scoring Engine',
+            });
+          }
+          const optionType = (c.alert.optionType as 'CE' | 'PE') || 'CE';
+          const signal = createSignal({
+            agentId: sdmAgent.id,
+            market: 'INDIA',
+            exchange: 'NFO',
+            underlying: c.symbol,
+            signalType: 'FINAL',
+            direction: optionType === 'CE' ? 'BUY_CE' : 'BUY_PE',
+            optionType,
+            strike: c.alert.strike || undefined,
+            entryPrice: c.alert.entry,
+            stopLoss: c.alert.sl,
+            target1: c.alert.tp1,
+            target2: c.alert.tp2,
+            confidence: (c.alert.confidence || 0) / 100,
+            thesis: c.alert.rationale || 'SDM V2 signal',
+            evidence: {},
+            dataSource: 'SDM_V2',
+            dataFreshness: 'LIVE',
+          });
+          transitionSignal(signal.id, 'CANDIDATE');
+          transitionSignal(signal.id, 'VALIDATING');
+          transitionSignal(signal.id, 'VALIDATED');
+          transitionSignal(signal.id, 'FINAL');
+          transitionSignal(signal.id, 'ACTIVE');
+        } catch {
+          // Non-critical
+        }
+
         newAlerts++;
       }
   }
@@ -309,7 +352,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               status: "ACTIVE",
               sentAt: new Date().toISOString(),
               source: "stock-scanner",
-            });
+            }, true); // skipAlert=true — stock alert already sent above
             // Migration: also record executed intraday trades to Trade Audit sidecar.
             await recordIntradayTrade({
               id: tradeId,

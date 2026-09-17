@@ -1,30 +1,21 @@
-# SMDApp — Render blueprint (free tier, single container, no card)
-# Docs: https://render.com/docs/yaml-spec
-# Deploy: push this repo to GitHub, then "New + > Blueprint" in Render,
-# or use the "Deploy from repo" flow pointing at this repo with the
-# Dockerfile at the root.
 services:
   - type: web
     name: smdapp
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/health
+    dockerfilePath: Dockerfile
     envVars:
       - key: NODE_ENV
         value: production
-      - key: BREEZE_API_KEY
-        sync: false # set these in the Render dashboard after deploy
-      - key: BREEZE_SECRET_KEY
-        sync: false
-      - key: BREEZE_SESSION_TOKEN
-        sync: false
+      - key: PORT
+        value: 3000
       - key: DATABASE_URL
-        sync: false
-      # Sidecars run inside the same container on localhost
-      - key: TRADE_AUDIT_BASE
-        value: http://localhost:4001
-      - key: MARKET_HISTORY_BASE
-        value: http://localhost:4002
-      - key: NEXT_PUBLIC_MARKET_HISTORY_URL
-        value: http://localhost:4002
+        value: file:/tmp/custom.db
+      - key: NEXT_TELEMETRY_DISABLED
+        value: 1
+      # Add your API keys in Render Dashboard → Environment tab
+      # BREEZE_API_KEY, BREEZE_SECRET_KEY, BREEZE_SESSION_TOKEN
+      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+      # GROQ_API_KEY, OPENROUTER_API_KEY, TOKENRA_API_KEY
+    healthCheckPath: /api/health
+    autoDeploy: true

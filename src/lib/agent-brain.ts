@@ -146,6 +146,23 @@ ${recentTrades.map((t: any) => `- ${t.strike} ${t.type} | Entry: ₹${t.entryPri
 ## Use the answer_trading_question tool for detailed explanations
 ${TRADING_KNOWLEDGE.substring(0, 2500)}
 
+## CROSS-TAB INTELLIGENCE (Hermes Agent — data is pre-fetched based on your query)
+The LIVE MARKET DATA below includes data fetched specifically for this question.
+You have access to tools for deeper analysis. Use them when the pre-fetched data isn't enough.
+- **Options/Strikes/Premium**: get_option_chain, get_options_edge, get_atm_straddle
+- **Institutional/FII/DII**: get_institutional_positioning, get_fii_dii
+- **Market Health/Regime**: get_market_regime, get_market_breadth, get_vix
+- **Expiry/CAS**: get_cas_analysis, get_expiry_liquidity
+- **Risk/Portfolio**: get_risk_status, get_portfolio, get_challenge_status
+- **Memory/Learning**: search_memory, get_memory_summary, record_trade_memory
+- **Trade Analysis**: get_trade_post_mortem, get_agent_analytics
+- **Trade Signals**: get_sdm_signal, get_unified_ranking, get_trade_tracking
+- **Most Active**: get_most_active_contracts (where institutional money is flowing)
+- **Hermes Pro**: hermes_pro_analysis (full deterministic pipeline), hermes_tool_registry (tool metadata)
+
+Always call multiple tools when you need deeper analysis. Cross-reference data for stronger signals.
+If a tool you need isn't available, use the pre-fetched data in the LIVE MARKET DATA section.
+
 ## MODULES (use when analyzing)
 1. MARKET STRUCTURE: Trend, HH/HL, VWAP, EMAs, S/R levels, Pivots, Opening range, SuperTrend
 2. GREEKS: Delta, Gamma, Theta, Vega, IV percentile, Gamma squeeze, Dealer regime, Gamma flip
@@ -158,7 +175,51 @@ ${TRADING_KNOWLEDGE.substring(0, 2500)}
 9. ENTRY: BUY CALL if Spot>VWAP + Bullish + Positive delta + Call long build-up. BUY PUT if Spot<VWAP + Bearish + Negative delta + Put long build-up
 10. AVOID: Theta too high, IV extreme, Low liquidity, Wide spread, Conflicting signals, Low confidence, Choppy market, Gap fill pending
 11. RISK: Max 2% per trade, 1:2 min R:R, Position sizing by ATR, Never add to losers
-12. 0DTE: Gamma acceleration, Dealer hedging, Premium decay speed, Only scalping allowed`;
+12. 0DTE: Gamma acceleration, Dealer hedging, Premium decay speed, Only scalping allowed
+13. MEMORY: Search past trades, record new ones, learn from patterns — use search_memory and record_trade_memory tools
+14. POST-MORTEM: After a trade closes, analyze what went right/wrong — use get_trade_post_mortem tool
+
+## TRADE DECISION FRAMEWORK (use when recommending trades)
+When user asks "what trade should I take" or similar, follow this EXACTLY:
+
+### Step 1: Read the LIVE MARKET DATA section above
+- Spot price, PCR, Max Pain, ATM strike, VIX
+- Support levels (PE OI walls) — where price is protected from falling
+- Resistance levels (CE OI walls) — where price is protected from rising
+- OI Movers — which strikes are seeing biggest position building
+- Most Active Contracts — where institutional money is flowing
+
+### Step 2: Determine Direction
+- PCR > 1.2 + Spot > Max Pain + FII buying = BULLISH → BUY CALL
+- PCR < 0.8 + Spot < Max Pain + FII selling = BEARISH → BUY PUT
+- PCR 0.8-1.2 + Spot near Max Pain = RANGE-BOUND → SELL STRADDLE or WAIT
+- Conflicting signals = NO TRADE
+
+### Step 3: Select Strike
+- For BUY CALL: Pick strike near support (high PE OI) or ATM
+- For BUY PUT: Pick strike near resistance (high CE OI) or ATM
+- Avoid strikes with very low OI (< 10K) — poor liquidity
+- Prefer strikes with OI building in your direction (CE buildup for calls, PE buildup for puts)
+
+### Step 4: Entry/SL/TP
+- Entry: Current LTP or limit order at support/resistance
+- SL: 30-50% of premium (max 2% of capital)
+- TP1: 1:1 R:R, TP2: 1:2 R:R, TP3: 1:3 R:R
+- Only recommend if R:R >= 1:2
+
+### Step 5: Risk Check
+- Max 1% capital per trade
+- Check VIX: if > 20, reduce position size by 50%
+- Check regime: if CHOPPY, reduce position size by 50%
+- Never recommend if confidence < 65%
+
+### Output Format
+When recommending a trade, ALWAYS output:
+"🎯 TRADE SIGNAL: [BUY/SELL] [STRIKE] [CE/PE]
+Entry: ₹[price] | SL: ₹[price] | TP1: ₹[price] | TP2: ₹[price] | TP3: ₹[price]
+R:R: 1:[ratio] | Confidence: [X]%
+Why: [1-2 line reason using OI/PCR/support/resistance data]
+Risk: [position size warning]"`;
 }
 
 // ─── Tool Definitions ───────────────────────────────────────────
@@ -433,7 +494,478 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ═══════════════════════════════════════════════════════════
+  // PHASE 2: NEW SMD TOOLS — Hermes Agent Integration
+  // ═══════════════════════════════════════════════════════════
+  {
+    type: "function",
+    function: {
+      name: "get_cas_analysis",
+      description: "Get CAS (Close Auction Session) straddle analysis — IBTR range, VWAP reference, banknifty CAS state. Critical for expiry day trading.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_institutional_positioning",
+      description: "Get institutional positioning — FIIs, DIIs, MF, retail, smart vs dumb money detection, trend analysis. For understanding who is doing what.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_fii_dii",
+      description: "Get FII and DII cash market flows with trend analysis. Shows net buying/selling by foreign and domestic institutions.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_options_edge",
+      description: "Get Options Edge — dynamic delta, premium melt, gamma projection, trade card for a given strike. Best for single-strike deep analysis.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+          strike: { type: "number", description: "Strike price to analyze" },
+          side: { type: "string", enum: ["CE", "PE"], description: "Option side" },
+        },
+        required: ["symbol", "strike", "side"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_expiry_liquidity",
+      description: "Get Expiry Liquidity analysis — CAS dislocation, futures basis, IV velocity, OI classification, gamma pressure. Full expiry intelligence.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_market_regime",
+      description: "Get market regime — trending/ranging/volatile/breakout, with bias and confidence. For understanding current market behavior.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_market_breadth",
+      description: "Get market breadth — advance/decline, sector participation, new highs/lows. For understanding market health.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_vix",
+      description: "Get India VIX — current level, percentile, trend. Critical for volatility regime assessment.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_atm_straddle",
+      description: "Get ATM straddle — premium, IV, expected range. For understanding market expectations.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol: NIFTY, BANKNIFTY, FINNIFTY, SENSEX" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_risk_status",
+      description: "Get risk engine status — current exposure, drawdown, capital usage, open positions. For risk-aware decisions.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_portfolio",
+      description: "Get current portfolio — open positions, P&L, holdings. For understanding current exposure.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_challenge_status",
+      description: "Get challenge engine status — active challenges, win/loss, performance. For tracking structured trading experiments.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_trade_post_mortem",
+      description: "Analyze a completed trade — what went right/wrong, entry/exit quality, improvements. Use after a trade closes.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol traded" },
+          strategy: { type: "string", description: "Strategy used" },
+          entryPrice: { type: "number", description: "Entry price" },
+          exitPrice: { type: "number", description: "Exit price" },
+          pnl: { type: "number", description: "P&L in INR" },
+          notes: { type: "string", description: "Any notes about the trade" },
+        },
+        required: ["symbol", "strategy", "entryPrice", "exitPrice", "pnl"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_memory",
+      description: "Search agent memory — past trades, setups, predictions, patterns. For learning from history.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query (e.g. 'BANKNIFTY CE breakout', 'pullback trades')" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_memory_summary",
+      description: "Get agent memory summary — best setups, win rates, recent trades, preferences. For quick memory overview.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "record_trade_memory",
+      description: "Record a trade to memory — pattern, setup, outcome. For learning from each trade.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol traded" },
+          strategy: { type: "string", description: "Strategy used" },
+          setup: { type: "string", description: "Setup description (e.g. 'pullback to VWAP', 'breakout above resistance')" },
+          entryPrice: { type: "number", description: "Entry price" },
+          exitPrice: { type: "number", description: "Exit price (0 if still open)" },
+          pnl: { type: "number", description: "P&L in INR (0 if still open)" },
+          tags: { type: "array", items: { type: "string" }, description: "Tags for filtering" },
+        },
+        required: ["symbol", "strategy", "setup", "entryPrice"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_agent_analytics",
+      description: "Get agent performance analytics — tool usage, LLM call stats, error rates. For monitoring agent health.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_telegram_signal",
+      description: "Send a trade signal to Telegram. Use this when you want to push a trade recommendation to the user's phone.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Symbol (NIFTY, BANKNIFTY, SENSEX, etc.)" },
+          action: { type: "string", description: "BUY or SELL" },
+          strike: { type: "number", description: "Strike price" },
+          optionType: { type: "string", description: "CE or PE" },
+          confidence: { type: "number", description: "Confidence percentage" },
+          entry: { type: "number", description: "Entry price" },
+          stopLoss: { type: "number", description: "Stop loss price" },
+          target1: { type: "number", description: "Target 1 price" },
+          target2: { type: "number", description: "Target 2 price" },
+        },
+        required: ["symbol", "action", "strike", "optionType", "confidence"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "scan_all_instruments",
+      description: "Scan ALL instruments (NIFTY, BANKNIFTY, SENSEX, FINNIFTY, MIDCPNIFTY, Stock F&O, Equity Swing, MCX Commodity) for high-accuracy trades. Returns top setups sorted by confidence.",
+      parameters: {
+        type: "object",
+        properties: {
+          minConfidence: { type: "number", description: "Minimum confidence threshold (default 70)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_mcx_data",
+      description: "Get MCX commodity data — CRUDEOIL, GOLD, SILVER, NATURALGAS. Shows live quotes, option chain, scanner.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "MCX symbol (CRUDEOIL, GOLD, SILVER, NATURALGAS)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "morning_scan",
+      description: "Run the morning signal generator — scans ALL instruments and sends high-accuracy trades to Telegram. Use at market open.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  // ── Debugging / Reverse Engineering Tools ──
+  {
+    type: "function",
+    function: {
+      name: "diagnose_data_source",
+      description: "Diagnose which data sources are alive/dead. Checks Breeze, NSE, Yahoo, Motilal, MCX APIs. Returns status, response times, error rates. Use when data is missing or stale.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "Specific source to test: breeze, nse, yahoo, motilal, mcx, or 'all'" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "trace_data_flow",
+      description: "Trace data flow from source → processing → output. Finds where data breaks in the pipeline. Use when a feature shows stale/missing data.",
+      parameters: {
+        type: "object",
+        properties: {
+          feature: { type: "string", description: "Feature to trace: option_chain, scanner, sdm_signal, mcx, morning_scan, intraday, heatmap, fii_dii" },
+        },
+        required: ["feature"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "test_api_endpoint",
+      description: "Test any API endpoint with custom params. Returns raw response, status code, headers, timing. Use to debug failing APIs.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Full URL to test (e.g., /api/option-chain?symbol=NIFTY or external URL)" },
+          method: { type: "string", description: "HTTP method: GET or POST (default GET)" },
+          body: { type: "string", description: "JSON body for POST requests" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  // ── Hermes Pro Tools ─────────────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "hermes_pro_analysis",
+      description: "Run Hermes Pro deterministic analysis — full market intelligence pipeline. Returns scored trade candidate with regime, OI, gamma, flow, strike selection, validation, and risk. Use for complete trade decisions. NEVER returns fabricated data.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "Instrument: NIFTY, BANKNIFTY, FINNIFTY, SENSEX, MIDCPNIFTY" },
+          mode: { type: "string", description: "Analysis mode: TRADE (full pipeline), RESEARCH (data only), QUICK (fast scan)", enum: ["TRADE", "RESEARCH", "QUICK"] },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "hermes_tool_registry",
+      description: "Query Hermes Pro tool registry — list available tools, their freshness requirements, reliability scores. Use to understand what data sources are available and how fresh they need to be.",
+      parameters: {
+        type: "object",
+        properties: {
+          category: { type: "string", description: "Filter by category: MARKET_DATA, OPTIONS, VOLATILITY, STRUCTURE, FLOW, RISK, MEMORY, ALL" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_most_active_contracts",
+      description: "Get NSE Most Active F&O Contracts — top contracts by volume, futures, options, calls, puts, OI. Shows where institutional money is flowing. Use when asked about most active, volume leaders, or where money is going.",
+      parameters: {
+        type: "object",
+        properties: {
+          type: { type: "string", description: "Filter: contracts, futures, options, calls, puts, oi (default: contracts)" },
+        },
+        required: [],
+      },
+    },
+  },
 ];
+
+// ─── Tool Router — pre-select relevant tools per query ──────────────
+// Free LLM models can't reliably choose from 36 tools. This router
+// selects 8-12 relevant tools per query so the LLM always sees them.
+
+interface ToolRouterEntry {
+  tools: string[];
+  keywords: RegExp;
+}
+
+const TOOL_ROUTER: ToolRouterEntry[] = [
+  // Institutional / FII / DII
+  { tools: ["get_fii_dii", "get_institutional_positioning", "get_sdm_signal"], keywords: /fii|dii|institution|foreign|domestic|fund.?flow|smart.?money/i },
+  // Market regime / breadth / VIX
+  { tools: ["get_market_regime", "get_market_breadth", "get_vix", "get_market_structure"], keywords: /regime|breadth|vix|volatil|trend|range|breakout|market.?health/i },
+  // Expiry / CAS
+  { tools: ["get_cas_analysis", "get_expiry_liquidity", "get_atm_straddle"], keywords: /cas|expiry|straddle|ibtr|auction|dislocat|gamma.?pressur|iv.?veloc/i },
+  // Options edge / Greeks deep
+  { tools: ["get_options_edge", "get_option_chain", "get_atm_straddle"], keywords: /edge|greeks?|delta|gamma|theta|vega|melt|iv.?skew|premium.?melt/i },
+  // Risk / Portfolio
+  { tools: ["get_risk_status", "get_portfolio", "get_challenge_status"], keywords: /risk|portfolio|position|p&l|exposure|drawdown|challenge|open.?trade/i },
+  // Memory / Learning
+  { tools: ["search_memory", "get_memory_summary", "record_trade_memory"], keywords: /memory|past.?trade|setup|pattern|learn|history|record|prediction/i },
+  // Trade post-mortem
+  { tools: ["get_trade_post_mortem", "search_memory"], keywords: /post.?mortem|review|what.?went|analyze.?trade|close.?trade|exit.?quality/i },
+  // News
+  { tools: ["get_news_sentiment"], keywords: /news|sentiment|headline|media|current.?event/i },
+  // Gift Nifty / Gap
+  { tools: ["get_gift_nifty"], keywords: /gift|gap|overnight|pre.?market|open/i },
+  // Correlation
+  { tools: ["get_correlation_signal"], keywords: /correlat|nifty.*sensex|sensex.*nifty|drift|beta/i },
+  // Scanner / Breakout / All instruments
+  { tools: ["get_scanner_picks", "get_breakout_signals", "scan_all_instruments"], keywords: /scan|breakout|momentum|pick|stock|intraday|signal|all.?instrument|every|everything|all.?trade|commodity|mcx/i },
+  // Backtest
+  { tools: ["get_backtest_results"], keywords: /backtest|historical|past.?performance|win.?rate/i },
+  // Trade recommendation / best trade / send signal
+  { tools: ["get_sdm_signal", "get_unified_ranking", "get_index_fo", "get_trade_tracking", "send_telegram_signal"], keywords: /trade|recommend|best|entry|sl|target|buy|sell|call|put|option|ce |pe |position|straddle|strangle|zero.?hero|hero.?zero|what.?should|which|where|when|send.*telegram|push.*signal|alert.*phone/i },
+  // MCX / Commodity
+  { tools: ["get_mcx_data", "scan_all_instruments"], keywords: /mcx|commodity|crude|gold|silver|natural.?gas|energy|precious/i },
+  // Morning scan
+  { tools: ["morning_scan", "scan_all_instruments"], keywords: /morning|daily|today|pre.?market|open|start.*day/i },
+  // Agent analytics
+  { tools: ["get_agent_analytics"], keywords: /analytics|agent.?health|tool.?usage|performance|llm.?call/i },
+  // Hermes Pro analysis
+  { tools: ["hermes_pro_analysis", "hermes_tool_registry"], keywords: /hermes|pro.?analysis|full.?analysis|trade.?decision|deterministic|scoring|regime.?analysis|complete.?analysis/i },
+  // Most Active / Volume / Money flow
+  { tools: ["get_most_active_contracts", "get_scanner_picks", "get_fii_dii"], keywords: /most.?active|volume.?leader|where.?money|money.?flow|institutional.?flow|big.?volume|active.?contract|fno.?data| derivatives.?data/i },
+  // Debugging / Reverse engineering
+  { tools: ["diagnose_data_source", "trace_data_flow", "test_api_endpoint"], keywords: /diagnos|debug|data.?source|api.?fail|not.?fetch|missing|stale|broken|test.?api|check.?api|trace|reverse|engineer|why.*not.*work|what.*wrong/i },
+];
+
+// Core tools always included
+const CORE_TOOLS = ["get_sdm_signal", "get_option_chain", "get_market_structure", "get_news_sentiment"];
+
+function selectToolsForQuery(message: string): any[] {
+  const msgLower = message.toLowerCase();
+  const selectedNames = new Set<string>(CORE_TOOLS);
+
+  for (const entry of TOOL_ROUTER) {
+    const re = entry.keywords;
+    if (re.test(msgLower)) {
+      for (const t of entry.tools) selectedNames.add(t);
+    }
+  }
+
+  // If query is very generic, add ranking + trade tools
+  if (selectedNames.size <= 4) {
+    selectedNames.add("get_unified_ranking");
+    selectedNames.add("get_scanner_picks");
+    selectedNames.add("get_trade_tracking");
+  }
+
+  // Always include at least 8 tools, never more than 14
+  const allToolNames = AGENT_TOOLS.map((t: any) => t.function.name);
+  for (const name of allToolNames) {
+    if (selectedNames.size >= 14) break;
+    selectedNames.add(name);
+  }
+
+  const filtered = AGENT_TOOLS.filter((t: any) => selectedNames.has(t.function.name));
+  console.log(`[ToolRouter] Query: "${message.substring(0, 60)}" → ${filtered.length} tools: ${filtered.map((t: any) => t.function.name).join(", ")}`);
+  return filtered;
+}
 
 // ─── Tool Execution ─────────────────────────────────────────────
 export async function executeTool(
@@ -826,6 +1358,485 @@ ${changes.join("\n")}`;
       } catch { return "Error fetching trade tracking"; }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 2: NEW SMD TOOL EXECUTION — Hermes Agent Integration
+    // ═══════════════════════════════════════════════════════════
+
+    case "get_cas_analysis": {
+      try {
+        const res = await fetch(BASE + "/api/market/regime?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch CAS analysis";
+        return "CAS Analysis for " + symbol + ":\nRegime: " + (data.regime || "N/A") + " | Bias: " + (data.bias || "N/A") + "\nConfidence: " + (data.confidence || 0) + "%\nFutures Basis: " + (data.futuresBasis ? "₹" + data.futuresBasis.toFixed(2) : "N/A") + "\nMarket: " + (data.marketCondition || "N/A");
+      } catch { return "Error fetching CAS analysis"; }
+    }
+
+    case "get_institutional_positioning": {
+      try {
+        const res = await fetch(BASE + "/api/institutional-greeks?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch institutional positioning";
+        const inst = data.data?.institutional || {};
+        return "Institutional Positioning for " + symbol + ":\nFII: " + (inst.fiiBias || "N/A") + " (" + (inst.fiiNet || 0) + " Cr)\nDII: " + (inst.diiBias || "N/A") + " (" + (inst.diiNet || 0) + " Cr)\nSmart Money: " + (inst.smartMoneyBias || "N/A") + "\nRetail: " + (inst.retailBias || "N/A") + "\nTrend: " + (inst.trend || "N/A");
+      } catch { return "Error fetching institutional positioning"; }
+    }
+
+    case "get_fii_dii": {
+      try {
+        const res = await fetch(BASE + "/api/fii-dii", { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch FII/DII data";
+        const latest = data.latest || {};
+        return "FII/DII Cash Flows:\nFII: " + (latest.fiiNet >= 0 ? "+" : "") + "₹" + latest.fiiNet + "Cr (" + (latest.fiiBias || "N/A") + ")\nDII: " + (latest.diiNet >= 0 ? "+" : "") + "₹" + latest.diiNet + "Cr (" + (latest.diiBias || "N/A") + ")\nDate: " + (latest.date || "N/A") + "\n30-day FII trend: " + (data.trend?.fii || "N/A");
+      } catch { return "Error fetching FII/DII data"; }
+    }
+
+    case "get_options_edge": {
+      try {
+        const { strike, side } = args;
+        if (!strike || !side) return "Missing required params: strike, side (CE/PE)";
+        const res = await fetch(BASE + "/api/options-edge?symbol=" + symbol + "&strike=" + strike + "&side=" + side, { signal: AbortSignal.timeout(12000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch options edge";
+        const edge = data.data?.optionsEdge?.[0];
+        if (!edge) return "No options edge data for this strike";
+        return "Options Edge: " + symbol + " ₹" + strike + " " + side + "\nDelta: " + (edge.greeks?.delta?.toFixed(4) || "N/A") + " | Gamma: " + (edge.greeks?.gamma?.toFixed(4) || "N/A") + "\nIV: " + (edge.iv ? (edge.iv * 100).toFixed(1) + "%" : "N/A") + " | Melt Score: " + (edge.premiumMelt?.meltScore?.toFixed(1) || "N/A") + "\nEdge Score: " + (edge.edgeScore?.toFixed(1) || "N/A") + " | Edge: " + (edge.edgePercent ? edge.edgePercent.toFixed(2) + "%" : "N/A") + "\nTrade: " + (edge.tradeCard?.action || "N/A") + " | Confidence: " + (edge.tradeCard?.confidence || "N/A") + "%";
+      } catch { return "Error fetching options edge"; }
+    }
+
+    case "get_expiry_liquidity": {
+      try {
+        const res = await fetch(BASE + "/api/expiry-liquidity?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch expiry liquidity";
+        const d = data.data || {};
+        return "Expiry Liquidity for " + symbol + ":\nCAS State: " + (d.casState || "N/A") + " | Dislocation: " + (d.casDislocation ? "₹" + d.casDislocation.toFixed(2) : "N/A") + "\nFutures Basis: " + (d.futuresBasis ? "₹" + d.futuresBasis.toFixed(2) : "N/A") + "\nIV Velocity: " + (d.ivVelocity || "N/A") + " | OI Classification: " + (d.oiClassification || "N/A") + "\nGamma Pressure: " + (d.gammaPressure || "N/A") + " | Auction State: " + (d.auctionState || "N/A");
+      } catch { return "Error fetching expiry liquidity"; }
+    }
+
+    case "get_market_regime": {
+      try {
+        const res = await fetch(BASE + "/api/market/regime?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch market regime";
+        return "Market Regime for " + symbol + ":\nRegime: " + (data.regime || "N/A") + " | Bias: " + (data.bias || "N/A") + "\nConfidence: " + (data.confidence || 0) + "% | Factors: " + (data.factors?.join(", ") || "N/A");
+      } catch { return "Error fetching market regime"; }
+    }
+
+    case "get_market_breadth": {
+      try {
+        const res = await fetch(BASE + "/api/market/breadth", { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch market breadth";
+        const b = data.data || {};
+        return "Market Breadth:\nAdvances: " + (b.advances || 0) + " | Declines: " + (b.declines || 0) + " | Unchanged: " + (b.unchanged || 0) + "\nA/D Ratio: " + (b.adRatio || "N/A") + " | New Highs: " + (b.newHighs || 0) + " | New Lows: " + (b.newLows || 0);
+      } catch { return "Error fetching market breadth"; }
+    }
+
+    case "get_vix": {
+      try {
+        const res = await fetch(BASE + "/api/option-chain?symbol=NIFTY", { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        const vix = data.data?.summary?.indiaVIX || data.data?.indiaVIX || 0;
+        return "India VIX: " + vix + "\nRegime: " + (vix > 25 ? "HIGH VOLATILITY" : vix > 15 ? "NORMAL" : "LOW VOLATILITY") + "\nPercentile: " + (vix > 30 ? "EXTREME" : vix > 20 ? "ELEVATED" : vix > 12 ? "NORMAL" : "LOW");
+      } catch { return "Error fetching VIX"; }
+    }
+
+    case "get_atm_straddle": {
+      try {
+        const res = await fetch(BASE + "/api/atm-straddle?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch ATM straddle";
+        const s = data.data || {};
+        return "ATM Straddle for " + symbol + ":\nStrike: ₹" + (s.strike || "N/A") + " | Premium: ₹" + (s.premium || "N/A") + "\nIV: " + (s.iv ? (s.iv * 100).toFixed(1) + "%" : "N/A") + "\nExpected Range: ₹" + (s.expectedRange || "N/A") + " (" + (s.expectedRangePercent ? s.expectedRangePercent.toFixed(2) + "%" : "N/A") + ")";
+      } catch { return "Error fetching ATM straddle"; }
+    }
+
+    case "get_risk_status": {
+      try {
+        const res = await fetch(BASE + "/api/trade-journal", { signal: AbortSignal.timeout(8000) });
+        const data = await res.json();
+        const trades = data.trades || data || [];
+        const open = Array.isArray(trades) ? trades.filter((t: any) => t.status === "OPEN") : [];
+        const totalPnL = open.reduce((s: number, t: any) => s + (t.currentPnL || 0), 0);
+        return "Risk Status:\nOpen positions: " + open.length + "\nUnrealized P&L: " + (totalPnL >= 0 ? "+" : "") + "₹" + totalPnL.toFixed(0) + "\nCapital at risk: " + (open.length > 0 ? "ACTIVE" : "NONE");
+      } catch { return "Error fetching risk status"; }
+    }
+
+    case "get_portfolio": {
+      try {
+        const res = await fetch(BASE + "/api/trade-journal", { signal: AbortSignal.timeout(8000) });
+        const data = await res.json();
+        const trades = data.trades || data || [];
+        const open = Array.isArray(trades) ? trades.filter((t: any) => t.status === "OPEN") : [];
+        if (open.length === 0) return "No open positions.";
+        const portfolioLines = open.map((t: any) => t.symbol + " " + (t.side || t.direction || "") + " — Entry: ₹" + (t.entryPrice || t.entry || "N/A") + " | Current: ₹" + (t.currentPrice || "N/A") + " | P&L: ₹" + (t.currentPnL || 0).toFixed(0)).join("\n");
+        return "Portfolio (" + open.length + " open):\n" + portfolioLines;
+      } catch { return "Error fetching portfolio"; }
+    }
+
+    case "get_challenge_status": {
+      try {
+        const res = await fetch(BASE + "/api/challenge-engine", { signal: AbortSignal.timeout(8000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch challenge status";
+        const c = data.data || {};
+        return "Challenge Engine:\nActive: " + (c.activeChallenges || 0) + " | Completed: " + (c.completedChallenges || 0) + "\nWin Rate: " + (c.winRate ? (c.winRate * 100).toFixed(1) + "%" : "N/A") + " | Avg R: " + (c.avgR?.toFixed(2) || "N/A");
+      } catch { return "Error fetching challenge status"; }
+    }
+
+    case "get_trade_post_mortem": {
+      const { strategy, entryPrice, exitPrice, pnl, notes } = args;
+      const rMultiple = entryPrice && exitPrice && args.sl ? Math.abs(exitPrice - entryPrice) / Math.abs(entryPrice - args.sl) : 0;
+      const quality = pnl > 0 ? "WINNING" : pnl < 0 ? "LOSING" : "BREAKEVEN";
+      return "Trade Post-Mortem: " + symbol + " " + strategy + "\nEntry: ₹" + entryPrice + " → Exit: ₹" + exitPrice + "\nP&L: " + (pnl >= 0 ? "+" : "") + "₹" + pnl.toFixed(0) + " (" + quality + ")\nR-Multiple: " + (rMultiple > 0 ? rMultiple.toFixed(2) + "R" : "N/A") + "\nNotes: " + (notes || "None") + "\n\nKey Learnings:\n- Entry quality: " + (entryPrice ? "Executed" : "Missing data") + "\n- Exit quality: " + (exitPrice ? "Executed" : "Still open") + "\n- Risk management: " + (pnl >= 0 ? "Positive outcome" : "Review stop loss placement");
+    }
+
+    case "search_memory": {
+      try {
+        const { searchTradePatterns, getBestSetups, getPredictionAccuracy } = await import("./agent-memory");
+        const { query } = args;
+        if (!query) return "Missing required param: query";
+        const patterns = searchTradePatterns(query, 10);
+        const setups = getBestSetups(undefined, 1);
+        const accuracy = getPredictionAccuracy();
+        const parts: string[] = [];
+        parts.push("Memory Search: \"" + query + "\"");
+        if (patterns.length > 0) {
+          const matchLines = patterns.map(function(p) { return "- " + p.symbol + " " + p.strategy + " " + p.setup + " " + (p.exit?.pnl ? (p.exit.pnl > 0 ? "+" : "") + "₹" + p.exit.pnl.toFixed(0) : "open"); }).join("\n");
+          parts.push("\nMatching trades (" + patterns.length + "):\n" + matchLines);
+        } else {
+          parts.push("\nNo matching trades found in memory.");
+        }
+        if (setups.length > 0) {
+          parts.push("\nBest setup: " + setups[0].setup + " on " + setups[0].symbol + " — " + (setups[0].winRate * 100).toFixed(0) + "% WR");
+        }
+        parts.push("\nPrediction accuracy: " + accuracy.total + " predictions, " + (accuracy.accuracy * 100).toFixed(0) + "% accuracy");
+        return parts.join("\n");
+      } catch { return "Error searching memory"; }
+    }
+
+    case "get_memory_summary": {
+      try {
+        const { getMemorySummary } = await import("./agent-memory");
+        return getMemorySummary();
+      } catch { return "Error fetching memory summary"; }
+    }
+
+    case "record_trade_memory": {
+      try {
+        const { recordTrade } = await import("./agent-memory");
+        const { strategy, setup, entryPrice, exitPrice, pnl, tags } = args;
+        if (!strategy || !setup || !entryPrice) return "Missing required params: strategy, setup, entryPrice";
+        recordTrade({
+          symbol,
+          strategy,
+          setup,
+          entry: { price: entryPrice, time: new Date().toISOString() },
+          exit: exitPrice ? { price: exitPrice, time: new Date().toISOString(), pnl: pnl || 0 } : undefined,
+          tags: tags || [],
+          confidence: 0.5,
+        });
+        return "Trade recorded to memory: " + symbol + " " + strategy + " — " + setup;
+      } catch { return "Error recording trade to memory"; }
+    }
+
+    case "get_agent_analytics": {
+      try {
+        const { getToolCallStats, getLLMCallStats, getErrorStats } = await import("./agent-logger");
+        const tools = getToolCallStats();
+        const llm = getLLMCallStats();
+        const errors = getErrorStats();
+        const topToolsStr = tools.topTools.slice(0, 5).map(function(t) { return t.name + "(" + t.count + ")"; }).join(", ");
+        return "Agent Analytics:\nTool calls: " + tools.totalCalls + " (" + (tools.successRate * 100).toFixed(1) + "% success, avg " + tools.avgDurationMs.toFixed(0) + "ms)\nLLM calls: " + llm.totalCalls + " (" + llm.totalInputTokens + " in / " + llm.totalOutputTokens + " out tokens)\nErrors: " + errors.total + "\nTop tools: " + topToolsStr;
+      } catch { return "Error fetching agent analytics"; }
+    }
+
+    case "send_telegram_signal": {
+      try {
+        const { sendTradeAlert } = await import("./telegram");
+        const { action, strike, optionType, confidence, entry, stopLoss, target1, target2 } = args;
+        if (!action || !strike || !optionType) return "Missing required params: action, strike, optionType";
+        const sent = await sendTradeAlert({
+          symbol,
+          action,
+          strike: Number(strike),
+          type: optionType,
+          confidence: Number(confidence) || 75,
+          entry: entry ? Number(entry) : undefined,
+          stopLoss: stopLoss ? Number(stopLoss) : undefined,
+          target1: target1 ? Number(target1) : undefined,
+          target2: target2 ? Number(target2) : undefined,
+          source: "Hermes Agent",
+        });
+        return sent ? `Signal sent to Telegram: ${symbol} ${action} ${strike} ${optionType} (${confidence}%)` : "Failed to send signal — check Telegram config or dedup";
+      } catch { return "Error sending Telegram signal"; }
+    }
+
+    case "scan_all_instruments": {
+      try {
+        const minConf = args.minConfidence || 70;
+        const BASE2 = ctx?.apiBase || "";
+        const [todayRes, mcxRes] = await Promise.allSettled([
+          fetch(BASE2 + "/api/today-trades", { signal: AbortSignal.timeout(30000) }).then(r => r.json()),
+          fetch(BASE2 + "/api/mcx?mode=scanner", { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+        ]);
+        const lines: string[] = [];
+        if (todayRes.status === "fulfilled" && todayRes.value?.success) {
+          const top = (todayRes.value.top || []).filter((s: any) => s.probability >= minConf);
+          lines.push(`NIFTY/SENSEX/Stock F&O — ${top.length} setups (≥${minConf}%):`);
+          top.slice(0, 10).forEach((s: any, i: number) => {
+            const emoji = s.direction?.includes("BUY") || s.direction === "LONG" ? "🟢" : "🔴";
+            lines.push(`${i + 1}. ${emoji} ${s.symbol} ${s.instrument || s.type} — ${s.direction} | ${s.probability}% | Entry ₹${s.entry?.toFixed(0)} | SL ₹${s.stopLoss?.toFixed(0)} | T1 ₹${s.tp1?.toFixed(0)}`);
+          });
+        } else {
+          lines.push("NIFTY/SENSEX/Stock F&O — data unavailable");
+        }
+        if (mcxRes.status === "fulfilled" && mcxRes.value) {
+          const best = mcxRes.value?.bestTrade || mcxRes.value?.data?.bestTrade;
+          if (best && (best.confidence || 0) >= minConf) {
+            lines.push(`\nMCX Commodity:`);
+            lines.push(`${best.symbol} — ${best.direction} | ${best.confidence}% | Entry ₹${best.entry} | SL ₹${best.stopLoss}`);
+          }
+        }
+        return lines.join("\n") || "No high-accuracy setups found across any instrument";
+      } catch { return "Error scanning instruments"; }
+    }
+
+    case "get_mcx_data": {
+      try {
+        const mcxSym = args.symbol || "CRUDEOIL";
+        const res = await fetch(BASE + "/api/mcx?symbol=" + mcxSym, { signal: AbortSignal.timeout(15000) });
+        const data = await res.json();
+        if (!data.success) return "Failed to fetch MCX data for " + mcxSym;
+        const q = data.data?.quote || data.data || {};
+        return "MCX " + mcxSym + ":\nLTP: ₹" + (q.ltp || q.lastPrice || "N/A") + "\nChange: " + (q.change || 0) + " (" + (q.changePct || 0) + "%)\nDay High: ₹" + (q.dayHigh || "N/A") + " | Day Low: ₹" + (q.dayLow || "N/A") + "\nVolume: " + (q.volume || 0).toLocaleString("en-IN") + "\nSource: " + (q.source || "MOAPI");
+      } catch { return "Error fetching MCX data"; }
+    }
+
+    case "morning_scan": {
+      try {
+        const { runMorningSignalFlow } = await import("./morningSignalGenerator");
+        const { sendTelegramMessage } = await import("./telegram");
+        const result = await runMorningSignalFlow(async (text) => {
+          return sendTelegramMessage(text);
+        });
+        return "Morning Scan Complete:\nSignals Found: " + result.signalsFound + "\nSignals Sent: " + result.signalsSent + "\nDigest Sent: " + result.digestSent + "\nInstruments: " + (result.instruments || []).join(", ");
+      } catch { return "Error running morning scan"; }
+    }
+
+    // ── Debugging Tools ──
+    case "diagnose_data_source": {
+      const src = (args.source || "all").toLowerCase();
+      const results: string[] = [];
+      const tests: Array<{ name: string; url: string; timeout: number }> = [];
+
+      if (src === "all" || src === "breeze") {
+        tests.push({ name: "ICICI Breeze Option Chain", url: `${BASE}/api/option-chain?symbol=NIFTY`, timeout: 10000 });
+      }
+      if (src === "all" || src === "yahoo") {
+        tests.push({ name: "Yahoo Finance (NIFTY spot)", url: "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSI?range=1d&interval=1d", timeout: 8000 });
+      }
+      if (src === "all" || src === "motilal") {
+        tests.push({ name: "Motilal Oswal API", url: `${BASE}/api/mcx`, timeout: 10000 });
+      }
+      if (src === "all" || src === "mcx") {
+        tests.push({ name: "MCX Data", url: `${BASE}/api/mcx`, timeout: 10000 });
+      }
+      if (src === "all" || src === "nse") {
+        tests.push({ name: "NSE API (FII/DII)", url: `${BASE}/api/fii-dii`, timeout: 10000 });
+      }
+
+      for (const test of tests) {
+        const start = Date.now();
+        try {
+          const res = await fetch(test.url, { signal: AbortSignal.timeout(test.timeout), headers: { "User-Agent": "Mozilla/5.0" } });
+          const ms = Date.now() - start;
+          const ok = res.ok;
+          let detail = "";
+          if (ok) {
+            try { const j = await res.json(); detail = j.success ? "OK" : j.error || "Response received"; } catch { detail = "Non-JSON response"; }
+          } else { detail = `HTTP ${res.status}`; }
+          results.push(`${ok ? "✅" : "⚠️"} ${test.name}: ${detail} (${ms}ms)`);
+        } catch (e: any) {
+          results.push(`❌ ${test.name}: FAILED — ${e.message} (${Date.now() - start}ms)`);
+        }
+      }
+      return `Data Source Diagnosis:\n${results.join("\n")}`;
+    }
+
+    case "trace_data_flow": {
+      const feature = (args.feature || "").toLowerCase();
+      const traces: string[] = [];
+
+      const traceStep = async (step: string, fn: () => Promise<any>) => {
+        const start = Date.now();
+        try {
+          const result = await fn();
+          const ms = Date.now() - start;
+          const status = result ? `OK (${JSON.stringify(result).length} bytes)` : "EMPTY/NULL";
+          traces.push(`✅ Step ${traces.length + 1}: ${step} → ${status} [${ms}ms]`);
+          return result;
+        } catch (e: any) {
+          const ms = Date.now() - start;
+          traces.push(`❌ Step ${traces.length + 1}: ${step} → FAILED: ${e.message} [${ms}ms]`);
+          return null;
+        }
+      };
+
+      if (feature === "option_chain") {
+        await traceStep("Fetch from Breeze/NSE", async () => {
+          const res = await fetch(`${BASE}/api/option-chain?symbol=NIFTY`, { signal: AbortSignal.timeout(15000) });
+          return await res.json();
+        });
+      } else if (feature === "sdm_signal") {
+        await traceStep("Fetch SDM Signal", async () => {
+          const res = await fetch(`${BASE}/api/sdm-signal?symbol=NIFTY`, { signal: AbortSignal.timeout(15000) });
+          return await res.json();
+        });
+      } else if (feature === "mcx") {
+        await traceStep("Fetch MCX Data", async () => {
+          const res = await fetch(`${BASE}/api/mcx`, { signal: AbortSignal.timeout(15000) });
+          return await res.json();
+        });
+      } else if (feature === "scanner") {
+        await traceStep("Run Intraday Scanner", async () => {
+          const res = await fetch(`${BASE}/api/scanner`, { signal: AbortSignal.timeout(20000) });
+          return await res.json();
+        });
+      } else if (feature === "fii_dii") {
+        await traceStep("Fetch FII/DII Data", async () => {
+          const res = await fetch(`${BASE}/api/fii-dii`, { signal: AbortSignal.timeout(10000) });
+          return await res.json();
+        });
+      } else if (feature === "morning_scan") {
+        traces.push("ℹ️ Morning scan runs via cron at 9:20 AM IST. Use 'morning_scan' tool to trigger manually.");
+      } else if (feature === "intraday") {
+        await traceStep("Fetch Intraday Scan", async () => {
+          const res = await fetch(`${BASE}/api/intraday-scan`, { signal: AbortSignal.timeout(20000) });
+          return await res.json();
+        });
+      } else if (feature === "heatmap") {
+        await traceStep("Fetch Market Heatmap", async () => {
+          const res = await fetch(`${BASE}/api/market/heatmap`, { signal: AbortSignal.timeout(15000) });
+          return await res.json();
+        });
+      } else {
+        traces.push(`Unknown feature: ${feature}. Available: option_chain, sdm_signal, mcx, scanner, fii_dii, morning_scan, intraday, heatmap`);
+      }
+
+      return `Data Flow Trace — ${feature}:\n${traces.join("\n")}`;
+    }
+
+    case "test_api_endpoint": {
+      const url = args.url || "";
+      const method = (args.method || "GET").toUpperCase();
+      const body = args.body || null;
+
+      if (!url) return "Error: URL is required";
+
+      const start = Date.now();
+      try {
+        const fetchOpts: any = {
+          method,
+          signal: AbortSignal.timeout(15000),
+          headers: { "User-Agent": "Mozilla/5.0", "Content-Type": "application/json" },
+        };
+        if (method === "POST" && body) {
+          fetchOpts.body = body;
+        }
+
+        const res = await fetch(url, fetchOpts);
+        const ms = Date.now() - start;
+        const contentType = res.headers.get("content-type") || "unknown";
+        let bodyPreview = "";
+        try {
+          const text = await res.text();
+          bodyPreview = text.substring(0, 500);
+          if (text.length > 500) bodyPreview += `... (${text.length} total bytes)`;
+        } catch { bodyPreview = "(could not read body)"; }
+
+        return `API Test Result:
+URL: ${url}
+Method: ${method}
+Status: ${res.status} ${res.statusText}
+Time: ${ms}ms
+Content-Type: ${contentType}
+Body Preview: ${bodyPreview}`;
+      } catch (e: any) {
+        return `API Test FAILED:
+URL: ${url}
+Method: ${method}
+Error: ${e.message}
+Time: ${Date.now() - start}ms`;
+      }
+    }
+
+    // ── Hermes Pro Tools ──────────────────────────────────────────────
+    case "hermes_pro_analysis": {
+      try {
+        const { hermesProFormatted } = await import("./hermes/agent");
+        const mode = args.mode || "TRADE";
+        const result = await hermesProFormatted(symbol, mode as any);
+        return result;
+      } catch (err: any) {
+        return `Hermes Pro analysis failed: ${err.message}. Falling back to standard analysis.`;
+      }
+    }
+
+    case "hermes_tool_registry": {
+      try {
+        const { HERMES_TOOLS, getToolsByCategory } = await import("./hermes/tool-registry");
+        const category = args.category || "ALL";
+        const tools = category === "ALL" ? HERMES_TOOLS : getToolsByCategory(category);
+        if (!tools || tools.length === 0) return `No tools found for category: ${category}`;
+        const lines = tools.map((t: any) =>
+          `• ${t.name}: ${t.description} (reliability: ${(t.reliability * 100).toFixed(0)}%, freshness: ${t.freshnessMaxAge / 1000}s)`
+        );
+        return `Hermes Tool Registry (${tools.length} tools):\n${lines.join("\n")}`;
+      } catch (err: any) {
+        return `Failed to query Hermes tool registry: ${err.message}`;
+      }
+    }
+
+    case "get_most_active_contracts": {
+      try {
+        const type = args.type || "contracts";
+        const res = await fetch(`${BASE}/api/market/most-active`, { signal: AbortSignal.timeout(10000) });
+        const json = await res.json();
+        if (!json.success) return "Failed to fetch most active contracts";
+        const d = json.data;
+
+        const fmt = (items: any[]) => items.map((c: any, i: number) =>
+          `${i + 1}. ${c.underlying} ${c.instrument || ""} ${c.optionType || ""} ${c.strikePrice || ""} | LTP: ₹${c.lastPrice} | Chg: ${c.pChange >= 0 ? "+" : ""}${c.pChange?.toFixed(2)}% | Vol: ${(c.numberOfContractsTraded || 0).toLocaleString("en-IN")} | OI: ${(c.openInterest || 0).toLocaleString("en-IN")}`
+        ).join("\n");
+
+        const parts: string[] = [];
+        parts.push(`Most Active F&O Contracts (${d.marketStatus || "unknown"} market)`);
+        parts.push(`Fetched: ${new Date(d.fetchedAt).toLocaleString("en-IN")}`);
+
+        if (type === "contracts" || type === "all") {
+          parts.push(`\nTOP CONTRACTS BY VOLUME:\n${fmt(d.contracts?.data || []) || "No data"}`);
+        }
+        if (type === "futures" || type === "all") {
+          parts.push(`\nTOP FUTURES:\n${fmt(d.futures?.data || []) || "No data"}`);
+        }
+        if (type === "calls" || type === "all") {
+          parts.push(`\nTOP INDEX CALLS:\n${fmt(d.callsIndex?.data || []) || "No data"}`);
+        }
+        if (type === "puts" || type === "all") {
+          parts.push(`\nTOP INDEX PUTS:\n${fmt(d.putsIndex?.data || []) || "No data"}`);
+        }
+        if (type === "oi" || type === "all") {
+          parts.push(`\nTOP BY OI:\n${fmt(d.oi?.data || []) || "No data"}`);
+        }
+
+        return parts.join("\n");
+      } catch (err: any) {
+        return `Error fetching most active contracts: ${err.message}`;
+      }
+    }
+
     default:
       return `Unknown tool: ${name}`;
   }
@@ -863,12 +1874,14 @@ export async function agentRespondLLM(
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
-    const result = await callLLM(messages, AGENT_TOOLS);
+    const result = await callLLM(messages, selectToolsForQuery(userMessage));
 
     // If no tool calls, return the response
     if (!result.toolCalls || result.toolCalls.length === 0) {
+      const responseText = result.content || "I couldn't generate a response. Please try again.";
+      console.log(`[Agent Brain] Model response (no tools): ${responseText.substring(0, 100)}... (${responseText.length} chars)`);
       return {
-        response: result.content || "I couldn't generate a response. Please try again.",
+        response: responseText,
         toolCallsMade: Array.from(toolCallsMadeSet),
       };
     }

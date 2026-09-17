@@ -10,6 +10,8 @@ import { calculateGreeks } from '@/lib/greeks';
 import { getNSEOptionChain } from '@/lib/nse-api';
 import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
+import { buildFreshnessMeta } from '@/lib/api-freshness';
+import { providerHealth } from '@/lib/provider-health';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -33,144 +35,178 @@ function parseBreezeDate(dateStr: string): Date {
 }
 
 export async function GET(request: NextRequest) {
-  try {
+  // Overall endpoint timeout: 18 seconds max
+  const controller = new AbortController();
+  const ENDPOINT_TIMEOUT_MS = 18000;
+  const timeoutId = setTimeout(() => controller.abort(), ENDPOINT_TIMEOUT_MS);
+
+  const mainLogic = async () => {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
     const expiry = searchParams.get('expiry') || undefined;
 
-    // Initialize session once
+    // Initialize session once (don't block on it)
     if (!sessionInitialized) {
       sessionInitialized = true;
-      await initSession().catch(() => {});
+      initSession().catch(() => {});
     }
 
-    // Fetch live India VIX + previous close (real market data).
-    // NSE primary (no rate limit), Yahoo fallback. When unavailable we
-    // leave them null so the UI can show "—".
+    // Fetch live India VIX + previous close with timeout
     let liveVix: number | null = null;
     let livePrevClose: number | null = null;
     try {
       const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
-      const vixRes = await fetchIndiaVIX().catch(() => null);
+      const vixRes = await Promise.race([
+        fetchIndiaVIX(),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('VIX_TIMEOUT')), 2000))
+      ]);
       liveVix = vixRes?.value ?? null;
     } catch {}
 
-    // Previous close: direct NSE API fetch (no client needed)
+    // Previous close with timeout
     try {
       const nseRes = await fetch('https://www.nseindia.com/api/marketStatus', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-        },
-        signal: AbortSignal.timeout(8000),
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(3000),
       });
       if (nseRes.ok) {
         const nseData = await nseRes.json();
-        const states = nseData?.marketState || [];
-        const niftyIdx = states.find((i: any) => i.index === 'NIFTY 50');
+        const niftyIdx = nseData?.marketState?.find((i: any) => i.index === 'NIFTY 50');
         if (niftyIdx) {
           const variation = parseFloat(niftyIdx.variation) || 0;
           const last = parseFloat(niftyIdx.last) || 0;
-          if (last > 0 && variation !== 0) {
-            livePrevClose = last - variation;
-          }
+          if (last > 0 && variation !== 0) livePrevClose = last - variation;
         }
       }
     } catch {}
 
-    // Yahoo fallback for prev close (cached 1 hour)
+    // Yahoo fallback for prev close (with timeout)
     if (!livePrevClose) {
       try {
         const { fetchPrevClose } = await import('@/lib/yahoo-finance-api');
-        livePrevClose = await fetchPrevClose(symbol).catch(() => null);
+        livePrevClose = await Promise.race([
+          fetchPrevClose(symbol),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('PREVCLOSE_TIMEOUT')), 2000))
+        ]);
       } catch {}
     }
 
     let chainData: any = null;
     let source = 'simulation';
     
-    // Try ICICI Breeze API first
+    // FINAL PROVIDER TREE: MOAPI → Breeze (bounded timeout) → NSE/BSE
+    // If all valid sources fail: OPTION_CHAIN=UNAVAILABLE → NO_TRADE
+    
+    // 1. Try MOAPI first (preferred primary provider) - 8s timeout (includes auto-login)
+    const moapiStart = Date.now();
     try {
-      if (expiry) {
-        const chain = await getOptionChain(symbol, expiry);
+      const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
+      const motilalChain = await Promise.race([
+        getMotilalOptionChain(symbol, expiry),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 8000))
+      ]);
+      if (motilalChain?.data?.length) {
+        chainData = {
+          data: motilalChain.data.map((row) => ({
+            strike: row.strike,
+            ce: row.ce ? {
+              ltp: row.ce.ltp || 0,
+              oi: row.ce.oi || 0,
+              oiChg: 0,
+              volume: row.ce.volume || 0,
+              iv: row.ce.iv || 0,
+              delta: row.ce.delta || 0,
+              gamma: row.ce.gamma || 0,
+              theta: row.ce.theta || 0,
+              vega: row.ce.vega || 0,
+              bid: row.ce.bid || 0,
+              ask: row.ce.ask || 0,
+            } : null,
+            pe: row.pe ? {
+              ltp: row.pe.ltp || 0,
+              oi: row.pe.oi || 0,
+              oiChg: 0,
+              volume: row.pe.volume || 0,
+              iv: row.pe.iv || 0,
+              delta: row.pe.delta || 0,
+              gamma: row.pe.gamma || 0,
+              theta: row.pe.theta || 0,
+              vega: row.pe.vega || 0,
+              bid: row.pe.bid || 0,
+              ask: row.pe.ask || 0,
+            } : null,
+          })),
+          spotPrice: motilalChain.spotPrice,
+          expiries: motilalChain.expiries.map((e) => ({ date: e, label: e, daysToExpiry: 0 })),
+          selectedExpiry: motilalChain.selectedExpiry,
+          summary: motilalChain.summary,
+        };
+        source = 'motilal-api';
+        providerHealth.recordSuccess("moapi", Date.now() - moapiStart);
+        console.log(`[API] MOAPI option chain fetched for ${symbol}`);
+      }
+    } catch (moapiError) {
+      console.warn('[API] MOAPI failed:', moapiError);
+      providerHealth.recordFailure("moapi", "SERVER", String(moapiError).substring(0, 200));
+    }
+
+    // 2. Breeze fallback — bounded timeout (5s) + fast failover
+    // AUTH_REQUIRED, TIMEOUT, ERROR → immediately skip to NSE/BSE
+    const breezeStart = Date.now();
+    if (!chainData && !providerHealth.shouldSkip("breeze")) {
+      try {
+        const fetchBreezeChain = async () => {
+          if (expiry) {
+            return await getOptionChain(symbol, expiry);
+          } else {
+            const expiries = await getOptionChainExpiries(symbol);
+            for (const exp of expiries) {
+              const chain = await getOptionChain(symbol, exp);
+              if (chain) return { ...chain, expiries };
+            }
+            return null;
+          }
+        };
+
+        // Bounded timeout: 8 seconds max for Breeze
+        const BREEZE_TIMEOUT_MS = 5000;
+        const chain = await Promise.race([
+          fetchBreezeChain(),
+          new Promise<null>((_, reject) =>
+            setTimeout(() => reject(new Error('BREEZE_TIMEOUT')), BREEZE_TIMEOUT_MS)
+          ),
+        ]);
+
         if (chain) {
           chainData = chain;
           source = 'icici-breeze';
+          providerHealth.recordSuccess("breeze", Date.now() - breezeStart);
+          console.log(`[API] Breeze option chain fetched for ${symbol}`);
         }
-      } else {
-        const expiries = await getOptionChainExpiries(symbol);
-        // Try each expiry and pick the nearest one with valid data
-        for (const exp of expiries) {
-          try {
-            const chain = await getOptionChain(symbol, exp);
-            if (chain) {
-              chainData = { ...chain, expiries };
-              source = 'icici-breeze';
-              break;
-            }
-          } catch (expErr) {
-            const errMsg = typeof expErr === 'string' ? expErr : (expErr as any)?.message || String(expErr);
-            console.warn(`[API] Breeze option chain failed for ${symbol} ${exp}:`, errMsg.substring(0, 120));
-          }
+      } catch (breezeError: any) {
+        const errMsg = String(breezeError?.message || breezeError);
+        // Fast failover for specific error types
+        if (errMsg.includes('AUTH') || errMsg.includes('401') || errMsg.includes('403') ||
+            errMsg.includes('Unauthorized') || errMsg.includes('BREEZE_TIMEOUT')) {
+          providerHealth.recordFailure("breeze", errMsg.includes('TIMEOUT') ? "TIMEOUT" : "AUTH", errMsg.substring(0, 120));
+          console.warn(`[API] Breeze ${errMsg.includes('TIMEOUT') ? 'timeout' : 'auth error'} — fast failover to NSE/BSE`);
+        } else {
+          providerHealth.recordFailure("breeze", "ERROR", errMsg.substring(0, 120));
+          console.warn('[API] Breeze error, trying NSE/BSE:', errMsg.substring(0, 120));
         }
       }
-    } catch (breezeError) {
-      console.warn('[API] ICICI Breeze failed, trying Motilal API:', breezeError);
+    } else if (!chainData) {
+      console.log('[API] Skipping Breeze — circuit open or MOAPI succeeded');
     }
 
-    // Fallback to Motilal API (NIFTY, BANKNIFTY, FINNIFTY, SENSEX)
+    // 3. Fallback to NSE API (with timeout)
+    const nseStart = Date.now();
     if (!chainData) {
       try {
-        const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
-        const motilalChain = await getMotilalOptionChain(symbol, expiry);
-        if (motilalChain?.data?.length) {
-          chainData = {
-            data: motilalChain.data.map((row) => ({
-              strike: row.strike,
-              ce: row.ce ? {
-                ltp: row.ce.ltp || 0,
-                oi: row.ce.oi || 0,
-                oiChg: 0,
-                volume: row.ce.volume || 0,
-                iv: row.ce.iv || 0,
-                delta: row.ce.delta || 0,
-                gamma: row.ce.gamma || 0,
-                theta: row.ce.theta || 0,
-                vega: row.ce.vega || 0,
-                bid: row.ce.bid || 0,
-                ask: row.ce.ask || 0,
-              } : null,
-              pe: row.pe ? {
-                ltp: row.pe.ltp || 0,
-                oi: row.pe.oi || 0,
-                oiChg: 0,
-                volume: row.pe.volume || 0,
-                iv: row.pe.iv || 0,
-                delta: row.pe.delta || 0,
-                gamma: row.pe.gamma || 0,
-                theta: row.pe.theta || 0,
-                vega: row.pe.vega || 0,
-                bid: row.pe.bid || 0,
-                ask: row.pe.ask || 0,
-              } : null,
-            })),
-            spotPrice: motilalChain.spotPrice,
-            expiries: motilalChain.expiries.map((e) => ({ date: e, label: e, daysToExpiry: 0 })),
-            selectedExpiry: motilalChain.selectedExpiry,
-            summary: motilalChain.summary,
-          };
-          source = 'motilal-api';
-          console.log(`[API] Motilal API data fetched for ${symbol}`);
-        }
-      } catch (motilalError) {
-        console.warn('[API] Motilal API also failed:', motilalError);
-      }
-    }
-
-    // Fallback to NSE API
-    if (!chainData) {
-      try {
-        const nseData = await getNSEOptionChain(symbol);
+        const nseData = await Promise.race([
+          getNSEOptionChain(symbol),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 5000))
+        ]);
         if (nseData?.records?.data) {
           chainData = {
             data: nseData.records.data.map((row: any) => ({
@@ -208,14 +244,16 @@ export async function GET(request: NextRequest) {
             summary: { spotPrice: nseData.records?.underlyingValue || 0 },
           };
           source = 'nse-api';
+          providerHealth.recordSuccess("nse", Date.now() - nseStart);
           console.log('[API] NSE API data fetched successfully');
         }
       } catch (nseError) {
         console.warn('[API] NSE API also failed:', nseError);
+        providerHealth.recordFailure("nse", "NETWORK", String(nseError).substring(0, 200));
       }
     }
     
-    // BSE indices (SENSEX, BANKEX) — use BSE public API
+    // 4. BSE indices (SENSEX, BANKEX) — use BSE public API (with timeout)
     if (!chainData && isBSEIndex(symbol)) {
       try {
         const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
@@ -223,7 +261,10 @@ export async function GET(request: NextRequest) {
         const selectedExpiry = expiry || bseExpiries[0] || '';
 
         if (selectedExpiry) {
-          const bseChain = await getBSEOptionChain(symbol, selectedExpiry).catch(() => null);
+          const bseChain = await Promise.race([
+            getBSEOptionChain(symbol, selectedExpiry),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('BSE_TIMEOUT')), 3000))
+          ]).catch(() => null);
           if (bseChain?.data?.length) {
             chainData = {
               data: bseChain.data.map((row) => ({
@@ -260,30 +301,8 @@ export async function GET(request: NextRequest) {
       } catch {}
     }
 
-    // If no real data available, try Yahoo Finance for spot price
-    if (!chainData) {
-      try {
-        const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
-        const yahooData = await fetchYahooIndexData(symbol);
-        if (yahooData?.regularMarketPrice) {
-          chainData = {
-            data: [],
-            spotPrice: yahooData.regularMarketPrice,
-            summary: {
-              spotPrice: yahooData.regularMarketPrice,
-              indiaVIX: liveVix,
-              maxPain: 0,
-              prevClose: yahooData.previousClose ?? livePrevClose,
-              vixLive: liveVix != null,
-              prevCloseLive: (yahooData.previousClose ?? livePrevClose) != null,
-            },
-            expiries: [],
-            selectedExpiry: '',
-          };
-          console.log(`[API] Using Yahoo Finance spot price for ${symbol}: ${yahooData.regularMarketPrice}`);
-        }
-      } catch {}
-    }
+    // Yahoo is NOT option-chain fallback per FINAL PROVIDER TREE.
+    // If Breeze/Motilal/NSE/BSE all fail, return empty chain with spot price from VIX/prevClose context.
 
     if (!chainData || (!chainData.data?.length && !chainData.calls?.length && !chainData.puts?.length)) {
       const spotPrice = chainData?.spotPrice || chainData?.summary?.spotPrice || 0;
@@ -429,13 +448,26 @@ export async function GET(request: NextRequest) {
       // Compute from strikes data
       const totalCallOI = optionChainStrikes.reduce((sum, s) => sum + (s.ce?.oi || 0), 0);
       const totalPutOI = optionChainStrikes.reduce((sum, s) => sum + (s.pe?.oi || 0), 0);
-      const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : 1;
-      // Max pain: strike with highest total OI
-      let maxPain = spotPrice;
-      let maxTotalOI = 0;
-      for (const s of optionChainStrikes) {
-        const total = (s.ce?.oi || 0) + (s.pe?.oi || 0);
-        if (total > maxTotalOI) { maxTotalOI = total; maxPain = s.strike; }
+      // PCR: null when OI unavailable — NEVER default to 1 (creates fake neutral)
+      const pcr = totalCallOI > 0 && totalPutOI > 0 ? Math.round((totalPutOI / totalCallOI) * 100) / 100 : null;
+      // Max Pain: strike where total payout to option holders is MINIMUM
+      // (NOT maximum total OI — that was wrong)
+      let maxPain: number | null = null;
+      if (optionChainStrikes.length > 0 && (totalCallOI > 0 || totalPutOI > 0)) {
+        const strikes = optionChainStrikes.map(s => s.strike).sort((a, b) => a - b);
+        const minStrike = strikes[0];
+        const maxStrike = strikes[strikes.length - 1];
+        let bestStrike = minStrike;
+        let minPayout = Infinity;
+        for (let price = minStrike; price <= maxStrike; price++) {
+          let totalPayout = 0;
+          for (const s of optionChainStrikes) {
+            if (price > s.strike) totalPayout += (price - s.strike) * (s.ce?.oi || 0);
+            if (price < s.strike) totalPayout += (s.strike - price) * (s.pe?.oi || 0);
+          }
+          if (totalPayout < minPayout) { minPayout = totalPayout; bestStrike = price; }
+        }
+        maxPain = bestStrike;
       }
 
       chainData.summary = {
@@ -497,7 +529,7 @@ export async function GET(request: NextRequest) {
               status: 'ACTIVE',
               sentAt: new Date().toISOString(),
               source: `option-chain-api`,
-            });
+            }, true); // skipAlert=true — sendTradeAlert already sent above
           }).catch(() => {});
         }
       }
@@ -514,7 +546,7 @@ export async function GET(request: NextRequest) {
       return { date: dateStr, label: dateStr, daysToExpiry };
     });
 
-    // Generate candles — try Breeze 5-min intraday first, fallback to
+    // Generate candles — try Breeze 5-min intraday first (bounded), fallback to
     // Yahoo daily candles so the SMC engine always has structure data.
     let candles5m: any[] = [];
     try {
@@ -522,14 +554,22 @@ export async function GET(request: NextRequest) {
       const seen = new Set<string>();
       const seenDay = new Set<string>();
       const d = new Date();
-      for (let attempt = 0; attempt < 10 && candles5m.length < 40; attempt++) {
+      // Limit to 3 days max, with 4s timeout per call
+      for (let attempt = 0; attempt < 3 && candles5m.length < 40; attempt++) {
         const dateStr = d.toISOString().split('T')[0];
         if (!seenDay.has(dateStr)) {
           seenDay.add(dateStr);
-          const cr = await getIntradayCandles(symbol, dateStr, '5minute');
-          for (const c of cr.candles || []) {
-            const key = c.time || `${c.open}-${c.close}-${c.volume}`;
-            if (!seen.has(key)) { seen.add(key); candles5m.push(c); }
+          try {
+            const cr = await Promise.race([
+              getIntradayCandles(symbol, dateStr, '5minute'),
+              new Promise<{candles: any[]}>((_, reject) => setTimeout(() => reject(new Error('CANDLE_TIMEOUT')), 4000))
+            ]);
+            for (const c of cr.candles || []) {
+              const key = c.time || `${c.open}-${c.close}-${c.volume}`;
+              if (!seen.has(key)) { seen.add(key); candles5m.push(c); }
+            }
+          } catch (candleErr) {
+            console.warn(`[API] Candle fetch for ${dateStr} failed:`, String(candleErr).substring(0, 80));
           }
         }
         d.setDate(d.getDate() - 1);
@@ -539,13 +579,16 @@ export async function GET(request: NextRequest) {
       candles5m = [];
     }
 
-    // Fallback: Yahoo daily candles when Breeze unavailable.
+    // Fallback: Yahoo daily candles when Breeze unavailable (bounded)
     if (candles5m.length < 10) {
       try {
         const yahooSym = symbol === 'SENSEX' ? '^BSESN' : '^NSEI';
-        const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=6mo&interval=1d`, {
-          signal: AbortSignal.timeout(8000),
-        });
+        const res = await Promise.race([
+          fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=6mo&interval=1d`, {
+            signal: AbortSignal.timeout(5000),
+          }),
+          new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('YAHOO_CANDLE_TIMEOUT')), 5000))
+        ]);
         if (res.ok) {
           const json = await res.json();
           const result = json?.chart?.result?.[0];
@@ -581,8 +624,8 @@ export async function GET(request: NextRequest) {
     chainData.summary.prevClose = livePrevClose;
     chainData.summary.vixLive = liveVix != null;
     chainData.summary.prevCloseLive = livePrevClose != null;
-    chainData.summary.pcr = analysis?.pcr ?? chainData.summary.pcr ?? 1;
-    chainData.summary.maxPain = analysis?.maxPain ?? chainData.summary.maxPain ?? 0;
+    chainData.summary.pcr = analysis?.pcr ?? chainData.summary.pcr ?? null;
+    chainData.summary.maxPain = analysis?.maxPain ?? chainData.summary.maxPain ?? null;
     chainData.summary.totalCallOI = analysis?.totalCallOI ?? chainData.summary.totalCallOI ?? 0;
     chainData.summary.totalPutOI = analysis?.totalPutOI ?? chainData.summary.totalPutOI ?? 0;
     chainData.summary.atmStrike = analysis?.atmStrike ?? chainData.summary.atmStrike ?? 0;
@@ -613,19 +656,101 @@ export async function GET(request: NextRequest) {
       analysis.spot.changePct = livePrevClose > 0 ? Math.round((spotChg / livePrevClose) * 10000) / 100 : 0;
     }
     
+    const dataTimestamp = new Date();
+    const freshness = buildFreshnessMeta({
+      provider: source,
+      dataTimestamp,
+      dataType: "optionChain",
+      fallbackUsed: source !== "icici-breeze",
+      fallbackReason: source === "nse-api" ? "Breeze auth failed" : source === "motilal-api" ? "Breeze + NSE failed" : undefined,
+    });
+
+    // Build canonical OptionChain from normalized strikes (backward-compatible addition)
+    let canonical: any = null;
+    try {
+      const { buildOptionChain, assessChainQuality } = await import('@/lib/option-chain-normalizer');
+      const normalizedStrikes = optionChainStrikes.map((s: any) => ({
+        strike: s.strike,
+        ce: s.ce ? {
+          ltp: s.ce.ltp || 0,
+          bid: s.ce.bid ?? null,
+          ask: s.ce.ask ?? null,
+          oi: s.ce.oi || 0,
+          oiChange: s.ce.oiChg || 0,
+          volume: s.ce.volume || 0,
+          iv: s.ce.iv || 0,
+          delta: s.ce.delta || 0,
+          gamma: s.ce.gamma || 0,
+          theta: s.ce.theta || 0,
+          vega: s.ce.vega || 0,
+          hasData: (s.ce.ltp || 0) > 0 || (s.ce.oi || 0) > 0,
+        } : null,
+        pe: s.pe ? {
+          ltp: s.pe.ltp || 0,
+          bid: s.pe.bid ?? null,
+          ask: s.pe.ask ?? null,
+          oi: s.pe.oi || 0,
+          oiChange: s.pe.oiChg || 0,
+          volume: s.pe.volume || 0,
+          iv: s.pe.iv || 0,
+          delta: s.pe.delta || 0,
+          gamma: s.pe.gamma || 0,
+          theta: s.pe.theta || 0,
+          vega: s.pe.vega || 0,
+          hasData: (s.pe.ltp || 0) > 0 || (s.pe.oi || 0) > 0,
+        } : null,
+      }));
+      canonical = buildOptionChain(normalizedStrikes, spotPrice, symbol, source, chainData?.selectedExpiry);
+      if (canonical) {
+        const quality = assessChainQuality(canonical);
+        (canonical as any)._quality = quality;
+      }
+    } catch (e) {
+      console.warn('[API] Canonical chain build failed:', e);
+    }
+
     return NextResponse.json({
       success: true,
       source,
-      lastUpdate: new Date().toISOString(),
+      lastUpdate: dataTimestamp.toISOString(),
+      freshness,
+      provenance: {
+        source,
+        retrievedAt: dataTimestamp.toISOString(),
+        freshness: freshness.freshness === 'LIVE' ? 'LIVE' : freshness.freshness === 'FRESH' ? 'FRESH' : 'DELAYED',
+        isLive: freshness.freshness === 'LIVE',
+        ageSeconds: Math.round(freshness.ageMs / 1000),
+        status: optionChainStrikes.length > 0 ? 'AVAILABLE' : 'PARTIAL',
+      },
       data: { ...chainData, data: optionChainStrikes, expiries, dataSource: source, candles: candles5m },
+      canonical,
       analysis,
     });
-    
+  };
+  // Run mainLogic with overall endpoint timeout
+  try {
+    return await Promise.race([
+      mainLogic(),
+      new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('ENDPOINT_TIMEOUT')));
+      }),
+    ]);
   } catch (error: any) {
+    clearTimeout(timeoutId);
+    // Handle abort as graceful timeout
+    if (error.name === 'AbortError' || error.message?.includes('Abort') || error.message?.includes('ENDPOINT_TIMEOUT')) {
+      console.warn('[API] Option chain endpoint timeout (18s)');
+      return NextResponse.json(
+        { success: false, error: 'Option chain endpoint timeout' },
+        { status: 504 }
+      );
+    }
     console.error('[API] Option chain error:', error);
     return NextResponse.json(
       { success: false, error: error.message || 'Failed to fetch option chain' },
       { status: 500 }
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

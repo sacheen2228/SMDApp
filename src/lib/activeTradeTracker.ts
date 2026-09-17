@@ -55,7 +55,7 @@ function getHoldingMins(trade: ActiveTrade): number {
   return Math.round((now - start) / 60000);
 }
 
-export async function addTrade(trade: ActiveTrade): Promise<void> {
+export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<void> {
   // SAFETY: Acquire active trade lock before creating trade
   const lockResult = await acquireTradeLock({
     tradeId: trade.id,
@@ -76,6 +76,14 @@ export async function addTrade(trade: ActiveTrade): Promise<void> {
   }
 
   activeTrades.set(trade.id, trade);
+
+  // TIGER alert: send Telegram notification for new trade (skip if caller already sent alert)
+  if (!skipAlert) {
+    try {
+      const { alertNewTrade } = await import("./tiger-monitor");
+      await alertNewTrade(trade);
+    } catch { /* tiger-monitor offline — non-fatal */ }
+  }
 
   // Persist to database (idempotent — trade-journal route upserts on tradeId)
   await createTrade({

@@ -21,6 +21,7 @@ import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/un
 import { getLotSize } from "@/lib/symbol-config";
 import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
+import MostActiveContracts from "@/components/terminal/MostActiveContracts";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -110,7 +111,7 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5";
+type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5" | "mostactive";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -126,6 +127,7 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
   { id: "ide", icon: <Layers size={19} />, label: "Institutional Derivatives" },
   { id: "top5", icon: <Flame size={19} />, label: "Today's Trade" },
+  { id: "mostactive", icon: <Activity size={19} />, label: "Most Active F&O" },
 ];
 
 function getISTTime(): Date {
@@ -134,10 +136,17 @@ function getISTTime(): Date {
   return new Date(now.getTime() + istOffset + now.getTimezoneOffset() * 60 * 1000);
 }
 
+const NSE_HOLIDAYS_2026 = new Set([
+  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
+  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
+]);
+
 function isMarketOpen(): boolean {
   const ist = getISTTime();
   const day = ist.getDay();
   if (day === 0 || day === 6) return false;
+  const iso = ist.toISOString().split('T')[0];
+  if (NSE_HOLIDAYS_2026.has(iso)) return false;
   const mins = ist.getHours() * 60 + ist.getMinutes();
   return mins >= 555 && mins <= 930;
 }
@@ -941,6 +950,8 @@ export function ZeroHeroTerminal() {
   // ─── Zero Hero candidates ────────────────────────────────────────
   const zhCandidates = useMemo(() => {
     if (!isEligible) return [];
+    // SAFETY: Zero Hero is ONLY allowed on expiry day
+    if (!getExpiryTypeForDate(symbol)) return []; // Not expiry day — no Zero Hero trades
     const threshold = spot * 0.02;
     const nearStrikes = chain.filter((s) => Math.abs(s.strike - spot) <= threshold);
     // Chain-wide context computed ONCE (reuses sdm-oianalysis, gamma-blast, expiry-calculator)
@@ -1224,6 +1235,9 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "top5" && (
             <TodaysTradeView />
+          )}
+          {activeTab === "mostactive" && (
+            <MostActiveContracts />
           )}
         </div>
       </div>
