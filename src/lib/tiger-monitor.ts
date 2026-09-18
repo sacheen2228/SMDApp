@@ -191,11 +191,21 @@ async function monitorTick(): Promise<void> {
 }
 
 // ── Public API ──
-export function startTigerMonitor(): void {
+export async function startTigerMonitor(): Promise<void> {
   const g = globalThis as any;
   if (!g.__tigerMonitor) g.__tigerMonitor = { running: false, timer: null };
   const state = g.__tigerMonitor;
   if (state.running) return;
+
+  // Reload active trades from database before starting monitor
+  try {
+    const { reloadActiveTrades } = await import("./activeTradeTracker");
+    const loaded = await reloadActiveTrades();
+    console.log(`[TIGER] Reloaded ${loaded} active trades from database`);
+  } catch (err: any) {
+    console.warn(`[TIGER] Failed to reload trades: ${err.message}`);
+  }
+
   state.running = true;
   state.timer = setInterval(monitorTick, POLL_INTERVAL_MS);
   monitorRunning = true;

@@ -190,6 +190,48 @@ export function getActiveTrades(): ActiveTrade[] {
     .filter(t => t.status === 'ACTIVE');
 }
 
+// Reload active trades from database on server restart
+export async function reloadActiveTrades(): Promise<number> {
+  try {
+    const res = await fetch(`${process.env.INTERNAL_API_BASE || "http://localhost:3000"}/api/trade-journal?status=ACTIVE`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    const trades = data.trades || [];
+    let loaded = 0;
+    for (const t of trades) {
+      if (!t.tradeId || activeTrades.has(t.tradeId)) continue;
+      activeTrades.set(t.tradeId, {
+        id: t.tradeId,
+        symbol: t.symbol,
+        side: (t.side || 'BUY') as 'BUY' | 'SELL',
+        instrument: `${t.symbol} ${t.strike || ''} ${t.type || ''}`.trim(),
+        strike: t.strike || 0,
+        optionType: t.type || '',
+        entry: t.entryPrice || 0,
+        sl: t.stopLoss || 0,
+        tp1: t.target1 || t.entryPrice || 0,
+        tp2: t.target2 || t.target1 || t.entryPrice || 0,
+        tp3: t.target3,
+        status: t.status || 'ACTIVE',
+        sentAt: t.createdAt || new Date().toISOString(),
+        source: t.strategy || 'unknown',
+        spotPrice: t.spotPrice,
+        confidence: t.confidence,
+        qualityScore: t.qualityScore,
+        qualityGrade: t.qualityGrade,
+      });
+      loaded++;
+    }
+    console.log(`[ActiveTrade] Reloaded ${loaded} active trades from database`);
+    return loaded;
+  } catch (err: any) {
+    console.warn(`[ActiveTrade] Failed to reload trades: ${err.message}`);
+    return 0;
+  }
+}
+
 export function getAllTrades(): ActiveTrade[] {
   return Array.from(activeTrades.values());
 }

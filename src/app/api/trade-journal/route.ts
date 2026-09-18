@@ -71,9 +71,11 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const symbol = searchParams.get("symbol");
     const date = searchParams.get("date");
+    const statusFilter = searchParams.get("status");
 
     const where: any = {};
     if (symbol) where.symbol = symbol;
+    if (statusFilter) where.status = statusFilter;
     if (date) {
       const dayStart = new Date(date);
       dayStart.setHours(0, 0, 0, 0);

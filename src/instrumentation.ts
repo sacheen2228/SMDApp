@@ -31,10 +31,19 @@ export async function register() {
       console.warn(`[Nous] Orchestrator auto-start failed: ${err.message}`);
     }
 
+    // Auto-reload active trades from database (lost on restart)
+    try {
+      const { reloadActiveTrades } = await import("@/lib/activeTradeTracker");
+      const loaded = await reloadActiveTrades();
+      console.log(`[ActiveTrade] Reloaded ${loaded} trades from database`);
+    } catch (err: any) {
+      console.warn(`[ActiveTrade] Reload failed: ${err.message}`);
+    }
+
     // Auto-start TIGER trade monitor (SL/TP/T trailing + Telegram alerts)
     try {
       const { startTigerMonitor } = await import("@/lib/tiger-monitor");
-      startTigerMonitor();
+      await startTigerMonitor();
       console.log("[TIGER] Trade monitor auto-started");
     } catch (err: any) {
       console.warn(`[TIGER] Monitor auto-start failed: ${err.message}`);
