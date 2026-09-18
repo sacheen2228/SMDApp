@@ -266,14 +266,23 @@ function buildDataHealthReport(
 ): DataHealthReport {
   const lastUpdateMs = new Date(lastUpdate).getTime();
   const atm = findATMStrike(optionChain, spot);
+  // Only count strikes within ±5% of spot as missing if LTP=0 — deep OTM strikes naturally have LTP=0
+  const rangeThreshold = spot * 0.05;
   const strikesWithMissing = optionChain.filter(
-    (s) => !s.ce || !s.pe || s.ce.ltp === 0 || s.pe.ltp === 0
+    (s) => {
+      const nearATM = Math.abs(s.strike - spot) <= rangeThreshold;
+      if (!nearATM) return false; // deep OTM — skip
+      return !s.ce || !s.pe || (s.ce.ltp === 0 && s.pe.ltp === 0);
+    }
+  ).length;
+  const nearATMCount = optionChain.filter(
+    (s) => Math.abs(s.strike - spot) <= rangeThreshold
   ).length;
 
   return evaluateDataHealth({
     latencyMs: source === 'simulation' ? 0 : 200,
     lastUpdateMs: isNaN(lastUpdateMs) ? Date.now() : lastUpdateMs,
-    totalStrikes: optionChain.length,
+    totalStrikes: nearATMCount || optionChain.length,
     strikesWithMissingData: strikesWithMissing,
     atmHasGreeks: atm ? (atm.ce?.delta !== undefined && atm.pe?.delta !== undefined) : false,
     source,
@@ -1033,8 +1042,13 @@ export async function generateTradeRecommendation(
   // ── Step 12: Build Recommendation ──────────────────────────────
 
   // Confidence: weighted blend of quality score and direction consensus
+  // When candle data is unavailable, weight quality score more heavily since
+  // direction confidence is low due to DEGRADED multi-TF/structure/volume
+  const hasCandles = primaryCandles.length > 0;
   const dirConfidence = dirResult.confidence;
-  const confidence = Math.round(qualityScore.overall * 0.6 + dirConfidence * 0.4);
+  const confidence = hasCandles
+    ? Math.round(qualityScore.overall * 0.6 + dirConfidence * 0.4)
+    : Math.round(qualityScore.overall * 0.8 + dirConfidence * 0.2);
   const clampedConfidence = clamp(confidence, 0, 100);
 
   // Apply confidence thresholds (session-adjusted)

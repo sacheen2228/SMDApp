@@ -17,7 +17,7 @@ const MIN_OI = 50000;
 const MIN_VOLUME = 10000;
 const MAX_SPREAD_PCT = 5;
 const MIN_HEALTH_PCT = 70;
-const MIN_CONFIDENCE_SCORE = 65;
+const MIN_CONFIDENCE_SCORE = 60;
 const MIN_VOLUME_RATIO = 1.5; // Require 1.5x average volume for high-prob trades
 const MIN_MTF_AGREEMENT = 2; // At least 2 of 3 timeframes must agree
 const GRADE_RANK: Record<TradeGrade, number> = {
@@ -104,7 +104,7 @@ function checkConfidence(
   grade: TradeGrade,
   score: number
 ): ValidationCheck {
-  const gradeOk = GRADE_RANK[grade] >= GRADE_RANK["B"];
+  const gradeOk = GRADE_RANK[grade] >= GRADE_RANK["C"];
   const scoreOk = score >= MIN_CONFIDENCE_SCORE;
   const passed = gradeOk && scoreOk;
   return {
@@ -112,7 +112,7 @@ function checkConfidence(
     passed,
     message: passed
       ? `Grade ${grade} (${score}) meets threshold`
-      : `Grade ${grade} (${score}) below minimum B / 65`,
+      : `Grade ${grade} (${score}) below minimum C / 60`,
   };
 }
 

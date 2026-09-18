@@ -251,10 +251,18 @@ export async function GET(request: NextRequest) {
 
     // Run SDM V2 engine — same function SDMBot.tsx calls client-side,
     // so chat/Telegram and the terminal UI always agree.
-    // VIX: no dedicated live-VIX fetch exists yet in this codebase;
-    // defaulting to 15 matches the documented fallback already used
-    // elsewhere (see AGENTS.md — hardcoded VIX=15 fallback).
-    const vix = 15;
+    // VIX: fetch live from NSE, fallback to 15 if unavailable
+    let vix = 15;
+    try {
+      const nseVix = await fetch('https://www.nseindia.com/api/allIndices', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(5000),
+      }).then(r => r.json()).then(d => {
+        const vixIdx = d?.data?.find((i: any) => i.index === 'INDIA VIX');
+        return vixIdx?.last ? parseFloat(vixIdx.last) : null;
+      }).catch(() => null);
+      if (nseVix && nseVix > 0) vix = nseVix;
+    } catch {}
     const signal = await generateTradeRecommendation(
       chain,
       spotPrice,

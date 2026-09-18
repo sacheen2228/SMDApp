@@ -722,7 +722,7 @@ export async function GET(request: NextRequest) {
         ageSeconds: Math.round(freshness.ageMs / 1000),
         status: optionChainStrikes.length > 0 ? 'AVAILABLE' : 'PARTIAL',
       },
-      data: { ...chainData, data: optionChainStrikes, expiries, dataSource: source, candles: candles5m },
+      data: { ...chainData, data: optionChainStrikes, strikes: optionChainStrikes, optionChainStrikes, expiries, dataSource: source, candles: candles5m },
       canonical,
       analysis,
     });
