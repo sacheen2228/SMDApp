@@ -8,30 +8,13 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
-    const includeDetails = searchParams.get('details') === 'true';
 
-    const engine = getExpiryLiquidityEngine();
-
-    // In production, this would fetch real live data
-    // For now, return the engine output structure
-    const result = await getExpiryLiquidityEngine().process({
-      symbol,
-      spot: 0,
-      candles: [],
-      optionChain: null,
-      futures: null,
-      marketBreadth: null,
-      sectorHeatmap: null,
-      regime: null,
-      vix: 15,
-      timestamp: Date.now(),
-    });
-
+    // GET endpoint requires real data via POST — do not fabricate data
     return NextResponse.json({
-      success: true,
-      data: result,
-      timestamp: new Date().toISOString(),
-    });
+      success: false,
+      error: 'GET endpoint not supported — use POST with real market data (symbol, spot, optionChain, etc.)',
+      hint: 'POST /api/expiry-liquidity with { symbol, spot, candles, optionChain, futures, vix }',
+    }, { status: 400 });
   } catch (error: any) {
     console.error('[Expiry Liquidity API] Error:', error);
     return NextResponse.json(

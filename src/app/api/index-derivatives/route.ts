@@ -116,8 +116,9 @@ function buildOptionsContractMeta(symbol: IndexSymbol, spot: number, chain: any)
   const chainStrikes = chain?.strikes || [];
   const strikesData = strikes.map(strike => {
     const live = chainStrikes.find((s: any) => s.strike === strike);
-    const ce = live?.ce || mockOptionMetrics(strike < spot ? 'ITM' : strike > spot ? 'OTM' : 'ATM', spot, strike);
-    const pe = live?.pe || mockOptionMetrics(strike > spot ? 'ITM' : strike < spot ? 'OTM' : 'ATM', spot, strike);
+    // Only use real data — no mock fallback
+    const ce = live?.ce || null;
+    const pe = live?.pe || null;
     return {
       strike,
       expiry: chain?.expiry || currentExpiry,
@@ -158,27 +159,7 @@ function buildOptionsContractMeta(symbol: IndexSymbol, spot: number, chain: any)
   };
 }
 
-function mockOptionMetrics(moneyness: string, spot: number, strike: number) {
-  const intrinsic = moneyness === 'ITM' ? Math.abs(spot - strike) : 0;
-  const timeValue = moneyness === 'ATM' ? 50 : moneyness === 'ITM' ? 20 : 5;
-  return {
-    ltp: intrinsic + timeValue + Math.random() * 10,
-    volume: Math.floor(Math.random() * 50000),
-    oi: Math.floor(Math.random() * 100000),
-    oiChange: Math.floor(Math.random() * 10000) - 5000,
-    iv: 15 + Math.random() * 10,
-    bid: intrinsic + timeValue - 2,
-    ask: intrinsic + timeValue + 2,
-    bidQty: Math.floor(Math.random() * 1000),
-    askQty: Math.floor(Math.random() * 1000),
-    delta: moneyness === 'ITM' ? 0.7 : moneyness === 'ATM' ? 0.5 : 0.3,
-    gamma: 0.01,
-    theta: -5,
-    vega: 10,
-    spread: 4,
-    spreadPct: 4,
-  };
-}
+// mockOptionMetrics removed — no fake data allowed
 
 function calculateChange(candles: any[]): { value: number; pct: number } {
   if (candles.length < 2) return { value: 0, pct: 0 };

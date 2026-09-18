@@ -38,6 +38,9 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
+
+    // This endpoint generates SYNTHETIC demonstration data only — NOT real backtest results
+    // Real backtest data is available at /api/backtest/trades (replays actual trades against Yahoo candles)
     const days = parseInt(searchParams.get("days") || "30", 10);
 
     const daily: DailyResult[] = [];
@@ -111,7 +114,7 @@ export async function GET(req: NextRequest) {
       ? Math.round((grossProfit / grossLoss) * 100) / 100
       : grossProfit > 0 ? Infinity : 0;
 
-    const result: BacktestResult = {
+    const result: BacktestResult & { dataSource: string; warning: string } = {
       symbol,
       days,
       totalReturnPct: cumReturn,
@@ -123,6 +126,8 @@ export async function GET(req: NextRequest) {
       winners,
       losers,
       daily,
+      dataSource: 'SYNTHETIC',
+      warning: 'This is SYNTHETIC demonstration data — NOT a real backtest. Use /api/backtest/trades for real results.',
     };
 
     return NextResponse.json(result);

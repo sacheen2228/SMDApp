@@ -13,38 +13,53 @@ export async function GET(request: Request) {
     const direction = searchParams.get('direction') || '';
     const signalType = searchParams.get('signal') || '';
 
-    // Get market data
+    // Fetch real market data
     const stocks = await fetchNIFTY50Stocks();
 
-    // For now, use the engine with mock data structure
-    // In production, this would fetch real option chain, futures, etc.
+    // Fetch real option chain for NIFTY
+    let spot = 0;
+    let vix = 15;
+    let optionChain = null;
+    try {
+      const { getNSEOptionChain } = await import('@/lib/nse-api');
+      const nseData = await getNSEOptionChain('NIFTY');
+      if (nseData?.records?.data) {
+        spot = nseData.records.underlyingValue || 0;
+        optionChain = nseData.records.data;
+      }
+    } catch {}
+
+    // Fetch live VIX
+    try {
+      const vixRes = await fetch('https://www.nseindia.com/api/allIndices', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(5000),
+      }).then(r => r.json()).then(d => {
+        const vixIdx = d?.data?.find((i: any) => i.index === 'INDIA VIX');
+        return vixIdx?.last ? parseFloat(vixIdx.last) : null;
+      });
+      if (vixRes && vixRes > 0) vix = vixRes;
+    } catch {}
+
+    if (!spot || spot <= 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'Could not fetch real market data — no opportunities to return',
+      }, { status: 503 });
+    }
+
     const engine = (await import('@/lib/expiry-liquidity/engine')).getExpiryLiquidityEngine();
 
-    // Create minimal context for engine
-    const context = {
+    const result = await engine.process({
       symbol: 'NIFTY',
-      spot: 19500, // Would come from live data
+      spot,
       candles: [],
-      optionChain: null,
+      optionChain,
       futures: null,
       marketBreadth: null,
       sectorHeatmap: null,
       regime: null,
-      vix: 15,
-      timestamp: Date.now(),
-    };
-
-    // Process through engine
-    const result = await require('@/lib/expiry-liquidity/engine').getExpiryLiquidityEngine().process({
-      symbol: 'NIFTY',
-      spot: 19500,
-      candles: [],
-      optionChain: null,
-      futures: null,
-      marketBreadth: null,
-      sectorHeatmap: null,
-      regime: null,
-      vix: 15,
+      vix,
       timestamp: Date.now(),
     });
 

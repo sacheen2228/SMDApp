@@ -338,37 +338,19 @@ export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
 
 // ─── Sector Strength Analysis ─────────────────────────────────────
 export function analyzeSectors(marketDirection: MarketDirection): SectorStrength[] {
-  const isBullish = marketDirection.trend.includes("BULLISH");
-  const isBearish = marketDirection.trend.includes("BEARISH");
-
-  // Sector performance simulation based on market direction
-  const sectorData: SectorStrength[] = SECTOR_ORDER.map((sector, idx) => {
-    let strength = 50;
-    let change = 0;
-
-    // Sector rotation logic
-    if (sector === "IT" && isBullish) { strength = 75; change = 1.5; }
-    else if (sector === "IT" && isBearish) { strength = 35; change = -1.2; }
-    else if (sector === "Banking" && isBullish) { strength = 80; change = 2.0; }
-    else if (sector === "Banking" && isBearish) { strength = 30; change = -1.8; }
-    else if (sector === "Auto" && isBullish) { strength = 70; change = 1.2; }
-    else if (sector === "Pharma" && isBearish) { strength = 65; change = 0.8; }
-    else if (sector === "FMCG" && isBearish) { strength = 70; change = 0.5; }
-    else if (sector === "Metal" && isBullish) { strength = 72; change = 1.8; }
-    else if (sector === "Energy") { strength = 55; change = 0.3; }
-    else { strength = 50; change = 0; }
-
+  // No fake sector data — return neutral/unknown for all sectors
+  // Real sector data should come from /api/market/heatmap or /api/market/sectors
+  const sectorData: SectorStrength[] = SECTOR_ORDER.map((sector) => {
     return {
       sector,
-      strength: Math.round(strength),
-      change: Math.round(change * 100) / 100,
+      strength: 50, // neutral — no data
+      change: 0,    // no data
       leadingStocks: [],
       laggards: [],
     };
   });
 
-  // Sort by strength descending
-  return sectorData.sort((a, b) => b.strength - a.strength);
+  return sectorData;
 }
 
 // ─── Yahoo Finance Price + Candle Fetcher ─────────────────────────

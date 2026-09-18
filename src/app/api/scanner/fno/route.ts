@@ -21,10 +21,7 @@ interface ScanCandidate {
   };
 }
 
-function seededRandom(seed: number): number {
-  const x = Math.sin(seed * 9301 + 49297) * 233280;
-  return x - Math.floor(x);
-}
+// seededRandom removed — no fake data allowed
 
 function calculateOISignal(oiChg: number, priceChange: number): { signal: string; score: number } {
   if (oiChg > 0 && priceChange > 0) return { signal: "Long Buildup", score: 80 };
@@ -90,18 +87,17 @@ export async function GET(req: NextRequest) {
 
     for (const symbol of topFnoSymbols) {
       const stock = stockMap.get(symbol);
-      const seed = symbol.split("").reduce((a, c) => a + c.charCodeAt(0), 0) + Date.now();
-      const rand = seededRandom(seed);
 
       const avgVolume = stock ? stock.volume * 0.8 : 500_000;
+      // Use real OI change from chain data, or 0 if unavailable — NO random fallback
       const oiChg = chainData?.summary?.callOiChange
-        ? chainData.summary.callOiChange * (rand - 0.5)
-        : (rand - 0.5) * 100_000;
+        ? chainData.summary.callOiChange * (stock ? 1 : 0)
+        : 0;
 
       const currentIv = chainData?.summary?.indiaVIX || 25;
       const ivPct = calculateIvPercentile(currentIv);
 
-      const priceChg = stock?.changePct || (rand - 0.5) * 4;
+      const priceChg = stock?.changePct || 0;
 
       const oiAnalysis = calculateOISignal(oiChg, priceChg);
       const premiumVel = estimatePremiumVelocity(
