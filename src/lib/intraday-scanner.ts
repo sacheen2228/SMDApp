@@ -553,6 +553,7 @@ export async function generateCandidates(
 ): Promise<GeneratedCandidates> {
   const candidates: StockCandidate[] = [];
   let liveCount = 0;
+  const chains = optionChains || new Map();
 
   // Fetch real prices + 3mo daily OHLC candles + last-session 5m intraday
   // candles from Yahoo Finance (free, no auth). Daily bars drive the trend
@@ -718,7 +719,7 @@ export async function generateCandidates(
     else { volumeScore = 30; }
 
     // Options scoring — REAL per-stock Breeze chain when available
-    const chain = optionChains.get(stock.symbol) || null;
+    const chain = chains.get(stock.symbol) || null;
     let stockPCR = 1.0;
     let stockOI = 0;
     let stockOIChange = 0;
