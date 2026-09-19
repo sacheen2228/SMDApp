@@ -307,6 +307,7 @@ export interface HermesContext {
   expiryLiquidity: FreshData<ExpiryLiquidityData>;
   backtestResults: FreshData<BacktestData>;
   mcxIntelligence?: FreshData<MCXIntelligenceData>;
+  mtf?: FreshData<any>;
 }
 
 // ── Trade Candidate ────────────────────────────────────────────────────

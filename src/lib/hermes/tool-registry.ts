@@ -372,6 +372,22 @@ export const HERMES_TOOLS: ToolDefinition[] = [
     cacheTTL: 0,
     tags: ["memory", "patterns", "setup"],
   },
+  // ── MTF Indicator Confirmation ────────────────────────────────────────
+  {
+    name: "get_mtf_signal",
+    description: "Multi-timeframe indicator confirmation — 15M trend → 5M signal → 3M entry. Computes SuperTrend, RSI, EMA, Bollinger, VWAP, ATR, ADX, Pivots across timeframes. Returns composite score and BUY_CE/BUY_PE/WAIT.",
+    category: "SIGNALS",
+    inputSchema: {
+      symbol: { type: "string", required: true, description: "Index symbol (NIFTY, BANKNIFTY, etc.)" },
+    },
+    source: "mtf-indicator-engine.ts + mtf-signal-engine.ts",
+    freshnessMaxAge: 30_000,
+    reliability: 0.90,
+    timeout: 15_000,
+    cacheable: true,
+    cacheTTL: 30_000,
+    tags: ["MTF", "multi-timeframe", "SuperTrend", "RSI", "signal", "confirmation"],
+  },
 ];
 
 // ── Registry Functions ─────────────────────────────────────────────────
@@ -395,7 +411,7 @@ export function getToolsByTag(tag: string): ToolDefinition[] {
 
 export function getRequiredTools(intent: string): string[] {
   const intentToolMap: Record<string, string[]> = {
-    LIVE_TRADE: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_oi_analysis", "get_greeks", "get_gamma", "get_fii_dii", "get_news", "get_regime", "get_risk_status", "get_market_session"],
+    LIVE_TRADE: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_oi_analysis", "get_greeks", "get_gamma", "get_fii_dii", "get_news", "get_regime", "get_risk_status", "get_market_session", "get_mtf_signal"],
     OPTION_ANALYSIS: ["get_option_chain", "get_oi_analysis", "get_greeks", "get_gamma", "get_volume_profile"],
     MCX_ANALYSIS: ["get_mcx_data", "get_market_session"],
     RESEARCH: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_fii_dii", "get_news", "get_regime"],
@@ -404,7 +420,7 @@ export function getRequiredTools(intent: string): string[] {
     RISK: ["get_risk_status", "get_trade_history"],
     TRADE_JOURNAL: ["get_trade_history"],
     BACKTEST: ["get_backtest_results"],
-    ZERO_HERO: ["get_spot", "get_option_chain", "get_vix", "get_gamma", "get_market_session"],
+    ZERO_HERO: ["get_spot", "get_option_chain", "get_vix", "get_gamma", "get_market_session", "get_mtf_signal"],
     CAS: ["get_cas_analysis", "get_expiry_liquidity"],
   };
   return intentToolMap[intent] || ["get_spot", "get_option_chain"];

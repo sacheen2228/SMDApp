@@ -250,6 +250,16 @@ export interface SDMRecommendation {
     confidenceMultiplier: number;
     notes: string[];
   };
+  // MTF indicator confirmation layer
+  mtf?: {
+    action: "BUY_CE" | "BUY_PE" | "WAIT" | "INVALID";
+    compositeScore: number;
+    confidence: number;
+    direction: "BULLISH" | "BEARISH" | "NEUTRAL";
+    entry: { spot: number; suggestedEntry: number; stopLoss: number; target1: number; target2: number; rrRatio: number } | null;
+    reasons: string[];
+    trend: { primary: string; signal: string; entry: string; trendDirection: string; trendAge: number };
+  };
 }
 
 // ─── Score Object ────────────────────────────────────────────────

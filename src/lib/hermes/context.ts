@@ -95,6 +95,9 @@ export async function collectHermesContext(
   if (requiredTools.includes("get_backtest_results")) {
     fetches.backtest = fetchJSON(`${apiBase}/api/backtest/trades?symbol=${symbol}`, 15_000);
   }
+  if (requiredTools.includes("get_mtf_signal")) {
+    fetches.mtf = fetchJSON(`${apiBase}/api/mtf-signal?symbol=${symbol}`, 15_000);
+  }
   // MCX-specific intelligence fetch
   const isMCX = getExchange(symbol) === "MCX";
   if (isMCX) {
@@ -490,6 +493,7 @@ export async function collectHermesContext(
     expiryLiquidity,
     backtestResults,
     ...(mcxFresh ? { mcxIntelligence: mcxFresh } : {}),
+    ...(data.mtf ? { mtf: wrapFresh(data.mtf, "mtf-signal-api", "signal") } : {}),
   };
 }
 

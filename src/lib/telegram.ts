@@ -102,6 +102,13 @@ export async function sendTradeAlert(params: {
   target1?: number;
   target2?: number;
   source?: string;
+  mtf?: {
+    direction: string;
+    compositeScore: number;
+    confidence: number;
+    trendDirection: string;
+    reasons: string[];
+  } | null;
 }): Promise<boolean> {
   const sig = buildSignalSignature({
     symbol: params.symbol,
@@ -124,13 +131,16 @@ export async function sendTradeAlert(params: {
 
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
   const sourceLabel = params.source || "SDM Engine";
+  const mtfLine = params.mtf
+    ? `\n📐 MTF: ${params.mtf.direction} (${params.mtf.trendDirection} trend, score ${params.mtf.compositeScore})`
+    : '';
   const msg = `
 ${emoji} <b>${sourceLabel}</b>
 
 📊 <b>${params.symbol}</b> — ${params.type}
 ⚡ Action: <b>${params.action}</b>
 🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>
-💪 Confidence: <b>${params.confidence}%</b>
+💪 Confidence: <b>${params.confidence}%</b>${mtfLine}
 ${params.entry ? `💰 Entry: ₹${params.entry}` : ""}
 ${params.stopLoss ? `🛑 Stop Loss: ₹${params.stopLoss}` : ""}
 ${params.target1 ? `🎯 Target 1: ₹${params.target1}` : ""}

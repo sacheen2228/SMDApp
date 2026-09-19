@@ -1193,6 +1193,35 @@ export async function generateTradeRecommendation(
   const marketRegime: MarketRegime = qualityScore.overall >= 75 ? 'trending'
     : qualityScore.overall >= 55 ? 'ranging' : 'mean_reversion';
 
+  // ─── MTF Indicator Confirmation Layer ────────────────────────────
+  let mtfResult: any = undefined;
+  try {
+    const { computeMTFIndicators } = await import('./mtf-indicator-engine');
+    const { generateMTFSignal } = await import('./mtf-signal-engine');
+    const { DEFAULT_INDICATOR_PARAMS } = await import('./mtf-config');
+
+    // Build candles by TF: use whatever was passed in
+    const candlesByTF: Record<string, CandleData[]> = {};
+    if (candles['15m']?.length) candlesByTF['15m'] = candles['15m'];
+    if (candles['5m']?.length) candlesByTF['5m'] = candles['5m'];
+    // Entry TF = 5M (closest to 3M available)
+    if (candles['5m']?.length) candlesByTF['3m'] = candles['5m'];
+
+    if (Object.keys(candlesByTF).length > 0) {
+      const indicators = computeMTFIndicators(candlesByTF, DEFAULT_INDICATOR_PARAMS, 20);
+      const mtfSignal = generateMTFSignal(indicators.timeframes);
+      mtfResult = {
+        action: mtfSignal.action,
+        compositeScore: mtfSignal.compositeScore,
+        confidence: mtfSignal.confidence,
+        direction: mtfSignal.direction,
+        entry: mtfSignal.entry,
+        reasons: mtfSignal.reasons,
+        trend: mtfSignal.trend,
+      };
+    }
+  } catch { /* non-fatal — MTF is additive */ }
+
   return {
     direction,
     strike: finalSelectedStrike,
@@ -1237,6 +1266,7 @@ export async function generateTradeRecommendation(
       confidenceMultiplier: session.confidenceMultiplier,
       notes: session.notes,
     },
+    mtf: mtfResult,
   };
 }
 

@@ -231,16 +231,19 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Generate candles — try Breeze historical, fall back to simulation
-    let candles: any[] = [];
+    // Generate candles — try Breeze historical, fall back to Yahoo
+    let candles5m: any[] = [];
+    let candles15m: any[] = [];
     try {
-      const { getIntradayCandles } = await import("@/lib/breeze-historical");
-      const expDate = selectedExpiry || chainData.selectedExpiry || "";
-      const candleResult = await getIntradayCandles(symbol, expDate, "5minute");
-      candles = candleResult.candles || [];
-    } catch {
-      // simulation fallback removed — candles will be empty
-    }
+      const { getHistoricalCandles } = await import("@/lib/historical-data");
+      const candle5mResult = await getHistoricalCandles(symbol, "5m", 50);
+      candles5m = candle5mResult.candles || [];
+    } catch {}
+    try {
+      const { getHistoricalCandles } = await import("@/lib/historical-data");
+      const candle15mResult = await getHistoricalCandles(symbol, "15m", 50);
+      candles15m = candle15mResult.candles || [];
+    } catch {}
 
     // Previous day OHLC — use real Breeze data or derive from chain
     const prevDay = {
@@ -268,7 +271,7 @@ export async function GET(request: NextRequest) {
       spotPrice,
       symbol,
       selectedExpiry,
-      { "5m": candles },
+      { "5m": candles5m },
       vix,
       source,
       new Date().toISOString(),
@@ -288,6 +291,39 @@ export async function GET(request: NextRequest) {
         vega: optionLeg.vega || 0,
         iv: optionLeg.iv || 0,
       };
+    }
+
+    // ─── MTF Indicator Confirmation Layer (before Telegram) ──────────
+    let mtf = null;
+    try {
+      const { computeMTFIndicators } = await import("@/lib/mtf-indicator-engine");
+      const { generateMTFSignal } = await import("@/lib/mtf-signal-engine");
+      const { DEFAULT_INDICATOR_PARAMS } = await import("@/lib/mtf-config");
+
+      const candlesByTF: Record<string, any[]> = {};
+      if (candles15m.length > 0) candlesByTF["15m"] = candles15m;
+      if (candles5m.length > 0) candlesByTF["5m"] = candles5m;
+      if (candles5m.length > 0) candlesByTF["3m"] = candles5m;
+
+      if (Object.keys(candlesByTF).length > 0) {
+        const indicators = computeMTFIndicators(candlesByTF, DEFAULT_INDICATOR_PARAMS, 20);
+        const mtfSignal = generateMTFSignal(indicators.timeframes);
+        mtf = {
+          action: mtfSignal.action,
+          compositeScore: mtfSignal.compositeScore,
+          confidence: mtfSignal.confidence,
+          direction: mtfSignal.direction,
+          entry: mtfSignal.entry,
+          trend: mtfSignal.trend,
+          dataQuality: mtfSignal.dataQuality,
+          reasons: mtfSignal.reasons,
+          factors: mtfSignal.factors,
+          indicators: indicators.timeframes,
+          dataAvailability: indicators.dataAvailability,
+        };
+      }
+    } catch (mtfErr) {
+      console.warn("[SDM Signal] MTF engine failed:", mtfErr);
     }
 
     // Send Telegram alert when data is real (not simulation) and confidence is high
@@ -310,12 +346,20 @@ export async function GET(request: NextRequest) {
         target1: rec.target1 || signal.target1,
         target2: rec.target2 || signal.target2,
         source: `SDM Engine (${source})`,
+        mtf: mtf ? {
+          direction: mtf.direction,
+          compositeScore: mtf.compositeScore,
+          confidence: mtf.confidence,
+          trendDirection: mtf.trend.trendDirection,
+          reasons: mtf.reasons,
+        } : null,
       }).catch(() => {});
     }
 
     return NextResponse.json({
       success: true,
       signal,
+      mtf,
       lastUpdate: new Date().toISOString(),
     });
   } catch (error: any) {
