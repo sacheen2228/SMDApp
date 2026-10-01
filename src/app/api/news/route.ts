@@ -21,6 +21,19 @@ export async function GET(request: NextRequest) {
     ];
 
     if (symbol) {
+      // X (Twitter) buzz for a symbol — free Google News index source
+      if (source === "x") {
+        const { fetchXBuzz } = await import("@/lib/x-sentiment");
+        const buzz = await fetchXBuzz(symbol);
+        return NextResponse.json({
+          success: true,
+          symbol,
+          source: "X (indexed posts)",
+          x: buzz,
+          count: buzz.tweetCount,
+          timestamp: new Date().toISOString(),
+        });
+      }
       // Get news for specific stock from selected source
       const selectedSource = sources.find(s => s.id === source) || sources[0];
       const news = await getStockNews(selectedSource, symbol);

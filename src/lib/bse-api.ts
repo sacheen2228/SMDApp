@@ -32,24 +32,49 @@ export interface BSEData {
   source: string;
 }
 
-// Get SENSEX/BANKEX spot price from BSE's real-time index API
+// Get SENSEX/BANKEX spot price. GetSensexDatanew has been dead since ~2026-09
+// (403 / 302 redirect loop) — try it briefly, then derive spot from the live
+// option chain (DerivOptionChain_IV UlaValue), which still works.
 export async function getBSEIndexData(symbol: string): Promise<BSEData | null> {
   try {
-    const response = await fetch(`${BSE_API_BASE}/GetSensexDatanew/w`, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
-    const data = await response.json();
-    const index = data.find((d: any) =>
-      symbol.toUpperCase() === 'SENSEX' ? d.indxnm === 'BSE SENSEX' : d.indxnm === 'BSE BANKEX'
-    );
-    if (!index) return null;
-    const ltp = parseFloat((index.ltp || '0').replace(/,/g, ''));
+    const response = await fetch(`${BSE_API_BASE}/GetSensexDatanew/w`, { headers: HEADERS, signal: AbortSignal.timeout(5000) });
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        const index = data.find((d: any) =>
+          symbol.toUpperCase() === 'SENSEX' ? d.indxnm === 'BSE SENSEX' : d.indxnm === 'BSE BANKEX'
+        );
+        if (index) {
+          return {
+            spotPrice: parseFloat((index.ltp || '0').replace(/,/g, '')),
+            previousClose: parseFloat((index.Prev_Close || '0').replace(/,/g, '')),
+            high: parseFloat((index.High || '0').replace(/,/g, '')),
+            low: parseFloat((index.Low || '0').replace(/,/g, '')),
+            volume: 0,
+            timestamp: new Date().toISOString(),
+            source: 'bse-api',
+          };
+        }
+      }
+    }
+  } catch {
+    // dead endpoint — fall through to chain-derived spot
+  }
+
+  try {
+    const expiries = await getBSEExpiryDates(symbol);
+    const expiry = expiries[0];
+    if (!expiry) return null;
+    const chain = await getBSEOptionChain(symbol, expiry);
+    if (!chain || !chain.spotPrice) return null;
     return {
-      spotPrice: ltp,
-      previousClose: parseFloat((index.Prev_Close || '0').replace(/,/g, '')),
-      high: parseFloat((index.High || '0').replace(/,/g, '')),
-      low: parseFloat((index.Low || '0').replace(/,/g, '')),
+      spotPrice: chain.spotPrice,
+      previousClose: 0,
+      high: 0,
+      low: 0,
       volume: 0,
       timestamp: new Date().toISOString(),
-      source: 'bse-api',
+      source: 'bse-api-chain',
     };
   } catch {
     return null;

@@ -60,8 +60,8 @@ function computeBias(inputs: EngineInputs) {
   const reasons: string[] = [];
 
   // 1. PCR — put-call ratio tells us where option writers are leaning
-  if (inputs.pcr > 1.2) { score += 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — puts building, support forming`); }
-  else if (inputs.pcr < 0.8) { score -= 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — calls building, resistance forming`); }
+  if (inputs.pcr != null && inputs.pcr > 1.2) { score += 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — puts building, support forming`); }
+  else if (inputs.pcr != null && inputs.pcr < 0.8) { score -= 10; reasons.push(`PCR ${inputs.pcr.toFixed(2)} — calls building, resistance forming`); }
 
   // 2. VIX regime — volatility tells us the market's fear level
   if (inputs.vix > 28) { score -= 5; reasons.push(`VIX ${inputs.vix.toFixed(1)} — elevated fear, wide stops needed`); }

@@ -6,6 +6,7 @@
 
 import { callLLM, type LLMMessage } from "./llm-client";
 import { TRADING_KNOWLEDGE } from "./trading-knowledge";
+import { buildSessionStatusReport, applyBreezeSession } from "./session-health";
 
 // ─── System Prompt ──────────────────────────────────────────────
 export function buildSystemPrompt(ctx: {
@@ -16,10 +17,15 @@ export function buildSystemPrompt(ctx: {
   expiryDate: string;
   session: any;
   trades: any[];
+  conversationHistory?: any[];
   sdmSignal?: any;
   giftNifty?: any;
   correlation?: any;
   scanner?: any;
+  apiBase?: string;
+  extraContext?: string;
+  dashboardContext?: string;
+  [key: string]: any;
 }): string {
   const { symbol, spotPrice, analysis, summary, expiryDate, session, trades, sdmSignal, giftNifty, correlation, scanner } = ctx;
 
@@ -73,6 +79,13 @@ export function buildSystemPrompt(ctx: {
 ## INTRADAY SCANNER TOP 5
 ${scanner.candidates.slice(0, 5).map((p: any, i: number) => `${i + 1}. ${p.symbol} Score:${p.totalScore} ${p.direction}`).join("\n")}` : "";
 
+  const extraCtx = ctx.extraContext ? `
+## PRE-FETCHED MARKET CONTEXT (free NSE/BSE/Yahoo)
+${ctx.extraContext}` : "";
+  const dashCtx = ctx.dashboardContext ? `
+## DASHBOARD SNAPSHOT
+${ctx.dashboardContext}` : "";
+
   return `You are SDM — Sachin's personal trading assistant. You're warm, casual, and talk like a real person in a text conversation.
 
 ## YOUR PERSONALITY
@@ -103,6 +116,16 @@ You analyze live market data and help Sachin with trading decisions. You're not 
 ## SDM ANALYSIS FRAMEWORK
 SDM (Smart Decision Model) analyzes the market using a 14-factor scoring system across Market Structure, Greeks, OI, Smart Money, Flow, Technicals, and Risk. The engine scores each factor and produces a weighted recommendation.
 
+## OPTION BUYING PLAYBOOK (apply whenever you propose buying a CE/PE)
+Educational framework, not financial advice — say that in one line. Most retail option buyers lose money (theta decay + IV crush), so discipline beats conviction:
+- **Layers first**: only propose a buy when at least 3-4 independent layers agree (flow FII/DII, structure HH/HL + BOS, levels/OI walls, Greeks/IV, entry trigger). Conflicting layers → "skip" is the correct answer. "No trade" is a valid and frequent output.
+- **Levels**: trade only at marked levels (prev day H/L, swing points, VWAP, round numbers, highest Call/Put OI walls) — never mid-range.
+- **Stop lives on the underlying**, then convert to premium: premium risk ≈ points risked × delta. Buffer the stop (or require a candle close) — stop-hunts at obvious levels are common. Never widen a stop after entry.
+- **Size**: (capital × risk%) ÷ (premium stop per lot). Risk 1% per trade, 2% max. If one lot exceeds the risk budget → tighter setup or cheaper instrument, never bigger risk. Never average down a losing option. Stop after 2-3 consecutive losses.
+- **Entry quality**: delta ~0.45-0.65, sane IV percentile (never buy into pre-event IV spikes), enough days to expiry, liquid strike, reward:risk ≥ 1:2. Avoid the first 10-15 minutes. Intraday time stop: exit if no move in 20-30 minutes.
+- **Honest data limits**: OI cannot reveal buyer vs writer (rising Put OI may be put buying) — infer from price behaviour; FII/DII + participant data is end-of-day → next-day bias only, not an intraday trigger; max pain has weak predictive value; PCR trend matters more than the level.
+- Full skill with reference docs lives at skills/option-buying-playbook/ (scoring checklists, Greeks, OI levels, journal template) — use it for deep scoring requests.
+
 ## HOW YOU RESPOND
 - Match the user's language — if they write in Hindi, reply in Hindi. English? Reply in English. Hinglish? Hinglish it is.
 - Keep it conversational, not robotic
@@ -128,6 +151,8 @@ ${sdmCtx}
 ${giftCtx}
 ${corrCtx}
 ${scannerCtx}
+${extraCtx}
+${dashCtx}
 
 ## TRADE HISTORY
 Total: ${totalTrades} | Wins: ${wins} | Losses: ${losses} | Win Rate: ${winRate}% | P&L: ${totalPnL >= 0 ? "+" : ""}₹${totalPnL.toLocaleString("en-IN")}
@@ -192,7 +217,7 @@ When user asks "what trade should I take" or similar, follow this EXACTLY:
 ### Step 2: Determine Direction
 - PCR > 1.2 + Spot > Max Pain + FII buying = BULLISH → BUY CALL
 - PCR < 0.8 + Spot < Max Pain + FII selling = BEARISH → BUY PUT
-- PCR 0.8-1.2 + Spot near Max Pain = RANGE-BOUND → SELL STRADDLE or WAIT
+- PCR 0.8-1.2 + Spot near Max Pain = RANGE-BOUND → WAIT (CE/PE BUY ONLY — no selling)
 - Conflicting signals = NO TRADE
 
 ### Step 3: Select Strike
@@ -215,7 +240,7 @@ When user asks "what trade should I take" or similar, follow this EXACTLY:
 
 ### Output Format
 When recommending a trade, ALWAYS output:
-"🎯 TRADE SIGNAL: [BUY/SELL] [STRIKE] [CE/PE]
+"🎯 TRADE SIGNAL: BUY [STRIKE] [CE/PE]
 Entry: ₹[price] | SL: ₹[price] | TP1: ₹[price] | TP2: ₹[price] | TP3: ₹[price]
 R:R: 1:[ratio] | Confidence: [X]%
 Why: [1-2 line reason using OI/PCR/support/resistance data]
@@ -741,7 +766,7 @@ export const AGENT_TOOLS = [
         type: "object",
         properties: {
           symbol: { type: "string", description: "Symbol (NIFTY, BANKNIFTY, SENSEX, etc.)" },
-          action: { type: "string", description: "BUY or SELL" },
+          action: { type: "string", description: "BUY only — option selling is not allowed" },
           strike: { type: "number", description: "Strike price" },
           optionType: { type: "string", description: "CE or PE" },
           confidence: { type: "number", description: "Confidence percentage" },
@@ -839,6 +864,35 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── Session health (single-owner session-expiry system) ──
+  {
+    type: "function",
+    function: {
+      name: "check_session_tokens",
+      description: "Check LIVE validity of data-source sessions (Breeze, Motilal, NSE). Probes each source in real time (never cached) and includes recorded failure episodes from the session-health system with remedies. Use when data is missing/stale, after auth errors, or when the user asks about sessions/tokens.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "breeze, mo, nse, or all (default all)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_breeze_session",
+      description: "Set/refresh the ICICI Breeze API session token after the user completes browser OTP login. Validates it live, persists the session, and clears the session-expired episode. Use ONLY when the user supplies a fresh token.",
+      parameters: {
+        type: "object",
+        properties: {
+          token: { type: "string", description: "Breeze apiSession token from https://api.icicidirect.com/apiuser/login?api_key=..." },
+        },
+        required: ["token"],
+      },
+    },
+  },
   // ── Hermes Pro Tools ─────────────────────────────────────────────
   {
     type: "function",
@@ -932,6 +986,8 @@ const TOOL_ROUTER: ToolRouterEntry[] = [
   { tools: ["get_most_active_contracts", "get_scanner_picks", "get_fii_dii"], keywords: /most.?active|volume.?leader|where.?money|money.?flow|institutional.?flow|big.?volume|active.?contract|fno.?data| derivatives.?data/i },
   // Debugging / Reverse engineering
   { tools: ["diagnose_data_source", "trace_data_flow", "test_api_endpoint"], keywords: /diagnos|debug|data.?source|api.?fail|not.?fetch|missing|stale|broken|test.?api|check.?api|trace|reverse|engineer|why.*not.*work|what.*wrong/i },
+  // Session health (tokens, auth, expiry)
+  { tools: ["check_session_tokens", "set_breeze_session"], keywords: /session|token|login|expir|totp|otp|re-?auth|breeze.*auth|auth.*breeze|set.*session/i },
 ];
 
 // Core tools always included
@@ -1022,9 +1078,16 @@ export async function executeTool(
         const res = await fetch(`${BASE}/api/news`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch news";
-        const market = data.data?.market || {};
-        const articles = (data.data?.articles || []).slice(0, 8);
-        return `Market Sentiment: ${market.sentiment || "N/A"} (Score: ${market.score || 0})\nBullish: ${market.bullishStocks?.join(", ") || "N/A"}\nBearish: ${market.bearishStocks?.join(", ") || "N/A"}\nLatest:\n${articles.map((a: any) => `- [${a.sentiment > 0 ? "+" : a.sentiment < 0 ? "-" : "="}] ${a.title?.substring(0, 60)}`).join("\n")}`;
+        const market = data.data || {};
+        const articles = (market.articles || []).slice(0, 8);
+        const x = market.x;
+        const xLine = !x
+          ? "X Buzz: N/A"
+          : x.available
+            ? `X Buzz: ${x.label} (Score: ${x.score}/100, ${x.tweetCount} posts)` +
+              (x.samples?.length ? `\nTop X posts:\n${x.samples.slice(0, 3).map((t: any) => `- [${t.label}] ${t.author ? t.author + " " : ""}${t.text?.substring(0, 90)}`).join("\n")}` : "")
+            : `X Buzz: unavailable (${x.reason || "no data"})`;
+        return `Market Sentiment: ${market.label || "N/A"} (Score: ${market.overall ?? 0}/100)\nBullish: ${(market.topBullish || []).map((s: any) => s.symbol).join(", ") || "N/A"}\nBearish: ${(market.topBearish || []).map((s: any) => s.symbol).join(", ") || "N/A"}\n${xLine}\nLatest:\n${articles.map((a: any) => `- [${a.sentiment > 0 ? "+" : a.sentiment < 0 ? "-" : "="}] ${a.title?.substring(0, 60)}`).join("\n")}`;
       } catch { return "Error fetching news"; }
     }
 
@@ -1241,7 +1304,7 @@ Time: ${g.timestamp || "N/A"}`;
     case "get_historical_data": {
       try {
         const days = Math.min(args.days || 30, 365);
-        const res = await fetch(`${BASE}/api/nse?symbol=${symbol}&days=${days}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${BASE}/api/nse?type=historical&symbol=${symbol}&days=${days}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch historical data";
         const candles = data.data || [];
@@ -1250,8 +1313,8 @@ Time: ${g.timestamp || "N/A"}`;
         const last = candles[candles.length - 1];
         const high = Math.max(...candles.map((c: any) => c.high || c.highPrice || 0));
         const low = Math.min(...candles.map((c: any) => c.low || c.lowPrice || Infinity));
-        const atr = candles.slice(-14).reduce((sum: number, c: any) => {
-          const prev = candles[candles.indexOf(c) - 1];
+        const atr = candles.slice(-14).reduce((sum: number, c: any, idx: number) => {
+          const prev = candles[idx - 1];
           if (!prev) return sum;
           const tr = Math.max(
             (c.high || c.highPrice || 0) - (c.low || c.lowPrice || 0),
@@ -1260,16 +1323,18 @@ Time: ${g.timestamp || "N/A"}`;
           );
           return sum + tr;
         }, 0) / Math.min(candles.length, 14);
-        const changes = candles.slice(-5).map((c: any, i: number) => {
+        const changes = candles.slice(-5).map((c: any, i: number, arr: any[]) => {
           if (i === 0) return "";
-          const prevClose = candles[i - 1]?.close || candles[i - 1]?.closePrice || 0;
+          const prevClose = arr[i - 1]?.close || arr[i - 1]?.closePrice || 0;
           const curClose = c.close || c.closePrice || 0;
-          return `${c.date || c.timestamp?.substring(0, 10)}: ${curClose >= prevClose ? "+" : ""}${((curClose - prevClose) / prevClose * 100).toFixed(2)}%`;
+          if (!prevClose) return "";
+          return `${c.date || String(c.timestamp || "").substring(0, 10)}: ${curClose >= prevClose ? "+" : ""}${((curClose - prevClose) / prevClose * 100).toFixed(2)}%`;
         }).filter(Boolean);
-        return `Historical Data (${days}d) — ${symbol}:
+        const src = data.source || "nse";
+        return `Historical Data (${days}d, source: ${src}) — ${symbol}:
 Period: ${first.date || "N/A"} → ${last.date || "N/A"}
 Range: ₹${low} — ₹${high} | Current: ₹${(last.close || last.closePrice || 0).toLocaleString("en-IN")}
-ATR(14): ${atr.toFixed(2)} | Volatility: ${((high - low) / low * 100).toFixed(1)}%
+ATR(14): ${atr.toFixed(2)} | Volatility: ${low > 0 ? ((high - low) / low * 100).toFixed(1) : "0"}%
 Last 5 changes:
 ${changes.join("\n")}`;
       } catch { return "Error fetching historical data"; }
@@ -1434,10 +1499,22 @@ ${changes.join("\n")}`;
     }
 
     case "get_vix": {
+      // Free NSE VIX first (no Breeze), then Yahoo India VIX
+      try {
+        const res = await fetch(BASE + "/api/nse?type=vix", { signal: AbortSignal.timeout(8000) });
+        const data = await res.json();
+        const vix = Number(data?.data?.value || 0);
+        if (data.success && vix > 0) {
+          return "India VIX: " + vix + "\nSource: " + (data.source || "nse") +
+            "\nRegime: " + (vix > 25 ? "HIGH VOLATILITY" : vix > 15 ? "NORMAL" : "LOW VOLATILITY") +
+            "\nPercentile: " + (vix > 30 ? "EXTREME" : vix > 20 ? "ELEVATED" : vix > 12 ? "NORMAL" : "LOW");
+        }
+      } catch {}
       try {
         const res = await fetch(BASE + "/api/option-chain?symbol=NIFTY", { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         const vix = data.data?.summary?.indiaVIX || data.data?.indiaVIX || 0;
+        if (!vix) return "India VIX unavailable (NSE + option-chain both failed)";
         return "India VIX: " + vix + "\nRegime: " + (vix > 25 ? "HIGH VOLATILITY" : vix > 15 ? "NORMAL" : "LOW VOLATILITY") + "\nPercentile: " + (vix > 30 ? "EXTREME" : vix > 20 ? "ELEVATED" : vix > 12 ? "NORMAL" : "LOW");
       } catch { return "Error fetching VIX"; }
     }
@@ -1568,6 +1645,7 @@ ${changes.join("\n")}`;
           target1: target1 ? Number(target1) : undefined,
           target2: target2 ? Number(target2) : undefined,
           source: "Hermes Agent",
+          instrument: optionType === 'PE' ? 'PUT' : 'CALL',
         });
         return sent ? `Signal sent to Telegram: ${symbol} ${action} ${strike} ${optionType} (${confidence}%)` : "Failed to send signal — check Telegram config or dedup";
       } catch { return "Error sending Telegram signal"; }
@@ -1663,6 +1741,22 @@ ${changes.join("\n")}`;
         }
       }
       return `Data Source Diagnosis:\n${results.join("\n")}`;
+    }
+
+    case "check_session_tokens": {
+      // Read-only live session status (probes each source for real) +
+      // recorded session-health episodes incl. candle-chain failures.
+      const report = await buildSessionStatusReport(String(args.source || "all"));
+      return JSON.stringify(report, null, 2);
+    }
+
+    case "set_breeze_session": {
+      const token = String(args.token || "").trim();
+      if (!token) {
+        return JSON.stringify({ success: false, error: "token required — pass { token: '<apiSession>' }" });
+      }
+      const res = await applyBreezeSession(token);
+      return JSON.stringify(res, null, 2);
     }
 
     case "trace_data_flow": {
@@ -1777,7 +1871,7 @@ Time: ${Date.now() - start}ms`;
       try {
         const { hermesProFormatted } = await import("./hermes/agent");
         const mode = args.mode || "TRADE";
-        const result = await hermesProFormatted(symbol, mode as any);
+        const result = await hermesProFormatted(symbol, { mode: mode as any });
         return result;
       } catch (err: any) {
         return `Hermes Pro analysis failed: ${err.message}. Falling back to standard analysis.`;
@@ -1859,6 +1953,9 @@ export async function agentRespondLLM(
     correlation?: any;
     scanner?: any;
     apiBase?: string;
+    extraContext?: string;
+    dashboardContext?: string;
+    [key: string]: any;
   }
 ): Promise<{ response: string; toolCallsMade: string[] }> {
   const systemPrompt = buildSystemPrompt({ ...ctx, giftNifty: ctx.giftNifty, correlation: ctx.correlation, scanner: ctx.scanner });

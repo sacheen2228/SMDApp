@@ -186,7 +186,7 @@ export function SDMNormalMode({ recommendation }: SDMNormalModeProps) {
           <div className="bg-accent/50 rounded p-2 text-center">
             <div className="text-[8px] text-muted-foreground">PCR</div>
             <div className="text-[11px] text-foreground font-medium">
-              {marketContext.pcr.toFixed(2)}
+              {marketContext.pcr != null && Number.isFinite(marketContext.pcr) ? marketContext.pcr.toFixed(2) : "N/A"}
             </div>
             <div className="text-[8px] text-muted-foreground">{getPcrLabel()}</div>
           </div>

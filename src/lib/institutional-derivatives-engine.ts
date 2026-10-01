@@ -188,7 +188,7 @@ export function runInstitutionalDerivativesEngine(
 
   if (inp.callUnwind) { call += 18; callReasons.push("Call OI unwinding (shorts covering)"); }
   if (inp.putWriting) { call += 14; callReasons.push("Put writing (resistance to downside)"); }
-  if (inp.pcr < 1) { call += 10; callReasons.push(`PCR ${inp.pcr.toFixed(2)} < 1 (calls relatively cheap)`); }
+  if (inp.pcr != null && inp.pcr < 1) { call += 10; callReasons.push(`PCR ${inp.pcr.toFixed(2)} < 1 (calls relatively cheap)`); }
   if (inp.delta > 0) { call += 6; callReasons.push("Net delta positive"); }
   if (inp.fiiLong > inp.fiiShort) { call += 10; callReasons.push("FII net long"); }
   if (inp.diiBuy > inp.diiSell) { call += 6; callReasons.push("DII net buyers"); }

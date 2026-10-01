@@ -16,16 +16,83 @@ export async function GET(request: Request) {
     // Fetch real market data
     const stocks = await fetchNIFTY50Stocks();
 
-    // Fetch real option chain for NIFTY
+    // Fetch real option chain for NIFTY → OptionChainSnapshot shape
     let spot = 0;
     let vix = 15;
-    let optionChain = null;
+    let optionChain: any = null;
     try {
       const { getNSEOptionChain } = await import('@/lib/nse-api');
       const nseData = await getNSEOptionChain('NIFTY');
       if (nseData?.records?.data) {
         spot = nseData.records.underlyingValue || 0;
-        optionChain = nseData.records.data;
+        const rawStrikes: any[] = nseData.records.data;
+        const strikes = rawStrikes
+          .map((s: any) => {
+            const strike = Number(s?.strikePrice ?? s?.strike ?? 0);
+            const toLeg = (leg: any) => {
+              if (!leg) return null;
+              const n = (v: any, d = 0) => (typeof v === 'number' && isFinite(v) ? v : d);
+              return {
+                ltp: n(leg.lastPrice ?? leg.ltp),
+                prevLtp: n(leg.lastPrice ?? leg.ltp),
+                bid: n(leg.bidprice ?? leg.buyPrice1),
+                ask: n(leg.askprice ?? leg.sellPrice1),
+                bidQty: n(leg.buyQuantity1),
+                askQty: n(leg.sellQuantity1),
+                volume: n(leg.totalTradedVolume ?? leg.volume),
+                prevVolume: n(leg.totalTradedVolume ?? leg.volume),
+                oi: n(leg.openInterest ?? leg.oi),
+                prevOi: n(leg.openInterest ?? leg.oi),
+                oiChange: n(leg.changeinOpenInterest ?? leg.oiChange),
+                oiChangePct: n(leg.pchangeinOpenInterest),
+                iv: n(leg.impliedVolatility ?? leg.iv),
+                prevIv: n(leg.impliedVolatility ?? leg.iv),
+                ivChange: 0,
+                delta: n(leg.delta),
+                gamma: n(leg.gamma),
+                theta: n(leg.theta),
+                vega: n(leg.vega),
+                spread: 0,
+                spreadPct: 0,
+                premiumVelocity: 0,
+                premiumAcceleration: 0,
+                ivVelocity: 0,
+                ivAcceleration: 0,
+                volumeVelocity: 0,
+                oiVelocity: 0,
+              };
+            };
+            return {
+              strike,
+              expiry: String(s?.expiryDate ?? ''),
+              ce: toLeg(s?.CE),
+              pe: toLeg(s?.PE),
+            };
+          })
+          .filter((s) => s.strike > 0 && (s.ce || s.pe));
+        const atmStrike =
+          strikes.reduce((best, s) =>
+            Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best,
+          strikes[0] ?? { strike: 0 })?.strike || 0;
+        optionChain = {
+          symbol: 'NIFTY',
+          spot,
+          atmStrike,
+          expiry: String(nseData.records.expiryDates?.[0] ?? ''),
+          strikes,
+          callOiMap: new Map<number, number>(),
+          putOiMap: new Map<number, number>(),
+          callOiChangeMap: new Map<number, number>(),
+          putOiChangeMap: new Map<number, number>(),
+          callVolumeMap: new Map<number, number>(),
+          putVolumeMap: new Map<number, number>(),
+          maxPain: 0,
+          pcr: 0,
+          ivRank: 0,
+          ivPercentile: 0,
+          atmIV: 0,
+          ivSkew: 0,
+        };
       }
     } catch {}
 
@@ -50,7 +117,9 @@ export async function GET(request: Request) {
 
     const engine = (await import('@/lib/expiry-liquidity/engine')).getExpiryLiquidityEngine();
 
-    const result = await engine.process({
+    let result: any;
+    try {
+      result = await engine.process({
       symbol: 'NIFTY',
       spot,
       candles: [],
@@ -60,8 +129,21 @@ export async function GET(request: Request) {
       sectorHeatmap: null,
       regime: null,
       vix,
-      timestamp: Date.now(),
-    });
+        timestamp: Date.now(),
+      });
+    } catch (engineErr: any) {
+      // Never 500 on a bad chain shape — degrade to empty opportunities
+      console.error('[Expiry Opportunities] engine.process failed:', engineErr?.message || engineErr);
+      return NextResponse.json({
+        success: true,
+        opportunities: [],
+        totalSymbols: 0,
+        avgScore: 0,
+        topOppCount: 0,
+        warning: 'option chain unavailable',
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // For opportunities, we'd scan all symbols
     // For now, return the single result as an array

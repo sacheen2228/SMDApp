@@ -15,6 +15,8 @@ import {
   isSignalDuplicateOrLowerQuality,
 } from "./signalTracker";
 import { isTelegramSendWindow } from "./marketHours";
+import { isTradeActive } from "./active-trade-lock";
+import { addTrade } from "./activeTradeTracker";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 const MIN_CONFIDENCE = 70; // Minimum confidence to include in morning digest
@@ -162,6 +164,13 @@ async function sendIndividualSignals(
     });
     if (isSignalAlreadySent(sig)) continue;
 
+    // ACTIVE-TRADE LOCK: skip if already have an active trade on this underlying
+    const existingTrade = isTradeActive(s.symbol, "NFO");
+    if (existingTrade) {
+      console.log(`[MorningSignals] SKIP ${s.symbol} — active trade ${existingTrade.tradeId} exists (${existingTrade.strategy})`);
+      continue;
+    }
+
     const emoji = s.direction.includes("BUY") || s.direction === "LONG" ? "🟢" : "🔴";
     const dir = s.direction.includes("BUY") || s.direction === "LONG" ? "BULLISH" : "BEARISH";
 
@@ -181,6 +190,26 @@ async function sendIndividualSignals(
     const ok = await sendFn(text);
     if (ok) {
       markSignalSent(sig, s.confidence, "morning-digest");
+
+      // TRADE REGISTRATION: register with active trade tracker + lock
+      const tradeId = `morning-${s.symbol}-${Date.now()}`;
+      await addTrade({
+        id: tradeId,
+        symbol: s.symbol,
+        side: "BUY",
+        instrument: s.instrument,
+        strike: s.strike || 0,
+        optionType: s.type,
+        entry: s.entry,
+        sl: s.stopLoss,
+        tp1: s.tp1,
+        tp2: s.tp2,
+        status: "ACTIVE",
+        sentAt: new Date().toISOString(),
+        source: "morning-signal",
+        confidence: s.confidence,
+      }, true); // skipAlert=true — already sent above
+
       sent++;
     }
   }
@@ -211,23 +240,23 @@ export async function generateMorningSignals(): Promise<{
     ]);
 
   // Combine all signals
-  const allSignals: MorningSignal[] = [
+  const allSignals = [
     ...indexSignals
       .filter((s) => s.direction !== "NO_TRADE" && s.confidence >= MIN_CONFIDENCE)
-      .map((s) => ({
+      .map((s): MorningSignal => ({
         symbol: s.symbol,
         name: s.symbol,
         sector: "Index F&O",
-        type: "CE" as const,
-        direction: s.direction,
+        type: (s.direction === "SHORT" || s.direction === "PUT" ? "PE" : "CE") as "CE" | "PE",
+        direction: String(s.direction),
         entry: s.entry,
         stopLoss: s.stopLoss,
         tp1: s.target1,
         tp2: s.target2,
         rr: s.riskReward,
         confidence: s.confidence,
-        instrument: s.recommendedInstrument,
-        reasoning: s.reasoning,
+        instrument: (s as any).recommendedInstrument || s.symbol,
+        reasoning: Array.isArray(s.reasoning) ? s.reasoning.join("; ") : String(s.reasoning || ""),
         source: "index-fo",
         strike: s.strike,
         expiry: s.expiry,
@@ -235,7 +264,7 @@ export async function generateMorningSignals(): Promise<{
       })),
     ...stockSignals
       .filter((s) => s.direction !== "NO_TRADE" && s.confidence >= MIN_CONFIDENCE)
-      .map((s) => ({
+      .map((s): MorningSignal => ({
         symbol: s.symbol,
         name: s.name,
         sector: "Stock F&O",
@@ -244,42 +273,43 @@ export async function generateMorningSignals(): Promise<{
           : s.direction === "BUY_PE"
             ? "PE"
             : "FUT") as "CE" | "PE" | "FUT",
-        direction: s.direction,
+        direction: String(s.direction),
         entry: s.entry,
         stopLoss: s.stopLoss,
         tp1: s.target1,
         tp2: s.target2,
         rr: s.riskReward,
         confidence: s.confidence,
-        instrument: s.recommendedInstrument,
-        reasoning: s.reasoning,
+        instrument: (s as any).recommendedInstrument || s.symbol,
+        reasoning: Array.isArray(s.reasoning) ? s.reasoning.join("; ") : String((s as any).reasoning || ""),
         source: "stock-fo",
-        strike: s.strike,
-        expiry: s.expiry,
-        premium: s.premium,
+        strike: (s as any).strike,
+        expiry: (s as any).expiry,
+        premium: (s as any).premium,
       })),
     ...swingSignals
       .filter((s) => s.direction !== "NO_TRADE" && s.confidence >= MIN_CONFIDENCE)
-      .map((s) => ({
+      .map((s): MorningSignal => ({
         symbol: s.symbol,
         name: s.name,
         sector: "Equity Swing",
         type: "EQ" as const,
-        direction: s.direction,
+        direction: String(s.direction),
         entry: s.entry,
         stopLoss: s.stopLoss,
         tp1: s.target1,
         tp2: s.target2,
         rr: s.riskReward,
         confidence: s.confidence,
-        instrument: s.recommendedInstrument,
-        reasoning: s.reasoning,
+        instrument: (s as any).recommendedInstrument || s.symbol,
+        reasoning: Array.isArray((s as any).reasoning) ? (s as any).reasoning.join("; ") : String((s as any).reasoning || ""),
         source: "equity-swing",
       })),
     ...mcxFutures.filter((s) => s.confidence >= MIN_CONFIDENCE),
   ];
 
   // Deduplicate — skip signals already sent today (from option-chain auto-alerts etc.)
+  // Also skip signals where an active trade already exists on the same underlying
   const freshSignals = allSignals.filter((s) => {
     const sig = buildSignalSignature({
       symbol: s.symbol,
@@ -288,6 +318,7 @@ export async function generateMorningSignals(): Promise<{
       direction: s.direction,
     });
     if (isSignalDuplicateOrLowerQuality(sig, s.confidence)) return false;
+    if (isTradeActive(s.symbol, "NFO")) return false;
     return true;
   });
 

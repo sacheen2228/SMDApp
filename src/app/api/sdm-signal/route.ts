@@ -346,6 +346,7 @@ export async function GET(request: NextRequest) {
         target1: rec.target1 || signal.target1,
         target2: rec.target2 || signal.target2,
         source: `SDM Engine (${source})`,
+        instrument: optionType === 'PE' ? 'PUT' : 'CALL',
         mtf: mtf ? {
           direction: mtf.direction,
           compositeScore: mtf.compositeScore,

@@ -49,10 +49,10 @@ export async function verifyTelegramBot(): Promise<{ ok: boolean; username?: str
 }
 
 export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
-  // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
+  // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
   // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
   if (!isTelegramSendWindow()) {
-    console.warn("[Telegram] outside 09:10-15:20 IST window — suppressed send");
+    console.warn("[Telegram] outside 09:10-15:30 IST window — suppressed send");
     return false;
   }
   const token = getBotToken();
@@ -102,6 +102,7 @@ export async function sendTradeAlert(params: {
   target1?: number;
   target2?: number;
   source?: string;
+  instrument?: string;  // 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY' — for SELL safety
   mtf?: {
     direction: string;
     compositeScore: number;
@@ -110,6 +111,14 @@ export async function sendTradeAlert(params: {
     reasons: string[];
   } | null;
 }): Promise<boolean> {
+  // SAFETY: Option selling blocked — instrument-aware (options only)
+  // SELL is valid for EQUITY and FUTURES
+  const isOption = params.instrument === 'CALL' || params.instrument === 'PUT';
+  if (isOption && params.action && (params.action.includes('SELL') || params.action.includes('SHORT'))) {
+    console.log(`[Telegram] BLOCKED: ${params.symbol} — option selling not allowed (${params.action} on ${params.instrument})`);
+    return false;
+  }
+
   const sig = buildSignalSignature({
     symbol: params.symbol,
     strike: params.strike,

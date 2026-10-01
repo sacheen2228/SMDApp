@@ -17,3 +17,17 @@ export const INDICES = [
 ] as const;
 
 export const ALL_SYMBOLS: string[] = [...INDICES];
+
+// ─── Option-chain symbol guard ─────────────────────────────────────────────
+// Rejects synthetic/test IDs before any provider is contacted.
+// Real NSE symbols: letters + & - . (e.g. M&M, BAJAJ-AUTO, 3MINDIA) and
+// never embed a 6+ digit run — trade IDs embed epoch ms (TP1E17906240439251).
+// Used by /api/option-chain to 400 fast instead of walking NSE + all
+// Breeze expiries with garbage (60+ provider calls per test run).
+export function isPlausibleOptionSymbol(symbol: string): boolean {
+  const s = (symbol || "").trim();
+  if (!s || s.length > 30) return false;
+  if (!/^[A-Za-z0-9&.\-]+$/.test(s)) return false;
+  if (/\d{6,}/.test(s)) return false; // epoch/timestamp runs = synthetic ID
+  return true;
+}

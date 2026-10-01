@@ -24,14 +24,33 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const q = req.nextUrl.searchParams;
-  const rows = await getScannerResults({
-    symbol: q.get("symbol") ?? undefined,
-    scanner: q.get("scanner") ?? undefined,
-    decision: q.get("decision") ?? undefined,
-    sessionId: q.get("sessionId") ?? undefined,
-    date: q.get("date") ?? undefined,
-    limit: q.get("limit") ? parseInt(q.get("limit")!, 10) : 5000,
-  });
-  return NextResponse.json({ success: true, count: rows.length, results: rows });
+  try {
+    const q = req.nextUrl.searchParams;
+    const rows = await getScannerResults({
+      symbol: q.get("symbol") ?? undefined,
+      scanner: q.get("scanner") ?? undefined,
+      decision: q.get("decision") ?? undefined,
+      sessionId: q.get("sessionId") ?? undefined,
+      date: q.get("date") ?? undefined,
+      limit: q.get("limit") ? parseInt(q.get("limit")!, 10) : 5000,
+    });
+    return NextResponse.json({ success: true, count: rows.length, results: rows });
+  } catch (err: any) {
+    // Market History sidecar (:4002) down — degrade gracefully so Zero Hero UI keeps working
+    const msg = err?.message || String(err);
+    const sidecarDown = msg.includes("ECONNREFUSED") || msg.includes("fetch failed") || msg.includes("mh ");
+    if (sidecarDown) {
+      return NextResponse.json({
+        success: true,
+        count: 0,
+        results: [],
+        degraded: true,
+        warning: "Market History sidecar unavailable on :4002",
+      });
+    }
+    return NextResponse.json(
+      { success: false, error: msg },
+      { status: 500 }
+    );
+  }
 }

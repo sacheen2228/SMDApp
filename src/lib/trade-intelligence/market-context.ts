@@ -7,6 +7,7 @@
 
 import { analyzeMSS, type MSSCandle } from "@/lib/mss-engine";
 import { computeSuperTrend, type SuperTrendCandle } from "@/lib/supertrend-engine";
+import { deriveIvStats } from "@/lib/option-chain-normalizer";
 
 // ── Types ──
 
@@ -34,7 +35,9 @@ export interface OptionChainSummary {
   pcrVolume: number;
   ivMedian: number;
   ivRank: number;
- 支撑: number[];
+  atmCePremium: number;
+  atmPePremium: number;
+  support: number[];
   resistance: number[];
   callWall: number;
   putFloor: number;
@@ -255,19 +258,28 @@ async function fetchOptionChain(symbol: string): Promise<OptionChainSummary | nu
   const inner = raw?.data;
   if (!a && !inner) return null;
   const spot = a?.spotPrice || inner?.spotPrice || 0;
+  // Real IV stats from the chain strikes — previously hardcoded 0 which made
+  // downstream reasoning print "IV rank 50% normal" from fabricated defaults.
+  const strikes: any[] = Array.isArray(inner?.strikes) ? inner.strikes : [];
+  const atmStrike = a?.atmStrike || inner?.summary?.atmStrike || 0;
+  const stats = strikes.length > 0 && atmStrike > 0
+    ? deriveIvStats(strikes, atmStrike)
+    : null;
   return {
     symbol,
     expiry: a?.expiryDate || inner?.selectedExpiry || "",
     spot,
-    atmStrike: a?.atmStrike || 0,
+    atmStrike,
     pcr: a?.pcr || 0,
     maxPain: a?.maxPain || 0,
     totalCallOI: a?.totalCallOI || 0,
     totalPutOI: a?.totalPutOI || 0,
     pcrVolume: a?.totalPutVolume && a?.totalCallVolume ? a.totalPutVolume / a.totalCallVolume : 0,
-    ivMedian: 0,
-    ivRank: 0,
-    支撑: a?.support || [],
+    ivMedian: stats?.ivMedian || 0,
+    ivRank: stats?.ivRank || 0,
+    atmCePremium: stats?.atmCePremium || 0,
+    atmPePremium: stats?.atmPePremium || 0,
+    support: a?.support || [],
     resistance: a?.resistance || [],
     callWall: a?.callWall || 0,
     putFloor: a?.putFloor || 0,
@@ -405,7 +417,10 @@ async function fetchGiftNifty() {
 }
 
 async function fetchStockQuotes(): Promise<StockQuote[]> {
-  const data = await fetchJSON<any>(`http://localhost:3000/api/scanner?live=true`);
+  // Scanner fetches 50 real option chains (Breeze → NSE fallback) and can
+  // take ~12-15s; the default 10s fetchJSON timeout aborted every call and
+  // starved ctx.stockQuotes (stock-FO saw quotes=0).
+  const data = await fetchJSON<any>(`http://localhost:3000/api/scanner?live=true`, 30000);
   // fetchJSON returns json.data which already strips the outer wrapper
   const candidates = data?.data?.candidates || data?.candidates || [];
   return candidates.map((c: any) => ({

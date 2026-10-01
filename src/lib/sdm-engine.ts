@@ -29,7 +29,7 @@ export function scorePCR(
     };
   }
 
-  if (pcr < 0.8) {
+  if (pcr != null && pcr < 0.8) {
     const score = Math.min(100, 50 + (0.8 - pcr) * 100);
     return {
       score,
@@ -41,7 +41,7 @@ export function scorePCR(
   return {
     score: 20,
     direction: "NEUTRAL",
-    details: `PCR at ${pcr.toFixed(2)} — Neutral zone`,
+    details: `PCR at ${pcr != null ? pcr.toFixed(2) : "N/A"} — Neutral zone`,
   };
 }
 
@@ -607,7 +607,7 @@ export function scoreExpiryGammaTheta(
     if (strike.pe) totalPEOI += strike.pe.oi;
   }
   const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
-  gammaBlastSignals.extremePCR = pcr < 0.7 || pcr > 1.3;
+  gammaBlastSignals.extremePCR = pcr != null && (pcr < 0.7 || pcr > 1.3);
 
   const gammaBlastDetected =
     window === "danger" &&
@@ -794,7 +794,7 @@ export function detectMarketRegime(
     details = `REGIME:low_volatility:VIX:${vix.toFixed(1)}:AVG_IV:${avgIV.toFixed(1)}:ACTION:Buy options for breakout`;
   }
   // PCR extremes suggest breakout
-  else if (pcr > 1.3 || pcr < 0.7) {
+  else if (pcr != null && (pcr > 1.3 || pcr < 0.7)) {
     regime = "breakout";
     score = 75;
     direction = pcr > 1.3 ? "PUT" : "CALL"; // Extreme PCR often reverses
@@ -811,8 +811,8 @@ export function detectMarketRegime(
   else {
     regime = "trending";
     score = 65;
-    direction = pcr > 1.0 ? "CALL" : "PUT";
-    details = `REGIME:trending:PCR:${pcr.toFixed(2)}:ACTION:Follow trend direction`;
+    direction = pcr == null ? "NEUTRAL" : (pcr > 1.0 ? "CALL" : "PUT");
+    details = `REGIME:trending:PCR:${pcr?.toFixed(2) ?? "N/A"}:ACTION:Follow trend direction`;
   }
 
   return { score, direction, details };
@@ -1106,8 +1106,15 @@ export function runFullAnalysis(
   }
 
   const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
-  const sentiment = pcr > 1.2 ? "bullish" : pcr < 0.8 ? "bearish" : "neutral";
-  const confidence = Math.min(100, Math.max(20, pcr > 1.2 ? 50 + (pcr - 1.2) * 50 : pcr < 0.8 ? 50 + (0.8 - pcr) * 50 : 40));
+  // PE has historically lost far more than CE on this book (0/571 wins).
+  // Require a stronger bearish PCR before emitting BUY PUT, and score
+  // bearish confidence more conservatively than bullish.
+  const pcrVal = pcr ?? 1;
+  const sentiment = pcrVal > 1.2 ? "bullish" : pcrVal < 0.75 ? "bearish" : "neutral";
+  const confidence = Math.min(100, Math.max(20,
+    pcrVal > 1.2 ? 50 + (pcrVal - 1.2) * 50
+    : pcrVal < 0.75 ? 45 + (0.75 - pcrVal) * 40
+    : 40));
 
   // Calculate days to expiry
   const today = new Date();
@@ -1237,7 +1244,7 @@ export function runFullAnalysis(
       pcr,
       maxPain,
       breakdown: {
-        "PCR": pcr.toFixed(2),
+        "PCR": pcr?.toFixed(2) ?? "N/A",
         "Max Pain": maxPain.toString(),
         "CE OI": `${(totalCEOI / 100000).toFixed(1)}L`,
         "PE OI": `${(totalPEOI / 100000).toFixed(1)}L`,

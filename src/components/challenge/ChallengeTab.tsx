@@ -77,6 +77,9 @@ interface ScanResult {
     reasoning: string[];
     position: { quantity: number; lotSize: number; canTrade: boolean; reason?: string };
     data: { ltp: number; changePct: number };
+    strike?: number;
+    premium?: number;
+    expiry?: string;
   }>;
   bestTrade?: any;
   summary: {
@@ -580,11 +583,19 @@ export default function ChallengeTab() {
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-white text-sm">{opp.symbol}</span>
                       <span className={`text-xs px-1.5 py-0.5 rounded ${
-                        opp.direction.includes("BUY") || opp.direction === "LONG" || opp.direction === "CALL"
-                          ? "bg-emerald-400/10 text-emerald-400"
-                          : "bg-red-400/10 text-red-400"
+                        opp.direction.includes("PE") || opp.direction.includes("PUT") ||
+                        opp.direction.includes("SHORT") || opp.direction.includes("SELL")
+                          ? "bg-red-400/10 text-red-400"
+                          : opp.direction.includes("BUY") || opp.direction === "LONG" || opp.direction === "CALL" || opp.direction.includes("CE")
+                            ? "bg-emerald-400/10 text-emerald-400"
+                            : "bg-neutral-400/10 text-neutral-400"
                       }`}>{opp.direction}</span>
-                      <span className="text-xs text-neutral-500">{opp.instrument}</span>
+                      <span className="text-xs text-neutral-500">
+                        {opp.instrument}
+                        {opp.strike ? ` ${opp.strike}` : ""}
+                        {opp.premium ? ` @ ₹${opp.premium.toFixed(1)}` : ""}
+                        {opp.expiry ? ` · ${opp.expiry}` : ""}
+                      </span>
                       {opp.dataStamp === 'PREV_CLOSE' && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-amber-400/10 text-amber-400">STALE</span>
                       )}

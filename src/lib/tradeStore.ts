@@ -31,6 +31,7 @@ export async function createTrade(trade: TradeRecord): Promise<boolean> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(trade),
+      signal: AbortSignal.timeout(4000),
     });
     const json = await res.json();
     return json.success === true;
@@ -48,7 +49,7 @@ export async function updateTrade(
     exitPrice?: number;
     exitReason?: string;
     holdingTimeMin?: number;
-    tpHitLevel?: string;
+    tpHitLevel?: string | null;
   }
 ): Promise<boolean> {
   try {
@@ -56,6 +57,7 @@ export async function updateTrade(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tradeId, ...updates }),
+      signal: AbortSignal.timeout(4000),
     });
     const json = await res.json();
     return json.success === true;

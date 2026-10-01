@@ -12,6 +12,7 @@ let sessionInitialized = false;
 export interface OptionChainResult {
   success: boolean;
   source: string;
+  ageMs?: number; // age of the chain data (0 = just fetched)
   data?: {
     data: any[];
     spotPrice: number;
@@ -82,92 +83,103 @@ export async function fetchLiveOptionChain(
 
   let chainData: any = null;
   let chainSource = 'none';
+  let chainDataAgeMs = 0; // 0 = just fetched; scraped path sets the real age
 
-  // 1) Try scraped NSE data first (from local scraper, updated hourly)
+  // 1) NSE API first choice — live data with priceChg/bid/ask/OI/IV (richest chain)
   try {
-    const scrapedRes = await fetch(`http://localhost:3000/api/nse-data?symbol=${symbol}`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (scrapedRes.ok) {
-      const scraped = await scrapedRes.json();
-      if (scraped.latest && scraped.latest.strikes?.length > 0) {
-        const snap = scraped.latest;
-        chainData = {
-          data: snap.strikes,
-          spotPrice: snap.spotPrice,
-          expiries: snap.expiries?.map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })) || [],
-          selectedExpiry: snap.selectedExpiry,
-          summary: {
-            spotPrice: snap.spotPrice,
-            indiaVIX: snap.indiaVIX,
-            maxPain: snap.maxPain,
-            pcr: snap.pcr,
-            totalCallOI: snap.totalCallOI,
-            totalPutOI: snap.totalPutOI,
-            callOiChange: snap.callOiChange,
-            putOiChange: snap.putOiChange,
-            atmStrike: snap.atmStrike,
-          },
-        };
-        chainSource = `nse-scraped(${Math.round((scraped.ageMs || 0) / 60000)}m ago)`;
-        if (snap.indiaVIX) liveVix = snap.indiaVIX;
-      }
+    const nseData = await getNSEOptionChain(symbol);
+    if (nseData?.records?.data) {
+      chainData = {
+        data: nseData.records.data.map((row: any) => ({
+          strike: row.strikePrice,
+          ce: row.CE ? {
+            ltp: row.CE.lastPrice || 0,
+            priceChg: row.CE.change !== undefined ? row.CE.change : undefined,
+            bid: row.CE.bidprice || 0,
+            ask: row.CE.askPrice || 0,
+            oi: row.CE.openInterest || 0,
+            oiChg: row.CE.changeinOpenInterest || 0,
+            volume: row.CE.totalTradedVolume || 0,
+            iv: row.CE.impliedVolatility || 0,
+            delta: row.CE.greeks?.delta || 0,
+            gamma: row.CE.greeks?.gamma || 0,
+            theta: row.CE.greeks?.theta || 0,
+            vega: row.CE.greeks?.vega || 0,
+          } : null,
+          pe: row.PE ? {
+            ltp: row.PE.lastPrice || 0,
+            priceChg: row.PE.change !== undefined ? row.PE.change : undefined,
+            bid: row.PE.bidprice || 0,
+            ask: row.PE.askPrice || 0,
+            oi: row.PE.openInterest || 0,
+            oiChg: row.PE.changeinOpenInterest || 0,
+            volume: row.PE.totalTradedVolume || 0,
+            iv: row.PE.impliedVolatility || 0,
+            delta: row.PE.greeks?.delta || 0,
+            gamma: row.PE.greeks?.gamma || 0,
+            theta: row.PE.greeks?.theta || 0,
+            vega: row.PE.greeks?.vega || 0,
+          } : null,
+        })),
+        spotPrice: nseData.records?.underlyingValue || 0,
+        expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
+        selectedExpiry: nseData.records?.expiryDates?.[0] || '',
+        summary: { spotPrice: nseData.records?.underlyingValue || 0 },
+      };
+      chainSource = 'nse-api';
+      chainDataAgeMs = 0;
     }
   } catch {}
 
-  // 2) Try Breeze for option chain (MOAPI doesn't provide option chains)
-  try {
-    if (expiry) {
-      const chain = await getOptionChain(symbol, expiry);
-      if (chain) { chainData = chain; chainSource = 'icici-breeze'; }
-    } else {
-      const expiries = await getOptionChainExpiries(symbol);
-      for (const exp of expiries.slice(0, 3)) {
-        try {
-          const chain = await getOptionChain(symbol, exp);
-          if (chain) { chainData = { ...chain, expiries }; chainSource = 'icici-breeze'; break; }
-        } catch {}
-      }
-    }
-  } catch {}
-
-  // 3) NSE fallback for option chain
+  // 2) Breeze fallback (MOAPI doesn't provide option chains)
   if (!chainData) {
     try {
-      const nseData = await getNSEOptionChain(symbol);
-      if (nseData?.records?.data) {
-        chainData = {
-          data: nseData.records.data.map((row: any) => ({
-            strike: row.strikePrice,
-            ce: row.CE ? {
-              ltp: row.CE.lastPrice || 0,
-              oi: row.CE.openInterest || 0,
-              oiChg: row.CE.changeinOpenInterest || 0,
-              volume: row.CE.totalTradedVolume || 0,
-              iv: row.CE.impliedVolatility || 0,
-              delta: row.CE.greeks?.delta || 0,
-              gamma: row.CE.greeks?.gamma || 0,
-              theta: row.CE.greeks?.theta || 0,
-              vega: row.CE.greeks?.vega || 0,
-            } : null,
-            pe: row.PE ? {
-              ltp: row.PE.lastPrice || 0,
-              oi: row.PE.openInterest || 0,
-              oiChg: row.PE.changeinOpenInterest || 0,
-              volume: row.PE.totalTradedVolume || 0,
-              iv: row.PE.impliedVolatility || 0,
-              delta: row.PE.greeks?.delta || 0,
-              gamma: row.PE.greeks?.gamma || 0,
-              theta: row.PE.greeks?.theta || 0,
-              vega: row.PE.greeks?.vega || 0,
-            } : null,
-          })),
-          spotPrice: nseData.records?.underlyingValue || 0,
-          expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
-          selectedExpiry: nseData.records?.expiryDates?.[0] || '',
-          summary: { spotPrice: nseData.records?.underlyingValue || 0 },
-        };
-        chainSource = 'nse-api';
+      if (expiry) {
+        const chain = await getOptionChain(symbol, expiry);
+        if (chain) { chainData = chain; chainSource = 'icici-breeze'; }
+      } else {
+        const expiries = await getOptionChainExpiries(symbol);
+        for (const exp of expiries.slice(0, 3)) {
+          try {
+            const chain = await getOptionChain(symbol, exp);
+            if (chain) { chainData = { ...chain, expiries }; chainSource = 'icici-breeze'; break; }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // 3) Scraped NSE cache — last fallback (hourly scraper, may be stale)
+  if (!chainData) {
+    try {
+      const scrapedRes = await fetch(`http://localhost:3000/api/nse-data?symbol=${symbol}`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (scrapedRes.ok) {
+        const scraped = await scrapedRes.json();
+        if (scraped.latest && scraped.latest.strikes?.length > 0) {
+          const snap = scraped.latest;
+          chainData = {
+            data: snap.strikes,
+            spotPrice: snap.spotPrice,
+            expiries: snap.expiries?.map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })) || [],
+            selectedExpiry: snap.selectedExpiry,
+            summary: {
+              spotPrice: snap.spotPrice,
+              indiaVIX: snap.indiaVIX,
+              maxPain: snap.maxPain,
+              pcr: snap.pcr,
+              totalCallOI: snap.totalCallOI,
+              totalPutOI: snap.totalPutOI,
+              callOiChange: snap.callOiChange,
+              putOiChange: snap.putOiChange,
+              atmStrike: snap.atmStrike,
+            },
+          };
+          chainSource = `nse-scraped(${Math.round((scraped.ageMs || 0) / 60000)}m ago)`;
+          chainDataAgeMs = scraped.ageMs || 0;
+          if (snap.indiaVIX) liveVix = snap.indiaVIX;
+        }
       }
     } catch {}
   }
@@ -230,6 +242,7 @@ export async function fetchLiveOptionChain(
   return {
     success: true,
     source,
+    ageMs: chainDataAgeMs,
     data: {
       data: rawStrikes,
       spotPrice,

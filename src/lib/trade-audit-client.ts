@@ -106,6 +106,7 @@ export interface TradeRecord {
   rMultiple: number | null;
   timeInTradeSec: number | null;
   verification: TradeVerification | null;
+  marketContext?: Record<string, unknown> | null;
 }
 
 export interface TradeFilters {

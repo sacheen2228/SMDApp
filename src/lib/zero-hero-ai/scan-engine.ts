@@ -178,16 +178,23 @@ export function runZeroHeroScan(input: ZHScanInput): ZHScanOutput {
 
       let signal: 'BUY_CALL' | 'BUY_PUT' | 'NO_TRADE' = 'NO_TRADE';
       let reason = '';
-      if (execution.decision === 'BUY_OPTION' || execution.decision === 'SMALL_POSITION') {
+      const minPremium = 5;
+      const levelsOk = leg.ltp >= minPremium;
+      if ((execution.decision === 'BUY_OPTION' || execution.decision === 'SMALL_POSITION') && levelsOk) {
         if (type === 'CE' && smartMoney.bias !== 'BEARISH') {
           signal = 'BUY_CALL';
           reason = 'CE candidate + SMC bias supportive';
-        } else if (type === 'PE' && smartMoney.bias !== 'BULLISH') {
+        } else if (type === 'PE' && smartMoney.bias === 'BEARISH' && execution.confidence >= 65) {
+          // PE requires explicit BEARISH bias + higher confidence (0 historical wins)
           signal = 'BUY_PUT';
-          reason = 'PE candidate + SMC bias supportive';
+          reason = 'PE candidate + SMC bearish bias + conf>=65';
+        } else if (type === 'PE') {
+          reason = 'PE rejected — need SMC BEARISH bias and confidence>=65';
         } else {
           reason = 'Engine confirmed but SMC bias conflicts with direction';
         }
+      } else if (!levelsOk) {
+        reason = `Premium ${leg.ltp} below min ${minPremium}`;
       } else {
         reason = 'Confidence below threshold';
       }

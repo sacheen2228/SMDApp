@@ -171,3 +171,79 @@ export async function fetchPrevClose(symbol: string): Promise<number | null> {
 
   return null;
 }
+
+// Fetch daily candles for ATR calculations (real data, no auth needed)
+export async function fetchYahooDailyCandles(symbol: string, limit = 30): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>> {
+  try {
+    let yahooSymbol = YAHOO_SYMBOL_MAP[symbol] || symbol;
+    // NSE equities need .NS suffix on Yahoo (e.g. RELIANCE → RELIANCE.NS)
+    if (!YAHOO_SYMBOL_MAP[symbol] && !symbol.includes(".") && !symbol.startsWith("^")) {
+      yahooSymbol = `${symbol}.NS`;
+    }
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1mo&interval=1d`;
+    const response = await rateLimitedFetch(url);
+    if (!response.ok && yahooSymbol.endsWith(".NS")) {
+      // Retry bare symbol if .NS failed (already-suffixed or non-NSE tickers)
+      const bare = symbol.includes(".") || symbol.startsWith("^") ? symbol : symbol;
+      const retry = await rateLimitedFetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bare)}?range=1mo&interval=1d`
+      );
+      if (!retry.ok) return [];
+      return parseYahooDailyBars(await retry.json(), limit);
+    }
+    if (!response.ok) return [];
+    return parseYahooDailyBars(await response.json(), limit);
+  } catch {
+    return [];
+  }
+}
+
+function parseYahooDailyBars(
+  data: any,
+  limit: number
+): Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> {
+  const result = data?.chart?.result?.[0];
+  const ts: number[] = result?.timestamp || [];
+  const quote = result?.indicators?.quote?.[0];
+  if (!quote || ts.length === 0) return [];
+
+  const candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> = [];
+  for (let i = 0; i < ts.length; i++) {
+    const o = quote.open?.[i], h = quote.high?.[i], l = quote.low?.[i], c = quote.close?.[i];
+    if (o == null || h == null || l == null || c == null) continue;
+    candles.push({ time: ts[i] * 1000, open: o, high: h, low: l, close: c, volume: quote.volume?.[i] || 0 });
+  }
+  return candles.slice(-limit);
+}
+
+// Real 14-period ATR from daily candles, cached per symbol for 1 hour
+// (daily candles are stable intraday — avoids refetching Yahoo every request)
+const atrCache: Map<string, { atr: number; timestamp: number }> = new Map();
+const ATR_CACHE_DURATION = 60 * 60 * 1000;
+
+export async function getRealATR14(symbol: string, fallback: number): Promise<{ atr: number; source: "real" | "vix-estimate" }> {
+  const cached = atrCache.get(symbol);
+  if (cached && Date.now() - cached.timestamp < ATR_CACHE_DURATION) {
+    return { atr: cached.atr, source: "real" };
+  }
+
+  try {
+    const candles = await fetchYahooDailyCandles(symbol, 30);
+    if (candles.length >= 15) {
+      let sum = 0;
+      for (let i = candles.length - 14; i < candles.length; i++) {
+        const c = candles[i];
+        const prev = candles[i - 1];
+        sum += Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+      }
+      const realATR = sum / 14;
+      if (realATR > 0) {
+        const atr = Math.round(realATR * 100) / 100;
+        atrCache.set(symbol, { atr, timestamp: Date.now() });
+        return { atr, source: "real" };
+      }
+    }
+  } catch {}
+
+  return { atr: fallback, source: "vix-estimate" };
+}

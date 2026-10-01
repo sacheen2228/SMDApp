@@ -4,6 +4,7 @@
 // Never sends duplicate alerts after restart.
 
 import { getEventBus, type HermesEvent, type HermesEventType } from './event-bus';
+import { isTelegramSendWindow, msUntilTelegramSendWindow } from '../marketHours';
 
 // ─── Queue Item ───────────────────────────────────────────────────
 export interface QueueItem {
@@ -121,6 +122,20 @@ export class TelegramQueue {
     this.processing = true;
 
     try {
+      // Outside the send window: HOLD items as PENDING without burning retries.
+      // Previously recovery events re-queued at 08:39 burned 3 retries in ~65s
+      // and FAILED permanently before 09:10 ever opened.
+      if (!isTelegramSendWindow()) {
+        const waitMs = msUntilTelegramSendWindow();
+        for (const item of this.queue) {
+          if (item.status === 'RETRYING' || item.status === 'PENDING') {
+            item.status = 'PENDING';
+            item.nextRetryAt = Date.now() + Math.max(waitMs, 30_000);
+          }
+        }
+        return;
+      }
+
       const now = Date.now();
       const ready = this.queue.filter(
         (item) => item.status === 'PENDING' || (item.status === 'RETRYING' && item.nextRetryAt <= now)
@@ -144,6 +159,13 @@ export class TelegramQueue {
               this.queue = this.queue.filter((q) => q.eventId !== item.eventId);
             }, 30_000);
           } else {
+            // Distinguish "outside window / suppressed" from real API failure:
+            // do not count suppressed sends against maxRetries.
+            if (!isTelegramSendWindow()) {
+              item.status = 'PENDING';
+              item.nextRetryAt = Date.now() + Math.max(msUntilTelegramSendWindow(), 30_000);
+              continue;
+            }
             throw new Error('Send returned false');
           }
         } catch (err: any) {
@@ -205,7 +227,7 @@ export function getTelegramQueue(): TelegramQueue {
 }
 
 // ─── Format Events for Telegram ───────────────────────────────────
-function formatEventForTelegram(event: HermesEvent): string {
+export function formatEventForTelegram(event: HermesEvent): string {
   const p = event.payload;
   const ts = new Date(event.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
@@ -235,6 +257,7 @@ function formatEventForTelegram(event: HermesEvent): string {
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${p.entry ?? '-'} → TP1: ₹${p.tp1 ?? '-'}`,
+        `SL: ₹${p.sl ?? '-'}`,
         `Current: ₹${p.current ?? '-'}`,
         ``,
         `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
@@ -249,6 +272,23 @@ function formatEventForTelegram(event: HermesEvent): string {
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${p.entry ?? '-'} → TP2: ₹${p.tp2 ?? '-'}`,
+        `SL: ₹${p.sl ?? '-'}`,
+        `TP1: ₹${p.tp1 ?? '-'}`,
+        `Current: ₹${p.current ?? '-'}`,
+        ``,
+        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        ``,
+        `⏰ ${ts}`,
+      ].join('\n');
+
+    case 'TP3_HIT':
+      return [
+        `🎯 <b>TP3 HIT — FULL EXIT</b>`,
+        ``,
+        `<b>${event.symbol}</b> ${p.direction || ''}`,
+        `Entry: ₹${p.entry ?? '-'} → TP3: ₹${p.tp3 ?? '-'}`,
+        `SL: ₹${p.sl ?? '-'}`,
+        `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}`,
         `Current: ₹${p.current ?? '-'}`,
         ``,
         `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
@@ -263,12 +303,13 @@ function formatEventForTelegram(event: HermesEvent): string {
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${p.entry ?? '-'} → SL: ₹${p.sl ?? '-'}`,
         `Exit: ₹${p.exit ?? '-'}`,
+        p.tp1 || p.tp2 || p.tp3 ? `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}${p.tp3 ? ` | TP3: ₹${p.tp3}` : ''}` : '',
         ``,
         `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
         `Reason: ${p.exitReason || 'INITIAL_SL'}`,
         ``,
         `⏰ ${ts}`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
 
     case 'TRAILING_SL_UPDATED':
       return [

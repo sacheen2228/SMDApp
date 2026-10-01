@@ -102,17 +102,18 @@ export async function GET() {
       ];
     } catch {}
 
-    // 2. Per-stock F&O (batches of 5, ~20s total)
+    // 2. Per-stock F&O (batches of 10 — each internal option-chain call takes
+    //    ~4-6s via the NSE path, so 5 batches ≈ 25s cold, less when warm)
     const stockFO: Record<string, any> = {};
-    for (let i = 0; i < FO_STOCKS.length; i += 5) {
-      const batch = FO_STOCKS.slice(i, i + 5);
+    for (let i = 0; i < FO_STOCKS.length; i += 10) {
+      const batch = FO_STOCKS.slice(i, i + 10);
       const results = await Promise.allSettled(batch.map(fetchStockFOData));
       for (let j = 0; j < results.length; j++) {
         if (results[j].status === "fulfilled" && (results[j] as any).value) {
           stockFO[batch[j]] = (results[j] as any).value;
         }
       }
-      if (i + 5 < FO_STOCKS.length) await new Promise(r => setTimeout(r, 200));
+      if (i + 10 < FO_STOCKS.length) await new Promise(r => setTimeout(r, 100));
     }
 
     const result = {

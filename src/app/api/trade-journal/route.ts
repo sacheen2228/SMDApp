@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { formatTradeStatus } from "@/lib/activeTradeTracker";
+import { computeJournalStats } from "@/lib/journal-stats";
 
 export async function POST(req: NextRequest) {
   try {
@@ -90,36 +91,14 @@ export async function GET(req: NextRequest) {
       take: 200,
     });
 
-    const closedStatuses = ["SL_HIT", "TP1_HIT", "TP2_HIT", "TP3_HIT", "CLOSED"];
-    const closed = trades.filter((t) => closedStatuses.includes(t.status));
-    const winners = closed.filter((t) => (t.pnl ?? 0) > 0);
-    const losers = closed.filter((t) => (t.pnl ?? 0) <= 0);
-    const totalPnL = trades.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
-    const winRate = closed.length > 0 ? (winners.length / closed.length) * 100 : 0;
-    const avgWin = winners.length > 0 ? winners.reduce((s, t) => s + (t.pnl ?? 0), 0) / winners.length : 0;
-    const avgLoss = losers.length > 0 ? losers.reduce((s, t) => s + (t.pnl ?? 0), 0) / losers.length : 0;
-
-    // Group by strategy
-    const byStrategy: Record<string, number> = {};
-    for (const t of closed) {
-      byStrategy[t.strategy] = (byStrategy[t.strategy] || 0) + (t.pnl ?? 0);
-    }
+    // Priced-only win/loss (null-pnl rows never count as losers); EXPIRED
+    // included as terminal so repaired stale rows show up in stats.
+    const stats = computeJournalStats(trades);
 
     return NextResponse.json({
       success: true,
       trades: trades.map((t: any) => ({ ...t, displayStatus: formatTradeStatus(t.status) })),
-      stats: {
-        total: trades.length,
-        open: trades.filter((t) => t.status === "ACTIVE" || t.status === "TP1_HIT" || t.status === "TP2_HIT").length,
-        closed: closed.length,
-        winners: winners.length,
-        losers: losers.length,
-        winRate: Math.round(winRate * 10) / 10,
-        totalPnL: Math.round(totalPnL * 100) / 100,
-        avgWin: Math.round(avgWin * 100) / 100,
-        avgLoss: Math.round(avgLoss * 100) / 100,
-        byStrategy,
-      },
+      stats,
     });
   } catch (error: any) {
     return NextResponse.json(
@@ -130,9 +109,11 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  let tradeId: string | undefined;
   try {
     const body = await req.json();
-    const { tradeId, status, pnl, exitPrice, exitReason, holdingTimeMin } = body;
+    tradeId = body.tradeId;
+    const { status, pnl, pnlPercent, exitPrice, exitReason, holdingTimeMin, tpHitLevel } = body;
 
     if (!tradeId) {
       return NextResponse.json({ success: false, error: "tradeId required" }, { status: 400 });
@@ -141,10 +122,14 @@ export async function PATCH(req: NextRequest) {
     const update: any = {};
     if (status) update.status = status;
     if (pnl !== undefined) update.pnl = pnl;
+    if (pnlPercent !== undefined) update.pnlPercent = pnlPercent;
     if (exitPrice !== undefined) update.exitPrice = exitPrice;
-    if (exitReason) update.exitReason = exitReason;
+    if (exitReason !== undefined) update.exitReason = exitReason;
     if (holdingTimeMin !== undefined) update.holdingTimeMin = holdingTimeMin;
-    if (status === "TP_HIT" || status === "SL_HIT" || status === "EXPIRED") {
+    if (tpHitLevel !== undefined) update.tpHitLevel = tpHitLevel;
+    // Exit time only for terminal statuses (NOT intermediate TP1/TP2 trail hits)
+    if (status === "TP3_HIT" || status === "TP_HIT" || status === "SL_HIT" ||
+        status === "EXPIRED" || status === "CLOSED" || status === "CANCELLED") {
       update.exitTime = new Date();
     }
 
@@ -155,6 +140,13 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json({ success: true, trade });
   } catch (error: any) {
+    // Prisma P2025 = record not found — not a server error
+    if (error?.code === "P2025" || /not found/i.test(error?.message || "")) {
+      return NextResponse.json(
+        { success: false, error: `Trade not found: ${tradeId ?? "?"}` },
+        { status: 404 }
+      );
+    }
     return NextResponse.json(
       { success: false, error: error.message },
       { status: 500 }

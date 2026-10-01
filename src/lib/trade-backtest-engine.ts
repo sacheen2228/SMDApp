@@ -5,10 +5,66 @@
 //
 // No Math.random() — deterministic replay against real market data.
 
-import { getTrades, TradeRecord, TradeFilters } from '@/lib/trade-audit-client';
+import { getTrades, TradeRecord, TradeFilters, TradesPage } from '@/lib/trade-audit-client';
+import {
+  TradeEvidence,
+  PlausibilityFlag,
+  EvidenceIntegrityReport,
+  emptyEvidence,
+  verifyTradeEvidence,
+  buildEvidenceIntegrityReport,
+} from '@/lib/evidence-verifier';
+import { fetchTradeEvidence } from '@/lib/evidence-fetcher';
+import {
+  getPremiumDailyCandles,
+  loadBhavcopyForTrade,
+  normalizeExpiry,
+  pickPremiumExpiry,
+  type PremiumCandle,
+} from '@/lib/option-bhavcopy';
+
+// ─── Trade fetching: paging + test-strategy exclusion ─────────────────────
+// The audit sidecar caps pageSize at 500, so a single request can never
+// return "all trades" — pages must be walked. Test sources
+// (tpsl-event-flow tests, verify-tpsl-production) write junk rows with
+// fake tickers that can never have candle data; they are excluded unless
+// explicitly requested, same exclusion instrumentation.ts uses.
+
+export const TEST_STRATEGIES = ['e2e-test', 'prod-verify'];
+const DEFAULT_PAGE_SIZE = 500;
+const MAX_PAGES = 100;
+
+export type TradePageFetcher = (page: number, pageSize: number) => Promise<TradesPage>;
+
+export async function fetchAllClosedTrades(
+  fetchPage: TradePageFetcher,
+  opts: {
+    maxTrades: number;
+    pageSize?: number;
+    excludeStrategies?: string[];
+    includeTestStrategies?: boolean;
+  }
+): Promise<TradeRecord[]> {
+  const pageSize = opts.pageSize || DEFAULT_PAGE_SIZE;
+  const exclude =
+    opts.excludeStrategies ?? (opts.includeTestStrategies ? [] : TEST_STRATEGIES);
+  const out: TradeRecord[] = [];
+
+  for (let page = 1; page <= MAX_PAGES && out.length < opts.maxTrades; page++) {
+    const res = await fetchPage(page, pageSize);
+    if (!res.items.length) break;
+    for (const t of res.items) {
+      if (exclude.includes(t.strategyId)) continue;
+      out.push(t);
+      if (out.length >= opts.maxTrades) break;
+    }
+    if (page >= res.totalPages) break;
+  }
+  return out;
+}
 
 // ─── Direct Yahoo Finance candle fetch (bypasses Breeze timeout) ─────
-function getYahooSymbol(symbol: string): string {
+export function getYahooSymbol(symbol: string, exchange?: string): string {
   const map: Record<string, string> = {
     NIFTY: '^NSEI', BANKNIFTY: '^NSEBANK', FINNIFTY: '^CNXFIN',
     MIDCPNIFTY: '^NSEMDCP50', SENSEX: '^BSESN', BANKEX: '^BSESN',
@@ -18,15 +74,19 @@ function getYahooSymbol(symbol: string): string {
     GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
     SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
   };
-  return map[symbol.toUpperCase()] || `${symbol.toUpperCase()}.NS`;
+  const mapped = map[symbol.toUpperCase()];
+  if (mapped) return mapped;
+  const suffix = exchange?.toUpperCase() === 'BSE' ? '.BO' : '.NS';
+  return `${symbol.toUpperCase()}${suffix}`;
 }
 
 async function fetchCandlesDirect(
   symbol: string,
   interval: string = '1d',
-  limit: number = 1000
+  limit: number = 1000,
+  exchange?: string
 ): Promise<Candle[]> {
-  const yahooSymbol = getYahooSymbol(symbol);
+  const yahooSymbol = getYahooSymbol(symbol, exchange);
   const range = interval === '5m' ? '5d' : interval === '15m' ? '1mo' : interval === '1h' ? '3mo' : '1y';
   const yahooInterval = interval === '1h' ? '60m' : interval;
 
@@ -73,6 +133,95 @@ interface Candle {
   volume: number;
 }
 
+// ─── Option premium replay path ──────────────────────────────────────────
+// Option trades carry PREMIUM entry/SL/TP but used to be replayed against the
+// UNDERLYING's spot candles (NIFTY 22,600 vs premium ₹99 → instant fake TP
+// for every CE, sign-flipped SL for every PE). Options now replay against the
+// NSE F&O bhavcopy's real daily premium OHLC (option-bhavcopy.ts). No premium
+// data → NO_DATA, never a spot comparison.
+
+export function isOptionReplayTrade(trade: TradeRecord): boolean {
+  return (
+    trade.instrumentType === 'OPTIONS' ||
+    trade.optionType === 'CE' ||
+    trade.optionType === 'PE'
+  );
+}
+
+export function premiumToCandle(p: PremiumCandle): Candle {
+  return {
+    time: Math.floor(Date.parse(`${p.date}T00:00:00Z`) / 1000),
+    open: p.open,
+    high: p.high,
+    low: p.low,
+    close: p.close,
+    volume: p.volume,
+  };
+}
+
+/**
+ * Premium candles for one option trade's window [entry date, exit date].
+ * The sidecar never stores expiry (recordAuditSignal sends ''), so it is
+ * resolved by matching the recorded entry premium against each candidate
+ * expiry's real entry-day range (pickPremiumExpiry). Unresolvable → [].
+ */
+async function loadOptionReplayCandles(trade: TradeRecord): Promise<Candle[]> {
+  const strike = trade.strikePrice;
+  const type = trade.optionType;
+  if (!strike || (type !== 'CE' && type !== 'PE')) return [];
+  const entryDate = (trade.createdAtIst || '').slice(0, 10);
+  const exitDate = (trade.exitTime || trade.createdAtIst || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) return [];
+
+  let expiry = normalizeExpiry(trade.expiry);
+  let from = entryDate;
+  if (!expiry) {
+    // Sidecar rows carry no expiry — match entry premium against real
+    // candidate days. Two real-data quirks: (1) ZERO_HERO records at
+    // 00:00 IST so the premium reflects the PREVIOUS session; (2) SMC
+    // records on weekends/holidays when no bhavcopy exists — probe the
+    // next session instead. Bounded, never fabricated.
+    const baseMs = Date.parse(`${entryDate}T00:00:00Z`);
+    const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const baseRows = await loadBhavcopyForTrade(entryDate, trade.symbol);
+    const probeDays: string[] =
+      baseRows.length === 0
+        ? [1, 2, 3, 4].map((i) => iso(baseMs + i * 86400000)) // weekend/holiday → next sessions
+        : [entryDate, ...[1, 2].map((i) => iso(baseMs - i * 86400000))]; // midnight record → prev sessions
+
+    let picked: { expiry: string } | null = null;
+    for (const day of probeDays) {
+      const dayRows =
+        day === entryDate ? baseRows : await loadBhavcopyForTrade(day, trade.symbol);
+      if (!dayRows.length) continue;
+      const candidates = dayRows.filter(
+        (r) =>
+          r.symbol === trade.symbol.toUpperCase() &&
+          Math.abs(r.strike - strike) < 0.005 &&
+          r.optionType === type
+      );
+      const p = pickPremiumExpiry(candidates, trade.entryPrice);
+      if (p) {
+        picked = p;
+        from = day;
+        break;
+      }
+    }
+    if (!picked) return [];
+    expiry = picked.expiry;
+  }
+
+  const { candles } = await getPremiumDailyCandles({
+    symbol: trade.symbol,
+    strike,
+    optionType: type,
+    expiry,
+    fromDate: from,
+    toDate: exitDate >= from ? exitDate : from,
+  });
+  return candles.map(premiumToCandle);
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────
 
 export interface BacktestedTrade {
@@ -82,6 +231,9 @@ export interface BacktestedTrade {
   instrumentType: string;
   entryTime: string;
   entryPrice: number;
+  entrySpot: number | null;
+  strikePrice: number | null;
+  optionType: string | null;
   stopLoss: number;
   tp1: number;
   tp2: number | null;
@@ -111,6 +263,11 @@ export interface BacktestedTrade {
   // Quality
   dataQuality: 'REAL' | 'PARTIAL' | 'NO_DATA';
   candleCount: number;
+
+  // Evidence (real OI/Greeks/news snapshot at signal time — never fabricated)
+  evidence: TradeEvidence;
+  evidenceFlags: PlausibilityFlag[];
+  evidenceIntegrity: 'FULL' | 'PARTIAL' | 'PRICE_ONLY' | 'FAILED';
 }
 
 export interface BacktestSummary {
@@ -153,24 +310,24 @@ export interface BacktestSummary {
   // Distribution
   pnlDistribution: Array<{ range: string; count: number }>;
   rDistribution: Array<{ range: string; count: number }>;
+
+  // Evidence integrity (OI/Greeks/news plausibility, news fabrication)
+  evidenceIntegrity: EvidenceIntegrityReport;
 }
 
 // ─── Main Backtest Function ──────────────────────────────────────────────
 
 export async function backtestAllTrades(
-  filters?: TradeFilters & { maxTrades?: number }
+  filters?: TradeFilters & { maxTrades?: number; includeTestStrategies?: boolean }
 ): Promise<{ trades: BacktestedTrade[]; summary: BacktestSummary }> {
-  // 1. Fetch trades from audit sidecar
+  // 1. Fetch trades from audit sidecar — walk every page (sidecar caps
+  //    pageSize at 500) and skip test-strategy junk by default.
   const maxTrades = filters?.maxTrades || 100;
-  let allTrades: TradeRecord[] = [];
-
-  const result = await getTrades({
-    ...filters,
-    status: 'closed',
-    page: 1,
-    pageSize: maxTrades,
-  });
-  allTrades = result.items.slice(0, maxTrades);
+  const { maxTrades: _max, includeTestStrategies, ...rest } = filters || {};
+  const allTrades = await fetchAllClosedTrades(
+    (page, pageSize) => getTrades({ ...rest, status: 'closed', page, pageSize }),
+    { maxTrades, includeTestStrategies }
+  );
 
   if (allTrades.length === 0) {
     return {
@@ -179,10 +336,14 @@ export async function backtestAllTrades(
     };
   }
 
-  // 2. Group trades by symbol to batch candle fetches
+  // 2. Split option trades (premium replay via bhavcopy) from spot trades
+  //    (Yahoo underlying candles). Group spot trades by symbol+exchange to
+  //    batch candle fetches (NSE .NS / BSE .BO Yahoo suffixes).
+  const optionTrades = allTrades.filter(isOptionReplayTrade);
+  const spotTrades = allTrades.filter((t) => !isOptionReplayTrade(t));
   const tradesBySymbol = new Map<string, TradeRecord[]>();
-  for (const trade of allTrades) {
-    const key = trade.symbol;
+  for (const trade of spotTrades) {
+    const key = `${trade.symbol}|${trade.exchange || 'NSE'}`;
     if (!tradesBySymbol.has(key)) tradesBySymbol.set(key, []);
     tradesBySymbol.get(key)!.push(trade);
   }
@@ -195,10 +356,13 @@ export async function backtestAllTrades(
   for (let i = 0; i < symbolEntries.length; i += 5) {
     const batch = symbolEntries.slice(i, i + 5);
     const results = await Promise.allSettled(
-      batch.map(async ([symbol, trades]) => {
+      batch.map(async ([key, trades]) => {
+        const sep = key.lastIndexOf('|');
+        const symbol = key.slice(0, sep);
+        const exchange = key.slice(sep + 1);
         // Find earliest entry and latest exit for date range
         const allTimes = trades.flatMap(t => {
-          const entryMs = new Date(t.createdAtIst || t.entryTime).getTime();
+          const entryMs = new Date(t.createdAtIst).getTime();
           const exitMs = t.exitTime ? new Date(t.exitTime).getTime() : Date.now();
           return [entryMs, exitMs];
         });
@@ -217,14 +381,14 @@ export async function backtestAllTrades(
         else if (daysAgo <= 30 && holdingDays < 7) interval = '15m';
         else if (daysAgo <= 90) interval = '1h';
 
-        const candles = await fetchCandlesDirect(symbol, interval, 1000);
-        return { symbol, candles };
+        const candles = await fetchCandlesDirect(symbol, interval, 1000, exchange);
+        return { key, candles };
       })
     );
 
     for (const r of results) {
       if (r.status === 'fulfilled') {
-        candleCache.set(r.value.symbol, r.value.candles);
+        candleCache.set(r.value.key, r.value.candles);
       }
     }
   }
@@ -232,11 +396,33 @@ export async function backtestAllTrades(
   // 4. Backtest each trade
   const backtestedTrades: BacktestedTrade[] = [];
 
+  // 3b. Option trades → REAL daily premium candles from the NSE F&O bhavcopy.
+  //     Chunked 4-wide: unique dates are cached on disk after first download,
+  //     repeated strikes/expiries resolve from the in-memory parse cache.
+  const optionCandleCache = new Map<string, Candle[]>();
+  for (let i = 0; i < optionTrades.length; i += 4) {
+    const batch = optionTrades.slice(i, i + 4);
+    await Promise.allSettled(
+      batch.map(async (t) => {
+        const premiumCandles = await loadOptionReplayCandles(t);
+        optionCandleCache.set(t.id, premiumCandles);
+      })
+    );
+  }
+
   for (const trade of allTrades) {
-    const candles = candleCache.get(trade.symbol) || [];
-    const bt = backtestSingleTrade(trade, candles);
+    const isOption = isOptionReplayTrade(trade);
+    const candles = isOption
+      ? optionCandleCache.get(trade.id) || []
+      : candleCache.get(`${trade.symbol}|${trade.exchange || 'NSE'}`) || [];
+    const bt = backtestSingleTrade(trade, candles, { prefiltered: isOption });
     backtestedTrades.push(bt);
   }
+
+  // 4b. Attach real evidence (OI/Greeks from market-history snapshots,
+  //     news ONLY from what was recorded at signal time) and run
+  //     plausibility/integrity checks. Never fabricate a missing value.
+  await attachEvidence(backtestedTrades, allTrades);
 
   // 5. Compute summary
   const summary = computeSummary(backtestedTrades);
@@ -244,19 +430,69 @@ export async function backtestAllTrades(
   return { trades: backtestedTrades, summary };
 }
 
+// ─── Evidence attachment ─────────────────────────────────────────────────
+
+async function attachEvidence(
+  btTrades: BacktestedTrade[],
+  rawTrades: TradeRecord[]
+): Promise<void> {
+  const byId = new Map(rawTrades.map((t) => [t.id, t]));
+
+  for (const bt of btTrades) {
+    const raw = byId.get(bt.id);
+    const entryTime = bt.entryTime;
+    const optionType =
+      raw?.optionType === 'CE' || raw?.optionType === 'PE'
+        ? raw.optionType
+        : null;
+
+    let evidence: TradeEvidence;
+    try {
+      evidence = await fetchTradeEvidence({
+        symbol: bt.symbol,
+        entryTime,
+        spotFallback: raw?.spotPrice || 0,
+        marketContext: raw?.marketContext ?? null,
+      });
+    } catch {
+      evidence = emptyEvidence('evidence fetch failed');
+    }
+
+    const result = verifyTradeEvidence({
+      tradeId: bt.id,
+      entryTime,
+      optionType,
+      evidence,
+    });
+
+    bt.evidence = result.evidence;
+    bt.evidenceFlags = result.flags;
+    bt.evidenceIntegrity = result.integrity;
+  }
+}
+
 // ─── Backtest Single Trade ───────────────────────────────────────────────
 
-function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedTrade {
-  const entryTime = new Date(trade.createdAtIst || trade.entryTime).getTime();
+export function backtestSingleTrade(
+  trade: TradeRecord,
+  candles: Candle[],
+  opts: { prefiltered?: boolean } = {}
+): BacktestedTrade {
+  const entryTime = new Date(trade.createdAtIst).getTime();
   const exitTime = trade.exitTime ? new Date(trade.exitTime).getTime() : null;
 
-  // Filter candles to trade window (entry to exit + buffer)
+  // Filter candles to trade window (entry to exit + buffer).
+  // Premium-path candles are already fetched for exactly [entryDate, exitDate]
+  // and pinned at 00:00 UTC (before the IST entry time) — the millisecond
+  // window would drop every one of them, so prefiltered skips it.
   const windowStart = entryTime;
   const windowEnd = exitTime || Date.now();
-  const tradeCandles = candles.filter(c => {
-    const t = c.time * 1000; // convert seconds to ms
-    return t >= windowStart - 60_000 && t <= windowEnd + 60_000;
-  });
+  const tradeCandles = opts.prefiltered
+    ? candles
+    : candles.filter(c => {
+        const t = c.time * 1000; // convert seconds to ms
+        return t >= windowStart - 60_000 && t <= windowEnd + 60_000;
+      });
 
   if (tradeCandles.length === 0) {
     return {
@@ -264,8 +500,11 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
       strategyId: trade.strategyId,
       symbol: trade.symbol,
       instrumentType: trade.instrumentType,
-      entryTime: trade.createdAtIst || trade.entryTime,
+      entryTime: trade.createdAtIst,
       entryPrice: trade.entryPrice,
+      entrySpot: trade.spotPrice ?? null,
+      strikePrice: trade.strikePrice ?? null,
+      optionType: trade.optionType ?? null,
       stopLoss: trade.stopLoss,
       tp1: trade.tp1,
       tp2: trade.tp2,
@@ -289,14 +528,23 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
       pnlDifference: 0,
       dataQuality: 'NO_DATA',
       candleCount: 0,
+      evidence: emptyEvidence('no candle data to anchor evidence'),
+      evidenceFlags: [],
+      evidenceIntegrity: 'PRICE_ONLY',
     };
   }
 
-  // Simulate trade replay
-  const isBuy = trade.trendDirection?.toUpperCase().includes('BULL') ||
-    trade.trendDirection?.toUpperCase().includes('UP') ||
-    (trade.optionType === 'CE') ||
-    (!trade.optionType && trade.side !== 'SELL');
+  // Simulate trade replay.
+  // Options: ALWAYS long premium — the sidecar has no side column and every
+  // recorder (option-chain-api, ZERO_HERO, SMART_MONEY, SMC) buys CE/PE.
+  // The old logic used trendDirection/optionType and replayed every PE as a
+  // short, flipping the P&L sign. Equities/futures keep the trend-based rule.
+  const isOptionTrade = isOptionReplayTrade(trade);
+  const isBuy = isOptionTrade
+    ? true
+    : trade.trendDirection?.toUpperCase().includes('BULL') ||
+      trade.trendDirection?.toUpperCase().includes('UP') ||
+      (!(trade as any).side || (trade as any).side !== 'SELL');
 
   let maxFavorable = 0;
   let maxAdverse = 0;
@@ -317,8 +565,11 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
       strategyId: trade.strategyId,
       symbol: trade.symbol,
       instrumentType: trade.instrumentType,
-      entryTime: trade.createdAtIst || trade.entryTime,
+      entryTime: trade.createdAtIst,
       entryPrice: trade.entryPrice,
+      entrySpot: trade.spotPrice ?? null,
+      strikePrice: trade.strikePrice ?? null,
+      optionType: trade.optionType ?? null,
       stopLoss: trade.stopLoss,
       tp1: trade.tp1,
       tp2: trade.tp2,
@@ -342,6 +593,9 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
       pnlDifference: 0,
       dataQuality: 'PARTIAL',
       candleCount: tradeCandles.length,
+      evidence: emptyEvidence('invalid stop-loss, evidence not evaluated'),
+      evidenceFlags: [],
+      evidenceIntegrity: 'PRICE_ONLY',
     };
   }
 
@@ -454,8 +708,11 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
     strategyId: trade.strategyId,
     symbol: trade.symbol,
     instrumentType: trade.instrumentType,
-    entryTime: trade.createdAtIst || trade.entryTime,
+    entryTime: trade.createdAtIst,
     entryPrice: trade.entryPrice,
+    entrySpot: trade.spotPrice ?? null,
+    strikePrice: trade.strikePrice ?? null,
+    optionType: trade.optionType ?? null,
     stopLoss: trade.stopLoss,
     tp1: trade.tp1,
     tp2: trade.tp2,
@@ -479,6 +736,9 @@ function backtestSingleTrade(trade: TradeRecord, candles: Candle[]): BacktestedT
     pnlDifference,
     dataQuality: 'REAL',
     candleCount: tradeCandles.length,
+    evidence: emptyEvidence('evidence pending'),
+    evidenceFlags: [],
+    evidenceIntegrity: 'PRICE_ONLY',
   };
 }
 
@@ -594,6 +854,15 @@ function computeSummary(trades: BacktestedTrade[]): BacktestSummary {
 
   const avgRValues = withData.filter(t => t.actualRMultiple !== null).map(t => t.actualRMultiple!);
 
+  const evidenceIntegrity = buildEvidenceIntegrityReport(
+    trades.map(t => ({
+      tradeId: t.id,
+      evidence: t.evidence,
+      flags: t.evidenceFlags,
+      integrity: t.evidenceIntegrity,
+    }))
+  );
+
   return {
     totalTrades: trades.length,
     backtestableTrades: withData.length,
@@ -615,6 +884,7 @@ function computeSummary(trades: BacktestedTrade[]): BacktestSummary {
     equityCurve,
     pnlDistribution,
     rDistribution,
+    evidenceIntegrity,
   };
 }
 
@@ -637,5 +907,6 @@ function emptySummary(): BacktestSummary {
     equityCurve: [],
     pnlDistribution: [],
     rDistribution: [],
+    evidenceIntegrity: buildEvidenceIntegrityReport([]),
   };
 }

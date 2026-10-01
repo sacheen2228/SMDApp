@@ -1,4 +1,5 @@
 import { NSEClient } from 'nse-bse-api/nse';
+import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
 
 let nseClient: NSEClient | null = null;
 
@@ -26,6 +27,9 @@ export async function getNSEOptionChain(symbol: string) {
       return data;
     } catch (err2: any) {
       console.error('[NSE API] Option chain error:', err2.message);
+      // NSE has no token auth — a failure here is availability/cookie/block, never
+      // session expiry (session-health enforces that: nse never classifies SESSION_EXPIRED).
+      reportSessionFailure("nse", classifySourceError("nse", String(err2?.message || err2)), String(err2?.message || err2));
       return null;
     }
   }
@@ -45,10 +49,13 @@ export async function getNSEMarketStatus() {
 export async function getNSEHistoricalData(symbol: string, from: Date, to: Date) {
   const client = getNSEClient();
   try {
+    // nse-bse-api requires Date objects (validateDateRange/splitDateRange call
+    // from.getFullYear()) — ISO strings used to crash with
+    // "from.getFullYear is not a function" and every caller got null.
     const data = await client.fetch_equity_historical_data({
       symbol,
-      from_date: from.toISOString().split('T')[0],
-      to_date: to.toISOString().split('T')[0],
+      from_date: from,
+      to_date: to,
     });
     return data;
   } catch (err: any) {
@@ -224,4 +231,82 @@ export async function getNSEIndices(): Promise<Array<{ key: string; name: string
         prevClose: i.previousClose || i.last || 0,
       }));
   } catch { return []; }
+}
+
+// ─── NSE intraday index chart (/api/chart-databyindex) ───
+// VERIFIED (live probes, 2026-09-27): the query param is `index=` (with `indices=true`);
+// `symbol=` returns the error body "Missing index.". Response envelope:
+//   { closePrice, grapthData: [...], identifier, name }  — auth OK (200 with warmed cookie).
+// grapthData was EMPTY on a Sunday for every variant, so the point shape is unverified
+// until a trading session; parsed defensively for the common shapes
+// ({x,y} close-only, [t,c], [t,o,h,l,c,v], {date,open,...}).
+// INDEX-ONLY: callers must never pass stock symbols (enforced by the candle chain allowlist).
+// Serves the current session only — historical dates are not available here.
+export interface NSEChartPoint {
+  time: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close: number;
+  volume?: number;
+}
+
+function parseNSEChartPoint(raw: any): NSEChartPoint | null {
+  if (Array.isArray(raw)) {
+    const t = raw[0];
+    if (t == null) return null;
+    const ms = typeof t === "number" && t < 1e12 ? t * 1000 : Number(t);
+    const time = new Date(ms);
+    if (isNaN(time.getTime())) return null;
+    if (raw.length >= 6) {
+      return { time: time.toISOString(), open: Number(raw[1]), high: Number(raw[2]), low: Number(raw[3]), close: Number(raw[4]), volume: Number(raw[5] ?? 0) };
+    }
+    if (raw.length >= 5) {
+      return { time: time.toISOString(), open: Number(raw[1]), high: Number(raw[2]), low: Number(raw[3]), close: Number(raw[4]) };
+    }
+    const close = Number(raw[1]);
+    return isFinite(close) ? { time: time.toISOString(), close } : null;
+  }
+  if (raw && typeof raw === "object") {
+    const t = raw.x ?? raw.time ?? raw.timestamp ?? raw.date;
+    if (t == null) return null;
+    const ms = typeof t === "number" ? (t < 1e12 ? t * 1000 : t) : Date.parse(t);
+    const time = new Date(ms);
+    if (isNaN(time.getTime())) return null;
+    const close = Number(raw.y ?? raw.close ?? raw.c);
+    if (!isFinite(close)) return null;
+    const out: NSEChartPoint = { time: time.toISOString(), close };
+    if (raw.open != null || raw.o != null) out.open = Number(raw.open ?? raw.o);
+    if (raw.high != null || raw.h != null) out.high = Number(raw.high ?? raw.h);
+    if (raw.low != null || raw.l != null) out.low = Number(raw.low ?? raw.l);
+    if (raw.volume != null || raw.v != null) out.volume = Number(raw.volume ?? raw.v);
+    return out;
+  }
+  return null;
+}
+
+// Throws on HTTP/shape failures with a human-readable message so the candle chain
+// can classify the failure (NSE failures are never session expiry).
+export async function getNSEIndexChart(indexName: string): Promise<NSEChartPoint[]> {
+  const cookie = await getNSECookie();
+  const url =
+    "https://www.nseindia.com/api/chart-databyindex?index=" +
+    encodeURIComponent(indexName) +
+    "&indices=true";
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": NSE_UA,
+      Cookie: cookie,
+      Referer: "https://www.nseindia.com/market-data/live-market-indices",
+      Accept: "application/json, text/plain, */*",
+    },
+    signal: AbortSignal.timeout(8000),
+  });
+  const text = await res.text();
+  let json: any = null;
+  try { json = JSON.parse(text); } catch { /* fallthrough */ }
+  if (!json || !Array.isArray(json.grapthData)) {
+    throw new Error(`NSE chart index=${indexName} HTTP ${res.status}: ${(text || "empty body").slice(0, 120)}`);
+  }
+  return json.grapthData.map(parseNSEChartPoint).filter(Boolean) as NSEChartPoint[];
 }

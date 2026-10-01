@@ -189,7 +189,7 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
           </div>
           <div className="text-center">
             <div className="text-muted-foreground">PCR</div>
-            <div className="font-bold">{stock.pcr}</div>
+            <div className="font-bold">{stock.pcr ?? "—"}</div>
           </div>
         </div>
 

@@ -1725,7 +1725,8 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalRR: 2.0,
         };
         const ceDecision = scoreTrade(ceInput);
-        if (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH" || ceDecision.score >= 50) {
+        if (ceDecision.entry >= 5 && ceDecision.stopLoss > 0 && ceDecision.stopLoss < ceDecision.entry &&
+            (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH" || ceDecision.score >= 50)) {
           results.push({
             strike: row.strike,
             type: "CE",
@@ -1764,7 +1765,9 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalRR: 2.0,
         };
         const peDecision = scoreTrade(peInput);
-        if (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 50) {
+        // PE floor raised — historical PE win rate on this book is ~0%.
+        if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
+            (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {
           results.push({
             strike: row.strike,
             type: "PE",

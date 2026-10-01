@@ -4,6 +4,7 @@
 import { getBreezeClient, getConfig, withAuthRetry } from './auth';
 import type { OptionChainData, OptionQuote } from '@/types';
 import { calculateGreeks } from '@/lib/greeks';
+import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
 
 // BSE symbols that need BFO exchange code (BSE F&O segment)
 const BSE_SYMBOLS = new Set(['SENSEX', 'BANKEX']);
@@ -33,8 +34,27 @@ export async function getOptionChain(
   expiryDate: string
 ): Promise<OptionChainData | null> {
   try {
+    // Callers pass "" meaning "current/nearest expiry" (tiger-monitor,
+    // backtest-audit). Resolve it to a real listed expiry BEFORE the SDK
+    // call — formatExpiryForSDK("") used to produce the garbage
+    // "NaN-undefined-NaN" expiry string and wasted a full API round-trip.
+    let expiry = expiryDate;
+    if (!expiry) {
+      const exps = await getOptionChainExpiries(stockCode);
+      expiry = exps[0] || "";
+    }
+    const expiryFormatted = formatExpiryForSDK(expiry);
+    if (!expiryFormatted) {
+      console.warn(
+        "[Breeze SDK] Invalid expiry for",
+        stockCode,
+        JSON.stringify(expiryDate),
+        "— skipping SDK call"
+      );
+      return null;
+    }
+
     return await withAuthRetry(async (breeze) => {
-      const expiryFormatted = formatExpiryForSDK(expiryDate);
       const exchangeCode = getExchangeCode(stockCode);
 
       const breezeStockCode = bfoStockCode(stockCode);
@@ -154,12 +174,22 @@ export async function getOptionChain(
     const raw = typeof err === 'string' ? err : String(err?.message || err || '');
     const meaningful = raw.includes('Errorundefined') ? 'SDK internal error (likely Unauthorized User or timeout)' : raw.substring(0, 120);
     console.warn('[Breeze SDK] getOptionChain failed for', stockCode, expiryDate, ':', meaningful);
+    reportSessionFailure("breeze", classifySourceError("breeze", meaningful), meaningful);
     return null;
   }
 }
 
 // ─── Get Option Chain Expiries ────────────────────────────────────
+// Expiry lists change only weekly (Thursday rollover) — cache per symbol so
+// the chain path skips the ~2-3s futures-quotes probe on every request.
+const expiriesCache = new Map<string, { list: string[]; ts: number }>();
+const EXPIRIES_TTL_MS = 6 * 3600 * 1000;
+
 export async function getOptionChainExpiries(stockCode: string): Promise<string[]> {
+  const cacheKey = stockCode.toUpperCase();
+  const hit = expiriesCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < EXPIRIES_TTL_MS) return hit.list;
+
   try {
     const breeze = getBreezeClient();
     const exchangeCode = getExchangeCode(stockCode);
@@ -204,6 +234,10 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
       return new Date(a).getTime() - new Date(b).getTime();
     });
 
+    // Cache only real results — never cache the error/empty fallback
+    if (expiryList.length > 0) {
+      expiriesCache.set(cacheKey, { list: expiryList, ts: Date.now() });
+    }
     return expiryList;
   } catch (error) {
     const msg = typeof error === 'string' ? error : error?.message || String(error);
@@ -224,11 +258,15 @@ export async function getQuotes(stockCode: string, exchangeCode: 'NSE' | 'NFO' =
 // ─── Format Expiry Date for SDK ───────────────────────────────────
 // SDK expects DD-MMM-YYYY format (e.g., "09-Jul-2026")
 function formatExpiryForSDK(dateStr: string): string {
+  // Empty / unparseable input must return "" (callers skip the SDK call)
+  // instead of "NaN-undefined-NaN"
+  if (!dateStr || !dateStr.trim()) return "";
   // If already in DD-MMM-YYYY format, return as-is
   if (/^\d{2}-[A-Z][a-z]{2}-\d{4}$/.test(dateStr)) {
     return dateStr;
   }
   const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return "";
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const day = date.getUTCDate().toString().padStart(2, '0');
   const month = months[date.getUTCMonth()];

@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { getNSEHistoricalData, getNSEOptionChain } from "@/lib/nse-api";
 import { initSession } from "@/lib/icici-breeze/auth";
 import { getOptionChain } from "@/lib/icici-breeze/option-chain";
+import { getYahooSymbol } from "@/lib/trade-backtest-engine";
 
 export interface ValidationResult {
   tradeId: string;
@@ -45,7 +46,48 @@ export interface ValidationReport {
 }
 
 // ─── Get daily high/low from NSE historical data ─────────────────
-async function getDailyRange(symbol: string, date: Date): Promise<{ high: number; low: number; close: number } | null> {
+// Exported for scripts/repair-legacy-exits.ts — real day OHLC/close for an
+// arbitrary past date (NSE first, exact-date Yahoo daily as fallback).
+const NSE_MONTHS: Record<string, string> = {
+  jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+  jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+};
+
+/**
+ * Pick the row whose bar date IS the target session (strict — never returns
+ * an adjacent session's bar). NSE historical range queries clamp across
+ * boundaries: [Sun, Mon] comes back with Monday's bar as data[0], so
+ * trusting data[0] silently stamped weekends/holidays with the next
+ * session's close.
+ */
+export function findBarForDate<T extends object>(
+  rows: T[] | null | undefined,
+  targetISO: string
+): T | null {
+  if (!Array.isArray(rows) || !/^\d{4}-\d{2}-\d{2}$/.test(targetISO)) return null;
+  for (const row of rows) {
+    const raw = String((row as any)?.mtimestamp ?? "").trim();
+    if (!raw) continue;
+    let iso: string | null = null;
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw);
+    if (m) iso = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    if (!iso) {
+      m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(raw);
+      if (m) {
+        const mo = NSE_MONTHS[m[2].toLowerCase()];
+        if (mo) iso = `${m[3]}-${mo}-${m[1].padStart(2, "0")}`;
+      }
+    }
+    if (!iso) {
+      m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+      if (m) iso = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+    }
+    if (iso === targetISO) return row;
+  }
+  return null;
+}
+
+export async function getDailyRange(symbol: string, date: Date): Promise<{ high: number; low: number; close: number } | null> {
   // Map symbol to NSE symbol
   const symbolMap: Record<string, string> = {
     NIFTY: "NIFTY",
@@ -59,20 +101,50 @@ async function getDailyRange(symbol: string, date: Date): Promise<{ high: number
   try {
     const end = new Date(date);
     end.setDate(end.getDate() + 1);
+    const targetISO = date.toISOString().slice(0, 10);
     const data = await getNSEHistoricalData(nseSymbol, date, end);
-    if (data && data.length > 0) {
-      const day = data[0];
-      return { high: day.high || day.HIGH, low: day.low || day.LOW, close: day.close || day.CLOSE };
+    const day: any = findBarForDate(data as any, targetISO);
+    if (day) {
+      const high = Number(day.chTradeHighPrice ?? day.high ?? day.HIGH ?? 0);
+      const low = Number(day.chTradeLowPrice ?? day.low ?? day.LOW ?? 0);
+      const close = Number(day.chClosingPrice ?? day.close ?? day.CLOSE ?? 0);
+      if (high > 0 && low > 0 && Number.isFinite(high) && Number.isFinite(low)) {
+        return { high, low, close: close > 0 ? close : (high + low) / 2 };
+      }
     }
   } catch { /* fall through */ }
 
-  // Fallback: try Breeze for current data
+  // Fallback: Yahoo Finance daily OHLC for the exact date (real data, never fabricated)
   try {
-    await initSession();
-    const chain = await getOptionChain(nseSymbol, "");
-    if (chain?.spotPrice) {
-      const spot = chain.spotPrice;
-      return { high: spot * 1.01, low: spot * 0.99, close: spot };
+    const yahooSymbol = getYahooSymbol(nseSymbol);
+    const dayMs = 86400000;
+    const p1 = Math.floor((date.getTime() - 4 * dayMs) / 1000);
+    const p2 = Math.floor((date.getTime() + 2 * dayMs) / 1000);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?period1=${p1}&period2=${p2}&interval=1d`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const result = json?.chart?.result?.[0];
+      const ts: number[] = result?.timestamp || [];
+      const q = result?.indicators?.quote?.[0];
+      const target = date.toISOString().slice(0, 10);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      for (let i = 0; i < ts.length; i++) {
+        // Shift epoch to IST before reading the calendar date
+        const ist = new Date((ts[i] + 19800) * 1000);
+        const dstr = `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth() + 1)}-${pad(ist.getUTCDate())}`;
+        if (dstr === target) {
+          const high = Number(q?.high?.[i]);
+          const low = Number(q?.low?.[i]);
+          const close = Number(q?.close?.[i]);
+          if (high > 0 && low > 0 && Number.isFinite(high) && Number.isFinite(low)) {
+            return { high, low, close: Number.isFinite(close) && close > 0 ? close : (high + low) / 2 };
+          }
+        }
+      }
     }
   } catch { /* fall through */ }
 
@@ -110,6 +182,14 @@ function validateTradeAgainstRange(
   trade: any,
   range: { high: number; low: number; close: number } | null
 ): Omit<ValidationResult, "tradeId" | "symbol" | "strike" | "type" | "entryPrice" | "stopLoss" | "target1" | "status" | "pnl" | "entryTime" | "exitTime"> {
+  const isCall = trade.type === "CALL" || trade.type === "BUY_CALL" || trade.type === "CE";
+  const isPut = trade.type === "PUT" || trade.type === "BUY_PUT" || trade.type === "PE";
+  const isSellCall = trade.type === "SELL_CALL";
+  const isSellPut = trade.type === "SELL_PUT";
+  const isEquity = trade.type === "EQUITY" || trade.type === "STOCK";
+  const isBullish = isCall || isSellPut || (isEquity && trade.side !== "SELL");
+  const isBearish = isPut || isSellCall || (isEquity && trade.side === "SELL");
+
   if (!range) {
     return {
       validated: false,
@@ -117,7 +197,7 @@ function validateTradeAgainstRange(
       slippage: 0,
       strikeExists: true,
       entryInRange: false,
-      slOnCorrectSide: trade.type?.startsWith("SELL") || trade.type === "PUT" ? trade.stopLoss > trade.entryPrice : trade.stopLoss < trade.entryPrice,
+      slOnCorrectSide: isBullish ? trade.stopLoss < trade.entryPrice : trade.stopLoss > trade.entryPrice,
       slWouldHit: false,
       tpWouldHit: false,
     };
@@ -126,12 +206,6 @@ function validateTradeAgainstRange(
   const entry = trade.entryPrice;
   const sl = trade.stopLoss;
   const tp = trade.target1 || 0;
-  const isCall = trade.type === "CALL" || trade.type === "BUY_CALL";
-  const isPut = trade.type === "PUT" || trade.type === "BUY_PUT";
-  const isSellCall = trade.type === "SELL_CALL";
-  const isSellPut = trade.type === "SELL_PUT";
-  const isBullish = isCall || isSellPut;
-  const isBearish = isPut || isSellCall;
 
   // 1. Entry price within daily range?
   const entryInRange = entry >= range.low * 0.95 && entry <= range.high * 1.05;

@@ -61,8 +61,12 @@ export type FlowBias =
 
 export type DataProvider =
   | "breeze"
+  | "icici-breeze"
   | "moapi"
   | "nse"
+  | "nse-api"
+  | "bse-api"
+  | "motilal-api"
   | "website"
   | "yahoo";
 

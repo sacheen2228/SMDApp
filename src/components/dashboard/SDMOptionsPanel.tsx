@@ -50,7 +50,7 @@ export function SDMOptionsPanel({ analysis, chainData, loading }: SDMOptionsPane
   const totalPutOI = analysis?.totalPutOI ?? 0;
 
   const breakdownItems = [
-    { label: 'PCR', value: sdm.breakdown["PCR"] || oiAnalysis.pcr.toFixed(2), color: oiAnalysis.pcr > 1.2 ? 'text-emerald-400' : oiAnalysis.pcr < 0.7 ? 'text-red-400' : 'text-amber-400' },
+    { label: 'PCR', value: sdm.breakdown["PCR"] || (oiAnalysis.pcr != null && Number.isFinite(oiAnalysis.pcr) ? oiAnalysis.pcr.toFixed(2) : "N/A"), color: oiAnalysis.pcr > 1.2 ? 'text-emerald-400' : oiAnalysis.pcr < 0.7 ? 'text-red-400' : 'text-amber-400' },
     { label: 'CE OI', value: sdm.breakdown["CE OI"] || fmt(totalCallOI), color: 'text-red-400' },
     { label: 'PE OI', value: sdm.breakdown["PE OI"] || fmt(totalPutOI), color: 'text-emerald-400' },
     { label: 'Call Vol', value: sdm.breakdown["Call Vol"] || fmt(totalCallVolume), color: 'text-muted-foreground' },
@@ -131,7 +131,7 @@ export function SDMOptionsPanel({ analysis, chainData, loading }: SDMOptionsPane
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">PCR</span>
-                  <span className={`font-bold ${oiAnalysis.pcr > 1.2 ? 'text-emerald-400' : oiAnalysis.pcr < 0.7 ? 'text-red-400' : 'text-amber-400'}`}>{oiAnalysis.pcr.toFixed(2)}</span>
+                  <span className={`font-bold ${oiAnalysis.pcr > 1.2 ? 'text-emerald-400' : oiAnalysis.pcr < 0.7 ? 'text-red-400' : 'text-amber-400'}`}>{oiAnalysis.pcr != null && Number.isFinite(oiAnalysis.pcr) ? oiAnalysis.pcr.toFixed(2) : "N/A"}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Max Pain</span>

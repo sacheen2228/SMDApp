@@ -54,12 +54,8 @@ export async function GET(req: NextRequest) {
     const targetSymbol = searchParams.get("symbol") || "NIFTY";
     const minScore = parseInt(searchParams.get("minScore") || "60", 10);
 
-    const topFnoSymbols = [
-      "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-      "HINDUNILVR", "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK",
-      "LT", "AXISBANK", "BAJFINANCE", "ASIANPAINT", "MARUTI",
-      "SUNPHARMA", "TITAN", "ULTRACEMCO", "TATAMOTORS", "WIPRO",
-    ];
+    const { FNO_SCAN_UNIVERSE } = await import("@/lib/sdm-chain-scanner");
+    const topFnoSymbols = FNO_SCAN_UNIVERSE;
 
     const [stockData, chainResult] = await Promise.allSettled([
       fetchNIFTY50Stocks(),

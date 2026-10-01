@@ -19,6 +19,12 @@ const VALID_INSTRUMENTS = new Set(['CALL', 'PUT', 'FUTURES', 'EQUITY']);
 const VALID_OPTION_TYPES = new Set(['CE', 'PE', 'FUT']);
 const BUY_ONLY_DIRECTIONS = new Set(['BUY_CE', 'BUY_PE', 'BUY']);
 
+// ─── Prohibited option-selling strategies (CE/PE BUY ONLY rule) ──
+const PROHIBITED_SELL_STRATEGIES = new Set([
+  'STRADDLE', 'STRANGLE', 'SELL_STRADDLE', 'SELL_STRANGLE',
+  'SHORT_STRADDLE', 'SHORT_STRANGLE', 'SELL_PREMIUM',
+]);
+
 // ─── Types ───────────────────────────────────────────────────────
 export interface TradeCandidate {
   symbol: string;
@@ -87,12 +93,22 @@ export interface TradeValidationResult {
 
 // ─── Individual Checks (24 total) ───────────────────────────────
 
-// 1. Option buying only
+// 1. Option selling rejected — instrument-aware (options only)
 function checkOptionBuyingOnly(c: TradeCandidate): { pass: boolean; msg: string } {
-  if (c.direction.includes('SELL') || c.direction.includes('SHORT')) {
-    return { pass: false, msg: `Option selling not allowed: ${c.direction}` };
+  const isOption = c.instrument === 'CALL' || c.instrument === 'PUT';
+  if (isOption && (c.direction.includes('SELL') || c.direction.includes('SHORT'))) {
+    return { pass: false, msg: `Option selling not allowed: ${c.direction} on ${c.instrument}` };
   }
-  return { pass: true, msg: 'Option buying only' };
+  return { pass: true, msg: 'Direction check passed' };
+}
+
+// 1b. Prohibited strategy check (STRADDLE/STRANGLE/etc.)
+function checkProhibitedStrategy(c: TradeCandidate): { pass: boolean; msg: string } {
+  const strategy = (c as any).strategy as string | undefined;
+  if (strategy && PROHIBITED_SELL_STRATEGIES.has(strategy.toUpperCase())) {
+    return { pass: false, msg: `OPTION_SELLING_NOT_ALLOWED: strategy "${strategy}" is a premium-selling strategy` };
+  }
+  return { pass: true, msg: 'Strategy check passed' };
 }
 
 // 2. Premium > 0
@@ -300,9 +316,10 @@ export function validateCandidateTrade(candidate: TradeCandidate): TradeValidati
   const warnings: string[] = [];
   const checkedAt = new Date().toISOString();
 
-  // Run all 24 checks
+  // Run all checks
   const checks = [
     { name: 'OPTION_BUYING_ONLY', result: checkOptionBuyingOnly(candidate) },
+    { name: 'PROHIBITED_STRATEGY', result: checkProhibitedStrategy(candidate) },
     { name: 'PREMIUM_POSITIVE', result: checkPremiumPositive(candidate) },
     { name: 'PREMIUM_MINIMUM', result: checkPremiumMinimum(candidate) },
     { name: 'VALID_UNDERLYING', result: checkValidUnderlying(candidate) },
@@ -368,6 +385,66 @@ export function validateCandidateTrade(candidate: TradeCandidate): TradeValidati
 // ─── Quick Guard ─────────────────────────────────────────────────
 export function isTradeSafe(candidate: TradeCandidate): boolean {
   return validateCandidateTrade(candidate).valid;
+}
+
+// ─── Option Selling Guard (standalone, instrument-aware) ─────────
+// instrument: 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY' — only blocks for options
+export function isOptionSelling(direction?: string, strategy?: string, instrument?: string): boolean {
+  const isOption = instrument === 'CALL' || instrument === 'PUT';
+  if (isOption && direction && (direction.includes('SELL') || direction.includes('SHORT'))) {
+    return true;
+  }
+  // STRADDLE/STRANGLE are always prohibited (premium-selling strategies)
+  if (strategy && PROHIBITED_SELL_STRATEGIES.has(strategy.toUpperCase())) {
+    return true;
+  }
+  return false;
+}
+
+// ─── Reject Option Selling (instrument-aware, returns rejection reason or null) ──
+export function rejectOptionSelling(direction?: string, strategy?: string, instrument?: string): string | null {
+  const isOption = instrument === 'CALL' || instrument === 'PUT';
+  if (isOption && direction && (direction.includes('SELL') || direction.includes('SHORT'))) {
+    return `OPTION_SELLING_NOT_ALLOWED: direction "${direction}" on ${instrument} is prohibited`;
+  }
+  if (strategy && PROHIBITED_SELL_STRATEGIES.has(strategy.toUpperCase())) {
+    return `OPTION_SELLING_NOT_ALLOWED: strategy "${strategy}" is a premium-selling strategy`;
+  }
+  return null;
+}
+
+// ─── Strike Scale Guard ─────────────────────────────────────────
+// Refuses wrong-symbol-scale strikes at the registration choke point
+// (/api/trade/register). Jul-15 incident: NIFTY-scale 24200 strikes were
+// recorded under symbol=SENSEX (real spot ~77000) — indexed strikes only
+// exist within a sane band around spot.
+const INDEX_STRIKE_BAND: Record<string, [number, number]> = {
+  NIFTY: [15000, 40000],
+  FINNIFTY: [15000, 40000],
+  MIDCPNIFTY: [10000, 40000],
+  BANKNIFTY: [30000, 80000],
+  SENSEX: [50000, 120000],
+  BANKEX: [50000, 120000],
+};
+
+export function isStrikeOnSymbolScale(symbol: string, strike: number, spot?: number | null): boolean {
+  if (!(strike > 0)) return true; // equity / no-strike rows
+  const band = INDEX_STRIKE_BAND[(symbol || "").toUpperCase()];
+  if (band && (strike < band[0] || strike > band[1])) return false;
+  if (spot != null && spot > 0 && Math.abs(strike - spot) / spot > 0.25) return false;
+  return true;
+}
+
+// ─── Confidence Floor ────────────────────────────────────────────
+// Options MUST clear their floor even when confidence is 0/missing — the
+// old `conf > 0 && conf < floor` check let conf=0 option rows through
+// (option-chain-api conf=0 POST_CLOSE rows: 0/17 wins, -4427 net).
+export function meetsConfidenceFloor(type: string | null | undefined, confidence: number): boolean {
+  const t = (type || "").toUpperCase();
+  const isOption = t === "CE" || t === "PE";
+  const floor = t === "PE" ? 65 : 55;
+  if (isOption) return confidence >= floor;
+  return !(confidence > 0) || confidence >= floor;
 }
 
 // ─── Stale Data Detector ─────────────────────────────────────────

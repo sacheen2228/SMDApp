@@ -12,22 +12,24 @@ import { PaperPerformanceEngine } from "@/lib/hermes/paper-performance";
 
 const performance = new PaperPerformanceEngine();
 
-// GET /api/hermes/paper
+// GET /api/hermes/paper[?view=open|history|no-trade|performance|status]
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const path = url.pathname;
+  const view = url.searchParams.get("view") || "";
   const status = getPaperEngineStatus();
+  const action = view || (path.endsWith("/status") ? "status"
+    : path.endsWith("/open") ? "open"
+    : path.endsWith("/history") ? "history"
+    : path.endsWith("/performance") ? "performance"
+    : path.endsWith("/no-trade") ? "no-trade"
+    : "");
 
-  // /api/hermes/paper/status
-  if (path.endsWith("/status")) {
-    return NextResponse.json({
-      success: true,
-      data: status,
-    });
+  if (action === "status") {
+    return NextResponse.json({ success: true, data: status });
   }
 
-  // /api/hermes/paper/open
-  if (path.endsWith("/open")) {
+  if (action === "open") {
     const data = await getPaperEngineData();
     return NextResponse.json({
       success: true,
@@ -36,8 +38,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // /api/hermes/paper/history
-  if (path.endsWith("/history")) {
+  if (action === "history") {
     const limit = parseInt(url.searchParams.get("limit") || "50");
     const data = await getPaperEngineData();
     const trades = data.closedTrades.slice(0, limit);
@@ -48,21 +49,16 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // /api/hermes/paper/performance
-  if (path.endsWith("/performance")) {
+  if (action === "performance") {
     const data = await getPaperEngineData();
     const report = performance.generateReport(
       data.closedTrades,
       data.noTradeObservations
     );
-    return NextResponse.json({
-      success: true,
-      data: report,
-    });
+    return NextResponse.json({ success: true, data: report });
   }
 
-  // /api/hermes/paper/no-trade
-  if (path.endsWith("/no-trade")) {
+  if (action === "no-trade") {
     const data = await getPaperEngineData();
     return NextResponse.json({
       success: true,

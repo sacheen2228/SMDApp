@@ -405,6 +405,76 @@ export function buildOptionChain(
   };
 }
 
+// ─── Shared chain statistics (real IV + premium — never fabricated) ──
+
+export interface ChainLegLike {
+  iv?: number;
+  ltp?: number;
+}
+
+export interface ChainStrikeLike {
+  strike: number;
+  ce?: ChainLegLike | null;
+  pe?: ChainLegLike | null;
+}
+
+/** Strike nearest to spot; 0 when there are no strikes. */
+export function findAtmStrike(strikes: number[], spot: number): number {
+  if (strikes.length === 0) return 0;
+  return strikes.reduce((prev, curr) =>
+    Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev
+  );
+}
+
+const round1 = (v: number): number => Math.round(v * 10) / 10;
+
+/**
+ * Real ATM IV, median IV and ATM option premiums from a chain's strikes.
+ * ivRank = percentile of today's ATM IV within today's IV distribution
+ * (the same approximation the Breeze snapshot mapper has always used).
+ * Missing IVs return 0 — callers must treat 0 as "unavailable", not "cheap".
+ */
+export function deriveIvStats(
+  strikes: ChainStrikeLike[],
+  atmStrike: number
+): {
+  ivMedian: number;
+  ivRank: number;
+  atmIV: number;
+  atmCePremium: number;
+  atmPePremium: number;
+} {
+  const empty = { ivMedian: 0, ivRank: 0, atmIV: 0, atmCePremium: 0, atmPePremium: 0 };
+  if (!strikes || strikes.length === 0) return empty;
+
+  const atmRow = strikes.find(s => s.strike === atmStrike) || null;
+  const atmCePremium = atmRow?.ce?.ltp || 0;
+  const atmPePremium = atmRow?.pe?.ltp || 0;
+  const atmIV = Math.max(atmRow?.ce?.iv || 0, atmRow?.pe?.iv || 0);
+
+  const ivs: number[] = [];
+  for (const s of strikes) {
+    if (s.ce && (s.ce.iv || 0) > 0) ivs.push(s.ce.iv as number);
+    if (s.pe && (s.pe.iv || 0) > 0) ivs.push(s.pe.iv as number);
+  }
+  if (ivs.length === 0) return { ...empty, atmCePremium, atmPePremium };
+
+  const sorted = [...ivs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const ivMedian =
+    sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const ivRank =
+    atmIV > 0 ? round1((ivs.filter(v => v <= atmIV).length / ivs.length) * 100) : 0;
+
+  return {
+    ivMedian: round1(ivMedian),
+    ivRank,
+    atmIV: round1(atmIV),
+    atmCePremium,
+    atmPePremium,
+  };
+}
+
 // ─── Data Quality Check ────────────────────────────────────────────
 
 export interface ChainQualityResult {

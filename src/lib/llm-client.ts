@@ -379,9 +379,9 @@ export async function callLLM(messages: LLMMessage[], tools?: any[], model?: str
   });
 
   // Provider chain — skip unhealthy providers immediately
-  // Groq first (direct API key), OpenRouter second, Ollama local fallback
-  // TokenRa disabled — uses OpenCode Zen free models which only work inside OpenCode CLI
-  const chain: Provider[] = ["groq", "openrouter", "ollama", "tokenra"];
+  // OpenRouter first — always free models only (:free suffix in .env), then Groq,
+  // Ollama local fallback, TokenRa last (OpenCode Zen models, only work inside OpenCode CLI)
+  const chain: Provider[] = ["openrouter", "groq", "ollama", "tokenra"];
   const providerLabels: Record<Provider, string> = {
     tokenra: "TokenRa",
     groq: "Groq",

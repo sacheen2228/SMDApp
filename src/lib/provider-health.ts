@@ -139,10 +139,12 @@ class ProviderHealthManager {
     h.healthy = true;
     h.status = "ready";
 
-    // Update circuit to CLOSED
-    if (h.circuitState === "HALF_OPEN") {
-      h.circuitState = "CLOSED";
-    }
+    // A successful call proves the provider is up — close the circuit from
+    // ANY state (OPEN/HALF_OPEN → CLOSED) and clear the cooldown, so a
+    // manually applied fresh token (Breeze browser-OTP flow) is usable
+    // immediately instead of waiting out a 1hr OPEN cooldown.
+    h.circuitState = "CLOSED";
+    h.cooldownUntil = 0;
 
     // Track latency (keep last 20 samples)
     h.latencySamples.push(latencyMs);
@@ -157,7 +159,9 @@ class ProviderHealthManager {
     h.lastFailureAt = now;
     h.consecutiveFailures++;
     h.totalFailures++;
-    h.lastError = errorMsg.substring(0, 200);
+    // SDK rejections are sometimes plain strings (err.message === undefined) —
+    // never let .substring crash the caller's error-handling path.
+    h.lastError = String(errorMsg ?? "").substring(0, 200);
     h.lastErrorType = errorType;
 
     // Set status based on error type

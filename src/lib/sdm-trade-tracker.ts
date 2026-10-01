@@ -159,8 +159,6 @@ export async function addTrade(
   }
 
   const now = new Date();
-  const tradeId =
-    Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
 
   const trade: TradeRecord = {
     id: tradeId,

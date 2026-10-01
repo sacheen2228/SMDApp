@@ -73,3 +73,6 @@ sys
 db/
 *.sqlite
 *.sqlite3
+
+# local repair backups (db copies — never commit)
+backups/

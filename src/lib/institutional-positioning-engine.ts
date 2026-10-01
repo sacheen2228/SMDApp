@@ -952,6 +952,7 @@ function computeConfidence(
 
 export interface InstitutionalPositioningOptions {
   skipCache?: boolean;
+  dbOnly?: boolean; // snapshot path: never hit NSE (preserves ≤12-fetch cycle budget)
   optionChainData?: any; // optional option chain for cross-validation
 }
 
@@ -976,7 +977,7 @@ export async function runInstitutionalPositioning(
   let source: 'nse' | 'db' | 'none' = todayData ? 'db' : 'none';
   let activeDate = todayDDMMYYYY;
 
-  if (!todayData) {
+  if (!todayData && !options?.dbOnly) {
     // Try NSE for each recent date
     for (const d of [todayDDMMYYYY, ...recentDates]) {
       const csv = await _fetchCSV(d);
@@ -1126,7 +1127,10 @@ export async function runInstitutionalPositioning(
     source,
   };
 
-  resultCache = { data: output, timestamp: Date.now() };
+  // dbOnly results stay local — never poison the cache the full (NSE) path shares
+  if (!options?.dbOnly) {
+    resultCache = { data: output, timestamp: Date.now() };
+  }
   return output;
 }
 
@@ -1227,4 +1231,62 @@ export function generateAIMarketSummary(output: InstitutionalPositioningOutput):
   lines.push(`Tomorrow's market bias is ${prediction.tomorrowBias} with ${prediction.confidence}% confidence.`);
 
   return lines.join('\n');
+}
+
+/** Return DDMMYYYY date stamp for the given date in IST (market close time).
+ * Falls back to UTC date slice if IST conversion not meaningful before 05:30 IST.
+ * Useful for matching NSE participant OI date format. */
+export function todayDDMMYYYYIST(now: Date = new Date()): string {
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const dd = String(ist.getDate()).padStart(2, "0");
+  const mm = String(ist.getMonth() + 1).padStart(2, "0");
+  const yyyy = ist.getFullYear();
+  return dd + mm + yyyy;
+}
+
+/** Parse a DDMMYYYY string to a Date for correct chronological comparison.
+ * Returns null on garbage. */
+export function ddmmyyyyToDate(ddmmyyyy: string): Date | null {
+  if (!ddmmyyyy || !/^\d{8}$/.test(ddmmyyyy)) return null;
+  const dd = parseInt(ddmmyyyy.slice(0, 2), 10);
+  const mm = parseInt(ddmmyyyy.slice(2, 4), 10) - 1; // zero based
+  const yyyy = parseInt(ddmmyyyy.slice(4, 8), 10);
+  if (dd < 1 || dd > 31 || mm < 0 || mm > 11 || yyyy < 2000) return null;
+  const d = new Date(yyyy, mm, dd);
+  if (d.getFullYear() !== yyyy || d.getMonth() !== mm || d.getDate() !== dd) return null;
+  return d;
+}
+
+/** Return the chronologically newest date from an array of {date:string} rows,
+ * using proper date-parse comparison rather than buggy string max.
+ * Returns null when no valid dates exist. */
+export function latestParticipantDate(rows: {date: string}[]): string | null {
+  let best: string | null = null;
+  let bestDate: Date | null = null;
+  for (const row of rows) {
+    const d = ddmmyyyyToDate(row.date);
+    if (!d) continue;
+    if (!bestDate || d > bestDate) {
+      bestDate = d;
+      best = row.date;
+    }
+  }
+  return best;
+}
+
+/** Determine watchdog verdict for institutional positioning data freshness.
+ * 'fresh' when the latest DB participant OI date matches today in IST.
+ * 'missing' when data is stale or absent. */
+export function positioningFreshness(latest: string | null, today: string): 'fresh' | 'missing' {
+  if (!latest || latest !== today) return "missing";
+  return "fresh";
+}
+
+/** Check if participant OI data already exists for a given IST date in the DB.
+ * Used by the cron route to skip re-fetch when data is already present. */
+export async function hasParticipantDataForDate(ddmmyyyy: string): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  const row = await db.participantOI.findFirst({ where: { date: ddmmyyyy } });
+  return !!row;
 }

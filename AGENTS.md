@@ -70,6 +70,9 @@ bun run dev        # starts on :3000
 | `src/app/api/morning-signals/route.ts` | Morning Signals API — call at 9:20 AM IST for daily trade recommendations |
 | `src/app/api/daily-digest/route.ts` | Daily Digest API — call at 3:25 PM IST for end-of-day summary |
 | `src/lib/telegram.ts` | Telegram sender — HTML messages, full-day dedup, trade alerts |
+| `src/lib/session-health.ts` | **Session Health** — single owner of session-expiry classification, dedup'd `[SYSTEM][SESSION_EXPIRED]` alerts, live source probes, Hermes status report |
+| `src/lib/market/candle-chain.ts` | Candle multi-source chain (live capture only): indices Breeze→MO→NSE index-only, stocks Breeze→MO; no timeframe/instrument substitution |
+| `src/lib/motilal/candles.ts` | MO EOD candle wrapper (only daily OHLC endpoint MO exposes; no intraday on the platform) |
 | `src/lib/telegramSend.ts` | Telegram sender — Markdown messages, used by cron/digest modules |
 | `src/lib/option-acceleration-engine.ts` | Option Acceleration Engine (10 sub-engines: delta accel, gamma explosion, OI absorption, volume momentum, institutional flow, premium elasticity, historical memory, time decay, regime + premium velocity + TP1/TP2/TP3) |
 | `src/lib/greek-flow-engine.ts` | **@deprecated** — old Greek Flow scoring engine, replaced by option-acceleration-engine.ts |
@@ -211,6 +214,15 @@ Risk & Portfolio: `get_risk_status`, `get_portfolio`, `get_challenge_status`, `c
 Trade & Journal: `get_trade_history`, `get_trade_post_mortem`, `get_backtest_results`, `get_news_sentiment`
 Memory: `search_memory`, `get_memory_summary`, `record_trade_memory`
 System: `get_agent_analytics`, `answer_trading_question`
+Session Health: `check_session_tokens` (live probes of breeze/mo/nse + recorded episodes), `set_breeze_session` (apply user-supplied Breeze token, re-arms episode)
+
+### Session Health & Candle Fallback Chain
+1. **session-health.ts** — SOLE sender of `[SYSTEM][SESSION_EXPIRED]` Telegram alerts (once per source per episode; retries when Telegram's 09:10-15:30 IST window suppresses a send). `classifySourceError()` → `SESSION_EXPIRED | NO_DATA | SOURCE_UNAVAILABLE`; NSE can NEVER classify as SESSION_EXPIRED (no token auth). Source modules report-then-return-null (contracts unchanged).
+2. **Breeze expiry** — hooks in `icici-breeze/auth.ts` (`doInitSession` catch, `generateSession` 401, `withAuthRetry` retry) + `option-chain.ts` catch. Manual remedy: browser OTP at `api.icicidirect.com/apiuser/login?api_key=…` → Hermes `set breeze session <token>`.
+3. **MO expiry** — `autoLogin()` is TOTP-first (`MOTILAL_TOTP_KEY`), OTP fallback leaves session UNVERIFIED. Candle chain attempts auto-recovery BEFORE alerting (self-healed blips never page). TOTP key re-registered 2026-09-27 — TOTP auto-login verified live. **Report endpoints work only on `/rest/report/v3/*`** — every `/rest/report/v1/*` path returns MO8001 "Invalid Token" even on a valid session (v1 auth broken; never call it — its auth-shaped error would fake an expiry alert). Candle capability (live-verified): NSE EOD v3 = equity **spot** daily bars (~9s); NSEFO dump = **derivatives only** (80–128s, zero spot rows); **no index spot OHLC anywhere** (IndexDataAPI is a code list only) → index symbols are an MO capability skip; CSV endpoints hang (>45s) — unused.
+4. **Candle chain** (live capture only, enforced by import-scan test): first-success-wins, failures recorded to session-health + `recorderState.lastCandle`. MO = daily-only capability skip for intraday (no substitution). NSE chart `chart-databyindex?index=…` is index-only (allowlist: NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY; SENSEX/BANKEX excluded — BSE), current session only, close-only points labeled degraded + interval derived from real point spacing.
+5. **Surfaces** — `/api/market-recorder/status` exposes `sessionHealth`/`sessionSummary`/`lastCandleCapture`; Hermes `check_session_tokens` returns live probes + recorded episodes + remedies.
+6. **Not fixed by alerts**: `.env` secrets/config changes still require a human (alert states the remedy).
 
 ### Signal Deduplication (3 levels)
 1. **signalTracker.ts** — Full-day signature dedup (same signal never sent twice per day)
@@ -284,6 +296,7 @@ Three skills adapted from Superpowers (obra/superpowers) for SMDApp. Reference t
 | **Test-Driven Development** | `skills/TDD.md` | New engines, bug fixes, scoring logic — test first, code second |
 | **Git Worktrees** | `skills/GIT-WORKTREES.md` | Feature work touching 3+ files — isolate from main |
 | **Systematic Debugging** | `skills/DEBUGGING.md` | Any bug — find root cause before fixing |
+| **Option Buying Playbook** | `skills/option-buying-playbook/SKILL.md` | Trade plans, CE/PE buys, option-chain/OI/Greeks interpretation, stops, position sizing, setup scoring (also condensed into the SDM agent system prompt in `agent-brain.ts`) |
 
 ## Architecture Guardian (MANDATORY pre-coding workflow)
 

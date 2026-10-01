@@ -505,7 +505,6 @@ class NousOrchestrator {
         return;
       }
 
-      const queue = getTelegramQueue();
       const mode = this.state.currentMode;
       const sessionLabel = formatSessionLabel(session);
       const capital = this.state.challengeState.currentCapital;
@@ -537,7 +536,9 @@ class NousOrchestrator {
         }
       }
 
-      await queue.enqueue(`STARTUP_${Date.now()}`, text, 'SYSTEM');
+      // Telegram startup card disabled — restart notices have no trade
+      // value. Recovery/startup detail stays in server logs only.
+      console.log(`[NousOrchestrator] Startup summary (log-only, telegram disabled):\n${text.replace(/<[^>]+>/g, "")}`);
     } catch (err: any) {
       console.error('[NousOrchestrator] Startup summary error:', err.message?.substring(0, 100));
     }

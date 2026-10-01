@@ -9,6 +9,9 @@ import {
   extractSectorEntities,
   type EventClassification,
 } from "./news-lexicon";
+// Runtime-deferred circular dep: x-sentiment reuses our parseRSSItems,
+// we call fetchXBuzz() inside fetchMarketNews — no top-level evaluation.
+import { fetchXBuzz, type XBuzz } from "./x-sentiment";
 
 // ─── Types ──────────────────────────────────────────────────────
 export interface NewsArticle {
@@ -44,6 +47,7 @@ export interface MarketSentiment {
   topBearish: StockSentiment[];
   sectorSentiment: Record<string, number>;
   articles: NewsArticle[];
+  x?: XBuzz; // X (Twitter) buzz — free Google News index source
   timestamp: string;
 }
 
@@ -99,7 +103,7 @@ function computeSentiment(text: string): { score: number; confidence: number } {
 }
 
 // ─── RSS XML Parser (no external dependencies) ──────────────────
-function parseRSSItems(xml: string, sourceName: string): { title: string; description: string; link: string; pubDate: string }[] {
+export function parseRSSItems(xml: string, sourceName: string): { title: string; description: string; link: string; pubDate: string }[] {
   const items: { title: string; description: string; link: string; pubDate: string }[] = [];
 
   // Match <item> blocks
@@ -292,10 +296,11 @@ for (const article of articles) {
 
 // ─── Main Public Function ───────────────────────────────────────
 export async function fetchMarketNews(): Promise<MarketSentiment> {
-  // Fetch all feeds in parallel with rate limiting
-  const results = await Promise.allSettled(
-    RSS_FEEDS.map(feed => fetchRSSFeed(feed))
-  );
+  // Fetch all feeds + X buzz in parallel (X adds no latency to RSS path)
+  const [results, xBuzz] = await Promise.all([
+    Promise.allSettled(RSS_FEEDS.map(feed => fetchRSSFeed(feed))),
+    fetchXBuzz().catch(() => undefined),
+  ]);
 
   const allArticles: NewsArticle[] = [];
   for (const result of results) {
@@ -310,7 +315,9 @@ export async function fetchMarketNews(): Promise<MarketSentiment> {
   // Sort by published date (newest first)
   unique.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
-  return analyzeMarketSentiment(unique);
+  const sentiment = analyzeMarketSentiment(unique);
+  if (xBuzz) sentiment.x = xBuzz;
+  return sentiment;
 }
 
 // Fetch news for a specific stock

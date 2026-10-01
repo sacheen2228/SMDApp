@@ -77,7 +77,7 @@ const GRADE_COLOR: Record<string, string> = {
   "SKIP": "text-zinc-600 border-zinc-700/30",
 };
 
-function StarRating({ count }: { count: number }) {
+function StarRating({ count }: { count: string }) {
   const stars = count === "A+" ? 5 : count === "A" ? 4 : count === "B" ? 3 : count === "C" ? 2 : 1;
   return (
     <span className="inline-flex gap-px">
@@ -302,14 +302,14 @@ function BTSTDetail({ candidate: c }: { candidate: BTSTCandidate }) {
         <div className="grid grid-cols-2 gap-2">
           <Metric label="Trend" value={c.trendLabel} tone={c.trendLabel.includes("Strong") ? "good" : c.trendLabel === "Weak" ? "bad" : "mid"} />
           <Metric label="Sector" value={c.sectorLabel} tone={c.sectorLabel === "Strong" ? "good" : c.sectorLabel === "Weak" ? "bad" : "mid"} />
-          <Metric label="Relative Strength" value={`${c.relativeStrength >= 0 ? "+" : ""}${c.relativeStrength.toFixed(1)}%`} tone={c.relativeStrength >= 0 ? "good" : "bad"} />
+          <Metric label="Relative Strength" value={`${(c.relativeStrength ?? 0) >= 0 ? "+" : ""}${(c.relativeStrength ?? 0).toFixed(1)}%`} tone={c.relativeStrength >= 0 ? "good" : "bad"} />
           <Metric label="Volume" value={`${c.volumeMultiple}x`} tone={c.volumeMultiple >= 1.5 ? "good" : "mid"} />
           <Metric label="Delivery" value={c.deliveryLabel} tone={c.deliveryLabel === "High" ? "good" : c.deliveryLabel === "Low" ? "bad" : "mid"} />
           <Metric label="OI" value={c.oiLabel} tone={c.oiLabel === "Bullish" ? "good" : c.oiLabel === "Bearish" ? "bad" : "mid"} />
-          <Metric label="PCR" value={c.pcr.toFixed(2)} tone={c.pcr < 1.2 ? "good" : "mid"} />
+          <Metric label="PCR" value={(c.pcr ?? 0).toFixed(2)} tone={(c.pcr ?? 0) < 1.2 ? "good" : "mid"} />
           <Metric label="Smart Money" value={c.smartMoney} tone={c.smartMoney === "Active" ? "good" : c.smartMoney === "Building" ? "mid" : "bad"} />
           <Metric label="Gap Risk" value={c.gapRisk} tone={c.gapRisk === "Low" ? "good" : c.gapRisk === "Medium" ? "mid" : "bad"} />
-          <Metric label="Expected Gap" value={`${c.expectedGapPct >= 0 ? "▲" : "▼"} ${Math.abs(c.expectedGapPct)}%`} tone={c.expectedGapPct >= 0 ? "good" : "bad"} />
+          <Metric label="Expected Gap" value={`${(c.expectedGapPct ?? 0) >= 0 ? "▲" : "▼"} ${Math.abs(c.expectedGapPct ?? 0)}%`} tone={(c.expectedGapPct ?? 0) >= 0 ? "good" : "bad"} />
         </div>
 
         {/* Institutional positioning (NSE Participant-wise OI) */}

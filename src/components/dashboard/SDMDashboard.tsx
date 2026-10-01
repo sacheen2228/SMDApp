@@ -197,7 +197,7 @@ export function SDMDashboard({ analysis, loading }: SDMDashboardProps) {
             <div className="flex justify-between">
               <span className="text-muted-foreground">PCR</span>
               <span className={`font-bold ${oiAnalysis.pcr > 1.2 ? 'text-emerald-500' : oiAnalysis.pcr < 0.7 ? 'text-red-500' : ''}`}>
-                {oiAnalysis.pcr.toFixed(2)}
+                {oiAnalysis.pcr != null && Number.isFinite(oiAnalysis.pcr) ? oiAnalysis.pcr.toFixed(2) : "N/A"}
               </span>
             </div>
             <div className="flex justify-between">

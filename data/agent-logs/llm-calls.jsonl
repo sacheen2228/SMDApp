@@ -56,3 +56,11 @@
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":2480,"toolCount":0,"toolNames":[],"_ts":"2026-09-15T04:44:34.727Z"}
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":2379,"toolCount":0,"toolNames":[],"_ts":"2026-09-15T05:43:20.976Z"}
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":7679,"toolCount":0,"toolNames":[],"_ts":"2026-09-15T06:22:19.460Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":29494,"toolCount":4,"toolNames":["get_sdm_signal","get_option_chain","get_market_structure","get_breakout_signals"],"_ts":"2026-09-18T04:52:18.303Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":1221,"toolCount":0,"toolNames":[],"_ts":"2026-09-18T04:52:44.984Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":1321,"toolCount":0,"toolNames":[],"_ts":"2026-09-18T04:52:58.218Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":2069,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T03:20:10.765Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":1364,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T16:19:53.344Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":1809,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T16:20:40.944Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":5283,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T16:21:49.995Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":4031,"toolCount":0,"toolNames":[],"_ts":"2026-09-25T09:07:05.019Z"}

@@ -122,6 +122,7 @@ function scoreSwingStock(
   let bullScore = 0;
   let bearScore = 0;
 
+  const symbol = quote.symbol || "";
   const price = quote.price || 0;
   const changePercent = quote.changePercent || 0;
   const rvol = quote.relativeVolume || 1;

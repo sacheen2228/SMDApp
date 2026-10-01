@@ -1,7 +1,11 @@
 // API Route - Breeze Connect using official SDK
+//
+// Token activation delegates to session-health applyBreezeSession — the
+// single owner of: generateSession + circuit-breaker reset + expiry-episode
+// re-arm. (Direct generateSession here previously skipped the re-arm.)
 
 import { NextRequest, NextResponse } from 'next/server';
-import { generateSession, validateSession, getConfig } from '@/lib/icici-breeze/auth';
+import { validateSession, getConfig } from '@/lib/icici-breeze/auth';
 
 // ─── GET: Check connection status (or activate via ?apisession=) ──
 export async function GET(request: NextRequest) {
@@ -11,18 +15,15 @@ export async function GET(request: NextRequest) {
 
     // If ?apisession= is provided, activate session immediately
     if (apiSessionParam) {
-      try {
-        await generateSession(apiSessionParam);
-        return NextResponse.json({
-          success: true,
-          data: { isConnected: true, message: 'Session activated' },
-        });
-      } catch (err: any) {
-        return NextResponse.json({
-          success: false,
-          error: err.message,
-        });
+      const { applyBreezeSession } = await import('@/lib/session-health');
+      const res = await applyBreezeSession(apiSessionParam);
+      if (!res.success) {
+        return NextResponse.json({ success: false, error: res.error || 'session activation failed' });
       }
+      return NextResponse.json({
+        success: true,
+        data: { isConnected: true, message: 'Session activated' },
+      });
     }
 
     const isConnected = await validateSession();
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     return NextResponse.json({
       success: false,
-      error: error.message,
+      error: String(error?.message || error || 'request failed'),
     });
   }
 }
@@ -58,16 +59,20 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    await generateSession(apiSession);
+    const { applyBreezeSession } = await import('@/lib/session-health');
+    const res = await applyBreezeSession(apiSession);
+    if (!res.success) {
+      return NextResponse.json({ success: false, error: res.error || 'session generation failed' });
+    }
 
     return NextResponse.json({
       success: true,
-      data: { message: 'Session generated successfully' },
+      data: { message: 'Session generated successfully', status: res.status },
     });
   } catch (error: any) {
     return NextResponse.json({
       success: false,
-      error: error.message,
+      error: String(error?.message || error || 'request failed'),
     });
   }
 }

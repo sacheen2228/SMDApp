@@ -262,9 +262,11 @@ export class HermesPaperEngine {
 
   private async evaluateInstrument(symbol: string): Promise<void> {
     // Run Hermes analysis
-    const result = await hermesPro(`Analyze ${symbol} for option buying`, {
+    const result = await hermesPro(`Give me a live trade recommendation for ${symbol} with CE or PE`, {
       symbol,
       mode: "TRADE",
+      intent: "LIVE_TRADE",
+      apiBase: process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000",
     });
 
     // Record the decision

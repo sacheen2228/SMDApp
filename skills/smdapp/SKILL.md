@@ -53,3 +53,7 @@ RESEARCH → CANDIDATE → VALIDATING → VALIDATED → FINAL → ACTIVE → TP1
 ## Commands
 - `bun test tests/agent-system.test.ts` — Run agent system tests (30 tests)
 - `bun run build` — Build with agent system
+
+## Mandatory Daily Tasks
+
+- **Institutional positioning data pull**: Runs automatically at 16:00–18:40 IST (every 20 min, Mon-Fri) via `scripts/dailyScanCron.ts`, which calls `/api/cron/institutional-positioning`. The endpoint includes a freshness guard that skips re-fetch when data for today already exists in the DB (`participantOI` table). A staleness watchdog at 19:00 IST alerts via Telegram (`[SYSTEM][DATA]`) if no data is present for the trading day. The schedule ensures the pull happens without fail — on first attempt data may not yet be published from NSE, so retries continue until 18:40; once fetched, subsequent same-day runs are skipped to avoid hammering NSE. The DB persists the snapshot for downstream consumers (Agent 02, market-regime, opportunity scanners).

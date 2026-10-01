@@ -54,8 +54,8 @@ export interface StockCandidate {
   macdSignal: number;
   adx: number;
   atr: number;
-  // Options (if F&O)
-  pcr: number;
+  // Options (if F&O) — pcr null = no chain, never a fabricated 1.0
+  pcr: number | null;
   totalOI: number;
   oiChange: number;
   iv: number;
@@ -260,8 +260,11 @@ export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
   let score = 50;
   let details = "";
 
-  // PCR Analysis
-  if (pcr > 1.3) {
+  // PCR Analysis — pcr can be null when option chain data is missing
+  const pcrOk = typeof pcr === "number" && Number.isFinite(pcr);
+  if (!pcrOk) {
+    details = "PCR unavailable — option chain data missing";
+  } else if (pcr > 1.3) {
     trend = "BULLISH";
     score += 15;
     details = `Strong put writing (PCR ${pcr.toFixed(2)}) indicates bullish sentiment`;
@@ -281,8 +284,11 @@ export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
     details = `Neutral PCR ${pcr.toFixed(2)} — balanced market`;
   }
 
-  // VIX Analysis
-  if (vix > 25) {
+  // VIX Analysis — vix can also be null (same missing-data condition as pcr)
+  const vixOk = typeof vix === "number" && Number.isFinite(vix);
+  if (!vixOk) {
+    // skip VIX scoring — no data, no fabrication
+  } else if (vix > 25) {
     trend = "VOLATILE";
     score -= 10;
     details += `. High VIX (${vix.toFixed(1)}) — expect big moves, wider stops needed`;
@@ -308,11 +314,11 @@ export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
   // Bank Nifty (correlated with Nifty)
   const bankNiftyTrend = niftyTrend;
 
-  // Breadth (simulated)
-  const breadth = pcr > 1.1 ? "Advancing (60%+ stocks up)" : pcr < 0.9 ? "Declining (60%+ stocks down)" : "Mixed";
+  // Breadth (simulated) — null pcr must not coerce to 0 and fake "Declining"
+  const breadth = !pcrOk ? "Mixed (no PCR data)" : pcr > 1.1 ? "Advancing (60%+ stocks up)" : pcr < 0.9 ? "Declining (60%+ stocks down)" : "Mixed";
 
   // Global Cues
-  const globalCues = vix > 20 ? "Global uncertainty elevated" : "Global markets supportive";
+  const globalCues = !vixOk ? "Global cues unavailable" : vix > 20 ? "Global uncertainty elevated" : "Global markets supportive";
 
   // Cap score
   score = Math.max(0, Math.min(100, score));
@@ -330,7 +336,7 @@ export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
     details,
     niftyTrend,
     bankNiftyTrend,
-    vixLevel: vix > 20 ? "High" : vix > 14 ? "Moderate" : "Low",
+    vixLevel: !vixOk ? "Unknown" : vix > 20 ? "High" : vix > 14 ? "Moderate" : "Low",
     breadth,
     globalCues,
   };
@@ -718,25 +724,27 @@ export async function generateCandidates(
     else if (rvol > 1.2) { volumeScore = 60; reasons.push(`RVOL ${rvol.toFixed(1)}x — above average`); }
     else { volumeScore = 30; }
 
-    // Options scoring — REAL per-stock Breeze chain when available
+    // Options scoring — REAL per-stock chain when available (Breeze → NSE);
+    // null/0 defaults = no chain, never fake PCR 1.0 / IV 20 presented as real
     const chain = chains.get(stock.symbol) || null;
-    let stockPCR = 1.0;
+    let stockPCR: number | null = null;
     let stockOI = 0;
     let stockOIChange = 0;
-    let stockIV = 20;
+    let stockIV = 0;
     if (chain) {
-      stockPCR = chain.pcr ?? null;
+      // chain.pcr can be null (zero-OI chains) — never toFixed on null
+      stockPCR = (typeof chain.pcr === "number" && Number.isFinite(chain.pcr)) ? chain.pcr : null;
       stockIV = chain.atmIV || 0;
       for (const v of chain.callOiMap.values()) stockOI += v;
       for (const v of chain.putOiMap.values()) stockOI += v;
       for (const v of chain.callOiChangeMap.values()) stockOIChange += v;
       for (const v of chain.putOiChangeMap.values()) stockOIChange += v;
-      reasons.push(`Real PCR ${stockPCR.toFixed(2)} | ATM IV ${stockIV.toFixed(1)}% | MaxPain ${chain.maxPain}`);
+      reasons.push(`Real PCR ${stockPCR != null ? stockPCR.toFixed(2) : "N/A"} | ATM IV ${stockIV > 0 ? stockIV.toFixed(1) + "%" : "N/A"} | MaxPain ${chain.maxPain}`);
     }
 
-    if (chain && direction === "BULLISH" && stockPCR > 1.1) { optionsScore = 70; reasons.push("PCR > 1.1 — put writing (bullish)"); }
-    else if (chain && direction === "BEARISH" && stockPCR < 0.9) { optionsScore = 70; reasons.push("PCR < 0.9 — call writing (bearish)"); }
-    else { optionsScore = 50; }
+    if (chain && stockPCR != null && direction === "BULLISH" && stockPCR > 1.1) { optionsScore = 70; reasons.push("PCR > 1.1 — put writing (bullish)"); }
+    else if (chain && stockPCR != null && direction === "BEARISH" && stockPCR < 0.9) { optionsScore = 70; reasons.push("PCR < 0.9 — call writing (bearish)"); }
+    else { optionsScore = 50; if (!chain) reasons.push("Option chain unavailable — options score neutral"); }
 
     // Fundamental score (simplified)
     if (stock.sector === "IT" || stock.sector === "Banking") { fundamentalScore = 65; }
@@ -836,8 +844,9 @@ export async function generateCandidates(
     // Technical summary
     const technicalSummary = `${ema9 > ema21 ? "Bullish" : "Bearish"} EMA alignment | RSI ${rsi.toFixed(0)} | ADX ${adx.toFixed(0)} | MACD ${macd > macdSignal ? "Bullish" : "Bearish"}`;
 
-    // Options summary
-    const optionsSummary = `PCR ${stockPCR.toFixed(2)} | OI ${formatOI(stockOI)} | OI Chg ${stockOIChange >= 0 ? "+" : ""}${formatOI(stockOIChange)} | IV ${stockIV.toFixed(1)}%`;
+    // Options summary — honest: unavailable chains say so instead of
+    // printing hardcoded "PCR 1.00 | IV 20.0%" as if real
+    const optionsSummary = buildOptionsSummary(chain);
 
     // Monthly option trade recommendation — uses the REAL Breeze chain (real
     // ATM premium/strike/IV) when available, else a clearly-labelled estimate.
@@ -872,7 +881,7 @@ export async function generateCandidates(
       macdSignal: Math.round(macdSignal * 100) / 100,
       adx: Math.round(adx * 10) / 10,
       atr: Math.round(atr * 100) / 100,
-      pcr: Math.round(stockPCR * 100) / 100,
+      pcr: stockPCR != null ? Math.round(stockPCR * 100) / 100 : null,
       totalOI: stockOI,
       oiChange: stockOIChange,
       iv: Math.round(stockIV * 10) / 10,
@@ -956,8 +965,8 @@ export async function runIntradayScan(
   // Key risks
   const keyRisks: string[] = [];
   if (config.vix > 20) keyRisks.push("High VIX — expect volatile moves");
-  if (config.pcr < 0.8) keyRisks.push("Low PCR — call writers dominating");
-  if (config.pcr > 1.4) keyRisks.push("Extremely high PCR — contrarian risk");
+  if (config.pcr != null && config.pcr < 0.8) keyRisks.push("Low PCR — call writers dominating");
+  if (config.pcr != null && config.pcr > 1.4) keyRisks.push("Extremely high PCR — contrarian risk");
   const distToMP = Math.abs(config.spotPrice - config.maxPain) / config.spotPrice * 100;
   if (distToMP > 2) keyRisks.push("Spot far from Max Pain — mean reversion risk");
   if (keyRisks.length === 0) keyRisks.push("Normal market conditions");
@@ -982,6 +991,32 @@ export async function runIntradayScan(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
+/**
+ * Honest per-stock options summary for the scanner card.
+ * No chain → "Options: chain unavailable" (never fake PCR 1.00 / IV 20.0%).
+ * Zero-OI chains → PCR N/A; zero ATM IV → IV N/A.
+ */
+export function buildOptionsSummary(chain: OptionChainSnapshot | null): string {
+  if (!chain) return "Options: chain unavailable";
+
+  let callOI = 0;
+  let putOI = 0;
+  let callChg = 0;
+  let putChg = 0;
+  for (const v of chain.callOiMap.values()) { callOI += v; }
+  for (const v of chain.putOiMap.values()) { putOI += v; }
+  for (const v of chain.callOiChangeMap.values()) { callChg += v; }
+  for (const v of chain.putOiChangeMap.values()) { putChg += v; }
+
+  const totalOI = callOI + putOI;
+  const pcr = totalOI > 0 && callOI > 0 ? putOI / callOI : null;
+  const pcrStr = pcr != null ? pcr.toFixed(2) : "N/A";
+  const ivStr = chain.atmIV > 0 ? chain.atmIV.toFixed(1) + "%" : "N/A";
+  const totalChg = callChg + putChg;
+
+  return `PCR ${pcrStr} | OI ${formatOI(totalOI)} | OI Chg ${totalChg >= 0 ? "+" : ""}${formatOI(totalChg)} | IV ${ivStr} | MaxPain ${chain.maxPain}`;
+}
+
 function formatOI(oi: number): string {
   if (Math.abs(oi) >= 10000000) return (oi / 10000000).toFixed(1) + " Cr";
   if (Math.abs(oi) >= 100000) return (oi / 100000).toFixed(1) + " L";

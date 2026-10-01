@@ -10,6 +10,7 @@ import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 import { buildMarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
 import { analyzeIndexFO } from "@/lib/trade-intelligence/index-fo-mode";
 import { detectEntryWindow, getPhaseLabel, TIME_WINDOWS } from "@/lib/cas-time-engine";
+import { rejectOptionSelling } from "@/lib/trade-validator-gate";
 
 // ─── GET: Live Signal ─────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -56,6 +57,14 @@ export async function GET(req: NextRequest) {
 
       const config: StrategyConfig = { ...DEFAULT_CONFIG, strategy: strategy as any, strikeSelection: strikeSelection as any, expiryType };
       const signal = generateStrategySignalV2(snap, config);
+
+      // PRODUCTION SAFETY: reject option-selling strategies at the API level
+      const sellRejection = rejectOptionSelling(undefined, signal.strategy);
+      if (sellRejection) {
+        signal.rejectionReasons.push(sellRejection);
+        signal.strategy = "NO_TRADE";
+        signal.confidence = 0;
+      }
 
       // Time engine status
       const now = new Date();

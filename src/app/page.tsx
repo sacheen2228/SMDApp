@@ -369,7 +369,7 @@ export default function TradingDashboard() {
     queryKey: ['option-chain', symbol, selectedExpiry],
     queryFn: async () => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
       try {
         const params = new URLSearchParams({ symbol });
         if (selectedExpiry) params.set('expiry', selectedExpiry);

@@ -388,6 +388,37 @@ export const HERMES_TOOLS: ToolDefinition[] = [
     cacheTTL: 30_000,
     tags: ["MTF", "multi-timeframe", "SuperTrend", "RSI", "signal", "confirmation"],
   },
+  // ── Session Health (single-owner session-expiry system) ──────────────
+  {
+    name: "check_session_tokens",
+    description: "LIVE validity check of Breeze / Motilal / NSE sessions (real probes, never cached) plus recorded session-health episodes and remedies",
+    category: "RISK",
+    inputSchema: {
+      source: { type: "string", required: false, description: "breeze | mo | nse | all (default all)" },
+    },
+    source: "session-health.ts (probeSessionSource)",
+    freshnessMaxAge: 0,
+    reliability: 0.95,
+    timeout: 15_000,
+    cacheable: false,
+    cacheTTL: 0,
+    tags: ["session", "token", "auth", "expiry", "breeze", "motilal", "NSE"],
+  },
+  {
+    name: "set_breeze_session",
+    description: "Set/refresh the ICICI Breeze apiSession token supplied by the user (browser OTP), validates live and clears the expired episode",
+    category: "RISK",
+    inputSchema: {
+      token: { type: "string", required: true, description: "Breeze apiSession token" },
+    },
+    source: "session-health.ts (applyBreezeSession → icici-breeze/auth.generateSession)",
+    freshnessMaxAge: 0,
+    reliability: 0.95,
+    timeout: 15_000,
+    cacheable: false,
+    cacheTTL: 0,
+    tags: ["session", "token", "breeze", "set", "re-auth"],
+  },
 ];
 
 // ── Registry Functions ─────────────────────────────────────────────────

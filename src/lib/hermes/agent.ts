@@ -2,7 +2,7 @@
 // Replaces the monolithic agent-brain.ts loop with structured pipeline.
 
 import type {
-  HermesContext, HermesDecision, TradeCandidate, Direction, OptionSide, Decision
+  HermesContext, HermesDecision, TradeCandidate, Direction, OptionSide, Decision, HermesMode
 } from "./types";
 import { detectIntent, detectSymbol, detectDirection, createExecutionPlan } from "./task-router";
 import { collectHermesContext } from "./context";
@@ -21,10 +21,41 @@ import { scoreWithUnifiedEngine } from "./unified-scoring-bridge";
 import { detectAndResolveConflicts, type EngineSignal } from "@/lib/signal-conflict-detector";
 import { registerAgent, getAgentByName, createSignal, emitEvent } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
+import { maybeRecordJevShadow } from "@/lib/jev/shadow";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
 const MAX_EXECUTION_TIME_MS = 30_000;
+
+// ── Jev shadow (never alters HermesDecision) ───────────────────────────
+
+function recordJevShadowForHermes(
+  decision: HermesDecision,
+  ctx: HermesContext
+): HermesDecision {
+  try {
+    maybeRecordJevShadow(
+      {
+        source: "HERMES",
+        symbol: ctx.symbol,
+        productionDecision: decision.decision,
+        hermesDecision: {
+          decision: decision.decision,
+          score: decision.score,
+          grade: decision.grade,
+          confidence: decision.confidence,
+          marketRegime: decision.marketRegime,
+          dataHealth: decision.dataHealth,
+          timestamp: decision.timestamp,
+        },
+      },
+      ctx
+    );
+  } catch {
+    // Shadow must never break Hermes
+  }
+  return decision;
+}
 
 // ── Main Orchestrator ──────────────────────────────────────────────────
 
@@ -34,12 +65,18 @@ export async function hermesPro(
     symbol?: string;
     spotPrice?: number;
     apiBase?: string;
+    /** Force pipeline mode (e.g. paper trader forces TRADE). Overrides detectIntent. */
+    mode?: HermesMode;
+    /** Force intent (e.g. LIVE_TRADE). Overrides detectIntent. */
+    intent?: string;
   } = {}
 ): Promise<HermesDecision> {
   const startTime = Date.now();
 
-  // 1. Detect intent and symbol
-  const { intent, mode } = detectIntent(message);
+  // 1. Detect intent and symbol (caller may override mode/intent)
+  const detectedIntent = detectIntent(message);
+  const intent = options.intent || detectedIntent.intent;
+  const mode = options.mode || detectedIntent.mode;
   const detected = options.symbol
     ? { symbol: options.symbol, exchange: "NSE", instrument: "index" }
     : detectSymbol(message);
@@ -50,13 +87,13 @@ export async function hermesPro(
 
   // 3. Check market status first
   if (ctx.marketStatus === "WEEKEND" || (ctx.marketStatus === "MARKET_CLOSED" && ctx.exchange === "NSE")) {
-    return buildDecision({
+    return recordJevShadowForHermes(buildDecision({
       decision: "RESEARCH_ONLY",
       explanation: `Market is ${ctx.marketStatus === "WEEKEND" ? "closed (weekend)" : "closed"}. Research analysis only.`,
       ctx,
       startTime,
       toolsCalled: ["collectHermesContext"],
-    });
+    }), ctx);
   }
 
   // 4. Run intelligence layers
@@ -70,11 +107,17 @@ export async function hermesPro(
 
   // 6. If TRADE mode, run full pipeline
   if (mode === "TRADE" || intent === "LIVE_TRADE" || intent === "ZERO_HERO") {
-    return executeTradePipeline(ctx, effectiveDirection, startTime);
+    return recordJevShadowForHermes(
+      await executeTradePipeline(ctx, effectiveDirection, startTime),
+      ctx
+    );
   }
 
   // 7. For RESEARCH/QUICK modes, provide analysis
-  return buildAnalysisDecision(ctx, effectiveDirection, regime, oi, gamma, flow, startTime);
+  return recordJevShadowForHermes(
+    buildAnalysisDecision(ctx, effectiveDirection, regime, oi, gamma, flow, startTime),
+    ctx
+  );
 }
 
 // ── Trade Pipeline ─────────────────────────────────────────────────────
@@ -459,7 +502,7 @@ function buildEvidence(ctx: HermesContext, candidate: TradeCandidate): any[] {
 
 export async function hermesProFormatted(
   message: string,
-  options: { symbol?: string; spotPrice?: number; apiBase?: string } = {}
+  options: { symbol?: string; spotPrice?: number; apiBase?: string; mode?: HermesMode; intent?: string } = {}
 ): Promise<string> {
   const decision = await hermesPro(message, options);
   return formatHermesDecision(decision);

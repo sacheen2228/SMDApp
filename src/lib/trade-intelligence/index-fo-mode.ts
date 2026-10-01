@@ -57,7 +57,9 @@ function scoreIndex(
   // Factor 1: PCR (0-15 points)
   const pcr = chain?.pcr ?? null;
   totalFactors += 15;
-  if (pcr > 1.2) {
+  if (pcr == null) {
+    reasoning.push("PCR unavailable");
+  } else if (pcr > 1.2) {
     bullScore += 15;
     reasoning.push(`PCR ${pcr.toFixed(2)} — heavy put writing, bullish`);
   } else if (pcr > 1.0) {
@@ -117,10 +119,13 @@ function scoreIndex(
     reasoning.push(`OI balanced — no clear directional bias`);
   }
 
-  // Factor 4: IV state (0-10 points)
+  // Factor 4: IV state (0-10 points) — real IV only; 0 = unavailable is
+  // never relabeled as "50 = normal"
   totalFactors += 10;
-  const ivRank = chain?.ivRank || 50;
-  if (ivRank > 70) {
+  const ivRank = chain && chain.ivRank > 0 ? chain.ivRank : null;
+  if (ivRank == null) {
+    reasoning.push(`IV rank unavailable — no IV data in chain`);
+  } else if (ivRank > 70) {
     reasoning.push(`IV rank ${ivRank}% — elevated, premium selling favored`);
   } else if (ivRank < 30) {
     reasoning.push(`IV rank ${ivRank}% — cheap, premium buying favored`);
@@ -294,11 +299,11 @@ function scoreIndex(
   if (direction === "CALL") {
     strike = chain?.atmStrike || spot;
     recommendedInstrument = `${symbol} ${strike} CE`;
-    premium = chain?.ivMedian || 0;
+    premium = chain?.atmCePremium || 0;
   } else if (direction === "PUT") {
     strike = chain?.atmStrike || spot;
     recommendedInstrument = `${symbol} ${strike} PE`;
-    premium = chain?.ivMedian || 0;
+    premium = chain?.atmPePremium || 0;
   } else if (direction === "LONG") {
     recommendedInstrument = `${symbol} Futures`;
   } else if (direction === "SHORT") {

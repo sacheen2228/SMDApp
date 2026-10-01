@@ -1,12 +1,16 @@
 // Breeze F&O Data Bridge
 // Converts real ICICI Breeze option chain + futures quotes into the
 // OptionChainSnapshot / FuturesData shapes the F&O engine expects.
-// NEVER fabricates OI/IV/Greeks — when Breeze has no data we return null
-// and let the engine fall back to a no-trade decision.
+// When Breeze has no data (auth dead, stock symbols unsupported by the SDK)
+// we fall back to NSE's public option-chain-v3 — NEVER fabricate OI/IV/Greeks.
+// When both fail we return null and the engine falls back to no-trade.
 
 import { getOptionChain, getOptionChainExpiries, getQuotes } from './icici-breeze/option-chain';
 import { getBreezeClient, withAuthRetry } from './icici-breeze/auth';
-import type { OptionChainSnapshot, FuturesData, OptionMetrics, FuturesOIState } from './auction-types';
+import { getNSEOptionChain } from './nse-api';
+import { normalizeExpiry } from './option-bhavcopy';
+import { findAtmStrike, deriveIvStats } from './option-chain-normalizer';
+import type { OptionChainSnapshot, OptionChainStrike, FuturesData, OptionMetrics, FuturesOIState } from './auction-types';
 
 // BSE symbols that need BFO exchange code (BSE F&O segment)
 const BSE_SYMBOLS = new Set(['SENSEX', 'BANKEX']);
@@ -35,7 +39,7 @@ function formatExpiryForSDK(dateStr: string): string {
 }
 
 // ─── Option Chain → OptionChainSnapshot ───────────────────────────
-export async function fetchOptionChainSnapshot(
+async function fetchBreezeSnapshot(
   symbol: string,
   spot: number
 ): Promise<OptionChainSnapshot | null> {
@@ -186,6 +190,218 @@ export async function fetchOptionChainSnapshot(
   }
 }
 
+// ─── NSE fallback → OptionChainSnapshot ───────────────────────────
+// Breeze's SDK fails on stock symbols ("SDK internal error") and the session
+// expires often — NSE's public option-chain-v3 works for both indices and
+// equities with no token. Same snapshot shape, real data only.
+
+const toNum = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function nseLegToMetrics(leg: any): OptionMetrics {
+  const bid = toNum(leg?.bidprice ?? leg?.bid);
+  const ask = toNum(leg?.askPrice ?? leg?.ask);
+  const g = leg?.greeks || {};
+  const spread = Math.max(0, ask - bid);
+  return {
+    ltp: toNum(leg?.lastPrice),
+    volume: toNum(leg?.totalTradedVolume),
+    oi: toNum(leg?.openInterest),
+    oiChange: toNum(leg?.changeinOpenInterest),
+    iv: toNum(leg?.impliedVolatility),
+    bid,
+    ask,
+    bidQty: 0,
+    askQty: 0,
+    delta: toNum(g.delta ?? leg?.delta),
+    gamma: toNum(g.gamma ?? leg?.gamma),
+    theta: toNum(g.theta ?? leg?.theta),
+    vega: toNum(g.vega ?? leg?.vega),
+    spread,
+    spreadPct: ask ? (spread / ask) * 100 : 0,
+  };
+}
+
+/**
+ * Pure mapper: raw NSE option-chain-v3 response → OptionChainSnapshot.
+ * Keeps only the nearest expiry (records.expiryDates[0]); rows dated to
+ * another expiry are filtered by normalizeExpiry so stale strikes never
+ * pollute the chain. Returns null when there is no usable data.
+ */
+export function nseChainToSnapshot(
+  raw: any,
+  spot: number,
+  symbol: string
+): OptionChainSnapshot | null {
+  const records = raw?.records;
+  const rows: any[] = records?.data;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+
+  const expiryDates: string[] = Array.isArray(records?.expiryDates) ? records.expiryDates : [];
+  const expiry = expiryDates[0] || '';
+  const expiryKey = normalizeExpiry(expiry);
+
+  const chainStrikes: OptionChainStrike[] = [];
+  const seen = new Set<number>();
+  for (const row of rows) {
+    const strike = Number(row?.strikePrice);
+    if (!Number.isFinite(strike) || strike <= 0) continue;
+    if (!row?.CE && !row?.PE) continue;
+    const rowKey = normalizeExpiry(row?.CE?.expiryDate) ?? normalizeExpiry(row?.PE?.expiryDate);
+    if (expiryKey && rowKey && rowKey !== expiryKey) continue;
+    if (seen.has(strike)) continue;
+    seen.add(strike);
+    chainStrikes.push({ strike, expiry, ce: nseLegToMetrics(row.CE), pe: nseLegToMetrics(row.PE) });
+  }
+  if (chainStrikes.length === 0) return null;
+
+  const spotForChain = spot || toNum(records?.underlyingValue);
+  if (spotForChain <= 0) return null;
+
+  const strikesList = chainStrikes.map(s => s.strike);
+  const atmStrike = findAtmStrike(strikesList, spotForChain);
+  const stats = deriveIvStats(chainStrikes, atmStrike);
+
+  const callOiMap = new Map<number, number>();
+  const putOiMap = new Map<number, number>();
+  const callOiChangeMap = new Map<number, number>();
+  const putOiChangeMap = new Map<number, number>();
+  const callVolumeMap = new Map<number, number>();
+  const putVolumeMap = new Map<number, number>();
+  let callOITotal = 0;
+  let putOITotal = 0;
+  for (const s of chainStrikes) {
+    callOiMap.set(s.strike, s.ce.oi);
+    putOiMap.set(s.strike, s.pe.oi);
+    callOiChangeMap.set(s.strike, s.ce.oiChange);
+    putOiChangeMap.set(s.strike, s.pe.oiChange);
+    callVolumeMap.set(s.strike, s.ce.volume);
+    putVolumeMap.set(s.strike, s.pe.volume);
+    callOITotal += s.ce.oi;
+    putOITotal += s.pe.oi;
+  }
+
+  // Max Pain: strike where the total payout to option buyers is minimum
+  let maxPain = atmStrike;
+  let minPayout = Infinity;
+  for (const price of strikesList) {
+    let payout = 0;
+    for (const s of chainStrikes) {
+      if (price > s.strike) payout += (price - s.strike) * s.ce.oi;
+      else if (price < s.strike) payout += (s.strike - price) * s.pe.oi;
+    }
+    if (payout < minPayout) {
+      minPayout = payout;
+      maxPain = price;
+    }
+  }
+
+  // IV skew: avg OTM CE IV vs ATM IV (same approximation as the Breeze mapper)
+  const ceIvs = chainStrikes.map(s => s.ce.iv).filter(v => v > 0);
+  const avgCeIv = ceIvs.length ? ceIvs.reduce((a, b) => a + b, 0) / ceIvs.length : 0;
+  const otmCeIvs = chainStrikes.filter(s => s.strike > atmStrike + 0.5).map(s => s.ce.iv).filter(v => v > 0);
+  const avgOtmCeIv = otmCeIvs.length ? otmCeIvs.reduce((a, b) => a + b, 0) / otmCeIvs.length : avgCeIv;
+  const ivSkew = stats.atmIV > 0 ? (avgOtmCeIv - stats.atmIV) / stats.atmIV : 0;
+
+  return {
+    symbol,
+    spot: spotForChain,
+    atmStrike,
+    expiry,
+    strikes: chainStrikes,
+    callOiMap,
+    putOiMap,
+    callOiChangeMap,
+    putOiChangeMap,
+    callVolumeMap,
+    putVolumeMap,
+    maxPain,
+    pcr: callOITotal > 0 ? putOITotal / callOITotal : 0,
+    ivRank: stats.ivRank,
+    ivPercentile: stats.ivRank,
+    atmIV: stats.atmIV,
+    ivSkew: Math.round(ivSkew * 10000) / 10000,
+  };
+}
+
+// First non-null result wins; nulls decrement a pending counter. Used to race
+// Breeze and NSE against each other without waiting for the slower provider.
+function firstNonNull<T>(promises: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    if (pending === 0) return resolve(null);
+    for (const p of promises) {
+      p.then((v) => {
+        if (v != null) resolve(v);
+        else if (--pending === 0) resolve(null);
+      }).catch(() => {
+        if (--pending === 0) resolve(null);
+      });
+    }
+  });
+}
+
+// Bound a provider attempt: slow = unavailable for this call. Without this a
+// hanging Breeze SDK (session retry loop, 10-20s) starves the probe race even
+// though NSE would answer in seconds.
+function withTimeout<T>(
+  p: Promise<T | null>,
+  ms: number,
+  onTimeout?: () => void
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (!done) { done = true; onTimeout?.(); resolve(null); }
+    }, ms);
+    p.then((v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } })
+      .catch(() => { if (!done) { done = true; clearTimeout(t); resolve(null); } });
+  });
+}
+
+// Breeze and NSE IN PARALLEL — first real chain wins, each under its own cap
+// (Breeze 6s / NSE 10s). Sequential Breeze-then-NSE was too slow: the Breeze
+// SDK can burn 10-20s on session retries before NSE is even attempted, which
+// blew the scanner's probe budget and made every probe fail (chains always
+// null at night). On Breeze failure/timeout the cooldown skips it on later
+// calls so the window stays NSE-only and fast.
+export async function fetchOptionChainSnapshot(
+  symbol: string,
+  spot: number
+): Promise<OptionChainSnapshot | null> {
+  const useBreeze = Date.now() >= breezeOptionsCooldownUntil;
+  const breezeP: Promise<OptionChainSnapshot | null> = useBreeze
+    ? withTimeout(
+        fetchBreezeSnapshot(symbol, spot).then((r) => {
+          breezeOptionsCooldownUntil = r ? 0 : Date.now() + OPTION_CHAIN_COOLDOWN;
+          return r;
+        }),
+        6_000,
+        () => { breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN; }
+      )
+    : Promise.resolve(null);
+
+  const nseP = withTimeout(
+    (async (): Promise<OptionChainSnapshot | null> => {
+      try {
+        const raw = await getNSEOptionChain(symbol);
+        const snap = nseChainToSnapshot(raw, spot, symbol);
+        if (!snap) console.warn(`[F&O] NSE chain empty or unusable for ${symbol}`);
+        return snap;
+      } catch (err) {
+        const msg = typeof err === 'string' ? err : (err as any)?.message || String(err);
+        console.warn(`[F&O] NSE fallback chain failed for ${symbol}: ${msg.substring(0, 100)}`);
+        return null;
+      }
+    })(),
+    10_000
+  );
+
+  return firstNonNull([breezeP, nseP]);
+}
+
 // Concurrent batch fetch of per-stock option chains with a module-level cache
 // + failure cooldown. All NIFTY50 names are F&O-eligible, so a null probe
 // means Breeze is unavailable for everything — we back off and skip the rest
@@ -199,15 +415,11 @@ export async function fetchStockOptionChain(
   symbol: string,
   spot: number
 ): Promise<OptionChainSnapshot | null> {
-  if (Date.now() < breezeOptionsCooldownUntil) return null;
-
   const cached = optionChainCache.get(symbol);
   if (cached && Date.now() - cached.ts < OPTION_CHAIN_TTL) return cached.data;
 
   const data = await fetchOptionChainSnapshot(symbol, spot);
   optionChainCache.set(symbol, { data, ts: Date.now() });
-  if (!data) breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN;
-  else breezeOptionsCooldownUntil = 0;
   return data;
 }
 
@@ -219,11 +431,12 @@ export async function fetchAllOptionChains(
   if (symbols.length === 0) return chains;
 
   // Probe with a hard timeout — when Breeze auth is dead, the SDK's
-  // generateSession() hangs indefinitely on the network call. 5s is
-  // generous for a healthy probe and prevents the scanner from stalling.
+  // generateSession() hangs indefinitely on the network call. The probe races
+  // Breeze ∥ NSE (first success wins, per-provider caps 6s/10s), so 12s
+  // bounds the worst healthy case; failing fast when both are down.
   const probe = await Promise.race([
     fetchStockOptionChain(symbols[0], spotBySymbol.get(symbols[0]) || 0),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000)),
   ]);
   chains.set(symbols[0], probe);
   if (!probe) {

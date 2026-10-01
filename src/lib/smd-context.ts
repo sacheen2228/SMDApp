@@ -311,7 +311,7 @@ export function summarizeContext(ctx: SMDContext): string {
     const o = ctx.options;
     parts.push(`\n--- OPTION CHAIN ---`);
     parts.push(`ATM: ₹${o.atmStrike.toLocaleString("en-IN")} | Max Pain: ₹${o.maxPain.toLocaleString("en-IN")} | VIX: ${o.vix || "N/A"}`);
-    parts.push(`PCR: ${o.pcr.toFixed(2)} | Call OI: ${o.totalCallOI.toLocaleString("en-IN")} (${o.callOiChg >= 0 ? "+" : ""}${o.callOiChg.toLocaleString("en-IN")}) | Put OI: ${o.totalPutOI.toLocaleString("en-IN")} (${o.putOiChg >= 0 ? "+" : ""}${o.putOiChg.toLocaleString("en-IN")})`);
+    parts.push(`PCR: ${o.pcr != null && Number.isFinite(o.pcr) ? o.pcr.toFixed(2) : "N/A"} | Call OI: ${o.totalCallOI.toLocaleString("en-IN")} (${o.callOiChg >= 0 ? "+" : ""}${o.callOiChg.toLocaleString("en-IN")}) | Put OI: ${o.totalPutOI.toLocaleString("en-IN")} (${o.putOiChg >= 0 ? "+" : ""}${o.putOiChg.toLocaleString("en-IN")})`);
     if (o.futuresPrice > 0) parts.push(`Futures: ₹${o.futuresPrice.toLocaleString("en-IN")} (basis: ${((o.futuresPrice - spotPrice) / spotPrice * 100).toFixed(2)}%)`);
 
     // Support from PE OI walls

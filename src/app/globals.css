@@ -121,6 +121,62 @@
   }
 }
 
+/* Mobile: comfortable tap targets + safe scrolling */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+  touch-action: manipulation;
+}
+
+@media (max-width: 640px) {
+  button,
+  [role='button'],
+  a,
+  input,
+  select,
+  textarea {
+    min-height: 44px;
+  }
+
+  table {
+    font-size: 11px;
+  }
+
+  /* Keep wide terminal tables scrollable without breaking layout */
+  .overflow-x-auto,
+  [class*='overflow-x'] {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Mobile: comfortable tap targets + safe scrolling */
+@media (max-width: 640px) {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  button,
+  [role="button"],
+  a,
+  select,
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 44px;
+  }
+
+  table {
+    font-size: 12px;
+  }
+
+  /* Prevent horizontal page overflow from wide tables/cards */
+  body {
+    overflow-x: hidden;
+  }
+}
+
 /* Custom scrollbar */
 .scrollbar-none::-webkit-scrollbar {
   display: none;

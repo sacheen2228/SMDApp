@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getSignalFeed, isFeatureEnabled, getAllSignals } from '@/lib/agents/registry';
+import { getSignalFeed, isFeatureEnabled } from '@/lib/agents/registry';
 
 export async function GET(req: NextRequest) {
   try {

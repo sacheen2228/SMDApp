@@ -46,6 +46,7 @@ import { evaluateExit } from './smart-exit';
 import { evaluateDataHealth, type DataHealthReport } from './data-health';
 import { validateTrade } from './validation-gate';
 import { runInstitutionalPositioning, getInstitutionalFilter } from './institutional-positioning-engine';
+import type { InstitutionalFilter } from './institutional-positioning-engine';
 import {
   getCurrentSession,
   adjustConfidenceForSession,
@@ -788,7 +789,8 @@ export async function generateTradeRecommendation(
   vix: number,
   source: string,
   lastUpdate: string,
-  overrideDirection?: 'CALL' | 'PUT'
+  overrideDirection?: 'CALL' | 'PUT',
+  institutionalFilterIn?: InstitutionalFilter
 ): Promise<SDMRecommendation> {
   const lotSize = getLotSize(symbol);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
@@ -827,11 +829,15 @@ export async function generateTradeRecommendation(
   const atr = computeATR(primaryCandles, 14);
 
   // ── Institutional Positioning Check ───────────────────────────
-  let institutionalFilter = { passed: true, action: 'caution' as const, reason: '', confidence: 50 };
-  try {
-    const instData = await runInstitutionalPositioning();
-    institutionalFilter = getInstitutionalFilter(instData);
-  } catch { /* non-fatal */ }
+  // Caller-supplied filter (from reconciled AgentContext.institutional slice) wins;
+  // otherwise compute via the engine's own cache — same underlying data either way.
+  let institutionalFilter = institutionalFilterIn ?? { passed: true, action: 'caution' as const, reason: '', confidence: 50 };
+  if (!institutionalFilterIn) {
+    try {
+      const instData = await runInstitutionalPositioning();
+      institutionalFilter = getInstitutionalFilter(instData);
+    } catch { /* non-fatal */ }
+  }
 
   // ── Step 3: Validation Gate ────────────────────────────────────
   // Run quality score first (needed for validation)
@@ -1500,7 +1506,7 @@ function generateRecommendationSync(
     direction = isCallDir ? 'CALL' : 'PUT';
   }
   if (isExpiryDay && currentWindow === 'theta' && direction !== 'WAIT') {
-    direction = direction === 'CALL' ? 'SELL_PUT' : 'SELL_CALL';
+    direction = 'WAIT';
   }
 
   // Seller SL

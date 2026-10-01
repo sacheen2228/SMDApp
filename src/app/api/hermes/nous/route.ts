@@ -67,6 +67,14 @@ export async function GET(req: NextRequest) {
               failed: telegramStatus.failed,
               sentToday: telegramStatus.sentToday,
               running: getTelegramQueue().isRunning(),
+              tpslDelivery: await (async () => {
+                try {
+                  const { getGlobalDeliveryStats } = await import('@/lib/agents/telegram-alerts');
+                  return getGlobalDeliveryStats();
+                } catch {
+                  return { totalSent: 0, totalPending: 0, totalFailed: 0, failures: [] };
+                }
+              })(),
             },
             eventBus: eventHealth,
             providers: state.providerHealth,

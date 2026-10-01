@@ -7,10 +7,12 @@ import {
   type RecorderMode,
 } from "@/lib/market/recorder-config";
 import { getStatus } from "@/lib/market-history-client";
+import { getSessionHealth, getSessionSummary } from "@/lib/session-health";
 
 // GET /api/market-recorder/status
-// Exposes recorder state, last successful/failed capture, active interval,
-// total snapshots, database size and uptime.
+// Exposes recorder state, last successful/failed capture (with failure kind),
+// last candle-chain result (source/failures), session-health (single source of
+// truth for session expiry), active interval, totals, database size and uptime.
 export async function GET() {
   const st = getRecorderRuntimeState();
   const mode: RecorderMode = st.mode;
@@ -26,6 +28,9 @@ export async function GET() {
     symbols: RECORDER_CONFIG.symbols,
     lastSuccessfulCapture: st.lastSuccess,
     lastFailedCapture: st.lastFailure,
+    lastCandleCapture: st.lastCandle,
+    sessionHealth: getSessionHealth(),
+    sessionSummary: getSessionSummary(),
     totalCaptures: st.totalCaptures,
     totalFailures: st.totalFailures,
     totalSnapshots: (await getStatus()).totalSnapshots,

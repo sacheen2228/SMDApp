@@ -12,6 +12,8 @@ import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
 import { buildFreshnessMeta } from '@/lib/api-freshness';
 import { providerHealth } from '@/lib/provider-health';
+import { getCurrentSession } from '@/lib/market-session';
+import { isPlausibleOptionSymbol } from '@/lib/stockUniverse';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -35,15 +37,28 @@ function parseBreezeDate(dateStr: string): Date {
 }
 
 export async function GET(request: NextRequest) {
-  // Overall endpoint timeout: 18 seconds max
+  // Overall endpoint timeout: 24 seconds max
+  // Provider budget: MO 6s + Breeze 7s + NSE 7s (cold-cookie) = 21s worst
+  // case + ~2s post-processing, leaving margin under the endpoint cap.
+  // Frontend aborts at 25s (page.tsx) — must stay ABOVE this.
   const controller = new AbortController();
-  const ENDPOINT_TIMEOUT_MS = 18000;
+  const ENDPOINT_TIMEOUT_MS = 24000;
   const timeoutId = setTimeout(() => controller.abort(), ENDPOINT_TIMEOUT_MS);
 
   const mainLogic = async () => {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
     const expiry = searchParams.get('expiry') || undefined;
+
+    // Fast-reject synthetic/test IDs (epoch-digit runs) — never contact
+    // NSE/Breeze with garbage (a single bad symbol used to walk all 7
+    // Breeze expiries + NSE; 60+ wasted provider calls per test run).
+    if (!isPlausibleOptionSymbol(symbol)) {
+      return NextResponse.json(
+        { success: false, error: `Invalid symbol: ${symbol.slice(0, 40)}` },
+        { status: 400 }
+      );
+    }
 
     // Initialize session once (don't block on it)
     if (!sessionInitialized) {
@@ -97,13 +112,18 @@ export async function GET(request: NextRequest) {
     // FINAL PROVIDER TREE: MOAPI → Breeze (bounded timeout) → NSE/BSE
     // If all valid sources fail: OPTION_CHAIN=UNAVAILABLE → NO_TRADE
     
-    // 1. Try MOAPI first (preferred primary provider) - 8s timeout (includes auto-login)
+    // Off-hours fast path: MO/Breeze can only serve live sessions (MO times
+    // out, Breeze needs auth) — NSE + Yahoo carry the last session's data.
+    const offHours = !getCurrentSession('index').isMarketOpen;
+
+    // 1. Try MOAPI first (preferred primary provider) - 6s timeout (includes auto-login)
     const moapiStart = Date.now();
+    if (!chainData && !offHours && !providerHealth.shouldSkip("moapi")) {
     try {
       const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
       const motilalChain = await Promise.race([
         getMotilalOptionChain(symbol, expiry),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 8000))
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 6000))
       ]);
       if (motilalChain?.data?.length) {
         chainData = {
@@ -149,9 +169,14 @@ export async function GET(request: NextRequest) {
       console.warn('[API] MOAPI failed:', moapiError);
       providerHealth.recordFailure("moapi", "SERVER", String(moapiError).substring(0, 200));
     }
+    } else if (!chainData) {
+      console.log('[API] Skipping MOAPI —', offHours ? 'market closed' : 'circuit open');
+    }
 
     // 2. Breeze fallback — bounded timeout (5s) + fast failover
     // AUTH_REQUIRED, TIMEOUT, ERROR → immediately skip to NSE/BSE
+    // No offHours gate here: a valid session serves frozen off-hours data
+    // fine, and dead auth is already encoded in the circuit (shouldSkip).
     const breezeStart = Date.now();
     if (!chainData && !providerHealth.shouldSkip("breeze")) {
       try {
@@ -169,7 +194,7 @@ export async function GET(request: NextRequest) {
         };
 
         // Bounded timeout: 8 seconds max for Breeze
-        const BREEZE_TIMEOUT_MS = 5000;
+        const BREEZE_TIMEOUT_MS = 7000; // expiries cached after first call (~3-4s chain)
         const chain = await Promise.race([
           fetchBreezeChain(),
           new Promise<null>((_, reject) =>
@@ -205,7 +230,7 @@ export async function GET(request: NextRequest) {
       try {
         const nseData = await Promise.race([
           getNSEOptionChain(symbol),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 5000))
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 7000))
         ]);
         if (nseData?.records?.data) {
           chainData = {
@@ -263,7 +288,7 @@ export async function GET(request: NextRequest) {
         if (selectedExpiry) {
           const bseChain = await Promise.race([
             getBSEOptionChain(symbol, selectedExpiry),
-            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('BSE_TIMEOUT')), 3000))
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('BSE_TIMEOUT')), 5000))
           ]).catch(() => null);
           if (bseChain?.data?.length) {
             chainData = {
@@ -495,8 +520,24 @@ export async function GET(request: NextRequest) {
     if (analysis?.recommendation && source !== "simulation") {
       const rec = analysis.recommendation;
       const isTradeAction = rec.action && !["HOLD", "NEUTRAL", "WAIT"].includes(rec.action);
-      const hasConfidence = (rec.confidence || rec.sdmScore || 0) >= 60;
-      if (isTradeAction && hasConfidence) {
+      const isPut = !!(rec.action?.includes("PUT") || rec.optionType === "PE");
+      // PE historically 0 wins on this book — demand a higher confidence floor.
+      const confFloor = isPut ? 70 : 60;
+      const conf = Number(rec.confidence || rec.sdmScore || 0);
+      const hasConfidence = conf >= confFloor;
+      // Quality gates — Final Validator rules (MIN_PREMIUM=5, no zero levels).
+      // option-chain-api historically wrote ₹0.05 PE stubs that always lost.
+      const entryPx = Number(rec.entryPrice || 0);
+      const slPx = Number(rec.stopLoss || 0);
+      const tp1Px = Number(rec.tp1 || 0);
+      const entryOk = entryPx >= 5;
+      // BUY options: SL must sit below entry for both CE and PE.
+      const levelsOk = slPx > 0 && tp1Px > 0 && entryPx > slPx && tp1Px > entryPx;
+      // Session gate — POST_CLOSE auto-entries historically won 0/17 (-4299).
+      // market-session.ts allowedActions is the single source of truth.
+      const { isTradeAllowed } = await import("@/lib/market-session");
+      const sessGate = isTradeAllowed(isPut || rec.optionType === "PE" ? "PUT" : "CALL");
+      if (isTradeAction && hasConfidence && entryOk && levelsOk && sessGate.allowed) {
         const { getActiveTrades, addTrade } = await import('@/lib/activeTradeTracker');
         const tradeSig = `${symbol}|${rec.strike || analysis.atmStrike || spotPrice}|${rec.optionType || ''}|${rec.action}`;
         const alreadyActive = getActiveTrades().some(t =>
@@ -514,24 +555,28 @@ export async function GET(request: NextRequest) {
             target1: rec.tp1,
             target2: rec.tp2,
             source: `📊 SDM Analysis (${source})`,
+            instrument: rec.optionType === 'PE' ? 'PUT' : 'CALL',
           }).then(() => {
             addTrade({
               id: `api-${Date.now()}`,
               symbol,
-              side: rec.action.includes('BUY') ? 'BUY' : 'SELL',
+              side: 'BUY' as const, // option-chain route is options-only
               instrument: `${symbol} ${rec.strike || ''} ${rec.optionType || ''}`.trim(),
               strike: rec.strike || analysis.atmStrike || spotPrice || 0,
               optionType: rec.optionType || '',
-              entry: rec.entryPrice || 0,
-              sl: rec.stopLoss || 0,
-              tp1: rec.tp1 || 0,
+              entry: entryPx,
+              sl: slPx,
+              tp1: tp1Px,
               tp2: rec.tp2 || 0,
               status: 'ACTIVE',
               sentAt: new Date().toISOString(),
               source: `option-chain-api`,
+              expiry: selectedExpiry || undefined,
             }, true); // skipAlert=true — sendTradeAlert already sent above
           }).catch(() => {});
         }
+      } else if (isTradeAction && hasConfidence) {
+        console.log(`[option-chain] Signal skipped: entryOk=${entryOk} levelsOk=${levelsOk} session=${sessGate.allowed ? "ok" : sessGate.reason} conf=${rec.confidence || rec.sdmScore}`);
       }
     }
 
@@ -548,14 +593,19 @@ export async function GET(request: NextRequest) {
 
     // Generate candles — try Breeze 5-min intraday first (bounded), fallback to
     // Yahoo daily candles so the SMC engine always has structure data.
+    // Skip Breeze when its circuit is open (AUTH dead) — otherwise the
+    // 3×4s attempts eat the remaining endpoint budget after a successful chain.
     let candles5m: any[] = [];
+    if (providerHealth.shouldSkip("breeze")) {
+      console.log('[API] Skipping Breeze candles — circuit open, using Yahoo fallback');
+    }
     try {
       const { getIntradayCandles } = await import('@/lib/breeze-historical');
       const seen = new Set<string>();
       const seenDay = new Set<string>();
       const d = new Date();
       // Limit to 3 days max, with 4s timeout per call
-      for (let attempt = 0; attempt < 3 && candles5m.length < 40; attempt++) {
+      for (let attempt = 0; attempt < 3 && candles5m.length < 40 && !providerHealth.shouldSkip("breeze"); attempt++) {
         const dateStr = d.toISOString().split('T')[0];
         if (!seenDay.has(dateStr)) {
           seenDay.add(dateStr);
@@ -662,7 +712,7 @@ export async function GET(request: NextRequest) {
       dataTimestamp,
       dataType: "optionChain",
       fallbackUsed: source !== "icici-breeze",
-      fallbackReason: source === "nse-api" ? "Breeze auth failed" : source === "motilal-api" ? "Breeze + NSE failed" : undefined,
+      fallbackReason: source === "nse-api" ? "Breeze/MO unavailable — NSE fallback used" : source === "motilal-api" ? "Breeze + NSE failed" : undefined,
     });
 
     // Build canonical OptionChain from normalized strikes (backward-compatible addition)
@@ -739,7 +789,7 @@ export async function GET(request: NextRequest) {
     clearTimeout(timeoutId);
     // Handle abort as graceful timeout
     if (error.name === 'AbortError' || error.message?.includes('Abort') || error.message?.includes('ENDPOINT_TIMEOUT')) {
-      console.warn('[API] Option chain endpoint timeout (18s)');
+      console.warn('[API] Option chain endpoint timeout (24s)');
       return NextResponse.json(
         { success: false, error: 'Option chain endpoint timeout' },
         { status: 504 }

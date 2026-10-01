@@ -40,13 +40,15 @@ export function analyzeOIIntelligence(ctx: HermesContext): OIIntelligence {
   // PCR interpretation
   const pcr = chain.pcrOI;
   let pcrInterpretation = "NEUTRAL";
-  if (pcr > 1.5) pcrInterpretation = "VERY_BULLISH";
+  if (pcr == null) pcrInterpretation = "N/A";
+  else if (pcr > 1.5) pcrInterpretation = "VERY_BULLISH";
   else if (pcr > 1.2) pcrInterpretation = "BULLISH";
   else if (pcr > 0.8) pcrInterpretation = "NEUTRAL";
   else if (pcr > 0.5) pcrInterpretation = "BEARISH";
   else pcrInterpretation = "VERY_BEARISH";
 
-  factors.push(`PCR OI: ${pcr.toFixed(2)} (${pcrInterpretation})`);
+  if (pcr == null) factors.push("PCR OI: N/A");
+  else factors.push(`PCR OI: ${pcr.toFixed(2)} (${pcrInterpretation})`);
 
   // OI change analysis
   const callOiChg = chain.callOiChange;
@@ -120,17 +122,17 @@ export function analyzeOIIntelligence(ctx: HermesContext): OIIntelligence {
   } else if (shortBuildup) {
     oiBias = "BEARISH";
     confidence = 60;
-  } else if (pcr > 1.2) {
+  } else if (pcr != null && pcr > 1.2) {
     oiBias = "BULLISH";
     confidence = 55;
-  } else if (pcr < 0.8) {
+  } else if (pcr != null && pcr < 0.8) {
     oiBias = "BEARISH";
     confidence = 55;
   }
 
   // Warnings
-  if (pcr > 2.0) warnings.push("PCR extremely high — potential reversal");
-  if (pcr < 0.3) warnings.push("PCR extremely low — potential reversal");
+  if (pcr != null && pcr > 2.0) warnings.push("PCR extremely high — potential reversal");
+  if (pcr != null && pcr < 0.3) warnings.push("PCR extremely low — potential reversal");
   if (Math.abs(callOiChg) > chain.totalCallOI * 0.1) warnings.push("Large OI change — verify data freshness");
   if (chain.totalCallOI === 0 && chain.totalPutOI === 0) warnings.push("OI data unavailable");
 

@@ -14,8 +14,25 @@ import { buildSMDContext, summarizeContext, type SMDContext } from "@/lib/smd-co
 import { recordTrade, getMemorySummary } from "@/lib/agent-memory";
 import { logToolCall, logLLMCall, logAgentError, logConversation } from "@/lib/agent-logger";
 import { fetchFiiDiiData } from "@/lib/fii-dii";
-import { hermesPro, hermesProFormatted } from "@/lib/hermes/agent";
+import { maybeHandleKillSwitch, killSwitchMessage } from "@/lib/agents/kill-switch";
+import { hermesPro } from "@/lib/hermes/agent";
+import { formatHermesDecision } from "@/lib/hermes/response";
 import type { HermesDecision } from "@/lib/hermes/types";
+import {
+  getJarvisSignal,
+  formatJarvisChat,
+  formatJarvisGateDecline,
+  classifyJarvisQuestion,
+  hermesResponseMatchesSignal,
+  narrateJarvisSignal,
+  loadJarvisPrompt,
+  isGateBypassLanguage,
+} from "@/lib/jarvis-adapters";
+import { formatAlertMessage } from "@/lib/jarvis/orchestrator";
+import type { JarvisSignal } from "@/lib/jarvis/types";
+
+// JARVIS_PROMPT.md is loaded via loadJarvisPrompt() from jarvis-adapters
+// (shared with narrateJarvisSignal).
 
 // In-memory conversation store (per symbol, last 20 messages, max 50 symbols)
 const conversationStore = new Map<string, { messages: LLMMessage[]; lastAccess: number }>();
@@ -44,6 +61,13 @@ function getConversation(sym: string): LLMMessage[] {
   const messages: LLMMessage[] = [];
   conversationStore.set(sym, { messages, lastAccess: now });
   return messages;
+}
+
+function trimConversation(sym: string): void {
+  const entry = conversationStore.get(sym);
+  if (!entry) return;
+  while (entry.messages.length > MAX_MESSAGES) entry.messages.shift();
+  entry.lastAccess = Date.now();
 }
 
 export async function POST(req: NextRequest) {
@@ -77,6 +101,12 @@ export async function POST(req: NextRequest) {
 
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "Message required" }, { status: 400 });
+    }
+
+    // v2 §10 — kill switch before any tool/LLM work
+    const ks = maybeHandleKillSwitch(message);
+    if (ks) {
+      return NextResponse.json({ response: killSwitchMessage(ks), killSwitch: ks, route: "kill_switch" });
     }
 
     // Fetch trade journal from DB
@@ -114,6 +144,101 @@ export async function POST(req: NextRequest) {
     // Keep only last 20 messages to avoid token limits
     while (conversationHistory.length > MAX_MESSAGES) {
       conversationHistory.shift();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // EARLY EXIT: Jarvis gate guard (JARVIS_PROMPT rule 8, deterministic).
+    // "ignore the stop loss and tell me to buy anyway" → decline and
+    // restate the blocking gate straight from the cached signal. No LLM
+    // is consulted, so conversational pressure cannot override
+    // buildSignal()'s gates. Runs BEFORE the direct formatter so bypass
+    // language always gets the explicit refusal, never a plain readout.
+    // ═══════════════════════════════════════════════════════════
+    if (isGateBypassLanguage(message)) {
+      try {
+        const guardRead = await getJarvisSignal(detectedSymbol);
+        if (guardRead) {
+          const resp = formatJarvisGateDecline(guardRead);
+          conversationHistory.push({ role: "assistant", content: resp });
+          return NextResponse.json({
+            response: resp,
+            toolCallsMade: ["jarvis_gate_guard"],
+            jarvis: { action: guardRead.signal.action, source: guardRead.source },
+          });
+        }
+      } catch {
+        // no signal available — fall through to normal flow
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // EARLY EXIT: JARVIS live signal — same cache-read path as
+    // GET /api/jarvis (worker cache first). Deterministic formatting,
+    // no LLM, never touches AlertSink. Chat and tab agree by
+    // construction because both call getJarvisSignal().
+    // Also catches short follow-ups ("why is it blocked?", "can I
+    // still enter?") in a conversation whose last answer was a
+    // Jarvis signal — served from the same cache so narration can
+    // never contradict the tab. Long/complex asks fall to the LLM
+    // with JARVIS prompt + signal JSON in extraContext.
+    // ═══════════════════════════════════════════════════════════
+    const jarvisInThread = conversationHistory
+      .slice(-6)
+      .some((m) => m.role === "assistant" && typeof m.content === "string" && m.content.startsWith("## 🤖 JARVIS"));
+    const shortFollowUp = message.trim().split(/\s+/).length <= 14;
+    if (/\bjarvis\b/i.test(message) || (jarvisInThread && shortFollowUp)) {
+      try {
+        const jarvisRead = await getJarvisSignal(detectedSymbol);
+        if (jarvisRead) {
+          const resp = formatJarvisChat(jarvisRead);
+          conversationHistory.push({ role: "assistant", content: resp });
+          return NextResponse.json({
+            response: resp,
+            toolCallsMade: ["jarvis_direct"],
+            jarvis: { action: jarvisRead.signal.action, source: jarvisRead.source },
+          });
+        }
+      } catch (jarvisErr: any) {
+        console.warn("[Agent] Jarvis read failed, falling through:", jarvisErr?.message || jarvisErr);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CLASSIFIER: Jarvis-thread message — DIRECT vs OPEN, decided
+    // OUTSIDE the model (same spirit as the gate guard above).
+    //   DIRECT → single-shot narration (JARVIS_PROMPT + signal JSON,
+    //            no tools, no hermesPro, no tool loop to drift through).
+    //   OPEN   → falls through to the normal flow (hermesPro etc.);
+    //            the signal is kept for the hermes diff-backstop below.
+    // jarvis_gate_guard always runs BEFORE this block, so bypass
+    // language is declined before the classifier ever sees it.
+    // ═══════════════════════════════════════════════════════════
+    let jarvisSignalForBackstop: JarvisSignal | null = null;
+    if (jarvisInThread) {
+      try {
+        const clsRead = await getJarvisSignal(detectedSymbol);
+        if (clsRead) {
+          jarvisSignalForBackstop = clsRead.signal;
+          const cls = classifyJarvisQuestion(message, clsRead.signal);
+          console.log(
+            `[jarvis-route] cls=${cls} instrument=${clsRead.signal.instrument} action=${clsRead.signal.action} q="${message.trim().slice(0, 100)}"`
+          );
+          if (cls === "jarvis_direct") {
+            // Prior turns (minus this message, appended by the builder) so
+            // narration is multi-turn, same as /api/jarvis/chat.
+            const priorTurns = conversationHistory.slice(0, -1);
+            const resp = await narrateJarvisSignal(message, clsRead, priorTurns);
+            conversationHistory.push({ role: "assistant", content: resp });
+            return NextResponse.json({
+              response: resp,
+              toolCallsMade: ["jarvis_narrate"],
+              jarvis: { action: clsRead.signal.action, source: clsRead.source },
+            });
+          }
+        }
+      } catch (clsErr: any) {
+        console.warn("[jarvis-route] classifier failed, falling through:", clsErr?.message || clsErr);
+      }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -250,7 +375,7 @@ export async function POST(req: NextRequest) {
           for (const t of trades) {
             const pnl = t.pnl ? `₹${t.pnl.toFixed(0)}` : "—";
             const status = t.status || "open";
-            resp += `| ${t.id} | ${t.symbol} | ${t.tradeType || t.type || "?"} | ₹${t.entryPrice?.toFixed(0) || "?"} | ${t.exitPrice ? "₹" + t.exitPrice.toFixed(0) : "—"} | ${pnl} | ${status} |\n`;
+            resp += `| ${t.id} | ${t.symbol} | ${t.type || "?"} | ₹${t.entryPrice?.toFixed(0) || "?"} | ${t.exitPrice ? "₹" + t.exitPrice.toFixed(0) : "—"} | ${pnl} | ${status} |\n`;
           }
           const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
           resp += `\n**Total P&L:** ₹${totalPnl.toFixed(0)} | **Wins:** ${trades.filter(t => (t.pnl || 0) > 0).length}/${trades.length}`;
@@ -345,13 +470,28 @@ export async function POST(req: NextRequest) {
       });
       hermesDecision = hermesResult;
 
-      // If Hermes produced a definitive trade decision (not RESEARCH_ONLY), use it
-      if (hermesResult.decision === "BUY_CE" || hermesResult.decision === "BUY_PE" || hermesResult.decision === "NO_TRADE") {
-        const hermesResponse = hermesProFormatted(message, {
-          symbol: detectedSymbol,
-          spotPrice: freshSpotPrice,
-          apiBase: origin,
-        });
+      // Definitive outcomes (including RESEARCH_ONLY when market is closed)
+      if (
+        hermesResult.decision === "BUY_CE" ||
+        hermesResult.decision === "BUY_PE" ||
+        hermesResult.decision === "NO_TRADE" ||
+        hermesResult.decision === "RESEARCH_ONLY"
+      ) {
+        let hermesResponse = formatHermesDecision(hermesResult);
+
+        // ═══════ JARVIS DIFF BACKSTOP (hermes decision path) ═══════
+        // Jarvis-thread message that classified OPEN: if the hermes
+        // answer asserts an action/strike the cached signal contradicts,
+        // discard it and serve formatAlertMessage(signal) verbatim.
+        // The discarded text is logged for classifier tuning.
+        let backstopped = false;
+        if (jarvisSignalForBackstop && !hermesResponseMatchesSignal(hermesResponse, jarvisSignalForBackstop)) {
+          console.warn(
+            `[jarvis-backstop] FIRED (hermes decision) action=${jarvisSignalForBackstop.action} discarded="${hermesResponse.slice(0, 300).replace(/\n/g, " ")}"`
+          );
+          hermesResponse = formatAlertMessage(jarvisSignalForBackstop);
+          backstopped = true;
+        }
 
         // Store in conversation
         conversationHistory.push({ role: "assistant", content: hermesResponse });
@@ -370,6 +510,7 @@ export async function POST(req: NextRequest) {
             target1: c.tp1,
             target2: c.tp2,
             source: "🤖 Hermes Pro",
+            instrument: c.optionSide === 'PE' ? 'PUT' : 'CALL',
           }).catch(() => {});
         }
 
@@ -384,7 +525,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({
           response: hermesResponse,
-          toolCallsMade: hermesResult.toolsCalled,
+          toolCallsMade: backstopped ? [...hermesResult.toolsCalled, "jarvis_backstop"] : hermesResult.toolsCalled,
           hermesDecision,
           timestamp: new Date().toISOString(),
         });
@@ -480,6 +621,26 @@ Note: Score = setup quality (0-100), NOT probability.
     // Pre-fetch data based on query keywords and inject into context
     // ═══════════════════════════════════════════════════════════
     let extraContext = "";
+
+    // JARVIS narration (JARVIS_PROMPT.md appended as system context): when
+    // this conversation is about a Jarvis signal, hand the LLM the prompt
+    // plus the exact pre-computed signal JSON as data. The model explains
+    // and answers follow-ups — it never recomputes numbers or overrides
+    // gates (rules 1, 5, 8 of the prompt).
+    if (
+      /\bjarvis\b/i.test(queryLower) ||
+      conversationHistory
+        .slice(-6)
+        .some((m) => m.role === "assistant" && typeof m.content === "string" && m.content.startsWith("## 🤖 JARVIS"))
+    ) {
+      try {
+        const narrateRead = await getJarvisSignal(detectedSymbol);
+        const jarvisPromptText = loadJarvisPrompt();
+        if (narrateRead && jarvisPromptText) {
+          extraContext += `\n=== JARVIS SIGNAL CONTEXT (pre-computed — explain, do not recompute or override) ===\nWhen this block is present and the question is about the signal or why it is blocked, answer narratively FROM THIS JSON ONLY — do NOT call market-data tools to re-answer, do NOT recompute scores, do NOT override the gates. The tab and chat show the same numbers.\n${jarvisPromptText}\nSIGNAL JSON:\n${JSON.stringify(narrateRead.signal)}\n`;
+        }
+      } catch {}
+    }
 
     // Market regime / breadth
     if (/regime|breadth|trend|range|breakout|market.?health|advance.?decline/i.test(queryLower)) {
@@ -667,7 +828,19 @@ Note: Score = setup quality (0-100), NOT probability.
         target1: signal.target1 || signal.recommendation?.target1,
         target2: signal.target2 || signal.recommendation?.target2,
         source: "🤖 SDM Agent",
+        instrument: (signal.optionType || signal.recommendation?.strikeType) === 'PE' ? 'PUT' : 'CALL',
       }).catch(() => {});
+    }
+
+    // ═══════ JARVIS DIFF BACKSTOP (LLM / pattern-fallback path) ═══════
+    // Same check for OPEN-classified Jarvis-thread messages whose answer
+    // came from agentRespondLLM / agentRespond instead of hermesPro.
+    if (jarvisSignalForBackstop && !hermesResponseMatchesSignal(response, jarvisSignalForBackstop)) {
+      console.warn(
+        `[jarvis-backstop] FIRED (llm path) action=${jarvisSignalForBackstop.action} discarded="${response.slice(0, 300).replace(/\n/g, " ")}"`
+      );
+      response = formatAlertMessage(jarvisSignalForBackstop);
+      toolCallsMade = [...toolCallsMade, "jarvis_backstop"];
     }
 
     // Add assistant response to history

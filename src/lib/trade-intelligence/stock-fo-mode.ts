@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { MarketIntelligenceContext } from "./market-context";
+import { deriveIvStats, findAtmStrike } from "@/lib/option-chain-normalizer";
 
 // ── Types ──
 export type StockTradeDirection = "LONG" | "SHORT" | "BUY_CE" | "BUY_PE" | "NO_TRADE";
@@ -44,14 +45,52 @@ export interface StockFOSignal {
 }
 
 // ── Fetch live option chain for a stock ──
+/**
+ * The /api/option-chain route nests the chain at `data.summary` /
+ * `data.strikes` — reading a top-level `summary` always returned null and
+ * this mode ran chainless (no PCR, no real premium). Accept both the
+ * nested envelope and an unwrapped legacy shape; require real content.
+ */
+export function parseStockChainResponse(json: any): any | null {
+  if (!json || typeof json !== "object") return null;
+  const inner =
+    json.data && typeof json.data === "object" && !Array.isArray(json.data) ? json.data : json;
+  if (inner?.summary) return inner;
+  if (Array.isArray(inner?.strikes) && inner.strikes.length > 0) return inner;
+  return null;
+}
+
+/**
+ * Options-first direction policy. This mode has no real futures-positioning
+ * evidence (the old LONG/SHORT branches scored against a hardcoded 50), so
+ * any directional edge ≥60 confidence becomes a CE/PE recommendation —
+ * never futures.
+ */
+export function determineStockFODirection(
+  bullScore: number,
+  bearScore: number
+): { direction: StockTradeDirection; confidence: number } {
+  const total = bullScore + bearScore;
+  if (total <= 0) return { direction: "NO_TRADE", confidence: 0 };
+  if (bullScore > bearScore) {
+    const confidence = Math.min(95, Math.round((bullScore / total) * 100));
+    return { direction: confidence >= 60 ? "BUY_CE" : "NO_TRADE", confidence };
+  }
+  if (bearScore > bullScore) {
+    const confidence = Math.min(95, Math.round((bearScore / total) * 100));
+    return { direction: confidence >= 60 ? "BUY_PE" : "NO_TRADE", confidence };
+  }
+  return { direction: "NO_TRADE", confidence: 0 };
+}
+
 async function fetchStockOptionChain(symbol: string): Promise<any | null> {
   try {
     const res = await fetch(`http://localhost:3000/api/option-chain?symbol=${symbol}`, {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
-    const data = await res.json();
-    return data?.summary ? data : null;
+    const json = await res.json();
+    return parseStockChainResponse(json);
   } catch {
     return null;
   }
@@ -119,11 +158,23 @@ function scoreStock(
     }
   }
 
-  // Factor 4: Option chain analysis (0-20 points)
-  const chain = chainData?.summary;
-  if (chain) {
-    const pcr = chain.pcr ?? null;
-    if (pcr > 1.3) {
+  // Factor 4: Option chain analysis (0-20 points) — REAL chain required.
+  // chainData is the route's inner envelope: { summary, strikes, selectedExpiry }
+  const summary = chainData?.summary || null;
+  const rawStrikes: any[] = Array.isArray(chainData?.strikes) ? chainData.strikes : [];
+  const atmStrike =
+    summary?.atmStrike ||
+    (rawStrikes.length > 0 ? findAtmStrike(rawStrikes.map((s: any) => s.strike), price) : 0);
+  const chainStats =
+    rawStrikes.length > 0 && atmStrike > 0 ? deriveIvStats(rawStrikes, atmStrike) : null;
+
+  if (summary) {
+    const pcr = (typeof summary.pcr === "number" && Number.isFinite(summary.pcr))
+      ? summary.pcr
+      : null;
+    if (pcr == null) {
+      reasoning.push("PCR unavailable");
+    } else if (pcr > 1.3) {
       bullScore += 20;
       reasoning.push(`PCR ${pcr.toFixed(2)} — heavy put writing, support building`);
     } else if (pcr > 1.0) {
@@ -140,12 +191,14 @@ function scoreStock(
       bearScore += 6;
     }
 
-    // IV percentile
-    const ivRank = chain.ivRank || 50;
-    if (ivRank > 70) {
-      reasoning.push(`IV rank ${ivRank}% — elevated, selling favored`);
-    } else if (ivRank < 30) {
-      reasoning.push(`IV rank ${ivRank}% — cheap, buying favored`);
+    // IV percentile — only from real IVs (0 = unavailable, never "50 = normal")
+    const ivRank = chainStats && chainStats.ivRank > 0 ? chainStats.ivRank : null;
+    if (ivRank != null) {
+      if (ivRank > 70) {
+        reasoning.push(`IV rank ${ivRank}% — elevated, selling favored`);
+      } else if (ivRank < 30) {
+        reasoning.push(`IV rank ${ivRank}% — cheap, buying favored`);
+      }
     }
   }
 
@@ -209,21 +262,10 @@ function scoreStock(
     }
   }
 
-  // Determine direction
+  // Determine direction — options-only (see determineStockFODirection)
   const totalScore = bullScore + bearScore;
   const netBias = bullScore - bearScore;
-  let direction: StockTradeDirection = "NO_TRADE";
-  let confidence = 0;
-
-  if (netBias > 0 && totalScore > 0) {
-    confidence = Math.min(95, Math.round((bullScore / totalScore) * 100));
-    if (confidence >= 70) direction = "LONG";
-    else if (confidence >= 60) direction = "BUY_CE";
-  } else if (netBias < 0 && totalScore > 0) {
-    confidence = Math.min(95, Math.round((bearScore / totalScore) * 100));
-    if (confidence >= 70) direction = "SHORT";
-    else if (confidence >= 60) direction = "BUY_PE";
-  }
+  const { direction, confidence } = determineStockFODirection(bullScore, bearScore);
 
   // Calculate levels
   const atr = price * 0.015;
@@ -246,20 +288,21 @@ function scoreStock(
     ? Math.abs(target1 - entry) / Math.abs(entry - stopLoss)
     : 0;
 
-  // Instrument
+  // Instrument — real ATM premium from the chain (never IV-as-premium);
+  // 0 means "chain had no premium", reported as-is.
   let recommendedInstrument = "NO_TRADE";
   let strike = 0;
   let premium = 0;
-  const expiry = chain?.expiry || "";
+  const expiry = chainData?.selectedExpiry || summary?.expiry || "";
 
   if (direction === "BUY_CE") {
-    strike = chain?.atmStrike || price;
+    strike = atmStrike || price;
     recommendedInstrument = `${symbol} ${strike} CE`;
-    premium = chain?.ivMedian || 0;
+    premium = chainStats?.atmCePremium || 0;
   } else if (direction === "BUY_PE") {
-    strike = chain?.atmStrike || price;
+    strike = atmStrike || price;
     recommendedInstrument = `${symbol} ${strike} PE`;
-    premium = chain?.ivMedian || 0;
+    premium = chainStats?.atmPePremium || 0;
   } else if (direction === "LONG") {
     recommendedInstrument = `${symbol} Futures`;
   } else if (direction === "SHORT") {
@@ -275,8 +318,10 @@ function scoreStock(
     score: Math.round((totalScore / 100) * 100),
     reasoning,
     factors: {
-      oiSignal: chain ? (chain.pcr > 1 ? 70 : 30) : 50,
-      ivPercentile: chain?.ivRank || 50,
+      oiSignal: summary
+        ? (typeof summary.pcr === "number" && summary.pcr > 1 ? 70 : 30)
+        : 50,
+      ivPercentile: chainStats?.ivRank || 0,
       premiumVelocity: 50,
       volumeConfirmation: rvol > 1.5 ? 80 : rvol > 1 ? 60 : 40,
       technicalAlignment: changePercent > 0 ? 60 : 40,
@@ -341,6 +386,11 @@ export async function analyzeStockFO(
 
   // Sort by confidence
   signals.sort((a, b) => b.confidence - a.confidence);
+
+  console.log(
+    `[StockFO] quotes=${quotes.length} top=${topStocks.length} chains=${chainMap.size} signals=${signals.length} ` +
+    `dirs=${signals.map(s => s.direction).join(",")}`
+  );
 
   return signals;
 }

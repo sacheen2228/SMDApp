@@ -2,6 +2,8 @@
 // Predicts WHICH premium will move FIRST, FASTEST, and with HIGHEST probability.
 // Not a Greek strength scorer — a premium movement predictor.
 
+import { classifyFreshnessMs } from "./hermes/freshness";
+
 export interface StrikeInput {
   strike: number;
   ce: LegInput;
@@ -20,6 +22,7 @@ export interface LegInput {
   gamma: number;
   theta: number;
   vega: number;
+  priceChg?: number; // real price change from chain when available (undefined = unavailable)
 }
 
 export interface MarketContext {
@@ -37,7 +40,11 @@ export interface MarketContext {
   minutesToExpiry: number;
   isExpiryDay: boolean;
   atr: number;
+  atrSource?: "real" | "vix-estimate";
   trend: "bullish" | "bearish" | "neutral";
+  dataAgeMs?: number;      // age of the chain data (ms)
+  isMarketOpen?: boolean;  // computed by caller from IST weekday/time
+  strikeStep?: number;     // instrument strike step (NIFTY 50, SENSEX 100)
 }
 
 interface DeltaAcceleration {
@@ -138,6 +145,7 @@ export interface AccelerationStrike {
   oiChg: number;
   volume: number;
   bidAskSpread: number;
+  bidAskSpreadAvailable: boolean;
   spot: number;
   distanceFromATM: number;
   distanceFromSpot: number;
@@ -187,6 +195,9 @@ export interface AccelerationResult {
   expectedMove: number;
   regime: string;
   sessionPhase: string;
+  stale?: boolean;
+  dataAgeMinutes?: number;
+  marketOpen?: boolean;
   metrics: {
     avgAcceleration: number;
     maxAcceleration: number;
@@ -195,6 +206,7 @@ export interface AccelerationResult {
     totalOIChange: number;
     pcr: number;
     vix: number;
+    atrSource: string;
   };
 }
 
@@ -215,9 +227,10 @@ function engineDeltaAcceleration(leg: LegInput, spot: number, strike: number): D
 
 // ─── Engine 2: Gamma Explosion ─────────────────────────────────────
 function engineGammaExplosion(leg: LegInput, spot: number, strike: number, ctx: MarketContext): GammaExplosion {
+  const step = ctx.strikeStep || 50; // instrument-aware (NIFTY 50, SENSEX 100)
   const distFromATM = Math.abs(strike - ctx.atmStrike);
-  const nearATM = distFromATM <= 100;
-  const isATM = distFromATM <= 50;
+  const nearATM = distFromATM <= step * 2;
+  const isATM = distFromATM <= step;
 
   const gammaEfficiency = nearATM ? leg.gamma * 1000 : leg.gamma * 200;
 
@@ -237,31 +250,36 @@ function engineGammaExplosion(leg: LegInput, spot: number, strike: number, ctx: 
 // ─── Engine 3: OI Absorption ───────────────────────────────────────
 function engineOIAbsorption(leg: LegInput, prevLeg: LegInput | null): OIAbsorption {
   const oiChg = leg.oiChg;
-  const priceChg = leg.ltp - (prevLeg?.ltp || leg.ltp);
-  const oiChange = leg.oi - (prevLeg?.oi || leg.oi);
+  // Price change: real chain data (priceChg) when available, else previous-scan
+  // comparison. When neither exists, price confirmation is UNKNOWN — never
+  // invent it and never claim price-confirmed OI signals.
+  const hasPriceData = typeof leg.priceChg === "number";
+  const priceChg = hasPriceData ? (leg.priceChg as number) : prevLeg ? leg.ltp - prevLeg.ltp : null;
+  const oiUp = oiChg > 0;
+  const oiDown = oiChg < 0;
 
-  const freshLongBuildup = oiChg > 0 && priceChg > 0;
-  const shortCovering = oiChg < 0 && priceChg > 0;
-  const longUnwinding = oiChg < 0 && priceChg < 0;
-  const freshShort = oiChg > 0 && priceChg < 0;
-  const hiddenWriting = Math.abs(oiChg) > leg.oi * 0.1 && Math.abs(priceChg) < leg.ltp * 0.02;
-  const aggressiveBuying = leg.volume > leg.oi * 0.05 && priceChg > 0;
+  const freshLongBuildup = hasPriceData && oiUp && (priceChg as number) > 0;
+  const shortCovering = hasPriceData && oiDown && (priceChg as number) > 0;
+  const longUnwinding = hasPriceData && oiDown && (priceChg as number) < 0;
+  const freshShort = hasPriceData && oiUp && (priceChg as number) < 0;
+  const hiddenWriting = hasPriceData && Math.abs(oiChg) > leg.oi * 0.1 && Math.abs(priceChg as number) < leg.ltp * 0.02;
+  const aggressiveBuying = hasPriceData && leg.volume > leg.oi * 0.05 && (priceChg as number) > 0;
 
   let score = 50;
-  if (freshLongBuildup) score = 85;
-  if (aggressiveBuying) score = 90;
-  if (shortCovering) score = 75;
-  if (hiddenWriting) score = 70;
-  if (longUnwinding) score = 30;
-  if (freshShort) score = 20;
-
   let signal = "Neutral";
-  if (freshLongBuildup) signal = "Fresh Long Buildup";
-  if (shortCovering) signal = "Short Covering";
-  if (longUnwinding) signal = "Long Unwinding";
-  if (freshShort) signal = "Fresh Short";
-  if (hiddenWriting) signal = "Hidden Writing";
-  if (aggressiveBuying) signal = "Aggressive Buying";
+  if (!hasPriceData) {
+    // OI-direction-only classification — reduced confidence, no price claim
+    if (oiUp) { signal = "OI Buildup (Price N/A)"; score = 60; }
+    else if (oiDown) { signal = "OI Unwind (Price N/A)"; score = 40; }
+  } else {
+    // Unified priority: strongest signal sets BOTH score and label together
+    if (aggressiveBuying) { score = 90; signal = "Aggressive Buying"; }
+    else if (freshLongBuildup) { score = 85; signal = "Fresh Long Buildup"; }
+    else if (shortCovering) { score = 75; signal = "Short Covering"; }
+    else if (hiddenWriting) { score = 70; signal = "Hidden Writing"; }
+    else if (longUnwinding) { score = 30; signal = "Long Unwinding"; }
+    else if (freshShort) { score = 20; signal = "Fresh Short"; }
+  }
 
   return { score, signal, freshLongBuildup, shortCovering, longUnwinding, freshShort, hiddenWriting, aggressiveBuying };
 }
@@ -287,7 +305,7 @@ function engineInstitutionalFlow(leg: LegInput, allLegs: LegInput[], ctx: Market
   const repeatedSelling = leg.oiChg < -avgOI * 0.3 && leg.volume > avgVol * 1.5;
 
   const distFromATM = Math.abs(ctx.atmStrike - ctx.spot);
-  const dealerHedging = leg.gamma > 0.0015 && distFromATM < 200;
+  const dealerHedging = leg.gamma > 0.0015 && distFromATM < (ctx.strikeStep || 50) * 4;
   const makerDefense = Math.abs(leg.oiChg) > avgOI * 0.5;
 
   const totalCallOI = ctx.totalOICE;
@@ -330,9 +348,10 @@ function enginePremiumElasticity(leg: LegInput, spot: number, strike: number, ct
 
 // ─── Engine 7: Historical Strike Memory ────────────────────────────
 function engineHistoricalMemory(leg: LegInput, spot: number, strike: number, ctx: MarketContext): HistoricalMemory {
+  const step = ctx.strikeStep || 50; // instrument-aware
   const distFromSpot = Math.abs(strike - spot);
-  const isNearATM = distFromSpot <= 100;
-  const isATM = distFromSpot <= 50;
+  const isNearATM = distFromSpot <= step * 2;
+  const isATM = distFromSpot <= step;
 
   const baseMove = ctx.expectedMove * (isATM ? 0.4 : isNearATM ? 0.25 : 0.12);
   const vixMultiplier = ctx.vix > 20 ? 1.5 : ctx.vix > 15 ? 1.2 : 1.0;
@@ -715,7 +734,19 @@ function elasticityLabel(score: number): string {
   return "Low";
 }
 
-function signalLabel(accel: number, ltp: number, oi: number, volume: number, sessionPhase: string, regime: string): string {
+function signalLabel(
+  accel: number,
+  ltp: number,
+  oi: number,
+  volume: number,
+  sessionPhase: string,
+  regime: string,
+  rr: number,
+  isMarketOpen: boolean | undefined
+): string {
+  // Market closed: no signals at all
+  if (isMarketOpen === false) return "MARKET_CLOSED";
+
   // Reject illiquid / low-premium strikes outright
   if (ltp < 5 || oi < 500) return "IGNORE";
   if (volume < 100) return "WAIT";
@@ -726,11 +757,9 @@ function signalLabel(accel: number, ltp: number, oi: number, volume: number, ses
     return "IGNORE";
   }
 
-  // Closing hour + Reversal: never BUY
-  if (sessionPhase === "Closing Hour" && regime === "Reversal") return "IGNORE";
-
-  if (accel >= 90) return "STRONG BUY";
-  if (accel >= 72) return "BUY";
+  // R:R gate — BUY signals require acceptable risk/reward
+  if (accel >= 90 && rr >= 1.0) return "STRONG BUY";
+  if (accel >= 72 && rr >= 1.0) return "BUY";
   if (accel >= 55) return "WATCH";
   if (accel >= 40) return "WAIT";
   return "IGNORE";
@@ -746,6 +775,14 @@ export function runAccelerationEngine(
   const allLegs = [...allCELegs, ...allPELegs];
 
   const regime = engineRegime(ctx);
+
+  // Market-closed override — session phase and signals reflect reality
+  const marketClosed = ctx.isMarketOpen === false;
+
+  // Data freshness gate — optionChain thresholds: STALE when age > 10min
+  const dataAgeMs = ctx.dataAgeMs ?? 0;
+  const freshnessLevel = classifyFreshnessMs(dataAgeMs, "optionChain");
+  const isStale = freshnessLevel === "STALE";
 
   const scoredStrikes: AccelerationStrike[] = [];
 
@@ -787,9 +824,31 @@ export function runAccelerationEngine(
       if (deltaAcc.score > 70) reasons.push("High Delta Reaction");
       if (oiAbs.hiddenWriting) reasons.push("Hidden Accumulation");
 
-      const bidAskSpread = leg.ask - leg.bid;
+      const bidAskSpread = (leg.bid > 0 && leg.ask > 0) ? leg.ask - leg.bid : 0;
+      const bidAskSpreadAvailable = leg.bid > 0 && leg.ask > 0;
 
-      const signal = signalLabel(acceleration, leg.ltp, leg.oi, leg.volume, timeDecay.sessionPhase, regime.regime);
+      let signal = signalLabel(acceleration, leg.ltp, leg.oi, leg.volume, timeDecay.sessionPhase, regime.regime, tps.rr, ctx.isMarketOpen);
+      let tradable = signal === "STRONG BUY" || signal === "BUY";
+
+      // Wide spread gate — only when bid/ask data is real (missing ≠ wide)
+      if (tradable && bidAskSpreadAvailable && bidAskSpread > leg.ltp * 0.25) {
+        signal = "WAIT";
+        tradable = false;
+        reasons.push("Wide Spread");
+      }
+
+      // Stale data gate — never trade on stale chain data
+      if (isStale && tradable) {
+        signal = "STALE";
+        tradable = false;
+        reasons.push("Stale Data");
+      }
+
+      // SAFETY: Option buying only — BUY CE / BUY PE. Never any sell direction.
+      if (signal.includes("SELL")) {
+        signal = "IGNORE";
+        tradable = false;
+      }
 
       scoredStrikes.push({
         strike: strike.strike,
@@ -813,8 +872,9 @@ export function runAccelerationEngine(
         oi: leg.oi,
         oiChg: leg.oiChg,
         volume: leg.volume,
-        bidAskSpread,
-        spot: ctx.spot,
+         bidAskSpread,
+         bidAskSpreadAvailable,
+         spot: ctx.spot,
         distanceFromATM: distFromATM,
         distanceFromSpot: distFromSpot,
         tp1: tps.tp1,
@@ -896,7 +956,10 @@ export function runAccelerationEngine(
     atmStrike: ctx.atmStrike,
     expectedMove: ctx.expectedMove,
     regime: regime.regime,
-    sessionPhase: engineTimeDecay(allLegs[0] || { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 }, ctx).sessionPhase,
+    sessionPhase: marketClosed ? "Market Closed" : engineTimeDecay(allLegs[0] || { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 }, ctx).sessionPhase,
+    stale: isStale,
+    dataAgeMinutes: Math.round(dataAgeMs / 60000),
+    marketOpen: ctx.isMarketOpen !== false,
     metrics: {
       avgAcceleration: Math.round(avgAcceleration * 10) / 10,
       maxAcceleration: Math.round(maxAcceleration * 10) / 10,
@@ -905,6 +968,7 @@ export function runAccelerationEngine(
       totalOIChange,
       pcr: ctx.pcr,
       vix: ctx.vix,
+      atrSource: ctx.atrSource || "vix-estimate",
     },
   };
 }

@@ -36,6 +36,8 @@ import { sendDailyDigest } from "../src/lib/dailyDigest";
 import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
+import { todayDDMMYYYYIST, positioningFreshness, latestParticipantDate, hasParticipantDataForDate } from "@/lib/institutional-positioning-engine";
+import { sendSystemAlert } from "../src/lib/telegram";
 
 const TIMEZONE = "Asia/Kolkata";
 const DAILY_SCHEDULE = "10 9 * * 1-5";        // 9:10am, Mon-Fri — the morning digest (within 09:10-15:20 window)
@@ -44,12 +46,14 @@ const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm windo
                                                  //  precise 9:15-15:30 market-hours boundary)
 const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
-const INST_SCHEDULE = "30 16 * * 1-5";          // 4:30pm, Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
+const EOD_SQUAREOFF_SCHEDULE = "31 15 * * 1-5"; // 3:31pm, Mon-Fri — close intraday journal trades at real LTP (BTST excluded)
+const INST_SCHEDULE = "*/20 16-18 * * 1-5";          // every 20 min, 16:00-18:40 Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
 
 console.log(`[dailyScanCron] daily digest scheduled for "${DAILY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] EOD square-off scheduled for "${EOD_SQUAREOFF_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] institutional positioning scheduled for "${INST_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
@@ -120,6 +124,30 @@ cron.schedule(
 );
 
 cron.schedule(
+  EOD_SQUAREOFF_SCHEDULE,
+  async () => {
+    console.log("[dailyScanCron] EOD square-off — closing intraday trades at real LTP...");
+    try {
+      const secret = process.env.DAILY_SCAN_SECRET;
+      const base = process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 3000}`;
+      const res = await fetch(`${base}/api/cron/eod-squareoff?secret=${secret}`, { cache: "no-store" });
+      const json = await res.json();
+      if (json.success) {
+        console.log(
+          `[dailyScanCron] EOD square-off done — closed=${json.closed} noPrice=${(json.noPrice || []).length}` +
+            (json.error ? ` error=${json.error}` : "")
+        );
+      } else {
+        console.error("[dailyScanCron] EOD square-off error:", json.error);
+      }
+    } catch (err) {
+      console.error("[dailyScanCron] EOD square-off fetch failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
   INST_SCHEDULE,
   async () => {
     console.log("[dailyScanCron] fetching institutional positioning data...");
@@ -135,6 +163,27 @@ cron.schedule(
       }
     } catch (err) {
       console.error("[dailyScanCron] institutional positioning fetch failed", err);
+    }
+  },
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  "0 19 * * 1-5",
+  async () => {
+    console.log("[dailyScanCron] institutional positioning staleness watchdog running...");
+    try {
+      const today = todayDDMMYYYYIST();
+      const hasData = await hasParticipantDataForDate(today);
+      if (!hasData) {
+        await sendSystemAlert(
+          `Institutional positioning data missing for ${today} — NSE may not have published yet, or data pull failed.`
+        );
+      } else {
+        console.log(`[dailyScanCron] positioning data fresh for ${today}`);
+      }
+    } catch (err) {
+      console.error("[dailyScanCron] staleness watchdog error", err);
     }
   },
   { timezone: TIMEZONE }

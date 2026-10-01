@@ -365,6 +365,10 @@ export async function logout(): Promise<void> {
 }
 
 // ── Auto-login with env credentials ──
+// TOTP-first: MOTILAL_TOTP_KEY generates a verifiable token without human/OTP
+// interaction (loginWithTOTP also completes getAccessToken). The OTP flow is only
+// a fallback — it leaves the session UNVERIFIED (needsVerification) unless the
+// account happens to skip 2FA, so it cannot fully recover an expired session.
 export async function autoLogin(): Promise<boolean> {
   const userid = process.env.MOTILAL_USERID;
   const password = process.env.MOTILAL_PASSWORD;
@@ -372,15 +376,61 @@ export async function autoLogin(): Promise<boolean> {
 
   if (!userid || !password || !dob) return false;
 
+  if (MOTILAL_CONFIG.TOTP_KEY) {
+    try {
+      const totpResult = await loginWithTOTP(userid, password, dob);
+      if (totpResult.success) {
+        console.log('[Motilal] Auto-login successful (TOTP)');
+        return true;
+      }
+      console.warn('[Motilal] TOTP auto-login failed, falling back to OTP flow:', totpResult.error);
+    } catch (e: any) {
+      console.warn('[Motilal] TOTP auto-login threw, falling back to OTP flow:', e?.message || e);
+    }
+  }
+
   try {
     const result = await loginWithOTP(userid, password, dob);
     if (result.success) {
-      console.log('[Motilal] Auto-login successful');
+      console.log('[Motilal] Auto-login successful (OTP flow)', result.needsVerification ? '(UNVERIFIED — needs OTP entry)' : '(verified)');
       return true;
     }
     console.warn('[Motilal] Auto-login failed:', result.error);
     return false;
   } catch {
     return false;
+  }
+}
+
+// ── Live session probe (never cached — local state can be stale) ──
+// Hits a cheap authenticated report endpoint; classifies the response as
+// auth-dead vs OK. "Invalid Token" / "Auth Token is not verified" (MO1097)
+// mean the server-side session is gone even if the local file says otherwise.
+export async function probeSession(): Promise<{
+  ok: boolean;
+  message: string;
+  local: ReturnType<typeof getSessionInfo>;
+}> {
+  const local = getSessionInfo();
+  if (!sessionToken) {
+    return { ok: false, message: "no MO session token loaded", local };
+  }
+  try {
+    const res = await fetch(`${MOTILAL_CONFIG.BASE_URL}/rest/report/v3/getltpdata`, {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify({ exchange: "BSE", scripcode: 500325 }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text();
+    const authDead = /invalid token|not verified|unauthorized|401|403/i.test(text);
+    if (authDead) {
+      const m = /"message"\s*:\s*"([^"]+)"/.exec(text);
+      return { ok: false, message: m ? m[1] : `auth rejected (HTTP ${res.status})`, local };
+    }
+    if (!res.ok) return { ok: false, message: `HTTP ${res.status}`, local };
+    return { ok: true, message: "session verified live (LTP call OK)", local };
+  } catch (e: any) {
+    return { ok: false, message: `probe failed: ${e?.message || e}`, local };
   }
 }

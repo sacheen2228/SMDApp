@@ -112,8 +112,87 @@ class OptionChainFlowEngine {
     this.callbacks.forEach(cb => cb(strikeMap));
   }
 
+  // ─── Normalize raw NSE/array input into OptionChainSnapshot ────────
+  private normalizeSnapshot(raw: any): OptionChainSnapshot | null {
+    if (!raw) return null;
+    if (Array.isArray(raw)) {
+      return {
+        symbol: 'NIFTY',
+        spot: 0,
+        atmStrike: 0,
+        expiry: '',
+        strikes: raw.map((s: any) => ({
+          strike: Number(s?.strike ?? s?.strikePrice ?? 0),
+          expiry: String(s?.expiry ?? s?.expiryDate ?? ''),
+          ce: this.normalizeLeg(s?.ce ?? s?.CE),
+          pe: this.normalizeLeg(s?.pe ?? s?.PE),
+        })).filter((s: any) => s.strike > 0),
+        callOiMap: new Map(),
+        putOiMap: new Map(),
+        callOiChangeMap: new Map(),
+        putOiChangeMap: new Map(),
+        callVolumeMap: new Map(),
+        putVolumeMap: new Map(),
+        maxPain: 0,
+        pcr: 0,
+        ivRank: 0,
+        ivPercentile: 0,
+        atmIV: 0,
+        ivSkew: 0,
+      };
+    }
+    if (Array.isArray(raw.strikes)) return raw as OptionChainSnapshot;
+    return null;
+  }
+
+  private normalizeLeg(leg: any) {
+    const n = (v: any, d = 0) => (typeof v === 'number' && isFinite(v) ? v : d);
+    if (!leg) {
+      return {
+        ltp: 0, prevLtp: 0, bid: 0, ask: 0, bidQty: 0, askQty: 0,
+        volume: 0, prevVolume: 0, oi: 0, prevOi: 0, oiChange: 0, oiChangePct: 0,
+        iv: 0, prevIv: 0, ivChange: 0, delta: 0, gamma: 0, theta: 0, vega: 0,
+        spread: 0, spreadPct: 0, premiumVelocity: 0, premiumAcceleration: 0,
+        ivVelocity: 0, ivAcceleration: 0, volumeVelocity: 0, oiVelocity: 0,
+      } as any;
+    }
+    return {
+      ltp: n(leg.ltp ?? leg.lastPrice),
+      prevLtp: n(leg.prevLtp ?? leg.lastPrice),
+      bid: n(leg.bid ?? leg.bidprice ?? leg.buyPrice1),
+      ask: n(leg.ask ?? leg.askprice ?? leg.sellPrice1),
+      bidQty: n(leg.bidQty ?? leg.buyQuantity1),
+      askQty: n(leg.askQty ?? leg.sellQuantity1),
+      volume: n(leg.volume ?? leg.totalTradedVolume),
+      prevVolume: n(leg.prevVolume ?? leg.totalTradedVolume),
+      oi: n(leg.oi ?? leg.openInterest),
+      prevOi: n(leg.prevOi ?? leg.openInterest),
+      oiChange: n(leg.oiChange ?? leg.changeinOpenInterest),
+      oiChangePct: n(leg.oiChangePct ?? leg.pchangeinOpenInterest),
+      iv: n(leg.iv ?? leg.impliedVolatility),
+      prevIv: n(leg.prevIv ?? leg.impliedVolatility),
+      ivChange: n(leg.ivChange),
+      delta: n(leg.delta),
+      gamma: n(leg.gamma),
+      theta: n(leg.theta),
+      vega: n(leg.vega),
+      spread: n(leg.spread),
+      spreadPct: n(leg.spreadPct),
+      premiumVelocity: 0,
+      premiumAcceleration: 0,
+      ivVelocity: 0,
+      ivAcceleration: 0,
+      volumeVelocity: 0,
+      oiVelocity: 0,
+    } as any;
+  }
+
   // ─── Process Option Chain Snapshot ──────────────────────────────────
-  processOptionChain(snapshot: OptionChainSnapshot): void {
+  processOptionChain(raw: OptionChainSnapshot | any): void {
+    const snapshot = this.normalizeSnapshot(raw);
+    if (!snapshot || !Array.isArray(snapshot.strikes) || snapshot.strikes.length === 0) {
+      return;
+    }
     const now = Date.now();
 
     // Initialize baseline if first snapshot

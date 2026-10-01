@@ -4,6 +4,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
+import type { JarvisSignal } from "@/lib/jarvis/types";
 
 const MEMORY_DIR = join(process.cwd(), "data", "agent-memory");
 const FILES = {
@@ -12,6 +13,7 @@ const FILES = {
   predictions: "predictions.json",
   preferences: "preferences.json",
   alerts: "alert-history.json",
+  jarvisSignals: "jarvis-signals.json",
 } as const;
 
 interface TradePattern {
@@ -244,6 +246,22 @@ export function acknowledgeAlert(id: string) {
     alert.acknowledged = true;
     saveJson(FILES.alerts, alerts);
   }
+}
+
+// ─── Jarvis Signals (dedicated store — kept out of alert-history.json
+// so the shared 200-record cap there isn't evicted by 60s worker writes) ───
+export function recordJarvisSignal(signal: JarvisSignal) {
+  const list = loadJson<JarvisSignal>(FILES.jarvisSignals);
+  list.push(signal);
+  if (list.length > 300) list.splice(0, list.length - 300);
+  saveJson(FILES.jarvisSignals, list);
+}
+
+/** Newest first. Filter by instrument when given. */
+export function getJarvisSignals(instrument?: string, limit = 10): JarvisSignal[] {
+  let list = loadJson<JarvisSignal>(FILES.jarvisSignals);
+  if (instrument) list = list.filter(s => s && s.instrument === instrument);
+  return list.slice(-limit).reverse();
 }
 
 // ─── Summary ───

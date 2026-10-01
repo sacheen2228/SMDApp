@@ -146,8 +146,8 @@ function checkBreakout(
   volumeOk ? reasons.push(`Volume ${volRatio.toFixed(2)}x avg (>1.5x)`) : failedReasons.push(`Volume only ${volRatio.toFixed(2)}x avg (need >1.5x)`);
 
   // Rule 3: PCR within healthy 0.8-1.3
-  const pcrOk = input.pcr >= 0.8 && input.pcr <= 1.3;
-  pcrOk ? reasons.push(`PCR ${input.pcr.toFixed(2)} in 0.8-1.3`) : failedReasons.push(`PCR ${input.pcr.toFixed(2)} outside 0.8-1.3`);
+  const pcrOk = input.pcr != null && input.pcr >= 0.8 && input.pcr <= 1.3;
+  pcrOk ? reasons.push(`PCR ${input.pcr.toFixed(2)} in 0.8-1.3`) : failedReasons.push(`PCR ${input.pcr?.toFixed(2) ?? "N/A"} outside 0.8-1.3`);
 
   // Rule 2: OI supports the move
   let oiOk = true;

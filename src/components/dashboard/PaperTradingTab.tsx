@@ -145,15 +145,15 @@ export default function PaperTradingTab() {
         setAccount(json.data.account);
       }
 
-      const openRes = await fetch("/api/hermes/paper/open");
+      const openRes = await fetch("/api/hermes/paper?view=open");
       const openJson = await openRes.json();
       if (openJson.success) setOpenTrades(openJson.data);
 
-      const histRes = await fetch("/api/hermes/paper/history?limit=200");
+      const histRes = await fetch("/api/hermes/paper?view=history&limit=200");
       const histJson = await histRes.json();
       if (histJson.success) setClosedTrades(histJson.data);
 
-      const ntRes = await fetch("/api/hermes/paper/no-trade");
+      const ntRes = await fetch("/api/hermes/paper?view=no-trade");
       const ntJson = await ntRes.json();
       if (ntJson.success) setNoTradeObs(ntJson.data);
     } catch (err) {

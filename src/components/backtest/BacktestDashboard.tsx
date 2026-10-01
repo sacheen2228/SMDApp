@@ -90,6 +90,168 @@ function BreakdownTable({
   );
 }
 
+// ─── Replay verification panel ───────────────────────────────────────────
+// Independent re-execution of every recorded trade against REAL data:
+// option trades replay premium OHLC from NSE/BSE F&O bhavcopies (never
+// spot), equity trades replay Yahoo candles. dataQuality=NO_DATA means no
+// real data existed — reported honestly, never simulated.
+
+interface ReplaySummary {
+  totalTrades: number;
+  backtestableTrades: number;
+  noDataTrades: number;
+  actualWinRate: number;
+  actualNetPnl: number;
+  actualProfitFactor: number;
+  actualAvgRMultiple: number;
+  actualMaxDrawdown: number;
+  correlationWithRecorded: number;
+  byStrategy: Record<string, { trades: number; wins: number; netPnl: number; winRate: number; profitFactor: number }>;
+  bySymbol: Record<string, { trades: number; wins: number; netPnl: number; winRate: number }>;
+}
+
+interface ReplayTradeRow {
+  id: string;
+  symbol: string;
+  strategyId: string;
+  instrumentType?: string;
+  optionType?: string;
+  dataQuality: string;
+  actualPnl?: number | null;
+}
+
+function isReplayOption(t: ReplayTradeRow): boolean {
+  return t.instrumentType === "OPTIONS" || t.optionType === "CE" || t.optionType === "PE";
+}
+
+function ReplayPanel() {
+  const [summary, setSummary] = useState<ReplaySummary | null>(null);
+  const [trades, setTrades] = useState<ReplayTradeRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/backtest/trades?maxTrades=1000");
+      if (!res.ok) throw new Error(String(res.status));
+      const j = await res.json();
+      if (!j.success) throw new Error(j.error || "failed");
+      setSummary(j.summary);
+      setTrades(j.trades ?? []);
+      setErr("");
+    } catch (e: any) {
+      setErr(e?.message || "Replay failed");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const split = useMemo(() => {
+    const real = (t: ReplayTradeRow) => t.dataQuality === "REAL" && t.actualPnl !== null && t.actualPnl !== undefined;
+    const agg = (grp: ReplayTradeRow[]) => {
+      const rw = grp.filter(real);
+      const wins = rw.filter((t) => (t.actualPnl ?? 0) > 0);
+      const net = rw.reduce((s, t) => s + (t.actualPnl ?? 0), 0);
+      const gp = rw.filter((t) => (t.actualPnl ?? 0) > 0).reduce((s, t) => s + (t.actualPnl ?? 0), 0);
+      const gl = Math.abs(rw.filter((t) => (t.actualPnl ?? 0) <= 0).reduce((s, t) => s + (t.actualPnl ?? 0), 0));
+      return {
+        n: grp.length,
+        real: rw.length,
+        noData: grp.length - rw.length,
+        winRate: rw.length ? (wins.length / rw.length) * 100 : 0,
+        net,
+        pf: gl > 0 ? gp / gl : null,
+      };
+    };
+    const opt = trades.filter(isReplayOption);
+    const eq = trades.filter((t) => !isReplayOption(t));
+    const nodBySym: Record<string, number> = {};
+    for (const t of trades) if (t.dataQuality === "NO_DATA") nodBySym[t.symbol] = (nodBySym[t.symbol] ?? 0) + 1;
+    return { opt: agg(opt), eq: agg(eq), nodBySym };
+  }, [trades]);
+
+  if (!summary) {
+    return (
+      <div className="bg-[#1a1d28] border border-[#2a2e39] rounded-lg p-3">
+        <div className="text-[11px] font-bold text-muted-foreground mb-2">
+          REPLAY VERIFICATION {loading && <span className="text-amber-400">— running against real premium/candle data…</span>}
+          {err && <span className="text-red-400">— {err}</span>}
+        </div>
+        <div className="text-[10px] text-muted-foreground py-3">
+          Re-executes every closed trade: options vs NSE/BSE bhavcopy premium OHLC, equity vs Yahoo candles.
+        </div>
+      </div>
+    );
+  }
+
+  const rows = (m: { n: number; real: number; noData: number; winRate: number; net: number; pf: number | null }) => [
+    m.n,
+    m.real,
+    m.noData,
+    `${fmt(m.winRate, 1)}%`,
+    m.pf === null ? "—" : fmt(m.pf, 2),
+    rupee(m.net),
+  ];
+
+  return (
+    <div className="bg-[#1a1d28] border border-[#2a2e39] rounded-lg p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[11px] font-bold text-muted-foreground flex items-center gap-2">
+          <TrendingUp className="h-3 w-3 text-emerald-400" />
+          REPLAY VERIFICATION — real premium (NSE/BSE bhavcopy) &amp; candle re-execution
+        </div>
+        <div className="flex items-center gap-2 text-[9px]">
+          {err && <span className="text-red-400">{err}</span>}
+          <button onClick={load} disabled={loading} className="h-6 text-[9px] bg-muted/50 px-2 rounded font-bold flex items-center gap-1 hover:bg-muted disabled:opacity-50">
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Re-run
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
+        <StatCard label="Replayed" value={`${summary.backtestableTrades}/${summary.totalTrades}`} />
+        <StatCard label="No Real Data" value={String(summary.noDataTrades)} color={summary.noDataTrades ? "text-amber-400" : "text-emerald-400"} />
+        <StatCard label="Actual WR" value={`${fmt(summary.actualWinRate, 1)}%`} color={summary.actualWinRate >= 50 ? "text-emerald-400" : "text-amber-400"} />
+        <StatCard label="Actual Net" value={rupee(summary.actualNetPnl)} color={summary.actualNetPnl >= 0 ? "text-emerald-400" : "text-red-400"} />
+        <StatCard label="Actual PF" value={summary.actualProfitFactor === null ? "—" : fmt(summary.actualProfitFactor, 2)} color={(summary.actualProfitFactor ?? 0) >= 1 ? "text-emerald-400" : "text-red-400"} />
+        <StatCard label="vs Recorded" value={`r=${fmt(summary.correlationWithRecorded, 2)}`} color="text-amber-400" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <BreakdownTable
+          title="REPLAY BY STRATEGY"
+          headers={["strategy", "trades", "win%", "PF", "net₹"]}
+          rows={Object.entries(summary.byStrategy).sort((a, b) => b[1].netPnl - a[1].netPnl).map(([k, v]) => [
+            k,
+            v.trades,
+            fmt(v.winRate, 1),
+            v.profitFactor === null ? "—" : fmt(v.profitFactor, 2),
+            rupee(v.netPnl),
+          ])}
+        />
+        <BreakdownTable
+          title="OPTIONS vs EQUITY (replayed)"
+          headers={["class", "trades", "noData", "win%", "PF", "net₹"]}
+          rows={[
+            ["OPTIONS", ...rows(split.opt)],
+            ["EQUITY", ...rows(split.eq)],
+          ]}
+        />
+        <BreakdownTable
+          title={`NO REAL DATA (${summary.noDataTrades})`}
+          headers={["symbol", "trades"]}
+          rows={Object.entries(split.nodBySym).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, String(v)])}
+        />
+      </div>
+    </div>
+  );
+}
+
 function TradeRow({ t }: { t: TradeRecord }) {
   const win = (t.netPnl ?? 0) >= 0;
   const statusColor =
@@ -283,6 +445,8 @@ export default function BacktestDashboard() {
               color="text-red-400"
             />
           </div>
+
+          <ReplayPanel />
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <BreakdownTable

@@ -47,14 +47,20 @@ export interface ActiveTradeLock {
 }
 
 // ─── Terminal states that release the lock ────────────────────────
+// NOTE: OPEN is an active state (trades are created OPEN/ACTIVE) — it must
+// NOT be terminal or restoreLocksFromDB + updateTradeStatus would fight.
+// TP2_HIT releases here (legacy contract: TP2 = final exit at lock level).
+// When a BUY trade still has TP3 pending, the tracker does NOT forward
+// TP2_HIT to updateTradeStatus — it keeps the lock and releases explicitly
+// only on the real terminal event (TP3 / SL / no-TP3-TP2 / SELL-TP1).
 const TERMINAL_STATES = new Set<string>([
-  'TP2_HIT', 'SL_HIT', 'EXIT', 'CANCELLED', 'EXPIRED',
-  'WIN', 'LOSS', 'BREAKEVEN', 'CLOSED', 'OPEN',
+  'TP2_HIT', 'TP3_HIT', 'SL_HIT', 'EXIT', 'CANCELLED', 'EXPIRED',
+  'WIN', 'LOSS', 'BREAKEVEN', 'CLOSED',
 ]);
 
 // ─── Active states that hold the lock ────────────────────────────
 const ACTIVE_STATES = new Set<string>([
-  'PENDING', 'ACTIVE', 'MONITORING', 'TP1_HIT',
+  'PENDING', 'ACTIVE', 'OPEN', 'MONITORING', 'TP1_HIT',
 ]);
 
 // ─── In-Memory Lock Cache (fast path) ────────────────────────────

@@ -5,12 +5,25 @@ import type {
   HermesContext, HermesMode, FreshData, SpotData, OptionChainData,
   StructureData, GreeksData, GammaData, VolumeData, FIIDIIData,
   NewsData, RegimeData, ExpiryLiquidityData, BacktestData, DataFreshness, ToolStatus,
-  MCXIntelligenceData
+  MCXIntelligenceData, DataProvider
 } from "./types";
 import { classifyFreshness } from "./freshness";
 import { getRequiredTools } from "./tool-registry";
 
 const BASE = ""; // Same-origin API calls
+
+// Map raw API provenance strings onto Hermes DataProvider
+function toProvider(raw: unknown, fallback: DataProvider = "nse"): DataProvider {
+  const s = String(raw || "").toLowerCase();
+  if (!s) return fallback;
+  if (s.includes("breeze") || s === "icici-breeze") return "icici-breeze";
+  if (s.includes("motilal") || s === "moapi") return "moapi";
+  if (s.includes("bse")) return "bse-api";
+  if (s.includes("nse")) return "nse";
+  if (s.includes("yahoo")) return "yahoo";
+  if (s.includes("website")) return "website";
+  return fallback;
+}
 
 // ── Fetch Helper ───────────────────────────────────────────────────────
 
@@ -133,7 +146,7 @@ export async function collectHermesContext(
       low: summary?.low || spotPrice,
       volume: summary?.volume || 0,
     },
-    source: data.optionChain ? "breeze" : "yahoo",
+    source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: spotPrice > 0 ? "LIVE" : "UNAVAILABLE",
@@ -205,7 +218,7 @@ export async function collectHermesContext(
         vix: summary?.indiaVIX || 0,
         futuresPrice: summary?.futuresPrice || 0,
       },
-      source: canonicalChain.dataSource || data.optionChain ? "canonical" : "yahoo",
+      source: toProvider(canonicalChain.dataSource || data.optionChain?.source || data.optionChain?.data?.dataSource, "nse"),
       timestamp: now.toISOString(),
       ageMs: 0,
       freshness: "LIVE",
@@ -237,7 +250,7 @@ export async function collectHermesContext(
         vix: summary?.indiaVIX || 0,
         futuresPrice: summary?.futuresPrice || 0,
       },
-      source: "breeze",
+      source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, "nse"),
       timestamp: now.toISOString(),
       ageMs: 0,
       freshness: "LIVE",
@@ -253,7 +266,7 @@ export async function collectHermesContext(
   const vixValue = summary?.indiaVIX || data.regime?.vix || 15;
   const vix: FreshData<number> = {
     value: vixValue,
-    source: data.optionChain ? "breeze" : "yahoo",
+    source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: vixValue > 0 ? "LIVE" : "UNAVAILABLE",
@@ -329,14 +342,14 @@ export async function collectHermesContext(
       pdh: sdmData.pdh || spotPrice,
       pdl: sdmData.pdl || spotPrice,
     },
-    source: "breeze",
+    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: "FRESH",
     status: "SUCCESS",
     delayed: false,
     fallbackUsed: false,
-  } : wrapFresh(null, "breeze", "structure");
+  } : wrapFresh(null, "nse", "structure");
 
   // Greeks (from option chain)
   const greeks: FreshData<GreeksData> = {
@@ -347,7 +360,7 @@ export async function collectHermesContext(
       vega: summary?.atmVega || 0,
       iv: summary?.atmIV || 0,
     },
-    source: "breeze",
+    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: "FRESH",
@@ -368,14 +381,14 @@ export async function collectHermesContext(
       estimatedGEX: data.gamma.estimatedGEX || 0,
       regime: "UNKNOWN",
     },
-    source: "breeze",
+    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: "FRESH",
     status: "SUCCESS",
     delayed: false,
     fallbackUsed: false,
-  } : wrapFresh(null, "breeze", "gamma");
+  } : wrapFresh(null, "nse", "gamma");
 
   // Volume
   const volume: FreshData<VolumeData> = {
@@ -389,7 +402,7 @@ export async function collectHermesContext(
       absorptionLevels: [],
       exhaustionSignals: [],
     },
-    source: "breeze",
+    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: "FRESH",
@@ -406,7 +419,7 @@ export async function collectHermesContext(
       gammaPressure: 0,
       oiShift: 0,
     },
-    source: "breeze",
+    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
     timestamp: now.toISOString(),
     ageMs: 0,
     freshness: "FRESH",
@@ -517,9 +530,11 @@ const NSE_HOLIDAYS = new Set([
 ]);
 
 function determineMarketStatus(now: Date): any {
+  // Shift epoch by +5:30 then read with UTC getters → correct IST wall-clock
+  // regardless of process TZ. (getHours() after this shift double-counts IST.)
   const ist = new Date(now.getTime() + 5.5 * 3600000);
-  const mins = ist.getHours() * 60 + ist.getMinutes();
-  const day = ist.getDay();
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const day = ist.getUTCDay();
   const iso = ist.toISOString().split('T')[0];
 
   if (day === 0 || day === 6) return "WEEKEND";

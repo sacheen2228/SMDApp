@@ -15,6 +15,7 @@ import { getEventBus, emitTradeCreated, emitTP1Hit, emitTP2Hit, emitSLHit, emitT
 import { randomBytes } from "crypto";
 import { releaseTradeLock } from "../active-trade-lock";
 import { recordSignalOutcome } from "@/lib/agents/reputation";
+import { getCurrentSession } from "../market-session";
 
 // ── Singleton State ─────────────────────────────────────────────────────
 
@@ -276,6 +277,14 @@ class PaperWorkerSingleton {
     if (this.state.status !== "RUNNING") return;
 
     try {
+      // Skip when market is closed — avoids flooding NO_TRADE observations
+      // (and signalsToday) while Hermes correctly returns RESEARCH_ONLY.
+      const session = getCurrentSession();
+      if (!session?.isMarketOpen && session?.session !== "pre_open") {
+        this.state.lastSignalEvaluation = new Date();
+        return;
+      }
+
       // Check max open trades
       if (this.openTrades.length >= this.config.maxOpenPaperTrades) return;
 
@@ -297,8 +306,11 @@ class PaperWorkerSingleton {
 
   private async evaluateInstrument(symbol: string): Promise<void> {
     // Run Hermes analysis
-    const result = await hermesPro(`Analyze ${symbol} for option buying`, {
+    const result = await hermesPro(`Give me a live trade recommendation for ${symbol} with CE or PE`, {
       symbol,
+      mode: "TRADE",
+      intent: "LIVE_TRADE",
+      apiBase: process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000",
     });
 
     this.state.signalsToday++;
@@ -522,6 +534,9 @@ class PaperWorkerSingleton {
         entry: trade.entryPrice,
         sl: trade.stopLoss,
         exit: currentPrice,
+        tp1: trade.target1,
+        tp2: trade.target2,
+        tp3: trade.target3,
         exitReason: 'INITIAL_SL',
       });
       await this.closeTrade(trade, "SL_HIT");
@@ -535,6 +550,7 @@ class PaperWorkerSingleton {
       await emitTP1Hit(trade.signalId, trade.underlying, {
         direction: trade.decision,
         entry: trade.entryPrice,
+        sl: trade.stopLoss,
         tp1: trade.target1,
         current: currentPrice,
         pnl: ((currentPrice - trade.entryPrice) * trade.quantity).toFixed(2),
@@ -554,6 +570,8 @@ class PaperWorkerSingleton {
       await emitTP2Hit(trade.signalId, trade.underlying, {
         direction: trade.decision,
         entry: trade.entryPrice,
+        sl: trade.stopLoss,
+        tp1: trade.target1,
         tp2: trade.target2,
         current: currentPrice,
         pnl: ((currentPrice - trade.entryPrice) * trade.quantity).toFixed(2),

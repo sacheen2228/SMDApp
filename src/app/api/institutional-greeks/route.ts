@@ -10,11 +10,13 @@ import {
   type MarketContext,
 } from "@/lib/option-acceleration-engine";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { getNearestExpiry, isExpiryDay } from "@/lib/expiry-calculator";
+import { getRealATR14 } from "@/lib/yahoo-finance-api";
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const symbol = searchParams.get("symbol") || "NIFTY";
+    const symbol = (searchParams.get("symbol") || "NIFTY").toUpperCase();
     const expiry = searchParams.get("expiry") || undefined;
 
     const result = await fetchLiveOptionChain(symbol, expiry, request.signal);
@@ -37,6 +39,7 @@ export async function GET(request: NextRequest) {
             oi: row.ce.oi || 0, oiChg: row.ce.oiChg || 0, volume: row.ce.volume || 0,
             iv: row.ce.iv || 0, delta: row.ce.delta || 0, gamma: row.ce.gamma || 0,
             theta: row.ce.theta || 0, vega: row.ce.vega || 0,
+            priceChg: row.ce.priceChg,
           }
         : { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 },
       pe: row.pe
@@ -45,6 +48,7 @@ export async function GET(request: NextRequest) {
             oi: row.pe.oi || 0, oiChg: row.pe.oiChg || 0, volume: row.pe.volume || 0,
             iv: row.pe.iv || 0, delta: row.pe.delta || 0, gamma: row.pe.gamma || 0,
             theta: row.pe.theta || 0, vega: row.pe.vega || 0,
+            priceChg: row.pe.priceChg,
           }
         : { ltp: 0, bid: 0, ask: 0, oi: 0, oiChg: 0, volume: 0, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 },
     }));
@@ -63,23 +67,35 @@ export async function GET(request: NextRequest) {
     const expectedMove = spot * (vix / 100) * Math.sqrt(1 / 365);
 
     const now = new Date();
-    const marketOpen = new Date(now);
-    marketOpen.setHours(9, 15, 0, 0);
+    const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
+    const ist = new Date(istMs);
+    const istMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    const istWeekday = ist.getUTCDay(); // 0 = Sunday
+    const isMarketOpen = istWeekday >= 1 && istWeekday <= 5 && istMinutes >= 555 && istMinutes <= 930;
+
+    const marketOpenDate = new Date(now);
+    marketOpenDate.setHours(9, 15, 0, 0);
     const totalSession = 375;
-    const elapsed = Math.max(0, Math.min(totalSession, (now.getTime() - marketOpen.getTime()) / 60000));
+    const elapsed = Math.max(0, Math.min(totalSession, (now.getTime() - marketOpenDate.getTime()) / 60000));
     const sessionMinutes = Math.max(0, totalSession - elapsed);
 
-    const Thursday = 4;
-    const daysToThu = (Thursday - now.getDay() + 7) % 7 || 7;
-    const minutesToExpiry = daysToThu * totalSession + sessionMinutes;
-    const isExpiryDay = now.getDay() === Thursday;
+    // Canonical expiry calculator — NOT hardcoded Thursday
+    const nearestExpiry = getNearestExpiry(symbol);
+    const daysToExpiry = nearestExpiry?.daysToExpiry ?? 7;
+    const minutesToExpiry = daysToExpiry * totalSession + sessionMinutes;
+    const isExpiryDayCalc = isExpiryDay(symbol, now);
 
     let trend: "bullish" | "bearish" | "neutral" = "neutral";
     if (pcr < 0.85 && spot >= atmStrike) trend = "bullish";
     else if (pcr > 1.2 && spot <= atmStrike) trend = "bearish";
 
     const sessionPct = elapsed / totalSession;
-    const intradayRange = expectedMove * (0.4 + sessionPct * 0.2);
+    const vixEstimatedRange = expectedMove * (0.4 + sessionPct * 0.2);
+
+    // Real ATR from daily candles (Yahoo, cached 1h) — fallback to VIX-derived estimate
+    const atrResult = await getRealATR14(symbol, Math.round(vixEstimatedRange * 100) / 100);
+    const atr = atrResult.atr;
+    const atrSource = atrResult.source;
 
     const ctx: MarketContext = {
       spot, vix, pcr, maxPain, atmStrike,
@@ -87,9 +103,13 @@ export async function GET(request: NextRequest) {
       callOiChg, putOiChg,
       expectedMove: Math.round(expectedMove * 100) / 100,
       sessionMinutes: Math.round(sessionMinutes),
-      minutesToExpiry, isExpiryDay,
-      atr: Math.round(intradayRange * 100) / 100,
+      minutesToExpiry, isExpiryDay: isExpiryDayCalc,
+      atr,
+      atrSource,
       trend,
+      dataAgeMs: result.ageMs || 0,
+      isMarketOpen,
+      strikeStep: symbol === "SENSEX" ? 100 : 50,
     };
 
     const engineResult = runAccelerationEngine(strikes, ctx);
@@ -97,6 +117,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      source: result.source,
       data: engineResult,
     });
   } catch (error: any) {

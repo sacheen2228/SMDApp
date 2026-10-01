@@ -88,6 +88,7 @@ const QUICK_ACTIONS = [
   { label: "Risk", icon: AlertTriangle, query: "Show me my current risk status and open positions." },
   { label: "Memory", icon: Bot, query: "What's in my trade memory? Best setups?" },
   { label: "CAS", icon: Sparkles, query: "What's the CAS straddle analysis for today?" },
+  { label: "Jarvis", icon: Bot, query: "Jarvis signal" },
 ];
 
 // ─── Markdown (lightweight, escaped) ─────────────────────────────

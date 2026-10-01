@@ -3,9 +3,11 @@
 // GET /api/backtest/trades
 //   ?strategyId=ZERO_HERO_AI  (filter by strategy)
 //   ?symbol=NIFTY             (filter by symbol)
-//   ?maxTrades=100            (limit trades to backtest, default 100)
+//   ?maxTrades=100            (limit trades to backtest, default 100;
+//                              pages through the sidecar past its 500 cap)
 //   ?dateFrom=2026-08-01      (filter trades from date)
 //   ?dateTo=2026-08-31        (filter trades to date)
+//   ?includeTest=1            (also backtest e2e-test/prod-verify junk rows)
 
 import { NextResponse } from 'next/server';
 import { backtestAllTrades } from '@/lib/trade-backtest-engine';
@@ -19,6 +21,7 @@ export async function GET(request: Request) {
     const maxTrades = parseInt(searchParams.get('maxTrades') || '100');
     const dateFrom = searchParams.get('dateFrom') || undefined;
     const dateTo = searchParams.get('dateTo') || undefined;
+    const includeTestStrategies = searchParams.get('includeTest') === '1';
 
     const result = await backtestAllTrades({
       strategyId,
@@ -26,6 +29,7 @@ export async function GET(request: Request) {
       maxTrades,
       dateFrom,
       dateTo,
+      includeTestStrategies,
     });
 
     return NextResponse.json({

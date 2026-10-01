@@ -25,6 +25,31 @@ import { getCurrentSession } from "@/lib/market-session";
 export type TradeDecision = "TRADE" | "WATCH" | "NO_TRADE";
 export type InstrumentType = "EQUITY" | "CALL" | "PUT" | "FUTURES" | "STRADDLE" | "STRANGLE" | "CAS" | "HERO_ZERO";
 
+/**
+ * Dedupe per (symbol, instrument-kind): an option setup is never erased by a
+ * higher-scoring equity/futures setup on the same symbol, and CALL/PUT stay
+ * distinct; only true duplicates (same symbol + same kind) collapse to the
+ * higher score. Previously keyed by symbol alone → option setups silently
+ * dropped from the Challenge tab.
+ */
+export function dedupeOpportunities(
+  opps: ChallengeOpportunity[]
+): ChallengeOpportunity[] {
+  const OPTION_INSTRUMENTS = new Set<InstrumentType>([
+    "CALL", "PUT", "STRADDLE", "STRANGLE", "CAS", "HERO_ZERO",
+  ]);
+  const map = new Map<string, ChallengeOpportunity>();
+  for (const opp of opps) {
+    const kind = OPTION_INSTRUMENTS.has(opp.instrument) ? opp.instrument : "BASE";
+    const key = `${opp.symbol}|${kind}`;
+    const existing = map.get(key);
+    if (!existing || opp.score > existing.score) {
+      map.set(key, opp);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export interface ChallengeOpportunity {
   rank: number;
   symbol: string;
@@ -48,6 +73,11 @@ export interface ChallengeOpportunity {
   factors: Record<string, number>;
   position: any;
   data: { ltp: number; changePct: number; weekHigh52: number; weekLow52: number };
+  // Option trade detail (CALL/PUT only) — real ATM strike/premium/expiry from
+  // the chain; undefined for equity/futures setups
+  strike?: number;
+  premium?: number;
+  expiry?: string;
   // Gate fields — inherited from session/status gate, NOT from raw score
   tradeable: boolean;
   blockedReasons: string[];
@@ -241,7 +271,9 @@ export async function runChallengeScan(
   try {
     ctx = await buildMarketIntelligenceContext();
     dataSource = ctx.dataQuality || "PARTIAL";
-  } catch {}
+  } catch (e: any) {
+    console.warn("[Challenge] market context failed:", String(e?.message || e).substring(0, 200));
+  }
 
   // 4. Index F&O (NIFTY + SENSEX)
   let indexFOAvailable = 0;
@@ -276,9 +308,14 @@ export async function runChallengeScan(
           factors: sig.factors,
           position: { quantity: 0, lotSize: 25, lots: 0, totalCost: 0, maxLoss: 0, maxLossPct: 0, riskAmount: 0, canTrade: false },
           data: { ltp: sig.entry, changePct: 0, weekHigh52: 0, weekLow52: 0 },
+          strike: sig.strike,
+          premium: sig.premium,
+          expiry: sig.expiry,
         });
       }
-    } catch {}
+    } catch (e: any) {
+      console.warn("[Challenge] index F&O failed:", String(e?.message || e).substring(0, 200));
+    }
   }
 
   // 5. Stock F&O
@@ -314,16 +351,21 @@ export async function runChallengeScan(
           factors: sig.factors,
           position: { quantity: 0, lotSize: 1, lots: 0, totalCost: 0, maxLoss: 0, maxLossPct: 0, riskAmount: 0, canTrade: false },
           data: { ltp: sig.entry, changePct: 0, weekHigh52: 0, weekLow52: 0 },
+          strike: sig.strike,
+          premium: sig.premium,
+          expiry: sig.expiry,
         });
       }
-    } catch {}
+    } catch (e: any) {
+      console.warn("[Challenge] stock F&O failed:", String(e?.message || e).substring(0, 200));
+    }
   }
 
   // 6. Equity Swing
   let equitySwingCandidates = 0;
   if (ctx) {
     try {
-      const swingSignals = analyzeEquitySwing(ctx, 20);
+      const swingSignals = await analyzeEquitySwing(ctx, 20);
       for (const sig of swingSignals) {
         if (sig.direction === "NO_TRADE") continue;
         equitySwingCandidates++;
@@ -332,7 +374,7 @@ export async function runChallengeScan(
           symbol: sig.symbol,
           name: sig.symbol,
           instrument: "EQUITY",
-          strategy: `SWING_${sig.setupType}`,
+          strategy: `SWING_${sig.setup?.type || "SETUP"}`,
           score: sig.confidence,
           confidence: sig.confidence,
           direction: sig.direction,
@@ -352,7 +394,9 @@ export async function runChallengeScan(
           data: { ltp: sig.entry, changePct: 0, weekHigh52: 0, weekLow52: 0 },
         });
       }
-    } catch {}
+    } catch (e: any) {
+      console.warn("[Challenge] equity swing failed:", String(e?.message || e).substring(0, 200));
+    }
   }
 
   // 7. Session gate — determine tradeability and dataStamp
@@ -387,15 +431,8 @@ export async function runChallengeScan(
     opp.dataStamp = isMarketOpen ? 'LIVE' : 'PREV_CLOSE';
   }
 
-  // 10. Dedupe per symbol — keep highest score, tag instrument type
-  const dedupedMap = new Map<string, ChallengeOpportunity>();
-  for (const opp of allOpportunities) {
-    const existing = dedupedMap.get(opp.symbol);
-    if (!existing || opp.score > existing.score) {
-      dedupedMap.set(opp.symbol, opp);
-    }
-  }
-  const deduped = Array.from(dedupedMap.values());
+  // 10. Dedupe per (symbol, instrument-kind) — keep highest score per kind
+  const deduped = dedupeOpportunities(allOpportunities);
 
   // 11. Sort by score
   deduped.sort((a, b) => b.score - a.score);

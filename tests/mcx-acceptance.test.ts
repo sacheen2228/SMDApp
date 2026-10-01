@@ -67,7 +67,7 @@ describe('MCX Commodity Module', () => {
     for (const sym of MCX_APPROVED_CONTRACTS) {
       expect(instruments.has(sym)).toBe(true);
     }
-  });
+  }, 10000); // > internal 8s skip-race; live MO cold load is ~69s
 
   // TEST 4: Correct expiry loaded
   test('TEST 4: Each instrument has expiry date', async () => {
@@ -84,7 +84,7 @@ describe('MCX Commodity Module', () => {
       expect(inst.expiry).toBeTruthy();
       expect(inst.expiry).not.toBe('0000-00-00');
     }
-  });
+  }, 10000); // > internal 8s skip-race; live MO cold load is ~69s
 
   // TEST 5: Correct lot size loaded
   test('TEST 5: Lot sizes match contract specs', () => {
@@ -156,7 +156,7 @@ describe('MCX Commodity Module', () => {
     for (const [sym, inst] of instruments) {
       expect(inst.tradingStatus).toBeTruthy();
     }
-  });
+  }, 10000); // > internal 8s skip-race; live MO cold load is ~69s
 
   // TEST 11: Natural Gas has stricter risk filtering
   test('TEST 11: NATURALGAS and NATGASMINI have higher risk filter', () => {

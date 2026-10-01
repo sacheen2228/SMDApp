@@ -148,7 +148,7 @@ ${alert.rationale}
 
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
   if (!isTelegramSendWindow()) {
-    console.error("[sendIntradayAlerts] outside 09:10-15:20 IST window — skipping");
+      console.error("[sendIntradayAlerts] outside 09:10-15:30 IST window — skipping");
     return { ran: false, newAlerts: 0 };
   }
   if (DIGEST_CHAT_IDS.length === 0) {

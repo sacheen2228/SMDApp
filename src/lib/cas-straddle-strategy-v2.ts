@@ -230,7 +230,7 @@ function computeCASScore(snap: MarketSnapshot): { score: number; phase: "BUILDIN
 
   // PCR confirmation (0-10 pts)
   if (snap.casAboveReference && snap.pcr > 1.05) { score += 10; reasoning.push(`PCR ${snap.pcr.toFixed(2)} confirms bullish CAS`); }
-  else if (!snap.casAboveReference && snap.pcr < 0.95) { score += 10; reasoning.push(`PCR ${snap.pcr.toFixed(2)} confirms bearish CAS`); }
+  else if (!snap.casAboveReference && snap.pcr != null && snap.pcr < 0.95) { score += 10; reasoning.push(`PCR ${snap.pcr.toFixed(2)} confirms bearish CAS`); }
 
   // Volume confirmation (0-10 pts)
   if (snap.volumeRatio > 1.5) { score += 10; reasoning.push(`Volume ${snap.volumeRatio.toFixed(1)}x avg`); }
@@ -596,6 +596,14 @@ export function generateStrategySignalV2(
     const optimized = optimizeStrategyType(snap, config.strikeSelection);
     strategyType = optimized.strategy;
     reasoning.push(...optimized.reasoning);
+  }
+
+  // ─── PRODUCTION SAFETY GATE: CE/PE BUY ONLY ──────────────────
+  // STRADDLE/STRANGLE are premium-selling strategies — prohibited in production.
+  // Must run BEFORE other gates so the rejection reason is properly recorded.
+  if (strategyType === "STRADDLE" || strategyType === "STRANGLE") {
+    rejectionReasons.push(`OPTION_SELLING_NOT_ALLOWED: ${strategyType} is a premium-selling strategy`);
+    strategyType = "NO_TRADE";
   }
 
   // ─── Step 5: Strike Optimization ──────────────────────────────

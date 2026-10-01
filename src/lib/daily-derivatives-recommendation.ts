@@ -51,7 +51,7 @@ export function buildDailyDerivativesRecommendation(
     `Dynamic S/R from Expected Move: Support ₹${sig.support}, Resistance ₹${sig.resistance} (IV factor ${sig.raw.iv > 22 ? "1.20" : sig.raw.iv > 18 ? "1.10" : "1.00"}, Gamma ${sig.raw.gamma > 0.03 ? "boost" : "neutral"}, Volume ${sig.raw.volumeRatio > 1.5 ? "boost" : "neutral"}).`,
   );
   reasoning.push(
-    `Oscillators: PCR ${sig.raw.pcr.toFixed(2)} | IV ${sig.raw.iv.toFixed(1)} | ATM Delta ${sig.raw.delta.toFixed(2)} | Gamma ${sig.raw.gamma.toFixed(3)} | Vega ${sig.raw.vega.toFixed(2)} | Theta ${sig.raw.theta.toFixed(2)}.`,
+    `Oscillators: PCR ${sig.raw.pcr?.toFixed(2) ?? "N/A"} | IV ${sig.raw.iv.toFixed(1)} | ATM Delta ${sig.raw.delta.toFixed(2)} | Gamma ${sig.raw.gamma.toFixed(3)} | Vega ${sig.raw.vega.toFixed(2)} | Theta ${sig.raw.theta.toFixed(2)}.`,
   );
   reasoning.push(
     `OI posture: highest Call OI ${sig.raw.highestCallOI.toLocaleString("en-IN")}, highest Put OI ${sig.raw.highestPutOI.toLocaleString("en-IN")} → Support strength ${sig.supportStrength}/100, Resistance strength ${sig.resistanceStrength}/100.`,

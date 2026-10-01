@@ -12,10 +12,10 @@ export async function sendTelegramMessage(
   chatId: string | number,
   text: string
 ): Promise<boolean> {
-  // Hard gate: no Telegram output outside 09:10-15:20 IST (Mon-Fri).
+  // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
   // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
   if (!isTelegramSendWindow()) {
-    console.warn("[telegramSend] outside 09:10-15:20 IST window — suppressed send");
+    console.warn("[telegramSend] outside 09:10-15:30 IST window — suppressed send");
     return false;
   }
   if (!TOKEN) {

@@ -1,76 +1,45 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Agent System — Main exports
+// Agent System Index — clean exports for the 30-agent system
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Types
-export * from './types';
+export type {
+  AgentId, AgentCategory, AgentBias, AgentRecommendation,
+  AgentResearchOutput, AgentDefinition, AgentContext,
+  CrossConfluenceInput, CrossConfluenceOutput,
+  GrokDecision, TradeMonitorState, TPSLAlert, TPSLAlertType,
+  TradeDecisionRecord,
+} from './agent-contract';
 
-// Registry (registration, lookup, heartbeat, health, tasks, signals, events)
+// Registry
 export {
-  registerAgent,
-  getAgent,
-  getAgentByName,
-  getAllAgents,
-  getAgentsByType,
-  updateHeartbeat,
-  getHeartbeat,
-  getAllHeartbeats,
-  checkStaleHeartbeats,
-  getSystemHealth,
-  createTask,
-  startTask,
-  completeTask,
-  failTask,
-  getTask,
-  getTasksByAgent,
-  getActiveTasks,
-  createSignal,
-  validateSignal,
-  getSignal,
-  getSignalsByAgent,
-  getSignalFeed,
-  emitEvent,
-  getEvents,
-  updatePerformance,
-  getPerformance,
-  forceAgentOffline,
-  isFeatureEnabled,
-} from './registry';
+  REGISTRY, getAgentDef, getAgentsByCategory, getAgentsForInstrument,
+  getAllAgentIds, getAgentCount, runAllAgents,
+} from './registry-30';
 
-// Heartbeat monitoring
-export {
-  startHeartbeatMonitoring,
-  stopHeartbeatMonitoring,
-  recordHeartbeat,
-  getAgentHealthSummary,
-} from './heartbeat';
+// Cross-Confluence
+export { analyzeCrossConfluence } from './cross-confluence';
 
-// Signal lifecycle
-export {
-  canTransition,
-  transitionSignal,
-  getSignalLifecycle,
-  VALID_TRANSITIONS,
-} from './signal-lifecycle';
+// Grok Supervisor
+export { runGrokSupervisor, grokBackstop, getGrokBackstopFireCount, resetGrokBackstopFireCount } from './supervisor';
 
-// Tasks
-export {
-  createMarketScanTask,
-  createOptionScanTask,
-  createCEPEComparisonTask,
-  createExpiryResearchTask,
-  createChartAnalysisTask,
-  createActiveTradeMonitorTask,
-  executeTask,
-  getTaskStatus,
-  getAgentTaskHistory,
-  getRunningTasks,
-  cancelTask,
-} from './tasks';
+// Engines
+export { runOptionEngine } from './option-engine';
+export { runCashFuturesEngine } from './cash-futures-engine';
 
-// Reputation
+// Trade Monitor
 export {
-  recordSignalOutcome,
-  getAgentReputation,
-  getLeaderboard,
-} from './reputation';
+  registerTradeForMonitoring, updateAndDetect, getMonitoredTrade,
+  getAllMonitoredTrades, getActiveMonitoredTrades, closeTrade,
+  isAlertAlreadySent, getMonitorSummary,
+} from './trade-monitor';
+
+// Telegram Alerts
+export { sendTPSLAlert, retryFailedAlerts, getDeliveryStatus, getGlobalDeliveryStats } from './telegram-alerts';
+
+// Learning DB
+export { storeDecisionRecord, updateOutcome, getAgentPerformance, getWinRateByRegime } from './learning-db';
+
+// Pipeline
+export { runFullPipeline, monitorAllTrades, getSystemStatus } from './pipeline';
+export type { PipelineResult } from './pipeline';

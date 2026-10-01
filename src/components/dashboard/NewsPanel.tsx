@@ -22,7 +22,9 @@ import {
   Zap,
   BarChart3,
   Brain,
+  AtSign,
 } from "lucide-react";
+import type { XBuzz } from "@/lib/x-sentiment";
 
 interface NewsArticle {
   id: string;
@@ -46,6 +48,7 @@ interface MarketSentiment {
   topBearish: any[];
   sectorSentiment: Record<string, number>;
   articles: NewsArticle[];
+  x?: XBuzz;
   timestamp: string;
 }
 
@@ -182,6 +185,75 @@ function SectorSentimentBar({ sector, score }: { sector: string; score: number }
   );
 }
 
+function XBuzzCard({ buzz }: { buzz?: XBuzz }) {
+  if (!buzz) return null;
+
+  if (!buzz.available) {
+    return (
+      <Card className="border-zinc-700/50">
+        <CardHeader className="p-3 pb-1">
+          <CardTitle className="text-[10px] font-bold text-muted-foreground flex items-center gap-1">
+            <AtSign className="h-3 w-3" /> X Buzz
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-3 pt-0">
+          <p className="text-[9px] text-muted-foreground">
+            Unavailable — {buzz.reason || "no data"}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const labelColor =
+    buzz.label === "BULLISH"
+      ? "bg-emerald-500/15 text-emerald-500"
+      : buzz.label === "BEARISH"
+      ? "bg-red-500/15 text-red-500"
+      : "bg-zinc-500/15 text-zinc-400";
+
+  return (
+    <Card className="border-sky-500/30">
+      <CardHeader className="p-3 pb-1">
+        <CardTitle className="text-[10px] font-bold flex items-center gap-1">
+          <AtSign className="h-3 w-3 text-sky-400" /> X Buzz
+          <Badge className={`${labelColor} ml-1 text-[9px]`}>{buzz.label}</Badge>
+          <span className="ml-auto font-mono tabular-nums text-[11px]">
+            {buzz.score}/100
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-3 pt-0 space-y-1.5">
+        <p className="text-[9px] text-muted-foreground">
+          {buzz.tweetCount} indexed public X posts (last day)
+        </p>
+        {buzz.samples.slice(0, 4).map((t, i) => (
+          <div key={i} className="flex items-start gap-1.5 py-0.5 border-t border-zinc-800/60 first:border-0">
+            <span
+              className={`text-[8px] font-bold px-1 rounded shrink-0 mt-0.5 ${
+                t.label === "BULLISH"
+                  ? "bg-emerald-500/20 text-emerald-400"
+                  : t.label === "BEARISH"
+                  ? "bg-red-500/20 text-red-400"
+                  : "bg-zinc-500/20 text-zinc-400"
+              }`}
+            >
+              {t.label === "BULLISH" ? "+" : t.label === "BEARISH" ? "-" : "="}
+            </span>
+            <span className="text-[10px] text-muted-foreground leading-snug">
+              {t.author && <span className="text-sky-400 font-semibold">{t.author} </span>}
+              {t.text.length > 140 ? t.text.slice(0, 140) + "…" : t.text}
+            </span>
+          </div>
+        ))}
+        <p className="text-[8px] text-muted-foreground/70 pt-1">
+          Indexed public X posts via Google News — keyword heuristic, one input among many
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string }) {
   const { data, isLoading, refetch, isFetching } = useQuery<MarketSentiment | null>({
     queryKey: ["news"],
@@ -269,6 +341,9 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
       <div className="p-4 space-y-4">
         {/* Sentiment Gauge */}
         <SentimentGauge score={data.overall} label={data.label} />
+
+        {/* X (Twitter) Buzz — free indexed-posts source */}
+        <XBuzzCard buzz={data.x} />
 
         {/* Top Bullish / Bearish */}
         <div className="grid grid-cols-2 gap-3">

@@ -215,7 +215,7 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
             if (isITM_PE) reasoning.push("ITM put");
-            if (pcr < 0.8) reasoning.push(`Bearish PCR ${pcr.toFixed(2)}`);
+            if (pcr > 0 && pcr < 0.8) reasoning.push(`Bearish PCR ${pcr.toFixed(2)}`);
             if (spot > 0) reasoning.push(`Spot ${spot}`);
 
             options.push({
@@ -297,7 +297,7 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
           if (rr >= 1.2 && premium >= 10) {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
-            if (pcr < 0.8) reasoning.push(`Bearish PCR ${pcr.toFixed(2)}`);
+            if (pcr > 0 && pcr < 0.8) reasoning.push(`Bearish PCR ${pcr.toFixed(2)}`);
             reasoning.push(`Spot ${spot}`);
 
             options.push({

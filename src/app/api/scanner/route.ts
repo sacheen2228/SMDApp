@@ -7,6 +7,7 @@ import { runIntradayScan, recordIntradayScannerResults, recordIntradayScannerSig
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
+import { isPlausibleOptionSymbol } from "@/lib/stockUniverse";
 
 // NIFTY 50 stock symbols for scanning
 const NIFTY50_SYMBOLS = [
@@ -110,6 +111,12 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
     const useLive = searchParams.get("live") === "true";
+
+    // Reject synthetic/test IDs before any provider is contacted (same guard
+    // as /api/option-chain) — garbage symbols never reach Breeze or NSE.
+    if (!isPlausibleOptionSymbol(symbol)) {
+      return NextResponse.json({ success: false, error: `Invalid symbol: ${symbol}` }, { status: 400 });
+    }
 
     // Fetch real option chain data: Breeze → NSE (15s max for both)
     let chainData: any = null;
@@ -250,16 +257,18 @@ export async function GET(request: NextRequest) {
       }, { status: 504 });
     }
 
-    // Fetch real per-stock Breeze option chains (probe-first + cached) so the
-    // scanner's options score + monthly option trades use REAL premium/IV/PCR
-    // when Breeze is up. Returns nulls quickly when Breeze is down.
+    // Fetch real per-stock option chains (probe ∥ Breeze/NSE race, cached)
+    // so the scanner's options score + monthly option trades use REAL
+    // premium/IV/PCR. 16s = worst probe (12s, per-provider caps 6s/10s)
+    // plus early batch work; fetchAllOptionChains has its own 12s batch
+    // deadline; empty map when both providers are down.
     const optionChains = await Promise.race([
       fetchAllOptionChains(NIFTY50_SYMBOLS, new Map()),
       new Promise<Map<string, any>>((resolve) => setTimeout(() => {
         const empty = new Map<string, null>();
         NIFTY50_SYMBOLS.forEach(s => empty.set(s, null));
         resolve(empty);
-      }, 8_000)),
+      }, 16_000)),
     ]);
 
     // Run the scan

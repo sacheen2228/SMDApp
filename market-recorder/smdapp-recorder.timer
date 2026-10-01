@@ -3,7 +3,9 @@ Description=SMDApp Market Recorder timer (config-driven interval in app)
 
 [Timer]
 # Finest granularity (30s) — the app enforces the per-mode interval via throttle.
-OnCalendar=Mon-Fri *-*-* 09:15..15:30:00/30
+# systemd 249 cannot parse range+step (09:15..15:30/30); tick every 30s from 09:15
+# and let tick.sh's own 09:15-15:30 IST guard skip out-of-session ticks.
+OnCalendar=Mon-Fri *-*-* 09:15:00/30
 Persistent=false
 Unit=smdapp-recorder.service
 

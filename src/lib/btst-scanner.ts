@@ -13,6 +13,9 @@ import { createTrade, updateTrade } from "./tradeStore";
 import { recordScannerResult } from "./market/record-scanner";
 import { validateCandidateTrade } from "@/lib/trade-validator-gate";
 import { acquireTradeLock, releaseTradeLock } from "@/lib/active-trade-lock";
+import { addDaysISO } from "./null-pnl-repair";
+import { getDailyRange } from "./trade-validator";
+import { isWeekend } from "./option-bhavcopy";
 
 export interface BTSTScanResult {
   timestamp: string;
@@ -407,9 +410,28 @@ export async function recordBTSTSignals(candidates: BTSTAnalysis[]): Promise<num
 }
 
 /**
- * Close yesterday's (or older) still-open BTST signals using the next trading
- * day's realized close — the backtest verification step. Called once daily
+ * Plan one BTST square-off. Rows created today stay open; every other row
+ * probes from ITS OWN next calendar day — never from "today" — so a stale
+ * row gets its real next-trading-day close instead of whatever close the
+ * sweep day happens to have (the Jul-20/Sep-11 mass-stamp corruption).
+ */
+export function planBtstSquareOff(
+  createdYmd: string,
+  todayYmd: string
+): { skip: boolean; probeFrom: string } {
+  if (!/^\d{8}$/.test(createdYmd)) return { skip: true, probeFrom: "" };
+  const createdIso = `${createdYmd.slice(0, 4)}-${createdYmd.slice(4, 6)}-${createdYmd.slice(6, 8)}`;
+  return { skip: createdYmd >= todayYmd, probeFrom: addDaysISO(createdIso, 1) };
+}
+
+/**
+ * Close yesterday's (or older) still-open BTST signals using EACH ROW'S real
+ * next trading day close — the backtest verification step. Called once daily
  * (cron 15:25 IST) so each BTST idea is held ~1 session, then squared off.
+ *
+ * Day-2+ rows (day-1 close failed) retry against their own exit date's
+ * historical close, not today's — and if no real close exists the row is
+ * left open with a warning (never a fabricated price).
  */
 export async function closeYesterdayBTST(): Promise<{ closed: number }> {
   try {
@@ -417,39 +439,68 @@ export async function closeYesterdayBTST(): Promise<{ closed: number }> {
     if (page.items.length === 0) return { closed: 0 };
 
     const todayYmd = istYmd();
-    const priceCache = new Map<string, number>();
+    const todayIso = `${todayYmd.slice(0, 4)}-${todayYmd.slice(4, 6)}-${todayYmd.slice(6, 8)}`;
+    const liveCache = new Map<string, number>();
     let closed = 0;
 
     for (const t of page.items) {
       const createdYmd = (t.createdAtIst || "").slice(0, 10).replace(/-/g, "");
-      if (createdYmd >= todayYmd) continue; // keep today's fresh scans open
+      const plan = planBtstSquareOff(createdYmd, todayYmd);
+      if (plan.skip) continue; // keep today's fresh scans open
 
-      let closePx = priceCache.get(t.symbol);
-      if (closePx === undefined) {
-        const d = await fetchYahooCandles(t.symbol, "5d", "1d");
-        closePx = d?.candles.at(-1)?.close ?? 0;
-        priceCache.set(t.symbol, closePx);
+      // First trading day strictly after creation (skip weekends/holidays).
+      let exitIso: string | null = null;
+      let closePx = 0;
+      for (let cand = plan.probeFrom, w = 0; w < 8; w++, cand = addDaysISO(cand, 1)) {
+        if (isWeekend(cand)) continue;
+        if (cand >= todayIso) break; // today → live close below; future → not traded yet
+        const range = await getDailyRange(t.symbol, new Date(`${cand}T00:00:00Z`));
+        if (range) {
+          exitIso = cand;
+          closePx = range.close;
+          break;
+        }
       }
-      if (closePx > 0) {
-        await closeTrade(t.id, closePx, "btst_square_off");
-        // Sync the same exit into the Prisma journal (unified lifecycle).
-        const pnl = Math.round((closePx - t.entryPrice) * 100) / 100;
-        const pnlPct = t.entryPrice > 0 ? Math.round((pnl / t.entryPrice) * 1000) / 10 : 0;
-        const createdMs = Date.parse(t.createdAtIst || "");
-        const holdingMin = Number.isFinite(createdMs)
-          ? Math.round((Date.now() - createdMs) / 60000)
+
+      if (exitIso === null) {
+        // Proper exit is today — use the live close (same as the normal path)
+        let live = liveCache.get(t.symbol);
+        if (live === undefined) {
+          const d = await fetchYahooCandles(t.symbol, "5d", "1d");
+          live = d?.candles.at(-1)?.close ?? 0;
+          liveCache.set(t.symbol, live);
+        }
+        closePx = live;
+        exitIso = todayIso;
+      }
+
+      if (!(closePx > 0)) {
+        console.warn(
+          `[BTST] square-off skipped for ${t.id}: no real close for exit ${exitIso} — row left open`
+        );
+        continue; // NEVER stamp a fabricated price
+      }
+
+      await closeTrade(t.id, closePx, "btst_square_off");
+      // Sync the same exit into the Prisma journal (unified lifecycle).
+      const pnl = Math.round((closePx - t.entryPrice) * 100) / 100;
+      const pnlPct = t.entryPrice > 0 ? Math.round((pnl / t.entryPrice) * 1000) / 10 : 0;
+      const createdMs = Date.parse(t.createdAtIst || "");
+      const exitMs = Date.parse(`${exitIso}T15:20:00+05:30`);
+      const holdingMin =
+        Number.isFinite(createdMs) && Number.isFinite(exitMs) && exitMs >= createdMs
+          ? Math.round((exitMs - createdMs) / 60000)
           : 0;
-        await updateTrade(t.id, {
-          status: "CLOSED",
-          exitPrice: closePx,
-          exitReason: "btst_square_off",
-          pnl,
-          pnlPercent: pnlPct,
-          holdingTimeMin: holdingMin,
-          tpHitLevel: "btst_square_off",
-        }).catch(() => {});
-        closed++;
-      }
+      await updateTrade(t.id, {
+        status: "CLOSED",
+        exitPrice: closePx,
+        exitReason: "btst_square_off",
+        pnl,
+        pnlPercent: pnlPct,
+        holdingTimeMin: holdingMin,
+        tpHitLevel: "btst_square_off",
+      }).catch(() => {});
+      closed++;
     }
     return { closed };
   } catch {

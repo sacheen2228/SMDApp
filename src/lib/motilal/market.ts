@@ -27,7 +27,7 @@ export interface MotilalScrip {
 }
 
 // ── Common headers ──
-function getHeaders(authToken?: string): Record<string, string> {
+export function getHeaders(authToken?: string): Record<string, string> {
   const session = getSessionToken();
   const access = getAccessTokenValue();
 
@@ -161,6 +161,9 @@ export async function getScrips(
         method: "POST",
         headers: getHeaders(authToken),
         body: JSON.stringify({ exchangename: exchange }),
+        // Cold MCX master is ~69s (14.9k scrips); cap so a hung MO can never
+        // block callers forever — timeout lands in catch → [] → static fallback.
+        signal: AbortSignal.timeout(90_000),
       }
     );
 

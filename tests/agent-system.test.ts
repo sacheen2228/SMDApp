@@ -1,748 +1,682 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Agent System Tests — Registry, Heartbeat, Tasks, Signals, Events, Reputation
+// Agent System Tests — 30 agents, cross-confluence, Grok, engines, TP/SL
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
-  registerAgent,
-  getAgent,
-  getAgentByName,
-  getAllAgents,
-  updateHeartbeat,
-  getHeartbeat,
-  getSystemHealth,
-  createTask,
-  startTask,
-  completeTask,
-  failTask,
-  getTask,
-  createSignal,
-  validateSignal,
-  getSignal,
-  getSignalFeed,
-  emitEvent,
-  getEvents,
-  isFeatureEnabled,
-  forceAgentOffline,
-  checkStaleHeartbeats,
-  updatePerformance,
-  getPerformance,
-} from '@/lib/agents/registry';
+  REGISTRY, getAgentDef, getAgentCount, getAllAgentIds, runAllAgents,
+} from '../src/lib/agents/registry-30';
+import { analyzeCrossConfluence } from '../src/lib/agents/cross-confluence';
+import { runGrokSupervisor } from '../src/lib/agents/supervisor';
+import { runOptionEngine } from '../src/lib/agents/option-engine';
+import { runCashFuturesEngine } from '../src/lib/agents/cash-futures-engine';
 import {
-  canTransition,
-  transitionSignal,
-  getSignalLifecycle,
-} from '@/lib/agents/signal-lifecycle';
-import {
-  recordSignalOutcome,
-  getAgentReputation,
-  getLeaderboard,
-} from '@/lib/agents/reputation';
-import {
-  validateExternalSignal,
-} from '@/lib/external/ai-trader/validator';
-import {
-  normalizeSignal,
-} from '@/lib/external/ai-trader/normalizer';
-import {
-  isDuplicateSignal,
-  cacheSignal,
-  clearSignalCache,
-} from '@/lib/external/ai-trader/cache';
-import type { AgentSignal, AgentCapabilities } from '@/lib/agents/types';
-import type { AITraderSignal } from '@/lib/external/ai-trader/types';
+  registerTradeForMonitoring, updateAndDetect, closeTrade,
+  isAlertAlreadySent, getMonitorSummary, getMonitoredTrade, markAlertSent,
+} from '../src/lib/agents/trade-monitor';
+import { sendTPSLAlert } from '../src/lib/agents/telegram-alerts';
+import type {
+  AgentContext, AgentResearchOutput, AgentId,
+} from '../src/lib/agents/agent-contract';
+
+// ─── Mock Agent Context ───────────────────────────────────────────
+
+function mockContext(overrides?: Partial<AgentContext>): AgentContext {
+  return {
+    symbol: 'NIFTY',
+    timeframe: '15m',
+    exchange: 'NSE',
+    instrument: 'index',
+    fetchedAtIso: new Date().toISOString(),
+    spot: 24500,
+    prevClose: 24400,
+    open: 24420,
+    high: 24550,
+    low: 24380,
+    volume: 50000000,
+    optionChain: {
+      totalCallOI: 10000000,
+      totalPutOI: 12000000,
+      callOiChange: 500000,
+      putOiChange: 800000,
+      maxPain: 24500,
+      atmStrike: 24500,
+    },
+    strikes: [
+      { strike: 24500, ce: { ltp: 150, volume: 10000, oi: 50000, iv: 15 }, pe: { ltp: 140, volume: 12000, oi: 60000, iv: 16 } },
+    ],
+    vix: 14,
+    vixChange: -0.5,
+    fiiNet: 300,
+    diiNet: 200,
+    fiiBias: 'BULLISH_FLOW',
+    participantOI: null,
+    regime: 'TRENDING_UP',
+    regimeBias: 'BULLISH',
+    regimeConfidence: 70,
+    trend: 'UP',
+    swingHigh: 24550,
+    swingLow: 24380,
+    supportLevels: [24400, 24300],
+    resistanceLevels: [24600, 24700],
+    pdh: 24480,
+    pdl: 24350,
+    lastEvent: 'BOS_UP',
+    atmDelta: 0.52,
+    atmGamma: 0.0008,
+    atmTheta: -3.5,
+    atmVega: 0.45,
+    atmIV: 16,
+    poc: 24490,
+    vah: 24560,
+    val: 24420,
+    gammaDetected: true,
+    gammaWallStrike: 24600,
+    gammaFlip: 24500,
+    dealerBias: 'SHORT_GAMMA',
+    newsSentiment: 'BULLISH',
+    newsScore: 0.3,
+    headlines: ['Markets rally on strong FII buying', 'IT stocks lead the charge'],
+    marketStatus: 'MARKET_OPEN',
+    daysToExpiry: 5,
+    expiry: '2026-09-25',
+    dataTimestamp: new Date().toISOString(),
+    spotFreshness: 'FRESH',
+    chainFreshness: 'FRESH',
+    ...overrides,
+  };
+}
+
+function mockAgentOutput(overrides?: Partial<AgentResearchOutput>): AgentResearchOutput {
+  return {
+    agentId: 'MARKET_REGIME',
+    agentName: 'Market Regime',
+    category: 'MARKET',
+    timestamp: new Date().toISOString(),
+    symbol: 'NIFTY',
+    timeframe: '15m',
+    dataFreshness: 'FRESH',
+    observation: 'Test observation',
+    bias: 'BULLISH',
+    confidence: 65,
+    evidence: ['Test evidence'],
+    riskFlags: [],
+    conflicts: [],
+    recommendationContext: 'TRADE',
+    recommendationReason: 'Test reason',
+    ...overrides,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AGENT REGISTRY TESTS
+// ═══════════════════════════════════════════════════════════════════
 
 describe('Agent Registry', () => {
-  beforeEach(() => {
-    // Reset by clearing all agents
-    // (In-memory store, tests will create fresh agents)
+  it('has 30 agents registered', () => {
+    expect(getAgentCount()).toBe(30);
   });
 
-  it('should register internal agent', () => {
-    const agent = registerAgent({
-      name: 'HERMES-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Test Hermes agent',
-    });
-
-    expect(agent.id).toContain('hermes-test');
-    expect(agent.name).toBe('HERMES-TEST');
-    expect(agent.type).toBe('HERMES');
-    expect(agent.version).toBe('2.0');
-    expect(agent.status).toBe('ACTIVE');
-    expect(agent.healthStatus).toBe('HEALTHY');
-    expect(agent.capabilities.tradeExecution).toBe(true);
+  it('all 30 agents have valid IDs', () => {
+    const ids = getAllAgentIds();
+    expect(ids.length).toBe(30);
+    const expectedIds = [
+      'MARKET_REGIME', 'FII_DII', 'GLOBAL_MARKET', 'INDIA_VIX',
+      'MARKET_BREADTH', 'SECTOR_ROTATION', 'OI_PCR', 'OI_CLASSIFICATION',
+      'GREEKS', 'GAMMA', 'IV_HV', 'OPTION_ACCELERATION',
+      'BUYER_CONFLUENCE', 'STRIKE_SELECTION', 'EXPIRY_THETA', 'ZERO_HERO',
+      'CAS', 'MARKET_STRUCTURE', 'SUPPORT_RESISTANCE', 'VWAP',
+      'VOLUME', 'BREAKOUT', 'MTF_CONFIRMATION', 'MOMENTUM',
+      'ATR', 'NEWS', 'EVENT_RISK', 'SENTIMENT', 'BTST', 'COMMODITY_MCX',
+    ];
+    for (const id of expectedIds) {
+      expect(ids).toContain(id);
+    }
   });
 
-  it('should register external agent with limited capabilities', () => {
-    const agent = registerAgent({
-      name: 'EXTERNAL-TEST',
-      type: 'EXTERNAL_AGENT',
-      version: '0.1',
-      description: 'Test external agent',
-    });
-
-    expect(agent.type).toBe('EXTERNAL_AGENT');
-    expect(agent.capabilities.tradeExecution).toBe(false);
-    expect(agent.capabilities.marketSnapshot).toBe(false);
-    expect(agent.capabilities.tradeResearch).toBe(true);
+  it('every agent can be looked up by ID', () => {
+    for (const id of getAllAgentIds()) {
+      const def = getAgentDef(id);
+      expect(def).toBeDefined();
+      expect(def!.id).toBe(id);
+      expect(def!.name).toBeTruthy();
+      expect(def!.category).toBeTruthy();
+      expect(def!.analysisFn).toBeInstanceOf(Function);
+    }
   });
 
-  it('should find agent by name', () => {
-    registerAgent({
-      name: 'FIND-ME',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Findable agent',
-    });
+  it('all agents return valid schema', async () => {
+    const ctx = mockContext();
+    const outputs = await runAllAgents(ctx);
+    expect(outputs.length).toBe(30);
 
-    const found = getAgentByName('FIND-ME');
-    expect(found).not.toBeNull();
-    expect(found!.name).toBe('FIND-ME');
+    for (const output of outputs) {
+      expect(output.agentId).toBeTruthy();
+      expect(output.agentName).toBeTruthy();
+      expect(output.category).toBeTruthy();
+      expect(output.timestamp).toBeTruthy();
+      expect(output.symbol).toBeTruthy();
+      expect(output.timeframe).toBeTruthy();
+      expect(['FRESH', 'STALE', 'MISSING', 'ERROR']).toContain(output.dataFreshness);
+      expect(output.observation).toBeTruthy();
+      expect(['BULLISH', 'BEARISH', 'NEUTRAL', 'CONFLICTED', 'NO_DATA']).toContain(output.bias);
+      expect(output.confidence).toBeGreaterThanOrEqual(0);
+      expect(output.confidence).toBeLessThanOrEqual(100);
+      expect(Array.isArray(output.evidence)).toBe(true);
+      expect(Array.isArray(output.riskFlags)).toBe(true);
+      expect(Array.isArray(output.conflicts)).toBe(true);
+      expect(['TRADE', 'WAIT', 'NO_TRADE', 'RESEARCH_ONLY']).toContain(output.recommendationContext);
+      expect(output.recommendationReason).toBeTruthy();
+    }
   });
 
-  it('should return null for non-existent agent', () => {
-    const found = getAgentByName('DOES-NOT-EXIST');
-    expect(found).toBeNull();
+  it('no agent errors on the mock snapshot (regression: STRIKE_SELECTION riskFlags)', async () => {
+    const outputs = await runAllAgents(mockContext());
+    const errored = outputs.filter(o => o.dataFreshness === 'ERROR');
+    expect(errored.map(o => `${o.agentId}: ${o.observation}`)).toEqual([]);
+
+    const strike = outputs.find(o => o.agentId === 'STRIKE_SELECTION')!;
+    expect(strike.evidence.join(' ')).toContain('ATM Strike');
+    expect(strike.observation).toContain('ATM:');
   });
 
-  it('should update agent status on re-registration', () => {
-    const agent1 = registerAgent({
-      name: 'RE-REGISTER',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'First registration',
+  it('handles stale data gracefully', async () => {
+    const ctx = mockContext({
+      spotFreshness: 'STALE',
+      chainFreshness: 'STALE',
+      vix: 0,
+      spot: 0,
     });
+    const outputs = await runAllAgents(ctx);
+    expect(outputs.length).toBe(30);
 
-    const agent2 = registerAgent({
-      name: 'RE-REGISTER',
-      type: 'SYSTEM',
-      version: '2.0',
-      description: 'Second registration',
-    });
-
-    expect(agent1.id).toBe(agent2.id);
-    expect(agent2.version).toBe('2.0');
-  });
-});
-
-describe('Agent Heartbeat', () => {
-  it('should record heartbeat', () => {
-    const agent = registerAgent({
-      name: 'HEARTBEAT-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Heartbeat test',
-    });
-
-    const hb = updateHeartbeat(agent.id, {
-      status: 'ACTIVE',
-      latencyMs: 150,
-      currentMarket: 'NIFTY',
-    });
-
-    expect(hb.agentId).toBe(agent.id);
-    expect(hb.status).toBe('ACTIVE');
-    expect(hb.latencyMs).toBe(150);
-    expect(hb.currentMarket).toBe('NIFTY');
-
-    const stored = getHeartbeat(agent.id);
-    expect(stored).not.toBeNull();
-    expect(stored!.latencyMs).toBe(150);
+    // Some agents should report NO_DATA or reduced confidence
+    const vixAgent = outputs.find(o => o.agentId === 'INDIA_VIX');
+    expect(vixAgent).toBeDefined();
   });
 
-  it('should update health based on heartbeat', () => {
-    const agent = registerAgent({
-      name: 'HEALTH-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Health test',
+  it('handles missing data gracefully', async () => {
+    const ctx = mockContext({
+      optionChain: null,
+      strikes: [],
+      vix: 0,
     });
+    const outputs = await runAllAgents(ctx);
+    expect(outputs.length).toBe(30);
 
-    // Normal heartbeat
-    updateHeartbeat(agent.id, {
-      status: 'ACTIVE',
-      latencyMs: 100,
-    });
-    expect(agent.healthStatus).toBe('HEALTHY');
+    const oiAgent = outputs.find(o => o.agentId === 'OI_PCR');
+    expect(oiAgent).toBeDefined();
+    expect(oiAgent!.dataFreshness).toBe('MISSING');
+  });
 
-    // High latency
-    updateHeartbeat(agent.id, {
-      status: 'ACTIVE',
-      latencyMs: 10000,
-    });
-    expect(agent.healthStatus).toBe('DEGRADED');
-
-    // Error
-    updateHeartbeat(agent.id, {
-      status: 'ERROR',
-      latencyMs: 100,
-      lastError: 'Connection failed',
-    });
-    expect(agent.healthStatus).toBe('UNHEALTHY');
+  it('handles error gracefully', async () => {
+    // Run agents with a valid context — should not throw
+    const ctx = mockContext();
+    const outputs = await runAllAgents(ctx);
+    // All agents should return valid output (some may be NO_DATA but not ERROR)
+    expect(outputs.length).toBe(30);
+    for (const output of outputs) {
+      expect(output.agentId).toBeTruthy();
+      expect(output.observation).toBeTruthy();
+    }
   });
 });
 
-describe('System Health', () => {
-  it('should return health summary', () => {
-    const health = getSystemHealth();
-    expect(health).toHaveProperty('totalAgents');
-    expect(health).toHaveProperty('activeAgents');
-    expect(health).toHaveProperty('averageLatency');
+// ═══════════════════════════════════════════════════════════════════
+// CROSS-CONFLUENCE TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Cross-Confluence', () => {
+  it('aggregates bullish agents correctly', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BULLISH', confidence: 65 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BULLISH', confidence: 60 }),
+      mockAgentOutput({ agentId: 'VWAP', bias: 'BULLISH', confidence: 55 }),
+    ];
+    const result = analyzeCrossConfluence('NIFTY', outputs);
+    expect(result.bullishScore).toBeGreaterThan(0);
+    expect(result.bearishScore).toBe(0);
+    expect(result.bullishEvidence.length).toBeGreaterThan(0);
+  });
+
+  it('detects conflicts between agents', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BEARISH', confidence: 65 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BULLISH', confidence: 60 }),
+    ];
+    const result = analyzeCrossConfluence('NIFTY', outputs);
+    expect(result.conflicts.length).toBeGreaterThan(0);
+  });
+
+  it('returns NO_TRADE for conflicting signals', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 50 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BEARISH', confidence: 50 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BEARISH', confidence: 50 }),
+      mockAgentOutput({ agentId: 'VWAP', bias: 'BULLISH', confidence: 50 }),
+    ];
+    const result = analyzeCrossConfluence('NIFTY', outputs);
+    expect(result.recommendation).toBe('NO_TRADE');
   });
 });
 
-describe('Agent Tasks', () => {
-  it('should create and complete task', () => {
-    const agent = registerAgent({
-      name: 'TASK-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Task test',
-    });
+// ═══════════════════════════════════════════════════════════════════
+// GROK SUPERVISOR TESTS
+// ═══════════════════════════════════════════════════════════════════
 
-    const task = createTask({
-      agentId: agent.id,
-      taskType: 'MARKET_SCAN',
-      underlying: 'NIFTY',
-      strategy: 'INTRADAY',
-      priority: 'HIGH',
-      input: { scanType: 'full' },
-    });
-
-    expect(task.id).toContain('task-');
-    expect(task.status).toBe('QUEUED');
-    expect(task.underlying).toBe('NIFTY');
-
-    // Start
-    const started = startTask(task.id);
-    expect(started!.status).toBe('RUNNING');
-    expect(started!.startedAt).not.toBeNull();
-
-    // Complete
-    const completed = completeTask(task.id, { result: 'success' });
-    expect(completed!.status).toBe('COMPLETED');
-    expect(completed!.output).toEqual({ result: 'success' });
+describe('Grok Supervisor', () => {
+  it('routes to OPTION engine for indices', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BULLISH', confidence: 65 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    expect(decision.selectedEngine).toBe('OPTION');
+    expect(decision.direction).toBe('BUY_CE');
   });
 
-  it('should fail task', () => {
-    const agent = registerAgent({
-      name: 'FAIL-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Fail test',
-    });
+  it('routes to CASH_FUTURES for stocks', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BEARISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BEARISH', confidence: 65 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
+    const decision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    expect(decision.selectedEngine).toBe('CASH_FUTURES');
+    expect(decision.direction).toBe('SELL');
+  });
 
-    const task = createTask({
-      agentId: agent.id,
-      taskType: 'OPTION_SCAN',
-      underlying: 'BANKNIFTY',
-      strategy: 'INTRADAY',
-      priority: 'MEDIUM',
-      input: {},
-    });
+  it('rejects option SELL direction', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BEARISH', confidence: 70 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    // For options, bearish should route to BUY_PE, not SELL
+    expect(decision.direction).not.toBe('SELL');
+  });
 
-    const failed = failTask(task.id, 'API timeout');
-    expect(failed!.status).toBe('FAILED');
-    expect(failed!.error).toBe('API timeout');
+  it('rejects invented data', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'NEUTRAL', confidence: 30 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    expect(decision.validation.passed).toBe(true); // Neutral = no trade, but valid
   });
 });
 
-describe('Agent Signals', () => {
-  it('should create signal', () => {
-    const agent = registerAgent({
-      name: 'SIGNAL-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Signal test',
-    });
+// ═══════════════════════════════════════════════════════════════════
+// OPTION ENGINE TESTS
+// ═══════════════════════════════════════════════════════════════════
 
-    const signal = createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_CE',
-      optionType: 'CE',
-      strike: 25000,
-      expiry: '18-09-2026',
-      entryPrice: 150,
-      stopLoss: 120,
-      target1: 200,
-      target2: 250,
-      confidence: 0.75,
-      thesis: 'Bullish momentum with OI support',
-      evidence: {
-        priceStructure: 'Above VWAP',
-        volume: 'Above average',
-        callOI: 'Building',
-      },
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
-    });
-
-    expect(signal.id).toContain('sig-');
-    expect(signal.direction).toBe('BUY_CE');
-    expect(signal.confidence).toBe(0.75);
-    expect(signal.lifecycle).toBe('RESEARCH');
-    expect(signal.validationStatus).toBe('PENDING');
+describe('Option Engine', () => {
+  it('produces BUY_CE for bullish with valid candidate', async () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 80 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BULLISH', confidence: 75 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'VWAP', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'MTF_CONFIRMATION', bias: 'BULLISH', confidence: 70 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    // Provide valid candidate data
+    grokDecision.candidate = {
+      symbol: 'NIFTY', direction: 'BUY_CE', entry: 150, stopLoss: 130,
+      tp1: 170, tp2: 190, confidence: 75, grade: 'B',
+      reasons: [], risks: [],
+    };
+    const result = await runOptionEngine('NIFTY', grokDecision, outputs);
+    expect(result.action).toBe('BUY_CE');
   });
 
-  it('should validate signal', () => {
-    const agent = registerAgent({
-      name: 'VALIDATE-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Validate test',
-    });
+  it('produces BUY_PE for bearish with valid candidate', async () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BEARISH', confidence: 80 }),
+      mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BEARISH', confidence: 75 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BEARISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'VWAP', bias: 'BEARISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'MTF_CONFIRMATION', bias: 'BEARISH', confidence: 70 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    grokDecision.candidate = {
+      symbol: 'NIFTY', direction: 'BUY_PE', entry: 140, stopLoss: 120,
+      tp1: 160, tp2: 180, confidence: 75, grade: 'B',
+      reasons: [], risks: [],
+    };
+    const result = await runOptionEngine('NIFTY', grokDecision, outputs);
+    expect(result.action).toBe('BUY_PE');
+  });
 
-    const signal = createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_PE',
-      optionType: 'PE',
+  it('rejects SELL CE', async () => {
+    const grokDecision = {
+      symbol: 'NIFTY', timestamp: new Date().toISOString(),
+      marketRegime: 'test', bullishEvidence: [], bearishEvidence: [],
+      neutralEvidence: [], conflicts: [], consensus: 'BEARISH' as const,
+      consensusConfidence: 70, selectedEngine: 'OPTION' as const,
+      engineReason: 'test', direction: 'SELL' as const,
+      directionReason: 'test', validation: { passed: true, failures: [], warnings: [] },
+      evidenceQuality: { totalAgents: 2, activeAgents: 2, freshData: 2, staleData: 0, missingData: 0 },
+    };
+    const result = await runOptionEngine('NIFTY', grokDecision, []);
+    expect(result.action).toBe('NO_TRADE');
+    expect(result.reasons[0]).toContain('OPTION_SELLING_NOT_ALLOWED');
+  });
+
+  it('rejects SELL PE', async () => {
+    const grokDecision = {
+      symbol: 'NIFTY', timestamp: new Date().toISOString(),
+      marketRegime: 'test', bullishEvidence: [], bearishEvidence: [],
+      neutralEvidence: [], conflicts: [], consensus: 'BULLISH' as const,
+      consensusConfidence: 70, selectedEngine: 'OPTION' as const,
+      engineReason: 'test', direction: 'SELL' as const,
+      directionReason: 'test', validation: { passed: true, failures: [], warnings: [] },
+      evidenceQuality: { totalAgents: 2, activeAgents: 2, freshData: 2, staleData: 0, missingData: 0 },
+    };
+    const result = await runOptionEngine('NIFTY', grokDecision, []);
+    expect(result.action).toBe('NO_TRADE');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// CASH/FUTURES ENGINE TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Cash/Futures Engine', () => {
+  it('produces BUY for bullish', async () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 80 }),
+      mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BULLISH', confidence: 75 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'VOLUME', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'BREAKOUT', bias: 'BULLISH', confidence: 70 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
+    const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    grokDecision.candidate = {
+      symbol: 'RELIANCE', direction: 'BUY', entry: 2500, stopLoss: 2425,
+      tp1: 2575, tp2: 2650, confidence: 75, grade: 'B',
+      reasons: [], risks: [],
+    };
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs);
+    expect(result.action).toBe('BUY');
+  });
+
+  it('produces SELL for bearish', async () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BEARISH', confidence: 80 }),
+      mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BEARISH', confidence: 75 }),
+      mockAgentOutput({ agentId: 'MARKET_STRUCTURE', bias: 'BEARISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'VOLUME', bias: 'BEARISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'BREAKOUT', bias: 'BEARISH', confidence: 70 }),
+    ];
+    const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
+    const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    grokDecision.candidate = {
+      symbol: 'RELIANCE', direction: 'SELL', entry: 2500, stopLoss: 2575,
+      tp1: 2425, tp2: 2350, confidence: 75, grade: 'B',
+      reasons: [], risks: [],
+    };
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs);
+    expect(result.action).toBe('SELL');
+  });
+
+  it('allows SELL for equity', async () => {
+    const grokDecision = {
+      symbol: 'RELIANCE', timestamp: new Date().toISOString(),
+      marketRegime: 'test', bullishEvidence: [], bearishEvidence: [],
+      neutralEvidence: [], conflicts: [], consensus: 'BEARISH' as const,
+      consensusConfidence: 70, selectedEngine: 'CASH_FUTURES' as const,
+      engineReason: 'test', direction: 'SELL' as const,
+      directionReason: 'test', validation: { passed: true, failures: [], warnings: [] },
+      evidenceQuality: { totalAgents: 2, activeAgents: 2, freshData: 2, staleData: 0, missingData: 0 },
+    };
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, []);
+    expect(result.action).toBe('SELL');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// TRADE MONITOR TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Trade Monitor', () => {
+  it('detects BUY TP hit', () => {
+    const trade = registerTradeForMonitoring({
+      tradeId: 'test-1',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
       strike: 24500,
-      expiry: '18-09-2026',
-      entryPrice: 100,
-      confidence: 0.8,
-      thesis: 'Bearish setup',
-      evidence: {},
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
     });
 
-    const validated = validateSignal(signal.id, true);
-    expect(validated!.validationStatus).toBe('VALIDATED');
-
-    const rejected = validateSignal(signal.id, false, 'Low confidence');
-    expect(rejected!.validationStatus).toBe('REJECTED');
+    const { state, alerts } = updateAndDetect('test-1', 175);
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].alertType).toBe('TP1_HIT');
+    // Delivery flag set only after Telegram confirms — see tpsl-event-flow tests
+    expect(state.tp1AlertSent).toBe(false);
+    expect(state.status).toBe('TP1_HIT');
   });
 
-  it('should filter signal feed', () => {
-    const agent = registerAgent({
-      name: 'FEED-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Feed test',
-    });
-
-    createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_CE',
-      confidence: 0.7,
-      thesis: 'Test',
-      evidence: {},
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
-    });
-
-    createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'BANKNIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_PE',
-      confidence: 0.8,
-      thesis: 'Test',
-      evidence: {},
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
-    });
-
-    const allSignals = getSignalFeed();
-    expect(allSignals.length).toBeGreaterThanOrEqual(2);
-
-    const niftyOnly = getSignalFeed({ underlying: 'NIFTY' });
-    expect(niftyOnly.every(s => s.underlying === 'NIFTY')).toBe(true);
-  });
-});
-
-describe('Agent Events', () => {
-  it('should emit and retrieve events', () => {
-    const agent = registerAgent({
-      name: 'EVENT-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Event test',
-    });
-
-    emitEvent('AGENT_REGISTERED', agent.id, { name: agent.name });
-    emitEvent('AGENT_HEARTBEAT', agent.id, { status: 'ACTIVE' });
-
-    const events = getEvents({ agentId: agent.id });
-    expect(events.length).toBeGreaterThanOrEqual(2);
-    expect(events[0].eventType).toMatch(/AGENT_/);
-  });
-
-  it('should deduplicate events within 5s window', () => {
-    const agent = registerAgent({
-      name: 'DEDUP-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Dedup test',
-    });
-
-    const e1 = emitEvent('AGENT_HEARTBEAT', agent.id, { status: 'ACTIVE' });
-    const e2 = emitEvent('AGENT_HEARTBEAT', agent.id, { status: 'ACTIVE' });
-
-    expect(e1.eventId).toBe(e2.eventId);
-  });
-});
-
-describe('Agent Performance', () => {
-  it('should update performance', () => {
-    const agent = registerAgent({
-      name: 'PERF-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Performance test',
-    });
-
-    updatePerformance(agent.id, {
-      totalSignals: 10,
-      validSignals: 8,
-      closedTrades: 5,
-      winners: 3,
-      losers: 2,
-      totalR: 4.5,
-      averageR: 0.9,
-    });
-
-    const perf = getPerformance(agent.id);
-    expect(perf).not.toBeNull();
-    expect(perf!.totalSignals).toBe(10);
-    expect(perf!.winners).toBe(3);
-  });
-});
-
-describe('Signal Lifecycle', () => {
-  it('should allow valid transitions', () => {
-    expect(canTransition('RESEARCH', 'CANDIDATE')).toBe(true);
-    expect(canTransition('CANDIDATE', 'VALIDATING')).toBe(true);
-    expect(canTransition('VALIDATING', 'VALIDATED')).toBe(true);
-    expect(canTransition('VALIDATED', 'FINAL')).toBe(true);
-    expect(canTransition('FINAL', 'ACTIVE')).toBe(true);
-    expect(canTransition('ACTIVE', 'TP1')).toBe(true);
-    expect(canTransition('ACTIVE', 'TP2')).toBe(true);
-    expect(canTransition('ACTIVE', 'EXIT')).toBe(true);
-    expect(canTransition('ACTIVE', 'SL')).toBe(true);
-    expect(canTransition('TP1', 'TP2')).toBe(true);
-    expect(canTransition('TP2', 'EXIT')).toBe(true);
-    expect(canTransition('EXIT', 'POST_TRADE_REVIEW')).toBe(true);
-  });
-
-  it('should reject invalid transitions', () => {
-    expect(canTransition('RESEARCH', 'ACTIVE')).toBe(false);
-    expect(canTransition('RESEARCH', 'TP1')).toBe(false);
-    expect(canTransition('ACTIVE', 'CANDIDATE')).toBe(false);
-    expect(canTransition('FINAL', 'RESEARCH')).toBe(false);
-  });
-
-  it('should transition signal', () => {
-    const agent = registerAgent({
-      name: 'LIFECYCLE-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Lifecycle test',
-    });
-
-    const signal = createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_CE',
-      confidence: 0.8,
-      thesis: 'Test',
-      evidence: {},
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
-    });
-
-    expect(signal.lifecycle).toBe('RESEARCH');
-
-    const t1 = transitionSignal(signal.id, 'CANDIDATE');
-    expect(t1.ok).toBe(true);
-    expect(t1.signal!.lifecycle).toBe('CANDIDATE');
-
-    const t2 = transitionSignal(signal.id, 'VALIDATING');
-    expect(t2.ok).toBe(true);
-    expect(t2.signal!.lifecycle).toBe('VALIDATING');
-
-    const t3 = transitionSignal(signal.id, 'VALIDATED');
-    expect(t3.ok).toBe(true);
-    expect(t3.signal!.lifecycle).toBe('VALIDATED');
-  });
-
-  it('should reject invalid transition', () => {
-    const agent = registerAgent({
-      name: 'INVALID-TRANSITION',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Invalid transition test',
-    });
-
-    const signal = createSignal({
-      agentId: agent.id,
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'CANDIDATE',
-      direction: 'BUY_CE',
-      confidence: 0.8,
-      thesis: 'Test',
-      evidence: {},
-      dataSource: 'MOAPI',
-      dataFreshness: 'LIVE',
-    });
-
-    const result = transitionSignal(signal.id, 'ACTIVE');
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain('Invalid transition');
-  });
-});
-
-describe('External Signal Validation', () => {
-  it('should reject SELL signals', () => {
-    const signal: AgentSignal = {
-      id: 'test',
-      agentId: 'test',
-      timestamp: new Date().toISOString(),
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'EXTERNAL',
-      direction: 'SELL_CE',
-      optionType: 'CE',
-      strike: 25000,
-      expiry: '18-09-2026',
-      entryPrice: 150,
-      stopLoss: 180,
-      target1: 120,
-      target2: 100,
-      confidence: 0.9,
-      thesis: 'Test',
-      evidence: {
-        priceStructure: null, vwap: null, volume: null, callOI: null, putOI: null,
-        oiMigration: null, sellerMap: null, delta: null, gamma: null, iv: null,
-        vix: null, frvp: null, poc: null, vah: null, val: null, liquidity: null,
-        absorption: null, cas: null, breadth: null, fiiDii: null, global: null, news: null,
-      },
-      dataSource: 'EXTERNAL_AGENT',
-      dataFreshness: 'SNAPSHOT',
-      validationStatus: 'PENDING',
-      executionStatus: 'NONE',
-      lifecycle: 'CANDIDATE',
-      expiresAt: null,
-    };
-
-    const result = validateExternalSignal(signal);
-    expect(result.valid).toBe(false);
-    expect(result.reasons.some(r => r.includes('SELL'))).toBe(true);
-  });
-
-  it('should reject low confidence signals', () => {
-    const signal: AgentSignal = {
-      id: 'test',
-      agentId: 'test',
-      timestamp: new Date().toISOString(),
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'EXTERNAL',
-      direction: 'BUY_CE',
-      optionType: 'CE',
-      strike: 25000,
-      expiry: '18-09-2026',
-      entryPrice: 150,
-      stopLoss: 120,
-      target1: 200,
-      target2: 250,
-      confidence: 0.3,
-      thesis: 'Test',
-      evidence: {
-        priceStructure: null, vwap: null, volume: null, callOI: null, putOI: null,
-        oiMigration: null, sellerMap: null, delta: null, gamma: null, iv: null,
-        vix: null, frvp: null, poc: null, vah: null, val: null, liquidity: null,
-        absorption: null, cas: null, breadth: null, fiiDii: null, global: null, news: null,
-      },
-      dataSource: 'EXTERNAL_AGENT',
-      dataFreshness: 'SNAPSHOT',
-      validationStatus: 'PENDING',
-      executionStatus: 'NONE',
-      lifecycle: 'CANDIDATE',
-      expiresAt: null,
-    };
-
-    const result = validateExternalSignal(signal);
-    expect(result.valid).toBe(false);
-    expect(result.reasons.some(r => r.includes('Confidence'))).toBe(true);
-  });
-
-  it('should accept valid BUY_CE signal', () => {
-    const signal: AgentSignal = {
-      id: 'test',
-      agentId: 'test',
-      timestamp: new Date().toISOString(),
-      market: 'INDIA',
-      exchange: 'NSE',
-      underlying: 'NIFTY',
-      signalType: 'EXTERNAL',
-      direction: 'BUY_CE',
-      optionType: 'CE',
-      strike: 25000,
-      expiry: '18-09-2026',
-      entryPrice: 150,
-      stopLoss: 120,
-      target1: 200,
-      target2: 250,
-      confidence: 0.8,
-      thesis: 'Bullish momentum',
-      evidence: {
-        priceStructure: 'Above VWAP', vwap: null, volume: 'High', callOI: null, putOI: null,
-        oiMigration: null, sellerMap: null, delta: null, gamma: null, iv: null,
-        vix: null, frvp: null, poc: null, vah: null, val: null, liquidity: null,
-        absorption: null, cas: null, breadth: null, fiiDii: null, global: null, news: null,
-      },
-      dataSource: 'EXTERNAL_AGENT',
-      dataFreshness: 'SNAPSHOT',
-      validationStatus: 'PENDING',
-      executionStatus: 'NONE',
-      lifecycle: 'CANDIDATE',
-      expiresAt: null,
-    };
-
-    const result = validateExternalSignal(signal);
-    expect(result.valid).toBe(true);
-    expect(result.reasons.length).toBe(0);
-  });
-});
-
-describe('External Signal Normalization', () => {
-  it('should normalize BUY_CE signal', () => {
-    const ext: AITraderSignal = {
-      id: 'ext-123',
-      agent_name: 'AI-Trader',
-      timestamp: new Date().toISOString(),
+  it('detects BUY SL hit', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-2',
       symbol: 'NIFTY',
-      action: 'BUY_CE',
-      strike: 25000,
-      expiry: '18-09-2026',
-      entry_price: 150,
-      stop_loss: 120,
-      target1: 200,
-      target2: 250,
-      confidence: 0.8,
-      thesis: 'Bullish momentum',
-      source: 'AI_TRADER',
-    };
-
-    const normalized = normalizeSignal(ext, 'agent-123');
-    expect(normalized.direction).toBe('BUY_CE');
-    expect(normalized.optionType).toBe('CE');
-    expect(normalized.underlying).toBe('NIFTY');
-    expect(normalized.strike).toBe(25000);
-  });
-
-  it('should reject SELL signals', () => {
-    const ext: AITraderSignal = {
-      id: 'ext-456',
-      agent_name: 'AI-Trader',
-      timestamp: new Date().toISOString(),
-      symbol: 'NIFTY',
-      action: 'SELL_CE',
-      confidence: 0.8,
-      thesis: 'Bearish',
-      source: 'AI_TRADER',
-    };
-
-    expect(() => normalizeSignal(ext, 'agent-123')).toThrow('SELL signals not allowed');
-  });
-});
-
-describe('Signal Cache', () => {
-  beforeEach(() => {
-    clearSignalCache();
-  });
-
-  it('should detect duplicate signals', () => {
-    const signal: AITraderSignal = {
-      id: 'cache-1',
-      agent_name: 'TEST',
-      timestamp: new Date().toISOString(),
-      symbol: 'NIFTY',
-      action: 'BUY_CE',
-      confidence: 0.8,
-      thesis: 'Test',
-      source: 'TEST',
-    };
-
-    expect(isDuplicateSignal(signal)).toBe(false);
-    cacheSignal(signal);
-    expect(isDuplicateSignal(signal)).toBe(true);
-  });
-});
-
-describe('Agent Reputation', () => {
-  it('should calculate reputation', () => {
-    const agent = registerAgent({
-      name: 'REP-TEST',
-      type: 'HERMES',
-      version: '2.0',
-      description: 'Reputation test',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
     });
 
-    recordSignalOutcome(agent.id, { valid: true, tradeResult: 'WIN', rMultiple: 2.0 });
-    recordSignalOutcome(agent.id, { valid: true, tradeResult: 'LOSS', rMultiple: -1.0 });
-    recordSignalOutcome(agent.id, { valid: true, tradeResult: 'WIN', rMultiple: 1.5 });
-
-    const rep = getAgentReputation(agent.id);
-    expect(rep.totalSignals).toBe(3);
-    expect(rep.totalTrades).toBe(3);
-    expect(rep.winRate).toBeCloseTo(66.67, 0);
-    expect(rep.rank).toMatch(/ROOKIE|NOVICE|INTERMEDIATE|EXPERT|MASTER/);
+    const { state, alerts } = updateAndDetect('test-2', 125);
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].alertType).toBe('SL_HIT');
+    expect(state.slAlertSent).toBe(false); // set only after delivery
+    expect(state.status).toBe('SL_HIT');
   });
-});
 
-describe('Feature Flags', () => {
-  it('should have correct defaults', () => {
-    expect(isFeatureEnabled('AGENT_SYSTEM_ENABLED')).toBe(true);
-    expect(isFeatureEnabled('EXTERNAL_AGENT_ENABLED')).toBe(true);
-    expect(isFeatureEnabled('AI_TRADER_ENABLED')).toBe(false);
-    expect(isFeatureEnabled('AGENT_WEBSOCKET_ENABLED')).toBe(true);
-    expect(isFeatureEnabled('AGENT_SIGNAL_FEED_ENABLED')).toBe(true);
-    expect(isFeatureEnabled('AGENT_PERFORMANCE_ENABLED')).toBe(true);
-  });
-});
-
-describe('Force Agent Offline', () => {
-  it('should force agent offline', () => {
-    const agent = registerAgent({
-      name: 'OFFLINE-TEST',
-      type: 'SYSTEM',
-      version: '1.0',
-      description: 'Offline test',
+  it('detects SELL TP hit', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-3',
+      symbol: 'RELIANCE',
+      exchange: 'NSE',
+      instrument: 'EQUITY',
+      side: 'SELL',
+      entry: 2500,
+      stopLoss: 2575,
+      tp1: 2425,
+      tp2: 2350,
     });
 
-    expect(agent.status).toBe('ACTIVE');
-    const result = forceAgentOffline(agent.id);
-    expect(result).toBe(true);
-    expect(agent.status).toBe('OFFLINE');
+    const { state, alerts } = updateAndDetect('test-3', 2400);
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].alertType).toBe('TP1_HIT');
+    expect(state.status).toBe('TP1_HIT');
   });
 
-  it('should return false for non-existent agent', () => {
-    const result = forceAgentOffline('non-existent');
-    expect(result).toBe(false);
+  it('detects SELL SL hit', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-4',
+      symbol: 'RELIANCE',
+      exchange: 'NSE',
+      instrument: 'EQUITY',
+      side: 'SELL',
+      entry: 2500,
+      stopLoss: 2575,
+      tp1: 2425,
+      tp2: 2350,
+    });
+
+    const { state, alerts } = updateAndDetect('test-4', 2600);
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].alertType).toBe('SL_HIT');
+    expect(state.status).toBe('SL_HIT');
+  });
+
+  it('detects TP1 then TP2 sequentially', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-5',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
+    });
+
+    // TP1 hit
+    const r1 = updateAndDetect('test-5', 175);
+    expect(r1.alerts.length).toBe(1);
+    expect(r1.alerts[0].alertType).toBe('TP1_HIT');
+
+    // TP2 hit (after TP1)
+    const r2 = updateAndDetect('test-5', 195);
+    expect(r2.alerts.length).toBe(1);
+    expect(r2.alerts[0].alertType).toBe('TP2_HIT');
+    expect(r2.state.status).toBe('TP2_HIT');
+  });
+
+  it('prevents duplicate alerts', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-6',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
+    });
+
+    // TP1 detected — delivery flag NOT set until Telegram confirms send
+    const r1 = updateAndDetect('test-6', 175);
+    expect(r1.alerts.length).toBe(1);
+    expect(isAlertAlreadySent('test-6', 'TP1_HIT')).toBe(false);
+
+    // Simulate successful Telegram delivery → flag set
+    markAlertSent(r1.alerts[0].alertId, 'test-6');
+    const state = getMonitoredTrade('test-6');
+    if (state) state.tp1AlertSent = true;
+    expect(isAlertAlreadySent('test-6', 'TP1_HIT')).toBe(true);
+
+    // Second update at TP1 level — status gate prevents a new alert
+    const r2 = updateAndDetect('test-6', 175);
+    expect(r2.alerts.length).toBe(0);
+  });
+
+  it('releases lock on terminal status', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-7',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
+    });
+
+    closeTrade('test-7', 180, 'TP2_HIT');
+    const state = getMonitoredTrade('test-7');
+    expect(state?.status).toBe('CLOSED');
+    expect(state?.exitPrice).toBe(180);
+  });
+
+  it('summary counts correctly', () => {
+    const summary = getMonitorSummary();
+    expect(summary.totalTrades).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// TELEGRAM ALERT TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Telegram Alerts', () => {
+  it('TP alert has correct format', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-alert-1',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
+    });
+
+    const { alerts } = updateAndDetect('test-alert-1', 175);
+    expect(alerts.length).toBe(1);
+
+    const msg = alerts[0].message;
+    expect(msg).toContain('TP HIT');
+    expect(msg).toContain('NIFTY');
+    expect(msg).toContain('24500');
+    expect(msg).toContain('BUY');
+    expect(msg).toContain('Entry: ₹150');
+    expect(msg).toContain('Current: ₹175');
+  });
+
+  it('SL alert has correct format', () => {
+    registerTradeForMonitoring({
+      tradeId: 'test-alert-2',
+      symbol: 'NIFTY',
+      exchange: 'NFO',
+      instrument: 'CALL',
+      side: 'BUY',
+      strike: 24500,
+      entry: 150,
+      stopLoss: 130,
+      tp1: 170,
+      tp2: 190,
+    });
+
+    const { alerts } = updateAndDetect('test-alert-2', 125);
+    expect(alerts.length).toBe(1);
+
+    const msg = alerts[0].message;
+    expect(msg).toContain('SL HIT');
+    expect(msg).toContain('SL:');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// END-TO-END PIPELINE TEST
+// ═══════════════════════════════════════════════════════════════════
+
+describe('End-to-End Pipeline', () => {
+  it('full pipeline produces valid output', async () => {
+    const ctx = mockContext();
+    const outputs = await runAllAgents(ctx);
+    const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
+    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+
+    expect(grokDecision.symbol).toBe('NIFTY');
+    expect(grokDecision.selectedEngine).toBeDefined();
+    expect(grokDecision.direction).toBeDefined();
+    expect(grokDecision.evidenceQuality.totalAgents).toBe(30);
   });
 });

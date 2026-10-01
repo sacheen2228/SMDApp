@@ -431,7 +431,7 @@ interface PriceActionBreakout {
   candleIndex: number;
 }
 
-function detectPriceActionBreakouts(
+export function detectPriceActionBreakouts(
   candles: HistoricalCandle[],
   prevDay: { high: number; low: number; close: number }
 ): PriceActionBreakout[] {
@@ -485,7 +485,7 @@ function detectPriceActionBreakouts(
           slPrice: sl,
           targetPrice: target,
           riskReward: 1.5,
-          timestamp: current.timestamp.toISOString(),
+          timestamp: new Date(current.time).toISOString(),
           candleIndex: i,
         });
       }
@@ -527,7 +527,7 @@ function detectPriceActionBreakouts(
           slPrice: sl,
           targetPrice: target,
           riskReward: 1.5,
-          timestamp: current.timestamp.toISOString(),
+          timestamp: new Date(current.time).toISOString(),
           candleIndex: i,
         });
       }
@@ -618,7 +618,7 @@ export async function runMultiDayBacktest(
         low: candle.low,
         close: candle.close,
         volume: candle.volume,
-        timestamp: candle.timestamp.toISOString(),
+        timestamp: new Date(candle.time).toISOString(),
       });
     }
 
@@ -646,7 +646,7 @@ export async function runMultiDayBacktest(
     const dayTrades: BacktestTrade[] = [];
     for (const signal of signals) {
       const signalTime = new Date(signal.timestamp);
-      const candleIndex = candles.findIndex((c) => c.timestamp.getTime() === signalTime.getTime());
+      const candleIndex = candles.findIndex((c) => new Date(c.time).getTime() === signalTime.getTime());
 
       if (candleIndex >= 0 && candleIndex < candles.length - 1) {
         const { oiScore, greekScore, qualityGrade, qualityScore } = simulateOIScore(

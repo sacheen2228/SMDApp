@@ -6,6 +6,7 @@ import { BreezeConnect } from 'breezeconnect';
 import fs from 'fs';
 import path from 'path';
 import { providerHealth } from '../provider-health';
+import { reportSessionFailure, classifySourceError } from '../session-health';
 
 // ─── Session Cache ────────────────────────────────────────────────
 const SESSION_FILE = path.join(process.cwd(), '.breeze-session.json');
@@ -62,8 +63,40 @@ export function getSessionState(): BreezeSessionState {
 // ─── Validate Session ─────────────────────────────────────────────
 export async function validateSession(): Promise<boolean> {
   try {
-    const breeze = getBreezeClient();
-    await breeze.getCustomerDetails();
+    // customerdetails must be called with the ORIGINAL apisession code — the
+    // SDK's decoded internal apiSession is rejected server-side ("Invalid
+    // session", Success null → the SDK then crashes deleting session_token).
+    // Calling the SDK method with no arg always returned the client-side
+    // "API Session cannot be empty" validation error (pre-2026-09-27 code
+    // therefore reported LIVE unconditionally).
+    let code = currentApiSession;
+    if (!code) {
+      await initSession(); // cache → env token → generateSession
+      code = currentApiSession;
+      if (!code) {
+        sessionState.status = "EXPIRED";
+        sessionState.authenticated = false;
+        return false;
+      }
+    }
+    const breeze = getBreezeClient() as any;
+    const res: any = await breeze.getCustomerDetails(code);
+    if (res == null) {
+      sessionState.status = "ERROR";
+      sessionState.authenticated = false;
+      return false;
+    }
+    // Defensive payload inspection — server auth failures arrive as
+    // { Status >= 400, Error } objects rather than thrown exceptions.
+    const httpish = Number(res?.Status);
+    const errText = String(res?.Error || res?.Message || "");
+    const authShaped = /session|token|auth|unauthor|expire|invalid/i.test(errText);
+    const failed = (Number.isFinite(httpish) && httpish >= 400) || (errText !== "" && authShaped);
+    if (failed) {
+      sessionState.status = authShaped ? "EXPIRED" : "ERROR";
+      sessionState.authenticated = false;
+      return false;
+    }
     sessionState.status = "LIVE";
     sessionState.authenticated = true;
     sessionState.lastSuccessfulRequest = new Date().toISOString();
@@ -104,11 +137,7 @@ async function doInitSession(): Promise<boolean> {
         currentApiSession = cached.apiSession;
         const breeze = getBreezeClient();
         if (!breeze.sessionKey || !breeze.userId) {
-          const config = getConfig();
-          await Promise.race([
-            breeze.generateSession(config.secretKey, cached.apiSession),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 8_000)),
-          ]);
+          await sdkExchange(breeze, cached.apiSession);
         }
         sessionState.status = "LIVE";
         sessionState.authenticated = true;
@@ -131,14 +160,41 @@ async function doInitSession(): Promise<boolean> {
 
     sessionState.status = "NOT_CONFIGURED";
     sessionState.authenticated = false;
+    reportSessionFailure("breeze", "SESSION_EXPIRED", "Breeze session not configured (no cached session, no BREEZE_SESSION_TOKEN)");
     return false;
   } catch (err: any) {
     console.error('[Breeze SDK] initSession error:', err);
     sessionState.status = "ERROR";
     sessionState.authenticated = false;
     sessionState.consecutiveAuthFailures++;
-    providerHealth.recordFailure("breeze", "AUTH", err.message);
+    const detail = String((err as any)?.message || err);
+    // Report BEFORE providerHealth — session-health must never depend on
+    // another module's error path succeeding.
+    reportSessionFailure("breeze", classifySourceError("breeze", detail), detail);
+    providerHealth.recordFailure("breeze", "AUTH", detail);
     return false;
+  }
+}
+
+// ─── SDK session exchange (25s race + one retry) ───────────────────
+// Live ICICI exchange observed at 19–23s (an 8s race timed out on valid
+// apisession codes) and it flings transient "Could not authenticate
+// credentials" Status-500s on codes that succeed seconds later. One retry
+// keeps blips from becoming session-health episodes / in-market false alerts —
+// only a persistent failure reaches the caller.
+async function sdkExchange(breeze: BreezeConnect, code: string): Promise<void> {
+  const config = getConfig();
+  const once = () =>
+    Promise.race([
+      breeze.generateSession(config.secretKey, code),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 25_000)),
+    ]);
+  try {
+    await once();
+  } catch (e: any) {
+    console.warn('[Breeze] session exchange failed, retrying once:', String(e?.message || e));
+    await new Promise((r) => setTimeout(r, 1500));
+    await once();
   }
 }
 
@@ -154,10 +210,8 @@ export async function generateSession(apiSession?: string): Promise<any> {
   const breeze = getBreezeClient();
   console.log('[Breeze SDK] Generating session with:', session.substring(0, 10) + '...');
 
-  const result = await Promise.race([
-    breeze.generateSession(config.secretKey, session),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK timeout')), 8_000)),
-  ]);
+  await sdkExchange(breeze, session);
+  const result = undefined; // SDK resolves undefined on completion (legacy 401 check below)
 
   // Breeze SDK returns undefined on success (no error object = success)
   // Only treat as error if result explicitly has an error
@@ -168,6 +222,7 @@ export async function generateSession(apiSession?: string): Promise<any> {
     sessionState.authenticated = false;
     sessionState.consecutiveAuthFailures++;
     providerHealth.recordFailure("breeze", "AUTH", errMsg);
+    reportSessionFailure("breeze", "SESSION_EXPIRED", `Breeze session rejected (401): ${errMsg}`);
     throw new Error(`Breeze auth failed: ${errMsg}. Please generate a new session token at https://api.icicidirect.com/apiuser/login?api_key=${encodeURIComponent(config.appKey)}`);
   }
 
@@ -242,10 +297,18 @@ export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>
       if (!ok) throw new Error('Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN.');
 
       // Retry original request ONCE
-      return await Promise.race([
-        fn(getBreezeClient()),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK call timeout')), 10_000)),
-      ]);
+      try {
+        return await Promise.race([
+          fn(getBreezeClient()),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Breeze SDK call timeout')), 10_000)),
+        ]);
+      } catch (err2: any) {
+        const msg2 = String(err2?.message || err2?.status || err2 || '');
+        if (!msg2.includes('timeout')) {
+          reportSessionFailure("breeze", classifySourceError("breeze", msg2), msg2);
+        }
+        throw err2;
+      }
     }
     throw err;
   }
