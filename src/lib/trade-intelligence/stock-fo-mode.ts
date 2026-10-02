@@ -350,33 +350,44 @@ function scoreStock(
 }
 
 // ── Main: Scan all F&O stocks ──
+export interface StockFOScanOpts {
+  /** Pre-filtered quote universe (e.g. affordable lots) — replaces ctx slice */
+  quotes?: { symbol: string; price: number; changePercent: number }[];
+  /** Max option chains to fetch (default 5) — fetched in waves of 6 */
+  maxChains?: number;
+}
+
 export async function analyzeStockFO(
   ctx: MarketIntelligenceContext,
-  maxStocks = 20
+  maxStocks = 20,
+  opts?: StockFOScanOpts
 ): Promise<StockFOSignal[]> {
   const signals: StockFOSignal[] = [];
 
-  // Get stock quotes from context
-  const quotes = ctx.stockQuotes.slice(0, maxStocks);
+  // Get stock quotes from context (or caller-provided universe)
+  const quotes = opts?.quotes ?? ctx.stockQuotes.slice(0, maxStocks);
+  const maxChains = opts?.maxChains ?? 5;
 
-  // Fetch option chains for top stocks (limited to avoid rate limiting)
+  // Pick scan candidates: session-range prices, most active first
+  // (bounds match buildStockOptionUniverse in challenge-engine)
   const topStocks = quotes
-    .filter(q => q.price > 100 && q.price < 5000)
+    .filter(q => q.price >= 20 && q.price <= 10000)
     .sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent))
-    .slice(0, 10);
+    .slice(0, Math.max(maxChains, 10));
 
-  // Fetch option chains in parallel (max 5 at a time)
-  const chainResults = await Promise.allSettled(
-    topStocks.slice(0, 5).map(q => fetchStockOptionChain(q.symbol))
-  );
-
+  // Fetch option chains in waves of 6 (bounded concurrency — avoids
+  // hammering Breeze/NSE when the universe grows to 12+ symbols)
+  const chainTargets = topStocks.slice(0, maxChains);
   const chainMap = new Map<string, any>();
-  topStocks.slice(0, 5).forEach((q, i) => {
-    const result = chainResults[i];
-    if (result.status === "fulfilled" && result.value) {
-      chainMap.set(q.symbol, result.value);
-    }
-  });
+  const WAVE = 6;
+  for (let i = 0; i < chainTargets.length; i += WAVE) {
+    const wave = chainTargets.slice(i, i + WAVE);
+    const results = await Promise.allSettled(wave.map(q => fetchStockOptionChain(q.symbol)));
+    wave.forEach((q, j) => {
+      const r = results[j];
+      if (r.status === "fulfilled" && r.value) chainMap.set(q.symbol, r.value);
+    });
+  }
 
   // Score each stock
   for (const quote of topStocks) {

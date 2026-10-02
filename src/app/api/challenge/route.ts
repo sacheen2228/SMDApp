@@ -29,7 +29,9 @@ import { getNSEIndiaVIX } from "@/lib/nse-api";
 // ── Scan cache ──
 let lastScan: ChallengeScanResult | null = null;
 let lastScanTime = 0;
-const SCAN_TTL_MS = 15_000;
+// 30s: stock-option universe fetches up to 12 chains/scan — 15s would double
+// the Breeze/NSE chain rate. Execute paths re-run runChallengeScan() fresh.
+const SCAN_TTL_MS = 30_000;
 
 // ── Auto-execute state ──
 let autoExecuteEnabled = false;

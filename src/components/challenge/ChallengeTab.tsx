@@ -75,11 +75,27 @@ interface ScanResult {
     riskReward: number;
     volume: number;
     reasoning: string[];
-    position: { quantity: number; lotSize: number; canTrade: boolean; reason?: string };
+    position: {
+      quantity: number;
+      lotSize: number;
+      lots?: number;
+      totalCost?: number;
+      maxLoss?: number;
+      canTrade: boolean;
+      reason?: string;
+    };
     data: { ltp: number; changePct: number };
     strike?: number;
     premium?: number;
     expiry?: string;
+    // Premium-converted options keep spot levels for display
+    spotEntry?: number;
+    spotStopLoss?: number;
+    spotTarget1?: number;
+    spotTarget2?: number;
+    tradeable?: boolean;
+    blockedReasons?: string[];
+    dataStamp?: "LIVE" | "PREV_CLOSE";
   }>;
   bestTrade?: any;
   summary: {
@@ -92,6 +108,8 @@ interface ScanResult {
     stockFOCandidates: number;
     equitySwingCandidates: number;
     totalSetups: number;
+    /** Option setups skipped — lot cost / risk sizing failed for ₹15K */
+    unfitOptions?: number;
     dataSource: string;
   };
   marketContext: {
@@ -199,6 +217,7 @@ export default function ChallengeTab() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [autoExec, setAutoExec] = useState<{ enabled: boolean; mode: string }>({ enabled: false, mode: "PAPER" });
   const [togglingAuto, setTogglingAuto] = useState(false);
+  const [instFilter, setInstFilter] = useState<"ALL" | "CE" | "PE">("ALL");
   const refreshRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch challenge data
@@ -323,6 +342,16 @@ export default function ChallengeTab() {
   const behind = challenge.progressPct < 0;
   const capitalGain = challenge.currentCapital - challenge.startingCapital;
   const capitalGainPct = (capitalGain / challenge.startingCapital) * 100;
+
+  const isOptInst = (inst: string) => inst === "CALL" || inst === "PUT";
+  // Keep the ORIGINAL index (i) so execute calls hit the right topOpportunities slot
+  const visibleOpps = scan.topOpportunities
+    .map((opp, i) => ({ opp, i }))
+    .filter(({ opp }) =>
+      instFilter === "ALL" ? true :
+      instFilter === "CE" ? opp.instrument === "CALL" :
+      opp.instrument === "PUT"
+    );
 
   return (
     <div className="space-y-4 p-4 max-w-[1400px] mx-auto">
@@ -567,8 +596,32 @@ export default function ChallengeTab() {
           </div>
         )}
 
+        {/* Instrument filter — CE/PE BUY only (challenge never sells options) */}
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          {([["ALL", "All"], ["CE", "CE BUY"], ["PE", "PE BUY"]] as const).map(([f, label]) => (
+            <button
+              key={f}
+              onClick={() => setInstFilter(f)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${
+                instFilter === f
+                  ? "bg-amber-400/15 text-amber-400 border-amber-400/30"
+                  : "bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-white"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          <span className="text-[11px] text-neutral-500">live lots + premium pricing</span>
+        </div>
+
+        {visibleOpps.length === 0 && (
+          <div className="text-neutral-500 text-sm py-4 text-center">
+            No {instFilter === "ALL" ? "" : `${instFilter} `}CE/PE setups in the top 10.
+          </div>
+        )}
+
         <div className="space-y-2">
-          {scan.topOpportunities.map((opp, i) => {
+          {visibleOpps.map(({ opp, i }) => {
             const isExpanded = expandedOpp === i;
             const canExec = opp.tradeable && opp.position.canTrade && scan.decision === "TRADE";
             const isCopied = copiedIds.has(opp.symbol + opp.timestamp);
@@ -601,7 +654,18 @@ export default function ChallengeTab() {
                       )}
                     </div>
                     <div className="text-xs text-neutral-400 mt-0.5">
-                      ₹{opp.entry.toFixed(2)} • SL ₹{opp.stopLoss.toFixed(2)} • TP ₹{opp.target1.toFixed(2)} • R:R 1:{opp.riskReward.toFixed(1)}
+                      {isOptInst(opp.instrument) ? (
+                        <>
+                          ₹{opp.entry.toFixed(2)} <span className="text-neutral-500">prem</span> • SL ₹{opp.stopLoss.toFixed(2)} • TP ₹{opp.target1.toFixed(2)} • R:R 1:{opp.riskReward.toFixed(1)}
+                          {opp.spotEntry !== undefined && (
+                            <span className="text-neutral-500">
+                              {" "}· spot {opp.spotEntry.toFixed(1)} → SL {opp.spotStopLoss?.toFixed(1)} → TP {opp.spotTarget1?.toFixed(1)}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>₹{opp.entry.toFixed(2)} • SL ₹{opp.stopLoss.toFixed(2)} • TP ₹{opp.target1.toFixed(2)} • R:R 1:{opp.riskReward.toFixed(1)}</>
+                      )}
                     </div>
                   </div>
                   <div className="text-right">
@@ -618,8 +682,17 @@ export default function ChallengeTab() {
                     <div className="text-xs text-neutral-400 space-y-1 mb-3">
                       <div><span className="text-neutral-500">Strategy:</span> {opp.strategy}</div>
                       <div><span className="text-neutral-500">Volume:</span> {(opp.volume / 100000).toFixed(1)}L • R:R 1:{opp.riskReward.toFixed(1)}</div>
-                      <div><span className="text-neutral-500">Qty:</span> {opp.position.quantity} {opp.position.lotSize > 1 ? `(lot ${opp.position.lotSize})` : ""}</div>
-                      {opp.blockedReasons.length > 0 && (
+                      {isOptInst(opp.instrument) ? (
+                        <div>
+                          <span className="text-neutral-500">Size:</span>{" "}
+                          {opp.position.canTrade
+                            ? `${opp.position.lots ?? 0} lot${(opp.position.lots ?? 0) === 1 ? "" : "s"} × ${opp.position.lotSize} = ${opp.position.quantity} qty • Cost ₹${fmt(opp.position.totalCost ?? 0)} • Max loss ₹${fmt(opp.position.maxLoss ?? 0)}`
+                            : `0 lots — ${opp.position.reason || "cannot size"}`}
+                        </div>
+                      ) : (
+                        <div><span className="text-neutral-500">Qty:</span> {opp.position.quantity} {opp.position.lotSize > 1 ? `(lot ${opp.position.lotSize})` : ""}</div>
+                      )}
+                      {opp.blockedReasons && opp.blockedReasons.length > 0 && (
                         <div className="text-amber-400">
                           <span className="text-neutral-500">Blocked:</span> {opp.blockedReasons.join('; ')}
                         </div>
@@ -694,7 +767,9 @@ export default function ChallengeTab() {
         )}
 
         <span className="text-xs text-neutral-500 ml-auto">
-          {scan.summary.nifty500Scanned} stocks • {scan.summary.totalSetups} setups • VIX {scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}
+          {scan.summary.nifty500Scanned} stocks • {scan.summary.totalSetups} setups
+          {(scan.summary.unfitOptions ?? 0) > 0 && ` • ${scan.summary.unfitOptions} didn't fit`}
+          • VIX {scan.marketContext.vixAvailable ? scan.marketContext.vix.toFixed(1) : "—"}
         </span>
       </div>
 

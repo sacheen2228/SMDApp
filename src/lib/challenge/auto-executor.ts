@@ -10,7 +10,8 @@ import { getBreezeClient } from "@/lib/icici-breeze/auth";
 import { recordSignal, closeTrade as auditClose } from "@/lib/trade-audit-client";
 import { validateCandidateTrade, type TradeCandidate } from "@/lib/trade-validator-gate";
 import { acquireTradeLock, releaseTradeLock, isTradeActive } from "@/lib/active-trade-lock";
-import type { ChallengeOpportunity } from "./challenge-engine";
+import { parseExpiryDate, resolveOrderAction, type ChallengeOpportunity } from "./challenge-engine";
+import { getLotSize } from "./capital-manager";
 
 export type ExecutionMode = "LIVE" | "PAPER";
 
@@ -81,13 +82,8 @@ async function isBreezeAvailable(): Promise<boolean> {
   }
 }
 
-// ── Get lot size for symbol ──
-function getLotSize(symbol: string): number {
-  const lots: Record<string, number> = {
-    NIFTY: 25, BANKNIFTY: 15, FINNIFTY: 40, MIDCPNIFTY: 50, SENSEX: 15,
-  };
-  return lots[symbol] || 1;
-}
+// ── Get lot size for symbol ── (imported from capital-manager — live NSE
+// lots + static snapshot; the old local 5-symbol table was a stale duplicate)
 
 // ── Get expiry date (FIXED: handles Thursday correctly) ──
 function getWeeklyExpiry(): string {
@@ -111,6 +107,22 @@ function getWeeklyExpiry(): string {
   const mm = String(thu.getMonth() + 1).padStart(2, "0");
   const yyyy = thu.getFullYear();
   return `${dd}-${mm}-${yyyy}`;
+}
+
+// ── Expiry from the signal's chain (dd-mm-yyyy for the SDK) ──
+// Falls back to "" (→ getWeeklyExpiry) when the signal expiry is missing,
+// unparseable or long expired — never sends a stale expiry.
+function expiryFromSignal(expiry?: string): string {
+  if (!expiry) return "";
+  try {
+    const d = parseExpiryDate(expiry);
+    if (!d) return "";
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    return `${dd}-${mm}-${d.getUTCFullYear()}`;
+  } catch {
+    return "";
+  }
 }
 
 // ── Execute a paper trade (simulated) ──
@@ -206,7 +218,9 @@ async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> 
 
     let exchangeCode: "NSE" | "NFO" = isEquity ? "NSE" : "NFO";
     let product = "MIS";
-    let action: "BUY" | "SELL" = opp.direction.includes("BUY") || opp.direction === "LONG" || opp.direction === "CALL" ? "BUY" : "SELL";
+    // Options are ALWAYS bought (resolveOrderAction) — direction "PUT" used
+    // to fall through to SELL = option selling, which the challenge forbids
+    let action: "BUY" | "SELL" = resolveOrderAction(opp);
     let quantity = String(opp.position.quantity);
     let price = "0";
     let expiryDate = "";
@@ -214,11 +228,13 @@ async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> 
     let strikePrice = "0";
 
     if (isOption) {
-      expiryDate = getWeeklyExpiry();
+      expiryDate = expiryFromSignal(opp.expiry) || getWeeklyExpiry();
       right = opp.instrument === "CALL" ? "call" : "put";
+      // Breeze rejects F&O option orders without the strike — was hardcoded "0"
+      strikePrice = opp.strike ? String(opp.strike) : "0";
       quantity = String(opp.position.lots * getLotSize(opp.symbol));
     } else if (isFuture) {
-      expiryDate = getWeeklyExpiry();
+      expiryDate = expiryFromSignal(opp.expiry) || getWeeklyExpiry();
       quantity = String(opp.position.lots * getLotSize(opp.symbol));
     }
 

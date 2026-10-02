@@ -18,11 +18,17 @@ export interface CapitalConfig {
 export const DEFAULT_CAPITAL_CONFIG: CapitalConfig = {
   startingCapital: 15000,
   targetCapital: 100000,
-  maxRiskPerTradePct: 5,
+  // 10% risk/trade — one full loss stays inside the 10% daily stop. At 5%
+  // (₹750) almost no option lot could ever fit the budget and the challenge
+  // would sit NO_TRADE forever.
+  maxRiskPerTradePct: 10,
   maxDailyDrawdownPct: 10,
   maxTotalDrawdownPct: 20,
   maxConcurrentTrades: 3,
-  maxPositionPct: 50, // Increased from 40% — was too restrictive for ₹15K
+  // 75% (rule set C): option buyers' deployed premium is bounded by the
+  // position cap, actual loss is bounded by the 10% premium stop; 50% left
+  // most lot-granular options unsizable at ₹15K (cost > ₹7,500)
+  maxPositionPct: 75,
   lotSizeBuffer: 5,   // Reduced from 10% — was inflating costs
   minTradeValue: 500, // Reduced from 1000 — ₹15K needs smaller trades
 };
@@ -52,29 +58,309 @@ export interface DrawdownState {
   failureReason?: string;
 }
 
-// ── SEBI F&O lot sizes (as of 2024) ──
+// ── SEBI F&O lot sizes ──
+// SNAPSHOT of NSE fo_mktlots.csv (first/current expiry month column,
+// OCT-26) taken 2026-10-02. Live fetch (fetchLiveLotSizes) overrides this;
+// SENSEX/NIFTY_BANK are NOT in the NSE file (BSE / legacy alias) and keep
+// their previous static values. Always verify against the exchange —
+// SEBI revises these often (the old 2024 table was badly stale: NIFTY 25→65,
+// RELIANCE 250→500, WIPRO 1500→3000).
 const FNO_LOT_SIZES: Record<string, number> = {
-  // Index
-  NIFTY: 25, BANKNIFTY: 15, FINNIFTY: 40, MIDCPNIFTY: 50, SENSEX: 15, NIFTY_BANK: 15,
-  // Large cap stocks
-  RELIANCE: 250, TCS: 175, HDFCBANK: 550, INFY: 400, ICICIBANK: 700,
-  SBIN: 1500, BHARTIARTL: 475, KOTAKBANK: 400, LT: 150, AXISBANK: 625,
-  BAJFINANCE: 125, ASIANPAINT: 200, MARUTI: 25, SUNPHARMA: 400, TITAN: 175,
-  TATAMOTORS: 1250, WIPRO: 1500, "M&M": 400, HCLTECH: 700, POWERGRID: 2700,
-  NTPC: 2250, ONGC: 3750, TATASTEEL: 5500, JSWSTEEL: 675, ADANIENT: 250,
-  ADANIPORTS: 600, TECHM: 600, HDFCLIFE: 1500, SBILIFE: 1000, BRITANNIA: 125,
-  CIPLA: 300, DRREDDY: 125, DIVISLAB: 100, EICHERMOT: 300, GRASIM: 400,
-  HEROMOTOCO: 200, HINDALCO: 1750, INDUSINDBK: 900, BAJAJFINSV: 375,
-  COALINDIA: 2250, BPCL: 1800, TRENT: 550, APOLLOHOSP: 125, LTIM: 175,
-  PIDILITIND: 250,
-  // Midcap stocks (common F&O)
-  AUROPHARMA: 500, CANBK: 4000, PFC: 2250, RECLTD: 1600, IRFC: 12500,
-  IREDA: 5000, BEL: 3500, HAL: 125, BDL: 500, COCHINSHIP: 250,
-  ZOMATO: 6000, NYKAA: 3000, POLYCAB: 300, KEI: 500,
+  "360ONE": 500,
+  ABB: 125,
+  ABCAPITAL: 3100,
+  ADANIENSOL: 675,
+  ADANIENT: 309,
+  ADANIGREEN: 600,
+  ADANIPORTS: 475,
+  ADANIPOWER: 3550,
+  ALKEM: 125,
+  AMBER: 100,
+  AMBUJACEM: 1200,
+  ANANDRATHI: 250,
+  ANGELONE: 2500,
+  APLAPOLLO: 350,
+  APOLLOHOSP: 125,
+  ASHOKLEY: 5000,
+  ASIANPAINT: 250,
+  ASTRAL: 425,
+  ATHERENERG: 375,
+  AUBANK: 1000,
+  AUROPHARMA: 550,
+  AXISBANK: 625,
+  "BAJAJ-AUTO": 75,
+  BAJAJFINSV: 300,
+  BAJAJHLDNG: 75,
+  BAJFINANCE: 750,
+  BANDHANBNK: 3600,
+  BANKBARODA: 2925,
+  BANKINDIA: 5200,
+  BANKNIFTY: 30,
+  BDL: 425,
+  BEL: 1425,
+  BHARATFORG: 500,
+  BHARTIARTL: 475,
+  BHEL: 2625,
+  BIOCON: 2500,
+  BLUESTARCO: 325,
+  BOSCHLTD: 25,
+  BPCL: 1975,
+  BRITANNIA: 125,
+  BSE: 200,
+  CAMS: 825,
+  CANBK: 6750,
+  CDSL: 475,
+  CGPOWER: 850,
+  CHOLAFIN: 625,
+  CIPLA: 425,
+  COALINDIA: 1350,
+  COCHINSHIP: 400,
+  COFORGE: 475,
+  COLPAL: 275,
+  CONCOR: 1250,
+  CROMPTON: 2150,
+  CUMMINSIND: 200,
+  DABUR: 1250,
+  DELHIVERY: 2075,
+  DIVISLAB: 100,
+  DIXON: 50,
+  DLF: 950,
+  DMART: 150,
+  DRREDDY: 625,
+  EICHERMOT: 100,
+  ENRIN: 175,
+  ETERNAL: 2425,
+  FEDERALBNK: 2500,
+  FINNIFTY: 60,
+  FORCEMOT: 25,
+  FORTIS: 775,
+  GAIL: 3550,
+  GLENMARK: 375,
+  GMRAIRPORT: 6975,
+  GODFRYPHLP: 275,
+  GODREJCP: 500,
+  GODREJPROP: 325,
+  GRASIM: 250,
+  "GVT&D": 125,
+  HAL: 150,
+  HAVELLS: 500,
+  HCLTECH: 400,
+  HDFCAMC: 300,
+  HDFCBANK: 650,
+  HDFCLIFE: 1100,
+  HEROMOTOCO: 150,
+  HINDALCO: 700,
+  HINDPETRO: 2025,
+  HINDUNILVR: 300,
+  HINDZINC: 1225,
+  HYUNDAI: 275,
+  ICICIBANK: 700,
+  ICICIGI: 325,
+  ICICIPRULI: 925,
+  IDEA: 71475,
+  IDFCFIRSTB: 9275,
+  IEX: 4350,
+  INDHOTEL: 1000,
+  INDIANB: 1000,
+  INDIGO: 150,
+  INDUSINDBK: 700,
+  INDUSTOWER: 1700,
+  INFY: 400,
+  INOXWIND: 6400,
+  IOC: 4875,
+  IREDA: 4525,
+  IRFC: 5425,
+  ITC: 1725,
+  JINDALSTEL: 625,
+  JIOFIN: 2350,
+  JSWENERGY: 1075,
+  JSWSTEEL: 675,
+  JUBLFOOD: 1250,
+  KALYANKJIL: 1350,
+  KAYNES: 150,
+  KEI: 175,
+  KFINTECH: 575,
+  KOTAKBANK: 2000,
+  KPITTECH: 775,
+  LAURUSLABS: 850,
+  LICHSGFIN: 1000,
+  LICI: 1400,
+  LODHA: 625,
+  LT: 175,
+  LTF: 2250,
+  LTIM: 150,
+  LTM: 150,
+  LUPIN: 425,
+  "M&M": 200,
+  MAHABANK: 6500,
+  MANAPPURAM: 3000,
+  MANKIND: 250,
+  MARICO: 1200,
+  MARUTI: 50,
+  MAXHEALTH: 525,
+  MAZDOCK: 225,
+  MCX: 225,
+  MFSL: 400,
+  MIDCPNIFTY: 120,
+  MOTHERSON: 6150,
+  MOTILALOFS: 775,
+  MPHASIS: 275,
+  MUTHOOTFIN: 275,
+  "NAM-INDIA": 625,
+  NATIONALUM: 1875,
+  NAUKRI: 550,
+  NBCC: 6500,
+  NESTLEIND: 500,
+  NHPC: 6950,
+  NIFTY: 65,
+  NIFTYFPI: 1100,
+  NIFTYNXT50: 25,
+  NIFTY_BANK: 15,
+  NMDC: 6750,
+  NTPC: 1500,
+  NYKAA: 3125,
+  OBEROIRLTY: 350,
+  OFSS: 100,
+  OIL: 1400,
+  ONGC: 2250,
+  PAGEIND: 20,
+  PATANJALI: 1075,
+  PAYTM: 725,
+  PERSISTENT: 125,
+  PETRONET: 1900,
+  PFC: 1300,
+  PGEL: 950,
+  PHOENIXLTD: 350,
+  PIDILITIND: 500,
+  PIIND: 175,
+  PNB: 8000,
+  PNBHOUSING: 650,
+  POLICYBZR: 350,
+  POLYCAB: 125,
+  POWERGRID: 1900,
+  POWERINDIA: 25,
+  PREMIERENE: 650,
+  PRESTIGE: 450,
+  RADICO: 150,
+  RBLBANK: 3175,
+  RECLTD: 1575,
+  RELIANCE: 500,
+  RVNL: 1925,
+  SAGILITY: 12000,
+  SAIL: 4700,
+  SBICARD: 800,
+  SBILIFE: 375,
+  SBIN: 750,
+  SENSEX: 15,
+  SHREECEM: 25,
+  SHRIRAMFIN: 825,
+  SIEMENS: 175,
+  SOLARINDS: 50,
+  SONACOMS: 1225,
+  SRF: 200,
+  SUNPHARMA: 350,
+  SUPREMEIND: 175,
+  SUZLON: 12700,
+  SWIGGY: 1825,
+  TATACONSUM: 550,
+  TATAELXSI: 125,
+  TATAMOTORS: 1250,
+  TATAPOWER: 1450,
+  TATASTEEL: 2750,
+  TCS: 225,
+  TECHM: 600,
+  TIINDIA: 200,
+  TITAN: 175,
+  TMPV: 1600,
+  TORNTPHARM: 125,
+  TRENT: 225,
+  TVSMOTOR: 175,
+  UJJIVANSFB: 8000,
+  ULTRACEMCO: 50,
+  UNIONBANK: 4425,
+  UNITDSPR: 400,
+  UNOMINDA: 550,
+  UPL: 1355,
+  VBL: 1275,
+  VEDL: 1150,
+  VMM: 4850,
+  VOLTAS: 375,
+  WAAREEENER: 175,
+  WIPRO: 3000,
+  YESBANK: 31100,
+  ZOMATO: 6000,
+  ZYDUSLIFE: 900,
 };
 
+// ── Live lot sizes (NSE fo_mktlots.csv) ──
+// SEBI revises lots often; the static snapshot above is only a fallback.
+let liveLotSizes: Record<string, number> = {};
+let liveLotFetchAt = 0;
+const LIVE_LOT_TTL_MS = 2 * 60 * 60 * 1000; // 2h — file changes rarely
+
+/** Parse NSE fo_mktlots.csv → SYMBOL → lot size (first non-empty month column). */
+export function parseMktLotsCsv(csv: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!csv || typeof csv !== "string") return out;
+  for (const line of csv.split(/\r?\n/)) {
+    const parts = line.split(",").map((p) => p.trim());
+    if (parts.length < 3) continue;
+    const sym = parts[1];
+    if (!/^[A-Z0-9&\-]{2,20}$/.test(sym)) continue; // header/notes rows
+    for (const cell of parts.slice(2)) {
+      if (/^\d+$/.test(cell) && Number(cell) > 0) {
+        out[sym] = Number(cell);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Inject live lots (loader + tests). */
+export function setLiveLotSizes(lots: Record<string, number>): void {
+  liveLotSizes = { ...lots };
+  liveLotFetchAt = Date.now();
+}
+
+export function getLiveLotSizes(): Record<string, number> {
+  return { ...liveLotSizes };
+}
+
+/**
+ * Fetch current lot sizes from NSE archives (fetches once per TTL).
+ * Never throws — on any failure returns {} and keeps whatever is cached
+ * (static snapshot still applies via getLotSize).
+ */
+export async function fetchLiveLotSizes(force = false): Promise<Record<string, number>> {
+  const now = Date.now();
+  if (!force && now - liveLotFetchAt < LIVE_LOT_TTL_MS && Object.keys(liveLotSizes).length > 0) {
+    return getLiveLotSizes();
+  }
+  try {
+    const res = await fetch("https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv", {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        Referer: "https://www.nseindia.com/",
+      },
+      signal: AbortSignal.timeout(15000),
+      cache: "no-store",
+    });
+    if (!res.ok) return getLiveLotSizes();
+    const lots = parseMktLotsCsv(await res.text());
+    if (Object.keys(lots).length === 0) return getLiveLotSizes();
+    setLiveLotSizes(lots);
+    console.log(`[Challenge] live lot sizes loaded: ${Object.keys(lots).length} symbols from NSE fo_mktlots.csv`);
+    return getLiveLotSizes();
+  } catch (e: any) {
+    console.warn("[Challenge] live lot fetch failed, using static snapshot:", String(e?.message || e).slice(0, 120));
+    return getLiveLotSizes();
+  }
+}
+
+/** Live first, static snapshot fallback, 1 for unknown (never a guessed lot). */
 export function getLotSize(symbol: string): number {
-  return FNO_LOT_SIZES[symbol] || 1;
+  return liveLotSizes[symbol] ?? FNO_LOT_SIZES[symbol] ?? 1;
 }
 
 // ── Calculate position size for equity trade ──
@@ -142,7 +428,14 @@ export function calculateFOPosition(
 
   const lots = Math.min(maxLotsByRisk, maxLotsByCapital);
   if (lots <= 0) {
-    return { quantity: 0, lotSize, lots: 0, totalCost: 0, maxLoss: 0, maxLossPct: 0, riskAmount: 0, canTrade: false, reason: `Min lot cost ₹${Math.round(lotCost)} exceeds capital limit`, instrument: isOption ? "OPTION" : "FUTURES" };
+    // Report the ACTUAL binder(s) — "min lot cost" alone was misleading when
+    // the stop-risk budget was the real limit (options stay sizeable only if
+    // the user can see why)
+    const maxPosition = capital * config.maxPositionPct / 100;
+    const fails: string[] = [];
+    if (maxLotsByRisk < 1) fails.push(`Stop risk ₹${Math.round(riskPerLot)}/lot > ₹${Math.round(riskAmount)} risk budget`);
+    if (maxLotsByCapital < 1) fails.push(`Min lot cost ₹${Math.round(lotCost)} > ₹${Math.round(maxPosition)} limit`);
+    return { quantity: 0, lotSize, lots: 0, totalCost: 0, maxLoss: 0, maxLossPct: 0, riskAmount: Math.round(riskAmount), canTrade: false, reason: fails.join(" | "), instrument: isOption ? "OPTION" : "FUTURES" };
   }
 
   const quantity = lots * lotSize;
