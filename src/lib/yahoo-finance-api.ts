@@ -30,6 +30,12 @@ const YAHOO_SYMBOL_MAP: Record<string, string> = {
   'GIFTNIFTY': '^NSEI', // SGXNIFTY.NS is dead (SGX→GIFTC merger). Use NIFTY 50 spot as proxy
 };
 
+// True when our symbol is an index known to Yahoo (goes through the v8 chart
+// path above instead of the .NS equity batch).
+export function isIndexSymbol(ourSymbol: string): boolean {
+  return !!YAHOO_SYMBOL_MAP[String(ourSymbol || '').trim().toUpperCase()];
+}
+
 // Cache for Yahoo data (2 minutes)
 let yahooCache: Map<string, { data: YahooIndexData; timestamp: number }> = new Map();
 const CACHE_DURATION = 2 * 60 * 1000; // 2 minutes

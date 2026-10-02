@@ -126,7 +126,11 @@ function LiveMode({ symbol }: { symbol: string }) {
     }
   }, [symbol, strategy, strikeSelection]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetchData();
+    const iv = setInterval(() => fetchData(), 60000); // auto-update every 60s
+    return () => clearInterval(iv);
+  }, [fetchData]);
 
   const strategyColor = (s: string) => {
     if (s === "CALL") return "text-[#1fbf75]";

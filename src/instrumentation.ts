@@ -41,6 +41,22 @@ export async function register() {
       console.warn("[sdm-scan] auto-start failed:", err.message);
     }
 
+    // Warm dashboard caches shortly after boot (system-on) so heatmap /
+    // breadth / regime tabs paint live data on first open. One-shot;
+    // failures are logged and ignored.
+    setTimeout(async () => {
+      try {
+        const paths = ["/api/market/heatmap", "/api/market/breadth", "/api/market/regime"];
+        const results = await Promise.allSettled(
+          paths.map((p) => fetch(`http://127.0.0.1:3000${p}`, { signal: AbortSignal.timeout(30000) })),
+        );
+        const ok = results.filter((r) => r.status === "fulfilled" && r.value.ok).length;
+        console.log(`[Warmup] dashboard caches: ${ok}/${paths.length} refreshed`);
+      } catch (err: any) {
+        console.warn("[Warmup] failed:", err.message);
+      }
+    }, 15000);
+
     // Restore one-trade-per-underlying locks from DB (never called before —
     // left stale ACTIVE rows free to re-enter while blocking nothing useful)
     try {

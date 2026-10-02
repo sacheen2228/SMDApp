@@ -52,17 +52,22 @@ export default function ExpiryPlanPanel({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      fetch("/api/fii-dii").then(r => r.json()).catch(() => null),
-      fetch("/api/greek-flow").then(r => r.json()).catch(() => null),
-      fetch("/api/institutional-positioning").then(r => r.json()).catch(() => null),
-    ]).then(([fiiData, accelData, inst]) => {
-      setFii(fiiData);
-      setAccel(accelData?.result || accelData);
-      setInstData(inst?.success ? inst : null);
-      setLoading(false);
-    });
+    const load = (initial = false) => {
+      if (initial) setLoading(true);
+      Promise.all([
+        fetch("/api/fii-dii").then(r => r.json()).catch(() => null),
+        fetch("/api/greek-flow").then(r => r.json()).catch(() => null),
+        fetch("/api/institutional-positioning").then(r => r.json()).catch(() => null),
+      ]).then(([fiiData, accelData, inst]) => {
+        setFii(fiiData);
+        setAccel(accelData?.result || accelData);
+        setInstData(inst?.success ? inst : null);
+        if (initial) setLoading(false);
+      });
+    };
+    load(true);
+    const iv = setInterval(() => load(false), 60000); // auto-update every 60s (was mount-only)
+    return () => clearInterval(iv);
   }, [symbol]);
 
   // Derive OI walls from chainData

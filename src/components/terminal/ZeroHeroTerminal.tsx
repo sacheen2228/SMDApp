@@ -763,6 +763,59 @@ export function ZeroHeroTerminal() {
   const [showModal, setShowModal] = useState(false);
   const [pendingTrade, setPendingTrade] = useState<any>(null);
   const [modalQty, setModalQty] = useState(1);
+  // Real broker positions from Breeze — 15s poll (null = not yet loaded /
+  // Breeze unavailable).
+  const [brokerPositions, setBrokerPositions] = useState<any[] | null>(null);
+
+  // Live LTP for open paper positions — every 15s fetch each position's
+  // option chain and update matching strike premiums. deps exclude `ltp`
+  // itself so updates don't retrigger the effect.
+  useEffect(() => {
+    if (positions.length === 0) return;
+    const syms = [...new Set(positions.map((p) => p.sym))];
+    let alive = true;
+    const tick = async () => {
+      try {
+        const results = await Promise.all(
+          syms.map(async (sym) => {
+            try {
+              const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(sym)}`);
+              if (!res.ok) return null;
+              const json = await res.json();
+              if (!json.success) return null;
+              return { sym, strikes: json.data?.data || [] } as const;
+            } catch { return null; }
+          }),
+        );
+        const map = new Map(results.filter(Boolean).map((r: any) => [r.sym, r.strikes]));
+        if (!alive || map.size === 0) return;
+        setPositions((prev) => prev.map((p) => {
+          const rows = map.get(p.sym);
+          if (!rows) return p;
+          const row = rows.find((s: any) => s.strike === p.strike);
+          const ltp = p.type === "CE" ? row?.ce?.ltp : row?.pe?.ltp;
+          return ltp ? { ...p, ltp } : p;
+        }));
+      } catch { /* keep last LTP */ }
+    };
+    tick();
+    const iv = setInterval(tick, 15000); // live LTP every 15s
+    return () => { alive = false; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions.length, positions.map((p) => p.sym).join(",")]);
+
+  // Broker positions (Breeze) — 15s poll; failures leave the last value.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("/api/positions")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => { if (alive && j?.success) setBrokerPositions(Array.isArray(j.data?.positions) ? j.data.positions : []); })
+        .catch(() => {});
+    load();
+    const iv = setInterval(load, 15000); // auto-update every 15s
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
 
   // Watchlist
   const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set(["NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK"]));
@@ -1222,7 +1275,7 @@ export function ZeroHeroTerminal() {
             <WatchlistTab watchlist={watchlist} setWatchlist={setWatchlist} setSymbol={setSymbol} symbol={symbol} />
           )}
           {activeTab === "positions" && (
-            <PositionsTab positions={positions} closePosition={closePosition} totalPnl={totalPnl} />
+            <PositionsTab positions={positions} closePosition={closePosition} totalPnl={totalPnl} brokerPositions={brokerPositions} />
           )}
           {activeTab === "straddle" && (
             <CASStraddleTab />
@@ -1516,25 +1569,26 @@ function DOMTab({ symbol }: { symbol: string }) {
 
   useEffect(() => {
     let mounted = true;
-    async function fetchDOM() {
+    async function fetchDOM(initial = false) {
       try {
-        setLoading(true);
+        if (initial) setLoading(true);
         setError(null);
         const res = await fetch(`/api/dom-analysis?symbol=${symbol}`);
         const json = await res.json();
         if (mounted && json.success && json.data) {
           setData(json.data);
-        } else if (mounted) {
+        } else if (mounted && initial) {
           setError(json.error || 'Failed to fetch DOM data');
         }
       } catch (e: any) {
-        if (mounted) setError(e.message);
+        if (mounted && initial) setError(e.message);
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted && initial) setLoading(false);
       }
     }
-    fetchDOM();
-    return () => { mounted = false; };
+    fetchDOM(true);
+    const iv = setInterval(() => fetchDOM(false), 60000); // auto-update every 60s
+    return () => { mounted = false; clearInterval(iv); };
   }, [symbol]);
 
   const fmtInt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
@@ -1919,6 +1973,25 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
 // ─── Trade History Tab ─────────────────────────────────────────────
 // ─── Watchlist Tab ─────────────────────────────────────────────────
 function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlist: Set<string>; setWatchlist: (s: Set<string>) => void; setSymbol: (s: string) => void; symbol: string }) {
+  const [quotes, setQuotes] = useState<Record<string, { ltp: number; changePct: number }>>({});
+
+  // Live LTP + chg% for every instrument — 30s poll of /api/quotes.
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      const syms = ALL_INSTRUMENTS.map((i) => i.symbol).join(",");
+      fetch(`/api/quotes?symbols=${syms}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (alive && j?.success) setQuotes(j.data?.quotes || {});
+        })
+        .catch(() => {});
+    };
+    load();
+    const iv = setInterval(load, 30000); // auto-update every 30s
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+
   const toggle = (sym: string) => {
     const next = new Set(watchlist);
     if (next.has(sym)) next.delete(sym); else next.add(sym);
@@ -1926,19 +1999,20 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
   };
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">⭐ Watchlist <span className="text-[#7d8ba0] font-mono text-[11px]">Click a row to switch instrument</span></div>
+      <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">⭐ Watchlist <span className="text-[#7d8ba0] font-mono text-[11px]">Click a row to switch instrument · LTP auto-updates 30s</span></div>
       <div className="p-2.5 overflow-y-auto" style={{ maxHeight: "78vh" }}>
         <table className="w-full border-collapse font-mono text-[12px]">
           <thead>
             <tr>
-              {["Pin", "Instrument", "Lot", "Exchange"].map((h) => (
-                <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h !== "Lot" ? "text-left" : "text-right"}`}>{h}</th>
+              {["Pin", "Instrument", "LTP", "Chg%", "Lot", "Exchange"].map((h) => (
+                <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Lot" ? "text-right" : h === "Chg%" || h === "LTP" ? "text-right" : "text-left"}`}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {[...ALL_INSTRUMENTS].sort((a, b) => (watchlist.has(b.symbol) ? 1 : 0) - (watchlist.has(a.symbol) ? 1 : 0)).map((i) => {
               const active = i.symbol === symbol;
+              const q = quotes[i.symbol];
               return (
                 <tr key={i.symbol} className={`border-b border-[#1f2733] cursor-pointer ${active ? "bg-[rgba(45,212,167,.08)]" : "hover:bg-[#151b25]"}`}
                   onClick={() => setSymbol(i.symbol)}>
@@ -1946,6 +2020,8 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
                     <span style={{ color: watchlist.has(i.symbol) ? "#e8a33d" : "#7d8ba0", fontSize: 15 }}>{watchlist.has(i.symbol) ? "★" : "☆"}</span>
                   </td>
                   <td className="text-left py-1.5 px-1 font-medium" style={{ color: active ? "#2dd4a7" : "#dfe6ee" }}>{i.label}</td>
+                  <td className="text-right py-1.5 px-1" style={{ color: q ? "#dfe6ee" : "#5a6a80" }}>{q ? `₹${q.ltp.toLocaleString("en-IN")}` : "—"}</td>
+                  <td className="text-right py-1.5 px-1 font-bold" style={{ color: !q ? "#5a6a80" : q.changePct >= 0 ? "#1fbf75" : "#f2495c" }}>{q ? `${q.changePct >= 0 ? "+" : ""}${q.changePct.toFixed(2)}%` : "—"}</td>
                   <td className="text-right py-1.5 px-1">{i.lotSize}</td>
                   <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{i.exchange}</td>
                 </tr>
@@ -1959,7 +2035,7 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
 }
 
 // ─── Positions Tab ─────────────────────────────────────────────────
-function PositionsTab({ positions, closePosition, totalPnl }: { positions: any[]; closePosition: (id: number) => void; totalPnl: number }) {
+function PositionsTab({ positions, closePosition, totalPnl, brokerPositions }: { positions: any[]; closePosition: (id: number) => void; totalPnl: number; brokerPositions: any[] | null }) {
   const winners = positions.filter((p) => p.ltp > p.entry).length;
   const losers = positions.filter((p) => p.ltp < p.entry).length;
   return (
@@ -2015,6 +2091,42 @@ function PositionsTab({ positions, closePosition, totalPnl }: { positions: any[]
             <div><div className="text-[#7d8ba0] text-[11px]">In loss</div><div className="text-[#f2495c] font-mono font-bold">{losers}</div></div>
           </div>
         </div>
+      </div>
+      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden col-span-2">
+        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🏛 Broker Positions (Breeze) <span className="text-[#7d8ba0] font-mono text-[11px]">{brokerPositions === null ? "connecting…" : `${brokerPositions.length} open`}</span></div>
+        {brokerPositions === null ? (
+          <div className="p-4 text-[#7d8ba0] text-center text-[12.5px]">Breeze unavailable — broker positions will appear when the session is active. Paper positions above keep updating.</div>
+        ) : brokerPositions.length === 0 ? (
+          <div className="p-4 text-[#7d8ba0] text-center text-[12.5px]">No open broker positions.</div>
+        ) : (
+          <div className="p-2.5 overflow-x-auto">
+            <table className="w-full border-collapse font-mono text-[12px]">
+              <thead>
+                <tr>
+                  {["Instrument", "Product", "Qty", "Avg", "LTP", "P&L", "P&L %"].map((h) => (
+                    <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Instrument" || h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {brokerPositions.map((p, i) => {
+                  const pnl = Number(p.pnl) || 0;
+                  return (
+                    <tr key={`${p.stockCode}-${p.exchangeCode}-${i}`} className="border-b border-[#1f2733] text-[11px]">
+                      <td className="text-left py-1.5 px-1 text-[#dfe6ee]">{p.stockCode} <span className="text-[10px] text-[#7d8ba0]">{p.exchangeCode}</span></td>
+                      <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{p.product}</td>
+                      <td className="text-right py-1.5 px-1">{p.quantity}</td>
+                      <td className="text-right py-1.5 px-1">₹{p.averagePrice}</td>
+                      <td className="text-right py-1.5 px-1">₹{p.ltp}</td>
+                      <td className={`text-right py-1.5 px-1 font-bold ${pnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>₹{fmtInt(pnl)}</td>
+                      <td className={`text-right py-1.5 px-1 ${pnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{p.pnlPercentage}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

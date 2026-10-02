@@ -149,6 +149,8 @@ function ReplayPanel() {
 
   useEffect(() => {
     load();
+    const iv = setInterval(() => load(), 30000); // auto-update every 30s (was mount-only)
+    return () => clearInterval(iv);
   }, [load]);
 
   const split = useMemo(() => {

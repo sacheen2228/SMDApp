@@ -355,6 +355,11 @@ export default function TradingDashboard() {
   
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
   const [refreshCountdown, setRefreshCountdown] = useState(15);
+  // Live session — cheap pure Date math, recomputed every render (the 1s
+  // countdown keeps that honest) so the refresh cadence flips within ~1s of
+  // market open/close. 15s while open (matches the countdown), 5min closed.
+  const marketSession = getCurrentSession();
+  const refreshSecs = marketSession.isMarketOpen ? 15 : 300;
   const [breezeStatus, setBreezeStatus] = useState<{ isConnected: boolean; loginInProgress: boolean; message: string }>({
     isConnected: false,
     loginInProgress: false,
@@ -382,7 +387,7 @@ export default function TradingDashboard() {
         clearTimeout(timeout);
       }
     },
-    refetchInterval: autoRefresh ? 900000 : false,
+    refetchInterval: autoRefresh ? refreshSecs * 1000 : false,
     staleTime: 5000,
     retry: 1,
     retryDelay: 2000,
@@ -405,6 +410,7 @@ export default function TradingDashboard() {
       return Array.isArray(json.trades) ? json.trades : Array.isArray(json) ? json : [];
     },
     staleTime: 30000,
+    refetchInterval: autoRefresh ? 30000 : false,
   });
 
   // Normalize the summary from the LIVE option-chain response. The API wraps
@@ -545,18 +551,19 @@ export default function TradingDashboard() {
     }
   }, [summary?.atmStrike, selectedExpiry, symbol]);
   
-  // Auto-refresh countdown
+  // Auto-refresh countdown — mirrors the query's refetchInterval (15s open,
+  // 5min closed) so what you see is what actually refetches.
   useEffect(() => {
     if (!autoRefresh) { setRefreshCountdown(0); return; }
-    setRefreshCountdown(15);
+    setRefreshCountdown(refreshSecs);
     const interval = setInterval(() => {
       setRefreshCountdown((prev) => {
-        if (prev <= 1) return 15;
+        if (prev <= 1) return refreshSecs;
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh, refreshSecs]);
 
   // Max OI for heat map
   const chainData = useMemo(() => {
@@ -564,8 +571,8 @@ export default function TradingDashboard() {
     return [];
   }, [data?.data]);
 
-  // Market session info
-  const marketSession = useMemo(() => getCurrentSession(), []);
+  // Market session info — declared at the top of the component (marketSession)
+  // so the option-chain query can use it for the refresh cadence.
 
   // Activate Breeze session from ?apisession= URL param
   useEffect(() => {
@@ -733,13 +740,13 @@ export default function TradingDashboard() {
                 </div>
               </PopoverContent>
             </Popover>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { refetch(); setRefreshCountdown(15); }} disabled={isFetching}>
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { refetch(); setRefreshCountdown(refreshSecs); }} disabled={isFetching}>
               <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
             </Button>
             {autoRefresh && (
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground tabular-nums">
                 <Timer className="h-3 w-3" />
-                <span>{refreshCountdown}s</span>
+                <span>{refreshCountdown >= 60 ? `${Math.floor(refreshCountdown / 60)}m ${refreshCountdown % 60}s` : `${refreshCountdown}s`}</span>
               </div>
             )}
           </div>

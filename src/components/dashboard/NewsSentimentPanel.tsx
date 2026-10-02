@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Newspaper, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { analyzeNewsSentiment, type NewsSentiment } from '@/lib/signal-engine';
 
-// ─── Default headlines (change these / wire to an API) ───
+// ─── Fallback headlines — only used when /api/news is unreachable ───
 const DEFAULT_HEADLINES: string[] = [
   "FII buying continues in cash market for third straight session",
   "NIFTY holds above 24,200 on strong support from banking stocks",
@@ -24,13 +24,40 @@ interface NewsSentimentPanelProps {
 export default function NewsSentimentPanel({ headlines = DEFAULT_HEADLINES, onScoreChange }: NewsSentimentPanelProps) {
   const [collapsed, setCollapsed] = useState(true);
   const [customText, setCustomText] = useState('');
+  const [liveHeadlines, setLiveHeadlines] = useState<string[]>([]);
+
+  // Real headlines from /api/news (Google News RSS etc.) — refresh every 2min.
+  // Falls back to DEFAULT_HEADLINES only when the API returns nothing.
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch('/api/news')
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => {
+          const payload = j?.data || j || {};
+          const articles = Array.isArray(payload.articles) ? payload.articles : [];
+          const titles = articles
+            .map((a: any) => String(a?.title || a?.headline || '').trim())
+            .filter(Boolean);
+          if (alive && titles.length) setLiveHeadlines(titles);
+        })
+        .catch(() => {});
+    };
+    load();
+    const iv = setInterval(load, 120000); // auto-update every 2min
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+
+  const effectiveHeadlines = headlines !== DEFAULT_HEADLINES && headlines.length
+    ? headlines
+    : liveHeadlines.length ? liveHeadlines : DEFAULT_HEADLINES;
 
   const sentiment: NewsSentiment = useMemo(() => {
     const items = customText.trim()
-      ? [...headlines, customText]
-      : headlines;
+      ? [...effectiveHeadlines, customText]
+      : effectiveHeadlines;
     return analyzeNewsSentiment(items);
-  }, [headlines, customText]);
+  }, [effectiveHeadlines, customText]);
 
   // Notify parent
   React.useEffect(() => {
@@ -50,7 +77,7 @@ export default function NewsSentimentPanel({ headlines = DEFAULT_HEADLINES, onSc
         <div className="flex items-center gap-2">
           <Newspaper className="h-3 w-3 text-orange-400" />
           <span className="font-semibold text-[#dfe6ee]">News Sentiment</span>
-          <span className="text-[9px] text-[#7d8ba0]">(heuristic — not verified)</span>
+          <span className="text-[9px] text-[#7d8ba0]">({liveHeadlines.length ? 'live headlines' : 'heuristic — not verified'})</span>
         </div>
         <div className="flex items-center gap-2">
           {/* Score bar */}

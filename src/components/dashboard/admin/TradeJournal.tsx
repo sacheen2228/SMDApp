@@ -34,7 +34,11 @@ export default function TradeJournal() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchTrades(); }, [filter.symbol]);
+  useEffect(() => {
+    fetchTrades();
+    const iv = setInterval(() => fetchTrades(), 60000); // auto-update every 60s (was mount-only)
+    return () => clearInterval(iv);
+  }, [filter.symbol]);
 
   const sorted = useMemo(() => {
     const arr = [...trades];

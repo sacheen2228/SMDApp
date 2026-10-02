@@ -120,18 +120,23 @@ export const GapAnalysis = memo(function GapAnalysis({
   const [showFactors, setShowFactors] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/gift-nifty?spot=${spotPrice}`)
-      .then(r => r.json())
-      .then(d => { if (d.success) setGiftNifty(d); })
-      .catch(() => {});
-    fetch(`/api/fii-dii`)
-      .then(r => r.json())
-      .then(d => { if (d.success) setFiiDii(d); })
-      .catch(() => {});
-    fetch(`/api/institutional-positioning`)
-      .then(r => r.json())
-      .then(d => { if (d.success) setInstData(d); })
-      .catch(() => {});
+    const refresh = () => {
+      fetch(`/api/gift-nifty?spot=${spotPrice}`)
+        .then(r => r.json())
+        .then(d => { if (d.success) setGiftNifty(d); })
+        .catch(() => {});
+      fetch(`/api/fii-dii`)
+        .then(r => r.json())
+        .then(d => { if (d.success) setFiiDii(d); })
+        .catch(() => {});
+      fetch(`/api/institutional-positioning`)
+        .then(r => r.json())
+        .then(d => { if (d.success) setInstData(d); })
+        .catch(() => {});
+    };
+    refresh();
+    const iv = setInterval(refresh, 60000); // own 60s timer — was spotPrice-only (15min)
+    return () => clearInterval(iv);
   }, [spotPrice]);
 
   const gapInput = useMemo(

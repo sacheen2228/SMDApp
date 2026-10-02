@@ -143,6 +143,8 @@ export function BTSTDashboard() {
   useEffect(() => {
     setLoading(true);
     load();
+    const iv = setInterval(() => load(), 60000); // route caches 5min, so this refreshes at most every 5min
+    return () => clearInterval(iv);
   }, [load]);
 
   return (

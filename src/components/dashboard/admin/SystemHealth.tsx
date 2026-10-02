@@ -28,7 +28,11 @@ export default function SystemHealth() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchHealth(); }, []);
+  useEffect(() => {
+    fetchHealth();
+    const iv = setInterval(() => fetchHealth(), 30000); // auto-update every 30s (was mount-only)
+    return () => clearInterval(iv);
+  }, []);
 
   const StatCard = ({ label, value, color }: { label: string; value: string; color?: string }) => (
     <div className="bg-[#1a1d28] border border-[#2a2e39] rounded-lg p-3 min-w-[100px]">

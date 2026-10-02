@@ -54,8 +54,8 @@ export default function InstitutionalPositioningPanel({ symbol: propSymbol }: { 
   const [error, setError] = useState<string | null>(null);
   const [expandedSection, setExpandedSection] = useState<string>('forecast');
 
-  const fetchData = useCallback(async () => {
-    setLoading(true); setError(null);
+  const fetchData = useCallback(async (initial = false) => {
+    if (initial) { setLoading(true); setError(null); }
     try {
       const [pRes, cRes] = await Promise.all([
         fetch('/api/participant-oi'),
@@ -63,12 +63,16 @@ export default function InstitutionalPositioningPanel({ symbol: propSymbol }: { 
       ]);
       const pJson = await pRes.json();
       if (pJson.success) setData(pJson);
-      else setError(pJson.error || 'Participant OI failed');
-    } catch (err: any) { setError(err.message); }
-    finally { setLoading(false); }
+      else if (initial) setError(pJson.error || 'Participant OI failed');
+    } catch (err: any) { if (initial) setError(err.message); }
+    finally { if (initial) setLoading(false); }
   }, [propSymbol]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetchData(true);
+    const iv = setInterval(() => fetchData(false), 60000); // auto-update every 60s
+    return () => clearInterval(iv);
+  }, [fetchData]);
 
   if (loading) return (
     <div className="flex-1 flex items-center justify-center p-8" style={{ background: '#0C131F' }}>
@@ -85,7 +89,7 @@ export default function InstitutionalPositioningPanel({ symbol: propSymbol }: { 
         <AlertTriangle className="h-8 w-8 mx-auto mb-2" style={{ color: '#F0566B' }} />
         <p className="text-[11px] font-mono mb-2" style={{ color: '#F0566B' }}>Data unavailable</p>
         <p className="text-[10px] font-mono" style={{ color: '#4E5A6B' }}>{error || 'No data received'}</p>
-        <button onClick={fetchData} className="mt-3 px-3 py-1.5 rounded text-[10px] font-bold"
+        <button onClick={() => fetchData(true)} className="mt-3 px-3 py-1.5 rounded text-[10px] font-bold"
           style={{ background: '#1B2531', color: '#4FB3E8', border: '1px solid #232E3D' }}>Retry</button>
       </div>
     </div>
@@ -112,7 +116,7 @@ export default function InstitutionalPositioningPanel({ symbol: propSymbol }: { 
             {isNse ? 'NSE' : 'DB'}
           </Badge>
           <span className="text-[9px] font-mono" style={{ color: '#4E5A6B' }}>{dateLabel}</span>
-          <button onClick={fetchData} className="p-1 rounded hover:bg-white/5" title="Refresh">
+          <button onClick={() => fetchData(true)} className="p-1 rounded hover:bg-white/5" title="Refresh">
             <RefreshCw className="h-3 w-3" style={{ color: '#4E5A6B' }} />
           </button>
         </div>

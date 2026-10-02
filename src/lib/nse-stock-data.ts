@@ -6,6 +6,7 @@
 // Returns whatever data was successfully fetched — never throws.
 
 import { fetchWithFallback, FallbackSource } from "./fetch-with-fallback";
+import { fetchYahooIndexData, isIndexSymbol } from "./yahoo-finance-api";
 
 const NSE_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -423,4 +424,69 @@ export async function getBreadthData(): Promise<{
     volAdvancing, volDeclining,
     topGainers: sorted.slice(0, 5), topLosers: sorted.slice(-5).reverse(),
   };
+}
+
+// ─── Arbitrary-symbol quotes (watchlist / single names) ─────────────────
+// Indices resolve via yahoo-finance-api v8 chart (own 2min cache + rate
+// limit); equities via the yahoo v7 batch above, per-stock chart fallback.
+export interface QuoteRow {
+  symbol: string;
+  name: string;
+  ltp: number;
+  change: number;
+  changePct: number;
+}
+
+// Uppercase/trim/dedupe NSE-style codes; drop junk, traversal and junk
+// tokens; cap at 40 symbols per request.
+export function sanitizeQuoteSymbols(raw: string[]): string[] {
+  const out: string[] = [];
+  for (const s of Array.isArray(raw) ? raw : []) {
+    const t = String(s ?? "").trim().toUpperCase();
+    if (!/^[A-Z0-9&-]{1,20}$/.test(t)) continue;
+    if (!out.includes(t)) out.push(t);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+
+const round2 = (n: number) => Math.round((n || 0) * 100) / 100;
+
+export async function fetchStockQuotes(rawSymbols: string[]): Promise<Record<string, QuoteRow>> {
+  const out: Record<string, QuoteRow> = {};
+  const symbols = sanitizeQuoteSymbols(rawSymbols);
+  if (!symbols.length) return out;
+
+  const indices = symbols.filter(isIndexSymbol);
+  const equities = symbols.filter((s) => !isIndexSymbol(s));
+
+  if (indices.length) {
+    await Promise.all(
+      indices.map(async (s) => {
+        const d = await fetchYahooIndexData(s);
+        if (d && d.regularMarketPrice) {
+          out[s] = { symbol: s, name: d.name || s, ltp: d.regularMarketPrice, change: round2(d.change), changePct: round2(d.changePct) };
+        }
+      }),
+    );
+  }
+
+  if (equities.length) {
+    const batch = await fetchYahooBatch(equities);
+    for (const [sym, q] of batch) {
+      out[sym] = { symbol: sym, name: q.name || sym, ltp: q.ltp, change: q.change, changePct: q.changePct };
+    }
+    const missing = equities.filter((s) => !out[s]);
+    if (missing.length && missing.length <= 10) {
+      const results = await Promise.allSettled(missing.map(fetchFromYahooChart));
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value && r.value.ltp) {
+          const q = r.value;
+          out[q.symbol] = { symbol: q.symbol, name: q.name || q.symbol, ltp: q.ltp, change: q.change, changePct: q.changePct };
+        }
+      }
+    }
+  }
+
+  return out;
 }
