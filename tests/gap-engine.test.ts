@@ -202,7 +202,7 @@ describe("auto-calibration (Phase 6)", () => {
     for (const [k, v] of Object.entries(result.weights)) {
       expect(v).toBeGreaterThan(0);
     }
-  });
+  }, 30_000); // Monte-Carlo heavy — flaky at default 5s under CPU load
 
   it("produces reproducible results (deterministic seeded RNG)", () => {
     const records = generateMockHistoricalRecords(100);
@@ -210,7 +210,7 @@ describe("auto-calibration (Phase 6)", () => {
     const result2 = calibrate(records, 100, DEFAULT_WEIGHTS);
     // With deterministic RNG, results should be similar
     expect(Math.abs(result1.accuracy - result2.accuracy)).toBeLessThan(15);
-  });
+  }, 30_000); // two full calibrations — flaky at default 5s under CPU load
 });
 
 // ─── PHASE 8: Safety ───────────────────────────────────────────

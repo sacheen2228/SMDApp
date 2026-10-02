@@ -82,6 +82,7 @@ function sanitize(raw: string): string {
   s = s.replace(/\/[\w./-]+:\d+/g, " ");   // file.ts:123 paths
   s = s.replace(/\bat\s+\S+\s*\(?[\w.]*\)?/g, " "); // stack frames ("at foo (bar)")
   s = s.replace(/[\u0000-\u001f]+/g, " "); // control chars
+  s = s.replace(/\|/g, " ");        // table/gate pipes — meaningless to TTS
   // spoken abbreviations (spec §23)
   s = s.replace(/\bPCR\b/gi, "put-call ratio");
   s = s.replace(/\bOI\b/g, "open interest");

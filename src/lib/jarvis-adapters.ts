@@ -368,6 +368,15 @@ function fmtTime(iso: string): string {
   }
 }
 
+/** Voice layer tap — the agent answered with a structured signal → speak it (fire-and-forget). */
+function emitJarvisVoiceTap(read: JarvisSignalRead): void {
+  try {
+    void import("@/lib/voice/voiceService")
+      .then((m) => m.emitJarvisSignalVoice(read?.signal as any))
+      .catch(() => {});
+  } catch {}
+}
+
 export function formatJarvisChat(read: JarvisSignalRead): string {
   const s = read.signal;
   const lines: string[] = [];
@@ -400,6 +409,7 @@ export function formatJarvisChat(read: JarvisSignalRead): string {
     `*Source: ${read.source === "worker-cache" ? "worker cache (live)" : "recomputed on-demand (worker may be down)"} · ${fmtTime(s.timestampIso)} IST · data ${s.dataFreshnessMinutes}m old*`
   );
   lines.push(`*${s.disclaimer}*`);
+  emitJarvisVoiceTap(read);
   return lines.join("\n");
 }
 
@@ -688,9 +698,12 @@ export async function narrateJarvisSignal(
   try {
     const res = await callLLM(msgs);
     const text = (res.content || "").trim();
-    if (text) return text;
+    if (text) {
+      emitJarvisVoiceTap(read);
+      return text;
+    }
   } catch (e: any) {
     console.warn("[jarvis-narrate] LLM failed, using deterministic formatter:", e?.message || e);
   }
-  return formatJarvisChat(read);
+  return formatJarvisChat(read); // formatter emits the voice tap itself
 }

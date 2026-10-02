@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "OptionChain - Real-time Options Chain | NIFTY | BANKNIFTY",
+  title: "SDM Trading AI — Real-time Options Chain | NIFTY | BANKNIFTY",
   description: "Free Option Chain with Real-time Option Prices, India Vix, IV, IV Percentile, Open Interest, OI Change and Option Greeks - Delta, Theta, Vega, Gamma.",
   keywords: ["Option Chain", "NIFTY", "BANKNIFTY", "Options", "India VIX", "Greeks", "IV", "India VIX"],
 };

@@ -11,6 +11,7 @@ import { VoiceQueue, buildDedupKey, voicePriority, type VoiceJob } from "./voice
 import { createProvider, type TTSProvider } from "./voiceProvider";
 import { isTelegramSendWindow } from "@/lib/marketHours";
 import type { HermesEvent } from "@/lib/hermes/event-bus";
+import type { JarvisSignal } from "@/lib/jarvis/types";
 
 // ─── Toggle map (spec §14) ────────────────────────────────────────
 export const VOICE_TOGGLE: Record<VoiceEventType, keyof VoiceSettings> = {
@@ -92,6 +93,61 @@ function deliverable(type: VoiceEventType, s: VoiceSettings): boolean {
   return true; // system / briefing voices allowed anytime
 }
 
+// ─── Jarvis signal → voice (structured mapper — no LLM-text parsing) ───
+/** Maps a structured JARVIS decision (BUY_CE / BUY_PE / NO_TRADE) to a VoiceEvent. */
+export function mapJarvisSignalToVoiceEvent(s: JarvisSignal): VoiceEvent | null {
+  try {
+    if (!s || typeof s !== "object" || !s.instrument) return null;
+    const ts = Date.parse(s.timestampIso || "") || Date.now();
+    if (s.action === "NO_TRADE") {
+      const gates = Array.isArray(s.gatesFailed) ? s.gatesFailed.slice(0, 3) : [];
+      const reasons = !gates.length && Array.isArray(s.reasons) ? s.reasons.slice(0, 2) : [];
+      return {
+        eventType: "NO_TRADE",
+        symbol: s.instrument,
+        spotPrice: typeof s.spot === "number" ? s.spot : undefined,
+        reason: [...gates, ...reasons].join("; ") || undefined,
+        source: "JARVIS",
+        timestamp: ts,
+      };
+    }
+    if (s.action === "BUY_CE" || s.action === "BUY_PE") {
+      const optType = s.action === "BUY_CE" ? "CE" : "PE";
+      const t = s.trade || null;
+      return {
+        eventType: "TRADE_SIGNAL",
+        symbol: s.instrument,
+        strike: typeof t?.strike === "number" ? t.strike : undefined,
+        optionType: (t?.optionType || optType) as "CE" | "PE",
+        side: `BUY ${optType}`,
+        entryPrice: Array.isArray(t?.entryZone) ? t.entryZone[0] : undefined,
+        stopLoss: typeof t?.stopLossPremium === "number" ? t.stopLossPremium : undefined,
+        target: typeof t?.tp1Premium === "number" ? t.tp1Premium : undefined,
+        spotPrice: typeof s.spot === "number" ? s.spot : undefined,
+        source: "JARVIS",
+        timestamp: ts,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Agent-route tap: the agent answered with a structured Jarvis decision →
+ * speak it. Interactive (user explicitly asked in chat): bypasses the send
+ * window + per-event toggle + dedup, like Test Voice; master `enabled` and
+ * `telegramVoice` still respected. Fire-and-forget — voice never blocks.
+ */
+export function emitJarvisSignalVoice(s: JarvisSignal): void {
+  try {
+    const ev = mapJarvisSignalToVoiceEvent(s);
+    if (!ev) return;
+    handleVoiceEvent(ev, { interactive: true });
+  } catch {}
+}
+
 function getProvider(s: VoiceSettings): TTSProvider | null {
   if (providerOverride) return providerOverride;
   try {
@@ -151,17 +207,27 @@ function getQueue(): VoiceQueue {
 }
 
 // ─── Public entry — fire-and-forget from any notification path ────
-export function handleVoiceEvent(ev: VoiceEvent): HandleResult {
+/**
+ * @param opts.interactive — user explicitly requested this output (chat signal
+ *   request, Test-Voice-like): bypasses send window, per-event toggle and
+ *   dedup. Master `enabled` + `telegramVoice` always apply.
+ */
+export function handleVoiceEvent(ev: VoiceEvent, opts?: { interactive?: boolean }): HandleResult {
   try {
     const s = settings();
     if (!s.enabled) return "disabled";
-    const toggle = VOICE_TOGGLE[ev.eventType];
-    if (toggle && !s[toggle]) return "off";
-    if (!deliverable(ev.eventType, s)) return "off"; // no consumer / outside send window
+    if (opts?.interactive) {
+      if (!s.telegramVoice) return "off"; // no consumer
+    } else {
+      const toggle = VOICE_TOGGLE[ev.eventType];
+      if (toggle && !s[toggle]) return "off";
+      if (!deliverable(ev.eventType, s)) return "off"; // no consumer / outside send window
+    }
     const text = formatVoiceEvent(ev);
     if (!text) return "no_text";
     const job: VoiceJob = {
-      key: buildDedupKey(ev),
+      // interactive = explicit user action → never deduped (each click re-speaks)
+      key: buildDedupKey(ev) + (opts?.interactive ? `:i:${Date.now()}:${Math.random().toString(36).slice(2, 8)}` : ""),
       priority: voicePriority(ev.eventType),
       text,
       eventType: ev.eventType,
