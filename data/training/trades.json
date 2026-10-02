@@ -17205,5 +17205,1136 @@
       "mostActiveSentiment": "Neutral"
     },
     "createdAt": "2026-10-02T16:11:37.214Z"
+  },
+  {
+    "id": "guard-real-1790959192603",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "CLOSED",
+      "sessionTime": "22:10 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T16:40:02.627Z",
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T16:39:52.603Z"
+  },
+  {
+    "id": "guard-real-1790960386351",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "22:29 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T16:59:51.804Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.23,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -0.99,
+        "peTheta": 1.7
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T16:59:46.351Z"
+  },
+  {
+    "id": "guard-real-1790960911797",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "22:38 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T17:08:37.393Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.23,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -0.99,
+        "peTheta": 1.7
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T17:08:31.797Z"
+  },
+  {
+    "id": "guard-real-1790965169864",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "23:49 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T18:19:33.108Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.23,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -0.99,
+        "peTheta": 1.7
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T18:19:29.864Z"
+  },
+  {
+    "id": "guard-real-1790965497608",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "23:55 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T18:25:01.426Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.23,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -0.99,
+        "peTheta": 1.7
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T18:24:57.608Z"
+  },
+  {
+    "id": "guard-real-1790967676063",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "CLOSED",
+      "sessionTime": "0:31 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "news"
+      ],
+      "dataFreshness": "2026-10-02T19:01:16.161Z",
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0
+    },
+    "createdAt": "2026-10-02T19:01:16.063Z"
+  },
+  {
+    "id": "guard-real-1790968411609",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "0:43 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T19:13:32.777Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.05,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -1,
+        "peTheta": 3.44
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T19:13:31.609Z"
+  },
+  {
+    "id": "guard-real-1790969740072",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "1:05 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T19:35:43.993Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.05,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -1,
+        "peTheta": 3.44
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T19:35:40.072Z"
+  },
+  {
+    "id": "guard-real-1790970336503",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "1:15 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T19:45:37.246Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.05,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -1,
+        "peTheta": 3.44
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T19:45:36.503Z"
+  },
+  {
+    "id": "guard-real-1790970417871",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "1:17 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T19:47:01.332Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.05,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -1,
+        "peTheta": 3.44
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T19:46:57.871Z"
+  },
+  {
+    "id": "guard-real-1790970798493",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 22421.95,
+      "spotChange": -198.5,
+      "spotChangePct": -0.8775245408468885,
+      "prevClose": 22620.45,
+      "marketStatus": "CLOSED",
+      "sessionTime": "1:23 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-10-02T19:53:19.211Z",
+      "atmStrike": 22400,
+      "maxPain": 22700,
+      "pcr": 0.69,
+      "totalCallOI": 2998319,
+      "totalPutOI": 2054451,
+      "callOiChange": 474142,
+      "putOiChange": 424867,
+      "vix": 14.44,
+      "futuresPrice": 22421.95,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 25000,
+        "ceOi": 32994,
+        "ceOiChg": -1720,
+        "ceVolume": 74302,
+        "ceLtp": 0.55,
+        "ceIV": 32.09,
+        "ceTheta": -0.05,
+        "peOi": 1529,
+        "peOiChg": -238,
+        "peVolume": 254,
+        "peLtp": 2551,
+        "peIV": 43.17,
+        "peDelta": -1,
+        "peTheta": 3.44
+      },
+      "supportLevels": [
+        {
+          "strike": 22000,
+          "peOi": 154746
+        },
+        {
+          "strike": 21500,
+          "peOi": 147958
+        },
+        {
+          "strike": 22300,
+          "peOi": 125716
+        },
+        {
+          "strike": 20500,
+          "peOi": 108260
+        },
+        {
+          "strike": 22200,
+          "peOi": 100082
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 211765
+        },
+        {
+          "strike": 23500,
+          "ceOi": 192261
+        },
+        {
+          "strike": 24000,
+          "ceOi": 170754
+        },
+        {
+          "strike": 22700,
+          "ceOi": 148754
+        },
+        {
+          "strike": 23200,
+          "ceOi": 145777
+        }
+      ],
+      "fiiNet": -9484.22,
+      "diiNet": 10041.84,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 1101948,
+        "fiiShort": 448195,
+        "diiLong": 3557,
+        "diiShort": 876,
+        "clientLong": 3448314,
+        "clientShort": 3206170
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-10-02T19:53:18.493Z"
   }
 ]
