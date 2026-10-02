@@ -1061,6 +1061,14 @@ export async function generateTradeRecommendation(
   const sessionConfidence = adjustConfidenceForSession(clampedConfidence, session);
   const threshold = getConfidenceThreshold(session);
 
+  // OI-derived context (PCR + max pain) — computed BEFORE the buyer-confluence
+  // gate below reads them (they were previously declared ~50 lines later,
+  // crashing every CALL/PUT path with a TDZ ReferenceError).
+  const totalCEOI = optionChain.reduce((sum, s) => sum + (s.ce?.oi ?? 0), 0);
+  const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
+  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
+  const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
+
   if (direction !== 'WAIT') {
     // Session check: is trading allowed right now?
     const tradeCheck = isTradeAllowed(direction === 'CALL' ? 'CALL' : 'PUT', session);
@@ -1077,9 +1085,11 @@ export async function generateTradeRecommendation(
       const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
       const confluenceInput: ConfluenceInput = {
         fiiNet: 0, diiNet: 0, fiiFutLongRatio: 0.5, fiiNet5dAvg: 0,
-        pcr: pcr, maxPain: maxPain, spotPrice: spotPrice,
+        pcr: pcr, maxPain: maxPain, spotPrice: spot,
         ceOIBuildup: false, peOIBuildup: false, oiPattern: 'NEUTRAL',
-        ivRank: 50, atmIV: atmIV || 15, ivTrend: 'STABLE',
+        ivRank: 50,
+        atmIV: Math.max(atmStrikeData?.ce?.iv ?? 0, atmStrikeData?.pe?.iv ?? 0) || 15,
+        ivTrend: 'STABLE',
         atmStraddlePrice: 0, expectedMove: 0,
         gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
         indiaVix: vix, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
@@ -1127,12 +1137,7 @@ export async function generateTradeRecommendation(
     missingFields: healthReport.issues,
   };
 
-  // Market context
-  const totalCEOI = optionChain.reduce((sum, s) => sum + (s.ce?.oi ?? 0), 0);
-  const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
-  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
-  const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
-
+  // Market context (pcr + maxPain hoisted above the confluence gate)
   const marketContext: MarketContext = {
     spot,
     change: 0,
