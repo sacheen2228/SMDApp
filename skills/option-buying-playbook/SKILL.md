@@ -1,6 +1,6 @@
 ---
 name: option-buying-playbook
-description: Structured playbook for buying index and stock options (Nifty, Bank Nifty, FinNifty, stocks; NSE/Indian market) using support/resistance, option-chain OI and change in OI, PCR, Greeks (delta, gamma, theta, vega, IV), India VIX and ATM/ITM/OTM strike selection with option math (expected move, Black-Scholes repricing, break-even, lot sizing), market structure (HH/HL, BOS, CHoCH), stop-loss placement, and FII/DII/Pro/Client participant data. Use this skill whenever the user asks how to trade or buy calls/puts, read an option chain or OI, interpret Greeks or IV, find support and resistance, place stop losses, size positions, understand who the buyers and sellers/writers are, choose which strike or expiry to buy, calculate expected move, break-even, premium stop or lot size, read FII/DII data or participant-wise OI, build a trade plan or journal, or review/score a trade setup, even if they do not say "playbook". Also use when the user pastes option chain or participant data and wants it analysed.
+description: "Playbook for buying index and stock options (Nifty, Bank Nifty, stocks; NSE/India): support/resistance, option-chain OI and change in OI, PCR, Greeks, India VIX, ATM/ITM/OTM strike selection with option math (expected move, Black-Scholes repricing, break-even, lot sizing), hedging a CE/PE buy (debit spreads, profit lock-in, portfolio hedges), market structure (BOS, CHoCH), stop-loss placement, and FII/DII/Pro/Client data. Use whenever the user asks how to trade or buy calls/puts, read an option chain or OI, interpret Greeks or IV, pick a strike or expiry, calculate expected move, break-even, premium stop or lots, hedge or reduce loss on an option position, find support/resistance, see who the buyers and writers are, read FII/DII or participant OI, build a trade plan or journal, or score a setup, even without the word playbook. Also use when the user pastes option chain or participant data to analyse."
 ---
 
 # Option Buying Playbook (NSE / India)
@@ -31,6 +31,10 @@ Trade only when **at least 3 to 4 layers agree**. If they conflict (for example 
 
 When the user wants a strike (or asks "ATM, ITM or OTM?"), run `python scripts/strike_selector.py` with spot, VIX (or ATM IV), days to expiry, direction, target, stop, expected hold time, capital, risk %, lot size (verify it), and live chain premiums if available (`--chain "strike:premium,..."`; use `--json` for machine-readable output). It re-prices every strike at the target and stop (with theta and IV shift), applies gates, sizes lots and ranks strikes. Report the recommended strike with entry, premium stop, target, option R:R, lots and the gate failures of rejected strikes. If no strike passes, the answer is skip / tighten stop / spread, never loosen the gates. If code cannot run, use the formulas in `references/math-and-formulas.md` by hand and say the numbers are approximate. Never fabricate live premiums or VIX; ask for them or search a current source.
 
+## Hedging: reduce loss with defined risk
+
+A long CE/PE already has capped loss, so hedging means lowering theta, vega and break-even distance at the cost of capped profit. Say this plainly; never present a hedge as free or as a substitute for a stop. When VIX is elevated, an event is near, expiry is within about 1-4 days, or the risk budget cannot fit one naked lot, run `python scripts/hedge_calculator.py spread ...` to compare the naked option with debit spreads (default: short strike at or beyond the target) and report net debit, hard max loss, R:R, lots and what upside is given up. For profit protection, for portfolio hedges (`hedge_calculator.py portfolio`), butterflies, calendars and event structures, read `references/hedging-strategies.md`. Always warn: buy leg first then sell leg, exit both legs together, never leave a short leg naked, and verify margin, costs and lot size with the broker.
+
 ## How to respond to common requests
 
 **"Give me a trade plan / what should I trade today?"**
@@ -41,6 +45,9 @@ Extract: highest Put OI and Call OI strikes, the largest *change in OI* strikes,
 
 **"Which strike / ATM or ITM or OTM / how many lots?"**
 Run the strike selector as above, then explain the result using the VIX regime and the ITM/ATM/OTM trade-off table.
+
+**"How do I hedge / reduce loss on a CE/PE?"**
+Explain the trade-off, run the hedge calculator, recommend naked vs spread vs lock-in using the decision table in `references/hedging-strategies.md`.
 
 **"Explain X" (OI, delta, theta, FII data, structure...)**
 Explain concisely with the practical trading use and the main caveat, using the relevant reference file.

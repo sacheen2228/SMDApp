@@ -3,7 +3,7 @@
 // Phase 3: Hermes Pro — deterministic trade orchestration layer
 
 import { NextRequest, NextResponse } from "next/server";
-import { agentRespond, type AgentContext, isCasualQuery, respondCasual } from "@/lib/agent-engine";
+import { agentRespond, type AgentContext, isCasualQuery, isKnowledgeQuery, respondCasual } from "@/lib/agent-engine";
 import { agentRespondLLM } from "@/lib/agent-brain";
 import { db } from "@/lib/db";
 import { getCurrentSession } from "@/lib/market-session";
@@ -242,9 +242,22 @@ export async function POST(req: NextRequest) {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // KNOWLEDGE GATE — computed BEFORE all direct-data exits so playbook /
+    // how-to / explain / hedge questions are never hijacked by the FII, VIX,
+    // regime, news or journal quick-answer panels. Knowledge questions fall
+    // through to the agent tool loop (read_playbook, hedge_calculator,
+    // strike_selector, …). Trade language or ambiguous input keeps Hermes +
+    // the deterministic exits exactly as before.
+    // ═══════════════════════════════════════════════════════════
+    const knowledgeGate = isKnowledgeQuery(message);
+    if (knowledgeGate) {
+      console.log(`[knowledge-gate] bypassing direct exits + hermes: ${message.slice(0, 80).replace(/\n/g, " ")}`);
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // EARLY EXIT: Direct FII/DII response (no LLM needed)
     // ═══════════════════════════════════════════════════════════
-    if (/fii|dii|institution|fund.?flow|foreign.?institution|domestic.?institution/i.test(queryLower) && !/option|greek|strike|chain|premium|edge|greeks?/i.test(queryLower)) {
+    if (!knowledgeGate && /fii|dii|institution|fund.?flow|foreign.?institution|domestic.?institution/i.test(queryLower) && !/option|greek|strike|chain|premium|edge|greeks?/i.test(queryLower)) {
       try {
         const fiiResult = await fetchFiiDiiData();
         const f = fiiResult.latest;
@@ -285,7 +298,7 @@ export async function POST(req: NextRequest) {
     }
 
     // EARLY EXIT: VIX data (direct, no LLM) — fetch from Yahoo Finance directly
-    if (/vix|volatil/i.test(queryLower)) {
+    if (!knowledgeGate && /vix|volatil/i.test(queryLower)) {
       try {
         const vixRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?interval=1d&range=1d", {
           headers: { "User-Agent": "Mozilla/5.0" },
@@ -304,7 +317,7 @@ export async function POST(req: NextRequest) {
     }
 
     // EARLY EXIT: Market regime + breadth (direct, no LLM) — uses Yahoo Finance
-    if (/regime|breadth|trend|range|market.?health|advance.?decline/i.test(queryLower)) {
+    if (!knowledgeGate && /regime|breadth|trend|range|market.?health|advance.?decline/i.test(queryLower)) {
       try {
         const [niftyRes, vixRes] = await Promise.allSettled([
           fetch("https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?interval=1d&range=5d", {
@@ -345,7 +358,7 @@ export async function POST(req: NextRequest) {
     }
 
     // EARLY EXIT: News sentiment (direct, no LLM) — uses Google News RSS
-    if (/news|sentiment|headline/i.test(queryLower)) {
+    if (!knowledgeGate && /news|sentiment|headline/i.test(queryLower)) {
       try {
         const newsRes = await fetch(
           `https://news.google.com/rss/search?q=${encodeURIComponent(detectedSymbol + " stock market India")}&hl=en-IN&gl=IN&ceid=IN:en`,
@@ -366,7 +379,7 @@ export async function POST(req: NextRequest) {
     }
 
     // EARLY EXIT: Trade history / journal (direct, no LLM)
-    if (/trade.?history|journal|position|my.?trade|open.?position/i.test(queryLower)) {
+    if (!knowledgeGate && /trade.?history|journal|position|my.?trade|open.?position/i.test(queryLower)) {
       try {
         const trades = await db.trade.findMany({ orderBy: { entryTime: "desc" }, take: 10 });
         if (trades.length > 0) {
@@ -477,7 +490,7 @@ export async function POST(req: NextRequest) {
     // ═══════════════════════════════════════════════════════════
     let hermesDecision: HermesDecision | null = null;
     try {
-      const hermesResult = await hermesPro(message, {
+      const hermesResult = knowledgeGate ? null : await hermesPro(message, {
         symbol: detectedSymbol,
         spotPrice: freshSpotPrice,
         apiBase: origin,
@@ -486,10 +499,11 @@ export async function POST(req: NextRequest) {
 
       // Definitive outcomes (including RESEARCH_ONLY when market is closed)
       if (
-        hermesResult.decision === "BUY_CE" ||
+        hermesResult != null &&
+        (hermesResult.decision === "BUY_CE" ||
         hermesResult.decision === "BUY_PE" ||
         hermesResult.decision === "NO_TRADE" ||
-        hermesResult.decision === "RESEARCH_ONLY"
+        hermesResult.decision === "RESEARCH_ONLY")
       ) {
         let hermesResponse = formatHermesDecision(hermesResult);
 

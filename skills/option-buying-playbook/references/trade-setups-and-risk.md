@@ -28,6 +28,9 @@
 Position size (lots) = (Capital x risk%) / (premium stop per lot).
 Example: capital Rs 2,00,000, risk 1% = Rs 2,000. Stop of Rs 40/unit on a 75-unit lot = Rs 3,000/lot -> cannot take even one lot at 1%. Tighten the setup or use a cheaper instrument; do not over-risk. (Always verify the current lot size with the exchange/broker.)
 
+## Hedge option
+When VIX is elevated, expiry is near, or one naked lot exceeds the risk budget, convert the buy into a debit spread (see `references/hedging-strategies.md`).
+
 ## Management
 - Book 50% at 1R-1.5R, move stop to cost, trail rest by structure (higher lows for calls, lower highs for puts).
 - Daily loss limit: stop after 2-3 losses or 2-3% of capital.

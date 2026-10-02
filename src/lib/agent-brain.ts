@@ -14,9 +14,9 @@ import fs from "node:fs";
 
 const execFileP = promisify(execFile);
 
-// Resolve the playbook strike calculator across dev/standalone layouts.
-function resolveStrikeSelector(): string | null {
-  const rel = path.join("skills", "option-buying-playbook", "scripts", "strike_selector.py");
+// Resolve a playbook script across dev/standalone layouts.
+function resolvePlaybookScript(scriptName: string): string | null {
+  const rel = path.join("skills", "option-buying-playbook", "scripts", scriptName);
   const candidates = [
     path.join(process.cwd(), rel),
     path.join(process.cwd(), "..", "..", rel),
@@ -24,6 +24,20 @@ function resolveStrikeSelector(): string | null {
   ];
   for (const c of candidates) {
     try { if (fs.existsSync(c)) return c; } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+// Resolve the playbook SKILL ROOT across dev/standalone layouts.
+function resolvePlaybookRoot(): string | null {
+  const rel = path.join("skills", "option-buying-playbook");
+  const candidates = [
+    path.join(process.cwd(), rel),
+    path.join(process.cwd(), "..", "..", rel),
+    path.join("/home/sachin/Desktop/SMDApp", rel),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return c; } catch { /* keep looking */ }
   }
   return null;
 }
@@ -145,7 +159,8 @@ Educational framework, not financial advice — say that in one line. Most retai
 - **Entry quality**: delta ~0.45-0.65, sane IV percentile (never buy into pre-event IV spikes), enough days to expiry, liquid strike, reward:risk ≥ 1:2. Avoid the first 10-15 minutes. Intraday time stop: exit if no move in 20-30 minutes.
 - **Always calculate the strike**: for "which strike / ATM or ITM or OTM / how many lots" run the strike_selector tool — it re-prices every strike at your target and stop (theta + IV shift) and ranks only strikes that pass: option R:R ≥ 1.5 (underlying R:R overstates it), theta cost within budget, break-even vs VIX-based expected move, lots ≥ 1 inside the risk budget. If nothing passes → skip / tighten the stop / spread — never loosen the gates. Check the target against the VIX expected move before believing it.
 - **Honest data limits**: OI cannot reveal buyer vs writer (rising Put OI may be put buying) — infer from price behaviour; FII/DII + participant data is end-of-day → next-day bias only, not an intraday trigger; max pain has weak predictive value; PCR trend matters more than the level.
-- Full skill with reference docs lives at skills/option-buying-playbook/ (scoring checklists, Greeks, OI levels, VIX/strike selection, math & formulas, strike_selector.py, journal template) — use it for deep scoring requests.
+- Full skill with reference docs lives at skills/option-buying-playbook/ (scoring checklists, Greeks, OI levels, VIX/strike selection, math & formulas, hedging strategies, journal template) — run the read_playbook tool to open SKILL.md or any references/*.md for deep scoring, formula, checklist or hedge requests; strike math goes through strike_selector, hedging comparisons through hedge_calculator.
+- Hedging ("hedge / reduce loss / lock profit / debit spread / portfolio hedge"): run hedge_calculator (mode=spread for one CE/PE, mode=portfolio for an index-put hedge) and read references/hedging-strategies.md via read_playbook. Warn every time: buy leg first, exit both legs together, never leave a short leg naked, verify margin/costs/lot size with the broker — a hedge lowers theta/vega/break-even at the cost of capped profit, never free money.
 
 ## HOW YOU RESPOND
 - Match the user's language — if they write in Hindi, reply in Hindi. English? Reply in English. Hinglish? Hinglish it is.
@@ -396,6 +411,54 @@ export const AGENT_TOOLS = [
           chain: { type: "string", description: 'Live premiums "strike:premium,..." to calibrate IV per strike' },
         },
         required: ["direction", "target", "stop", "days"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_playbook",
+      description: "Read the Option Buying Playbook skill files — SKILL.md and references/*.md (scoring checklists, Greeks, OI levels, VIX & strike selection, math & formulas, trade setups, hedging strategies, participant data, journal template). Use for deep scoring, formula, checklist, hedge or 'what does the playbook say' requests. Omit file to list what's available.",
+      parameters: {
+        type: "object",
+        properties: {
+          file: { type: "string", description: "Path inside skills/option-buying-playbook — e.g. 'SKILL.md' or 'references/math-and-formulas.md'. Omit to list files." },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "hedge_calculator",
+      description: "Compare a naked long CE/PE with vertical debit spreads (net debit, max loss, R:R, lots, upside given up) or size a portfolio index-put hedge — Black-Scholes repricing from the option buying playbook. Use for hedge / reduce loss / lock profit / debit spread / portfolio hedge requests.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["spread", "portfolio"], description: "spread = hedge one CE/PE position; portfolio = index-put hedge on a stock portfolio" },
+          spot: { type: "number", description: "spread mode: underlying spot price" },
+          vix: { type: "number", description: "India VIX (or ATM IV)" },
+          days: { type: "number", description: "Days to expiry of the long option" },
+          direction: { type: "string", enum: ["call", "put"], description: "spread mode: which option is held" },
+          longStrike: { type: "number", description: "spread mode: strike of the long option being hedged" },
+          longPremium: { type: "number", description: "spread mode: entry premium of the long option (if known)" },
+          shortChain: { type: "string", description: "spread mode: short-leg candidates as strike:premium,... e.g. '25200:160,25250:130'" },
+          target: { type: "number", description: "spread mode: target on the underlying" },
+          stop: { type: "number", description: "spread mode: stop on the underlying" },
+          holdDays: { type: "number", description: "Expected hold in days (default 1)" },
+          capital: { type: "number", description: "Capital in ₹ (default 200000)" },
+          riskPct: { type: "number", description: "Risk % per trade (default 1)" },
+          lotSize: { type: "number", description: "Lot size — inferred from symbol if omitted" },
+          value: { type: "number", description: "portfolio mode: portfolio value in ₹" },
+          beta: { type: "number", description: "portfolio mode: portfolio beta (default 1)" },
+          index: { type: "number", description: "portfolio mode: index spot level" },
+          hedgeRatio: { type: "number", description: "portfolio mode: fraction to hedge, 0-1 (default 0.5)" },
+          putPremium: { type: "number", description: "portfolio mode: ATM put premium in ₹" },
+          maxWidth: { type: "number", description: "spread mode: max spread width in points" },
+          minRR: { type: "number", description: "spread mode: minimum R:R to rank" },
+        },
+        required: ["mode"],
       },
     },
   },
@@ -1034,6 +1097,10 @@ const TOOL_ROUTER: ToolRouterEntry[] = [
   { tools: ["diagnose_data_source", "trace_data_flow", "test_api_endpoint"], keywords: /diagnos|debug|data.?source|api.?fail|not.?fetch|missing|stale|broken|test.?api|check.?api|trace|reverse|engineer|why.*not.*work|what.*wrong/i },
   // Strike selection (option buying playbook)
   { tools: ["strike_selector", "get_option_chain", "get_vix"], keywords: /strike|itm|otm|which (call|put|ce|pe)|how many lots|lot size|entry strike|buy.*expir|expir.*buy|expected move|break-?even|atm or/i },
+  // Playbook reference docs (checklists, formulas, deep scoring — read the skill files)
+  { tools: ["read_playbook"], keywords: /checklist|playbook|formula|black.?scholes|greeks? (explain|detail|meaning)|reference doc|setup scor|journal template|vix regime|read (the )?(skill|doc)|maths? (and|&) formulas/i },
+  // Hedging (playbook hedge calculator + hedging reference)
+  { tools: ["hedge_calculator", "read_playbook", "get_vix"], keywords: /\bhedge|hedges|hedging|reduce (my )?(loss|risk)|protect (profit|position|my)|lock (in )?(profit|gains)|profit protect|debit spread|portfolio hedge|index put hedge|butterfly|calendar spread/i },
   // Session health (tokens, auth, expiry)
   { tools: ["check_session_tokens", "set_breeze_session"], keywords: /session|token|login|expir|totp|otp|re-?auth|breeze.*auth|auth.*breeze|set.*session/i },
 ];
@@ -2065,7 +2132,7 @@ Time: ${Date.now() - start}ms`;
           return `Strike selector needs: ${missing.join(", ")}. Ask Sachin for the missing values — never guess them.`;
         }
 
-        const script = resolveStrikeSelector();
+        const script = resolvePlaybookScript("strike_selector.py");
         if (!script) {
           return "Strike selector script not found (skills/option-buying-playbook/scripts/strike_selector.py)";
         }
@@ -2111,6 +2178,141 @@ Time: ${Date.now() - start}ms`;
           return `Strike selector input error: ${errOut.split("\n").pop()}`;
         }
         return `Strike selector failed: ${String(errOut).slice(0, 200)}`;
+      }
+    }
+
+    case "hedge_calculator": {
+      try {
+        const mode = String(args.mode || "").toLowerCase() === "portfolio" ? "portfolio" : "spread";
+        const script = resolvePlaybookScript("hedge_calculator.py");
+        if (!script) return "Hedge calculator script not found (skills/option-buying-playbook/scripts/hedge_calculator.py)";
+        const LOT_SIZES: Record<string, number> = { NIFTY: 75, BANKNIFTY: 35, FINNIFTY: 65, MIDCPNIFTY: 140, SENSEX: 20 };
+        const num = (v: any): number | null => {
+          if (v == null || v === "") return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : null;
+        };
+        const missing: string[] = [];
+        const argv = [script, mode];
+
+        if (mode === "spread") {
+          const spot = num(args.spot);
+          const vix = num(args.vix);
+          const days = num(args.days);
+          const dir = String(args.direction || "").toLowerCase();
+          const longStrike = num(args.longStrike);
+          const target = num(args.target);
+          const stop = num(args.stop);
+          if (spot == null) missing.push("--spot");
+          if (vix == null) missing.push("--vix");
+          if (days == null) missing.push("--days");
+          if (dir !== "call" && dir !== "put") missing.push("--direction (call|put)");
+          if (longStrike == null) missing.push("--long-strike");
+          if (target == null) missing.push("--target");
+          if (stop == null) missing.push("--stop");
+          let lotSize = num(args.lotSize) || 0;
+          if (!lotSize) {
+            lotSize = LOT_SIZES[String(symbol || "").toUpperCase()] || 0;
+            if (!lotSize) missing.push(`--lot-size (no known lot size for ${symbol})`);
+          }
+          if (missing.length) {
+            return `Hedge calculator needs: ${missing.join(", ")}. Ask Sachin for the missing values — never guess them.`;
+          }
+          argv.push(
+            "--spot", String(spot), "--vix", String(vix), "--days", String(days),
+            "--direction", dir, "--long-strike", String(longStrike),
+            "--target", String(target), "--stop", String(stop),
+            "--hold-days", String(num(args.holdDays) ?? 1),
+            "--capital", String(num(args.capital) ?? 200000),
+            "--risk-pct", String(num(args.riskPct) ?? 1),
+            "--lot-size", String(lotSize),
+            "--json"
+          );
+          if (num(args.longPremium) != null) argv.push("--long-premium", String(num(args.longPremium)));
+          if (args.shortChain) argv.push("--short-chain", String(args.shortChain));
+          if (num(args.maxWidth) != null) argv.push("--max-width", String(num(args.maxWidth)));
+          if (num(args.minRR) != null) argv.push("--min-rr", String(num(args.minRR)));
+
+          const { stdout } = await execFileP("python3", argv, { timeout: 15000, maxBuffer: 1024 * 1024 });
+          const d = JSON.parse(stdout);
+          const lines: string[] = [];
+          lines.push(`Hedge compare — ${dir.toUpperCase()} long ${longStrike} (spot ₹${spot}, VIX ${vix}, ${days}d to expiry)`);
+          const n = d.naked || {};
+          lines.push(`Naked long: entry ₹${n.entry} | max loss ₹${n.max_loss_per_lot}/lot | R:R ${n.rr} | theta ₹${n.theta_day}/day | max profit ${n.max_profit}`);
+          const spreads = (d.spreads || []) as any[];
+          if (!spreads.length) lines.push(d.note || "No spread candidates — supply shortChain (short-leg premiums like '25200:160,25250:130') or widen maxWidth.");
+          for (const s of spreads.slice(0, 4)) {
+            lines.push(`short ${s.short_strike} (width ${s.width_pts}): net debit ₹${s.net_debit} (saves ${s.premium_saved_pct}% premium) | max loss ₹${s.max_loss_per_lot}/lot | max profit ₹${s.max_profit_per_unit}/unit | exp R:R ${s.rr_at_expiry} | exit R:R ${s.rr_at_exit} @ target | BE ${s.breakeven_expiry} | lots by stop-risk ${s.lots_by_stop_risk}${s.target_beyond_short_strike ? " | target beyond short strike — upside capped before your target" : ""}`);
+          }
+          if (spreads.length > 4) lines.push(`… ${spreads.length - 4} more widths not shown`);
+          const best = [...spreads].sort((a: any, b: any) => (b.rr_at_exit || 0) - (a.rr_at_exit || 0))[0];
+          if (best) lines.push(`Best by exit R:R → short ${best.short_strike} (net debit ₹${best.net_debit}, max loss ₹${best.max_loss_per_lot}/lot, exit R:R ${best.rr_at_exit})`);
+          lines.push(`Always: buy leg first, exit BOTH legs together, never leave a short leg naked, verify margin/costs/lot size with the broker. Butterflies, calendars, profit lock-in and the decision table: read references/hedging-strategies.md via read_playbook.`);
+          return lines.join("\n");
+        }
+
+        // portfolio mode — index-put hedge for a stock portfolio
+        const value = num(args.value);
+        const index = num(args.index);
+        if (value == null) missing.push("--value (portfolio ₹)");
+        if (index == null) missing.push("--index (spot level)");
+        let lotSize = num(args.lotSize) || LOT_SIZES[String(symbol || "").toUpperCase()] || 0;
+        if (missing.length) {
+          return `Hedge calculator needs: ${missing.join(", ")} (portfolio mode). Ask Sachin for the missing values — never guess them.`;
+        }
+        argv.push("--value", String(value), "--index", String(index), "--json");
+        if (lotSize) argv.push("--lot-size", String(lotSize));
+        if (num(args.beta) != null) argv.push("--beta", String(num(args.beta)));
+        if (num(args.hedgeRatio) != null) argv.push("--hedge-ratio", String(num(args.hedgeRatio)));
+        if (num(args.putPremium) != null) argv.push("--put-premium", String(num(args.putPremium)));
+        if (num(args.vix) != null) argv.push("--vix", String(num(args.vix)));
+        if (num(args.days) != null) argv.push("--days", String(num(args.days)));
+
+        const { stdout } = await execFileP("python3", argv, { timeout: 15000, maxBuffer: 1024 * 1024 });
+        const d = JSON.parse(stdout);
+        return [
+          `Portfolio index-put hedge — value ₹${value}, index ${index}`,
+          `Hedge notional ₹${d.hedge_notional} | lots: ${d.lots} (exact ${d.lots_exact}) | est cost ₹${d.est_cost} (${d.est_cost_pct_of_portfolio}% of portfolio)`,
+          `Verify margin/costs/lot size with the broker. Ratio guidance, expiry choice and the naked-vs-hedge decision table: read references/hedging-strategies.md via read_playbook.`,
+        ].join("\n");
+      } catch (err: any) {
+        const errOut = String(err?.stdout || err?.stderr || err?.message || err);
+        if (/required|usage:/i.test(errOut)) {
+          return `Hedge calculator input error: ${errOut.split("\n").filter((l: string) => l.trim()).slice(-2).join(" ")}`;
+        }
+        return `Hedge calculator failed: ${String(errOut).slice(0, 200)}`;
+      }
+    }
+
+    case "read_playbook": {
+      try {
+        const root = resolvePlaybookRoot();
+        if (!root) return "Playbook not found (skills/option-buying-playbook missing).";
+        // Exact allowlist built from the real directory: SKILL.md + references/*.md only.
+        const allowed: string[] = ["SKILL.md"];
+        try {
+          const refDir = path.join(root, "references");
+          if (fs.existsSync(refDir)) {
+            for (const f of fs.readdirSync(refDir)) if (f.endsWith(".md")) allowed.push(`references/${f}`);
+          }
+        } catch { /* keep base entry */ }
+        const list = `Available files (use file= one of these):\n- ${allowed.join("\n- ")}`;
+        const want = String(args.file || "")
+          .trim()
+          .replace(/\\/g, "/")
+          .replace(/^\.\//, "")
+          .replace(/^skills\/option-buying-playbook\//, "");
+        if (!want) return list;
+        if (want.includes("..") || want.startsWith("/") || !want.endsWith(".md")) {
+          return `Reading "${want}" is not allowed. ${list}`;
+        }
+        if (!allowed.includes(want)) return `No such file: ${want}. ${list}`;
+        let content = fs.readFileSync(path.join(root, want), "utf8");
+        const CAP = 8000;
+        if (content.length > CAP) content = content.slice(0, CAP) + "\n…[truncated — ask for a specific section]";
+        return `# ${want}\n${content}`;
+      } catch (e: any) {
+        return `Playbook read failed: ${e?.message || e}`;
       }
     }
 

@@ -576,6 +576,41 @@ export function respondCasual(
   }
 }
 
+// ─── Knowledge gate (skip Hermes → agent tool loop) ────────────────────
+// hermesPro ALWAYS returns one of BUY_CE/BUY_PE/NO_TRADE/RESEARCH_ONLY and
+// /api/agent returns for all four — so playbook/how-to/explain questions used
+// to get an analysis panel (RESEARCH_ONLY after hours) instead of an answer
+// built from the skill files. This matches clear doc/playbook/hedge/
+// educational intent; execution language or anything ambiguous stays on
+// Hermes (trade decisions always win priority).
+
+// Trade-execution language — never bypass Hermes. NOTE: target/stop/entry
+// numbers are NOT here — hedge questions legitimately include them as
+// hedge_calculator inputs ("hedge my call: target 25250, stop 25040").
+const EXECUTION_RE = /\b(?:buy|sell|enter|execute|place (?:an? )?order|mujhe trade|trade do|kharid|bech|right now|aaj)\b/i;
+
+// Doc / playbook / formula file requests
+const KNOWLEDGE_DOC_RE = /\b(?:read|open|show|give|fetch|pull)\b.{0,40}\b(?:playbook|skill|doc(?:s|ument)?|reference|checklist|journal template)\b|\b(?:playbook|checklist|black.?scholes|journal template|expected move)\b/i;
+
+// Hedging requests (hedge_calculator + hedging-strategies.md) — matched
+// BEFORE the execution guard so "hedge my call: target X, stop Y" works
+// (target/stop are hedge_calculator args), but explicit buy/sell still wins.
+const KNOWLEDGE_HEDGE_RE = /\bhedge|hedges|hedging|debit spread|protect (?:my )?profit|lock (?:in )?(?:my )?profit|portfolio hedge/i;
+
+// Educational openers + trading-concept vocabulary
+const KNOWLEDGE_OPENER_RE = /^(?:explain|define|what (?:is|are)|what'?s|why (?:is|are|do|does)|how to\b|how (?:do|does|can) (?:i|you|we))\b/i;
+const KNOWLEDGE_CONCEPT_RE = /\b(?:delta|theta|gamma|vega|iv|implied vol|volatility|pcr|put.?call ratio|open interest|oi buildup|greeks?|max pain|breakeven|break-?even|expected move|lot size|position siz(?:e|ing)|risk|straddle|strangle|spread|butterfly|calendar|collar|bos|choch|market structure|vwap|rsi|bollinger|adx|support|resistance|trend|regime|expiry|atm|itm|otm|in the money|out of the money|fii|dii|participant|premium|decay|vol crush|dealer|stop ?loss)\b/i;
+
+export function isKnowledgeQuery(query: string): boolean {
+  const q = (query || "").trim();
+  if (!q) return false;
+  if (KNOWLEDGE_HEDGE_RE.test(q)) return !EXECUTION_RE.test(q);
+  if (EXECUTION_RE.test(q)) return false;
+  if (KNOWLEDGE_DOC_RE.test(q)) return true;
+  if (KNOWLEDGE_OPENER_RE.test(q) && KNOWLEDGE_CONCEPT_RE.test(q)) return true;
+  return false;
+}
+
 // ─── Main Agent Function ──────────────────────────────────────────
 export function agentRespond(ctx: AgentContext, query: string): string {
   const q = query.trim();
