@@ -104,3 +104,6 @@
 {"type":"conversation","conversationId":"NIFTY","messageCount":2,"toolCallCount":1,"totalDurationMs":8587,"symbols":["NIFTY"],"actions":["collectHermesContext"],"_ts":"2026-10-01T17:42:30.868Z"}
 {"type":"conversation","conversationId":"NIFTY","messageCount":2,"toolCallCount":1,"totalDurationMs":28,"symbols":["NIFTY"],"actions":["collectHermesContext"],"_ts":"2026-10-01T19:20:14.140Z"}
 {"type":"conversation","conversationId":"NIFTY","messageCount":4,"toolCallCount":1,"totalDurationMs":10271,"symbols":["NIFTY"],"actions":["collectHermesContext"],"_ts":"2026-10-01T20:07:43.892Z"}
+{"type":"conversation","conversationId":"NIFTY","messageCount":2,"toolCallCount":1,"totalDurationMs":540,"symbols":["NIFTY"],"actions":["collectHermesContext"],"_ts":"2026-10-02T15:24:04.107Z"}
+{"type":"conversation","conversationId":"NIFTY","messageCount":2,"toolCallCount":1,"totalDurationMs":53686,"symbols":["NIFTY"],"actions":["read_playbook"],"_ts":"2026-10-02T16:13:34.131Z"}
+{"type":"conversation","conversationId":"NIFTY","messageCount":2,"toolCallCount":1,"totalDurationMs":52242,"symbols":["NIFTY"],"actions":["hedge_calculator"],"_ts":"2026-10-02T16:23:50.798Z"}

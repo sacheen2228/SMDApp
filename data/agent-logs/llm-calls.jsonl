@@ -64,3 +64,5 @@
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":1809,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T16:20:40.944Z"}
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":5283,"toolCount":0,"toolNames":[],"_ts":"2026-09-23T16:21:49.995Z"}
 {"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":4031,"toolCount":0,"toolNames":[],"_ts":"2026-09-25T09:07:05.019Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":53685,"toolCount":1,"toolNames":["read_playbook"],"_ts":"2026-10-02T16:13:34.130Z"}
+{"type":"llm_call","provider":"llm","model":"agent","inputTokens":0,"outputTokens":0,"durationMs":52241,"toolCount":1,"toolNames":["hedge_calculator"],"_ts":"2026-10-02T16:23:50.798Z"}
