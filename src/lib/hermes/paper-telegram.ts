@@ -120,6 +120,19 @@ Data: ${obs.freshness}
 ⚠️ PAPER OBSERVATION`;
 
   const eventId = `NO_TRADE:${obs.underlying}:${Date.now()}`;
+  // Publish structured observation to the event bus (voice layer taps NO_TRADE_OBSERVED)
+  try {
+    void getEventBus().emit("NO_TRADE_OBSERVED", {
+      underlying: obs.underlying,
+      spotAtObservation: obs.spotAtObservation,
+      score: obs.score,
+      regime: obs.regime,
+      blockingConditions: obs.blockingConditions,
+      provider: obs.provider,
+      freshness: obs.freshness,
+      reason: obs.blockingConditions.slice(0, 3).join("; "),
+    }).catch(() => {});
+  } catch {}
   return sendViaQueue(text, eventId);
 }
 

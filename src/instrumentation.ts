@@ -136,5 +136,14 @@ export async function register() {
     } catch (err: any) {
       console.warn(`[TIGER] Monitor auto-start failed: ${err.message}`);
     }
+
+    // Start voice output layer (output-only; synthesis is async — never blocks startup)
+    try {
+      const { startVoiceService } = await import("@/lib/voice/voiceService");
+      await startVoiceService();
+      console.log("[Voice] Voice service started");
+    } catch (err: any) {
+      console.warn(`[Voice] Voice service start failed: ${err.message}`);
+    }
   }
 }

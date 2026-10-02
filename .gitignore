@@ -76,3 +76,10 @@ db/
 
 # local repair backups (db copies — never commit)
 backups/
+
+# Local TTS voice models (~126MB) — download via python3 -m piper.download_voices
+voices/
+
+# voice layer runtime state (startup dedup — machine-local)
+data/voice-state.json
+data/voice-config.json

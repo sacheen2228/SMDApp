@@ -6,6 +6,7 @@ import TradeJournal from "./admin/TradeJournal";
 import ConnectionManager from "./admin/ConnectionManager";
 import ConfigProfiles from "./admin/ConfigProfiles";
 import StrategyConfig from "./admin/StrategyConfig";
+import VoiceSettings from "./admin/VoiceSettings";
 import { AdminSettings } from "./AdminSettings";
 
 interface AdminPanelProps {
@@ -22,6 +23,7 @@ export function AdminPanel({ onConfigChange }: AdminPanelProps) {
     { id: "connections", label: "Connections", icon: "🔌" },
     { id: "profiles", label: "Profiles", icon: "💾" },
     { id: "strategy", label: "Strategy", icon: "⚙️" },
+    { id: "voice", label: "Voice", icon: "🔊" },
   ];
 
   return (
@@ -52,6 +54,7 @@ export function AdminPanel({ onConfigChange }: AdminPanelProps) {
         {section === "connections" && <ConnectionManager />}
         {section === "profiles" && <ConfigProfiles />}
         {section === "strategy" && <StrategyConfig />}
+        {section === "voice" && <VoiceSettings />}
       </div>
     </div>
   );

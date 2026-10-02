@@ -161,6 +161,25 @@ ${params.target2 ? `🎯 Target 2: ₹${params.target2}` : ""}
   const sent = await sendTelegramMessage(msg);
   if (sent) {
     markSignalSent(sig, params.confidence, params.source || "sdm-engine");
+    // Voice output layer (fire-and-forget — never blocks the text alert or trading).
+    // Central tap: all TRADE_SIGNAL producers flow through sendTradeAlert.
+    void import("./voice/voiceService")
+      .then(({ handleVoiceEvent }) =>
+        handleVoiceEvent({
+          eventType: "TRADE_SIGNAL",
+          symbol: params.symbol,
+          strike: params.strike,
+          optionType: params.type === "CE" || params.type === "PE" ? params.type : undefined,
+          side: params.action,
+          confidence: params.confidence,
+          entryPrice: params.entry,
+          stopLoss: params.stopLoss,
+          target: params.target1,
+          source: params.source,
+          timestamp: Date.now(),
+        })
+      )
+      .catch(() => {});
   }
   return sent;
 }
@@ -203,4 +222,37 @@ ${params.reasons.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
 export async function sendSystemAlert(message: string): Promise<boolean> {
   const msg = `🤖 <b>System Alert</b>\n\n${message}\n\n⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
   return sendTelegramMessage(msg);
+}
+
+/**
+ * Voice message to Telegram (voice output layer).
+ * Format: OGG/OPUS (converted by the TTS provider). No window gating here —
+ * the voice service decides deliverability per event type.
+ */
+export async function sendTelegramVoice(audioPath: string, chatId?: string): Promise<boolean> {
+  try {
+    const token = getBotToken();
+    if (!token) return false;
+    const chat = chatId || getChatId();
+    if (!chat) return false;
+    const { readFile } = await import("fs/promises");
+    const { basename } = await import("path");
+    const buf = await readFile(audioPath);
+    const form = new FormData();
+    form.append("chat_id", chat);
+    form.append(
+      "voice",
+      new File([new Uint8Array(buf)], basename(audioPath), {
+        type: audioPath.endsWith(".ogg") ? "audio/ogg" : "audio/wav",
+      })
+    );
+    const res = await fetch(`${TELEGRAM_API}${token}/sendVoice`, { method: "POST", body: form });
+    const json: any = await res.json().catch(() => ({}));
+    if (!json.ok) console.warn(`[Telegram] sendVoice failed: ${json.description || res.status}`);
+    else console.log(`[Telegram] voice sent → ${basename(audioPath)}`);
+    return !!json.ok;
+  } catch (err: any) {
+    console.warn(`[Telegram] sendVoice error: ${err.message}`);
+    return false;
+  }
 }
