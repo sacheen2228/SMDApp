@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { qualityGrade } from "../src/lib/smc-engine";
-import { isExpiryDay, getExpiryTypeForDate } from "../src/lib/expiry-calculator";
+import { isExpiryDay, getExpiryTypeForDate, getWeeklyExpiries, getAllExpiries } from "../src/lib/expiry-calculator";
 
 // ═══════════════════════════════════════════════════════════════
 // 1. OPTION SELLING REJECTION
@@ -126,6 +126,37 @@ describe("SAFETY: Expiry Day Logic", () => {
     if (result) {
       expect(["weekly", "monthly"]).toContain(result);
     }
+  });
+});
+
+// Date-bomb regression (failed live 2026-10-01, a Thursday): FNO_EQUITY_WEEKDAY
+// still mapped stocks to legacy Thursday weeklies, so every Thursday looked like
+// a RELIANCE/TCS expiry. Stock F&O is MONTHLY-only — weeklies exist for indices.
+describe("SAFETY: stock expiries are monthly-only (no fake weeklies)", () => {
+  it("getWeeklyExpiries returns [] for F&O stocks", () => {
+    expect(getWeeklyExpiries("RELIANCE")).toEqual([]);
+    expect(getWeeklyExpiries("TCS")).toEqual([]);
+    expect(getWeeklyExpiries("HDFCBANK")).toEqual([]);
+  });
+
+  it("getWeeklyExpiries still returns entries for indices", () => {
+    const nifty = getWeeklyExpiries("NIFTY");
+    expect(nifty.length).toBeGreaterThan(0);
+    expect(nifty.every((e) => e.type === "weekly")).toBe(true);
+  });
+
+  it("getAllExpiries for a stock contains only monthly rows", () => {
+    const all = getAllExpiries("RELIANCE");
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.every((e) => e.type === "monthly")).toBe(true);
+  });
+
+  it("isExpiryDay(stock) is false on a non-monthly Thursday", () => {
+    // A Thursday that is NOT the last Thursday of the month → not a stock expiry.
+    const d = new Date(2026, 9, 1); // Thu 1 Oct 2026, monthly stock expiry = last Thu
+    expect(d.getDay()).toBe(4);
+    expect(isExpiryDay("RELIANCE", d)).toBe(false);
+    expect(isExpiryDay("TCS", d)).toBe(false);
   });
 });
 

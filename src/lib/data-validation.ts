@@ -45,7 +45,8 @@ export function runQualityGates(
   }
 
   // Gate 2: Minimum strikes with data
-  const strikesWithData = chain.strikes.filter(s => (s.ce && s.ce.premium > 0) || (s.pe && s.pe.premium > 0)).length;
+  const strikes = chain.strikes || [];
+  const strikesWithData = strikes.filter(s => (s.ce && s.ce.premium > 0) || (s.pe && s.pe.premium > 0)).length;
   if (strikesWithData < 5) {
     gates.push({ passed: false, gate: 'STRIKESWithData', reason: `Only ${strikesWithData} strikes with valid premiums (need ≥5)`, severity: 'BLOCK' });
   } else {
@@ -53,7 +54,7 @@ export function runQualityGates(
   }
 
   // Gate 3: OI data availability
-  const hasOI = chain.strikes.some(s => (s.ce && s.ce.oi > 0) || (s.pe && s.pe.oi > 0));
+  const hasOI = strikes.some(s => (s.ce && s.ce.oi > 0) || (s.pe && s.pe.oi > 0));
   if (!hasOI) {
     gates.push({ passed: false, gate: 'OI_AVAILABLE', reason: 'No OI data — all signals will be unreliable', severity: 'BLOCK' });
   } else {
@@ -61,7 +62,7 @@ export function runQualityGates(
   }
 
   // Gate 4: Greeks availability
-  const hasGreeks = chain.strikes.some(s => (s.ce && Math.abs(s.ce.delta) > 0.01) || (s.pe && Math.abs(s.pe.delta) > 0.01));
+  const hasGreeks = strikes.some(s => (s.ce && Math.abs(s.ce.delta) > 0.01) || (s.pe && Math.abs(s.pe.delta) > 0.01));
   if (!hasGreeks && source !== 'simulation') {
     gates.push({ passed: false, gate: 'GREEKS_AVAILABLE', reason: 'No valid Greeks data — option scoring unreliable', severity: 'BLOCK' });
   } else {
@@ -75,8 +76,10 @@ export function runQualityGates(
     gates.push({ passed: true, gate: 'VIX_VALID', reason: `VIX: ${vix}`, severity: 'BLOCK' });
   }
 
-  // Gate 6: PCR reasonableness
-  if (chain.pcr < 0.1 || chain.pcr > 10) {
+  // Gate 6: PCR reasonableness (pcr can be missing on degraded chains — never toFixed on it)
+  if (chain.pcr == null || !Number.isFinite(chain.pcr)) {
+    gates.push({ passed: false, gate: 'PCR_REASONABLE', reason: 'PCR missing — cannot validate', severity: 'WARN' });
+  } else if (chain.pcr < 0.1 || chain.pcr > 10) {
     gates.push({ passed: false, gate: 'PCR_REASONABLE', reason: `PCR out of range: ${chain.pcr}`, severity: 'WARN' });
   } else {
     gates.push({ passed: true, gate: 'PCR_REASONABLE', reason: `PCR: ${chain.pcr.toFixed(2)}`, severity: 'WARN' });
@@ -91,7 +94,7 @@ export function runQualityGates(
   }
 
   // Gate 8: Volume data
-  const hasVolume = chain.strikes.some(s => (s.ce && s.ce.volume > 0) || (s.pe && s.pe.volume > 0));
+  const hasVolume = strikes.some(s => (s.ce && s.ce.volume > 0) || (s.pe && s.pe.volume > 0));
   if (!hasVolume) {
     gates.push({ passed: false, gate: 'VOLUME_AVAILABLE', reason: 'No volume data — liquidity assessment unreliable', severity: 'WARN' });
   } else {

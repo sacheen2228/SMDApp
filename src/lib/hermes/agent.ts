@@ -85,8 +85,13 @@ export async function hermesPro(
   // 2. Collect market data
   const ctx = await collectHermesContext(detected.symbol, mode, options.apiBase || "");
 
-  // 3. Check market status first
-  if (ctx.marketStatus === "WEEKEND" || (ctx.marketStatus === "MARKET_CLOSED" && ctx.exchange === "NSE")) {
+  // 3. Check market status first (NSE holiday = exchange closed, research only;
+  // MCX has its own calendar so only NSE-scoped statuses block)
+  if (
+    ctx.marketStatus === "WEEKEND" ||
+    (ctx.marketStatus === "HOLIDAY" && ctx.exchange === "NSE") ||
+    (ctx.marketStatus === "MARKET_CLOSED" && ctx.exchange === "NSE")
+  ) {
     return recordJevShadowForHermes(buildDecision({
       decision: "RESEARCH_ONLY",
       explanation: `Market is ${ctx.marketStatus === "WEEKEND" ? "closed (weekend)" : "closed"}. Research analysis only.`,

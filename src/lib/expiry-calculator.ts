@@ -219,7 +219,12 @@ function lastWeekdayOfMonth(year: number, month: number, weekday: 1 | 2 | 3 | 4 
 }
 
 // ─── Generate next N weekly expiry dates ──────────────────────────
+// Weekly expiries exist for INDICES only — stock F&O is monthly-only.
+// FNO_EQUITY_WEEKDAY keeps a legacy Thursday mapping for isFNO membership;
+// using it here made every Thursday look like a RELIANCE/TCS expiry
+// (date-bomb surfaced live 2026-10-01 by the safety-guards suite).
 export function getWeeklyExpiries(symbol: string, count: number = 10): ExpiryInfo[] {
+  if (!isIndex(symbol)) return [];
   const weekday = getExpiryWeekday(symbol);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());

@@ -510,6 +510,72 @@ const intents: Intent[] = [
   },
 ];
 
+// ─── Casual / smalltalk (instant early-exit for /api/agent) ───────────
+// Bug fix: greetings used to fall through to hermesPro, which returned a
+// RESEARCH_ONLY data panel ("RESEARCH ONLY — delayed data / UNAVAILABLE")
+// for a simple "hi" after hours. These helpers answer instantly — no data
+// fetch, no Hermes, no LLM.
+
+export type CasualKind = "greeting" | "thanks" | "bye" | "identity" | "smalltalk";
+
+const CASUAL_KINDS: Array<{ kind: CasualKind; pattern: RegExp }> = [
+  { kind: "greeting", pattern: /^(?:hi+|hello+|hey+|yo|oye|namaste|namaskar|hola)(?:\s+(?:there|sdm|ji))?$/ },
+  { kind: "greeting", pattern: /^(?:hi+|hello+|hey+)(?:\s+(?:hi+|hello+|hey+))*$/ },
+  { kind: "greeting", pattern: /^(?:good|great|bad)\s+(?:morning|afternoon|evening|night)$/ },
+  { kind: "greeting", pattern: /^(?:how\s+(?:are|ru|r)\s+(?:you|u)|kaise\s+ho|kya\s+haal\s+(?:hain|h|ha)|how'?s\s+it\s+going)$/ },
+  { kind: "identity", pattern: /^(?:who\s+are\s+you|what\s+can\s+you\s+do|what\s+do\s+you\s+do|tumhara\s+naam|aap\s+kaun\s+ho|your\s+name)$/ },
+  { kind: "thanks", pattern: /^(?:thanks?|thank\s+you|shukriya|dhanyavaad|dhanyavad)$/ },
+  { kind: "bye", pattern: /^(?:bye+|goodbye|see\s+you|alvida|catch\s+you\s+later)$/ },
+  { kind: "smalltalk", pattern: /^(?:ok|okay|cool|great|nice|good|super|fine|chalo|accha)$/ },
+];
+
+// Lowercase, drop punctuation/emoji (whitelist letters/digits/space), collapse
+function normalizeCasual(q: string): string {
+  return q.toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function casualKind(query: string): CasualKind | null {
+  const q = normalizeCasual(query);
+  if (!q) return null;
+  for (const { kind, pattern } of CASUAL_KINDS) {
+    if (pattern.test(q)) return kind;
+  }
+  return null;
+}
+
+export function isCasualQuery(query: string): boolean {
+  return casualKind(query) !== null;
+}
+
+export function respondCasual(
+  query: string,
+  opts: { symbol: string; spotPrice: number; session: { label?: string; isMarketOpen?: boolean } | null }
+): string {
+  const kind = casualKind(query) ?? "greeting";
+  const spot = opts.spotPrice > 0 ? `₹${opts.spotPrice.toLocaleString("en-IN")}` : null;
+  const open = !!opts.session?.isMarketOpen;
+  const label = opts.session?.label || (open ? "Market Open" : "Market Closed");
+  const status = open ? `⚡ market is **open** — ${label}` : `🔴 market is **closed** — ${label}`;
+  const priceLine = spot ? `\n**${opts.symbol}** last at ${spot}` : "";
+  const suggest = `ask me for a **trade** (Nifty/BankNifty/Sensex), **news**, **gap** or **correlation** — bolo "mujhe ek trade do" 🇮🇳`;
+
+  switch (kind) {
+    case "identity":
+      return `i'm **SDM** — your trading buddy 🤖\n\ni track ${opts.symbol}, option chain, OI/greeks, FII/DII and market regime, and i can draft full trade plans with entry / SL / TP.\n\n${suggest}`;
+    case "thanks":
+      return `anytime! 😄 ${status}.\n\nneed a **trade**, **news** or the **Gift Nifty gap**?`;
+    case "bye":
+      return `bye! 👋 i'll be around — ${status.toLowerCase()}. research works 24×7, just ping me.`;
+    case "smalltalk":
+      return `${status}${priceLine}\n\nwanna check a **trade**, **news** or **gap**?`;
+    default:
+      return `hey! 👋 i'm **SDM**, your trading buddy.\n\n${status}${priceLine}\n\n${suggest}`;
+  }
+}
+
 // ─── Main Agent Function ──────────────────────────────────────────
 export function agentRespond(ctx: AgentContext, query: string): string {
   const q = query.trim();

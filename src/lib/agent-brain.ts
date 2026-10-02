@@ -7,6 +7,26 @@
 import { callLLM, type LLMMessage } from "./llm-client";
 import { TRADING_KNOWLEDGE } from "./trading-knowledge";
 import { buildSessionStatusReport, applyBreezeSession } from "./session-health";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import path from "node:path";
+import fs from "node:fs";
+
+const execFileP = promisify(execFile);
+
+// Resolve the playbook strike calculator across dev/standalone layouts.
+function resolveStrikeSelector(): string | null {
+  const rel = path.join("skills", "option-buying-playbook", "scripts", "strike_selector.py");
+  const candidates = [
+    path.join(process.cwd(), rel),
+    path.join(process.cwd(), "..", "..", rel),
+    path.join("/home/sachin/Desktop/SMDApp", rel),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch { /* keep looking */ }
+  }
+  return null;
+}
 
 // ─── System Prompt ──────────────────────────────────────────────
 export function buildSystemPrompt(ctx: {
@@ -123,8 +143,9 @@ Educational framework, not financial advice — say that in one line. Most retai
 - **Stop lives on the underlying**, then convert to premium: premium risk ≈ points risked × delta. Buffer the stop (or require a candle close) — stop-hunts at obvious levels are common. Never widen a stop after entry.
 - **Size**: (capital × risk%) ÷ (premium stop per lot). Risk 1% per trade, 2% max. If one lot exceeds the risk budget → tighter setup or cheaper instrument, never bigger risk. Never average down a losing option. Stop after 2-3 consecutive losses.
 - **Entry quality**: delta ~0.45-0.65, sane IV percentile (never buy into pre-event IV spikes), enough days to expiry, liquid strike, reward:risk ≥ 1:2. Avoid the first 10-15 minutes. Intraday time stop: exit if no move in 20-30 minutes.
+- **Always calculate the strike**: for "which strike / ATM or ITM or OTM / how many lots" run the strike_selector tool — it re-prices every strike at your target and stop (theta + IV shift) and ranks only strikes that pass: option R:R ≥ 1.5 (underlying R:R overstates it), theta cost within budget, break-even vs VIX-based expected move, lots ≥ 1 inside the risk budget. If nothing passes → skip / tighten the stop / spread — never loosen the gates. Check the target against the VIX expected move before believing it.
 - **Honest data limits**: OI cannot reveal buyer vs writer (rising Put OI may be put buying) — infer from price behaviour; FII/DII + participant data is end-of-day → next-day bias only, not an intraday trigger; max pain has weak predictive value; PCR trend matters more than the level.
-- Full skill with reference docs lives at skills/option-buying-playbook/ (scoring checklists, Greeks, OI levels, journal template) — use it for deep scoring requests.
+- Full skill with reference docs lives at skills/option-buying-playbook/ (scoring checklists, Greeks, OI levels, VIX/strike selection, math & formulas, strike_selector.py, journal template) — use it for deep scoring requests.
 
 ## HOW YOU RESPOND
 - Match the user's language — if they write in Hindi, reply in Hindi. English? Reply in English. Hinglish? Hinglish it is.
@@ -350,6 +371,31 @@ export const AGENT_TOOLS = [
           lotSize: { type: "number", description: "Lot size for the symbol" },
         },
         required: ["entry", "sl", "lotSize"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "strike_selector",
+      description: "Calculate the exact option strike to buy. Re-prices every strike at the target and stop (theta + IV shift), applies gates (option R:R >= 1.5, theta cost, break-even vs VIX expected move, risk budget), sizes lots and ranks strikes. Use for: which strike to buy, ATM vs ITM vs OTM, how many lots, which expiry — and before proposing any CE/PE.",
+      parameters: {
+        type: "object",
+        properties: {
+          direction: { type: "string", enum: ["call", "put"], description: "Option side to buy" },
+          target: { type: "number", description: "Underlying target price" },
+          stop: { type: "number", description: "Underlying stop price" },
+          days: { type: "number", description: "Calendar days to expiry" },
+          spot: { type: "number", description: "Spot price (default: live context spot)" },
+          vix: { type: "number", description: "India VIX or ATM IV in percent (default: live context VIX)" },
+          capital: { type: "number", description: "Capital in ₹ (default 200000)" },
+          riskPct: { type: "number", description: "Risk % per trade (default 1)" },
+          lotSize: { type: "number", description: "Lot size (default: known index lots; REQUIRED for stocks)" },
+          holdDays: { type: "number", description: "Expected holding time in days (default 0.25 ~ intraday)" },
+          ivShift: { type: "number", description: "Assumed IV change at exit in vol points (e.g. -2 for crush)" },
+          chain: { type: "string", description: 'Live premiums "strike:premium,..." to calibrate IV per strike' },
+        },
+        required: ["direction", "target", "stop", "days"],
       },
     },
   },
@@ -986,6 +1032,8 @@ const TOOL_ROUTER: ToolRouterEntry[] = [
   { tools: ["get_most_active_contracts", "get_scanner_picks", "get_fii_dii"], keywords: /most.?active|volume.?leader|where.?money|money.?flow|institutional.?flow|big.?volume|active.?contract|fno.?data| derivatives.?data/i },
   // Debugging / Reverse engineering
   { tools: ["diagnose_data_source", "trace_data_flow", "test_api_endpoint"], keywords: /diagnos|debug|data.?source|api.?fail|not.?fetch|missing|stale|broken|test.?api|check.?api|trace|reverse|engineer|why.*not.*work|what.*wrong/i },
+  // Strike selection (option buying playbook)
+  { tools: ["strike_selector", "get_option_chain", "get_vix"], keywords: /strike|itm|otm|which (call|put|ce|pe)|how many lots|lot size|entry strike|buy.*expir|expir.*buy|expected move|break-?even|atm or/i },
   // Session health (tokens, auth, expiry)
   { tools: ["check_session_tokens", "set_breeze_session"], keywords: /session|token|login|expir|totp|otp|re-?auth|breeze.*auth|auth.*breeze|set.*session/i },
 ];
@@ -993,7 +1041,7 @@ const TOOL_ROUTER: ToolRouterEntry[] = [
 // Core tools always included
 const CORE_TOOLS = ["get_sdm_signal", "get_option_chain", "get_market_structure", "get_news_sentiment"];
 
-function selectToolsForQuery(message: string): any[] {
+export function selectToolsForQuery(message: string): any[] {
   const msgLower = message.toLowerCase();
   const selectedNames = new Set<string>(CORE_TOOLS);
 
@@ -1045,7 +1093,7 @@ export async function executeTool(
           .sort((a: any, b: any) => (b.ce?.oi || 0) - (a.ce?.oi || 0))
           .slice(0, 10)
           .map((s: any) => `₹${s.strike}: CE_OI=${(s.ce?.oi || 0).toLocaleString("en-IN")} PE_OI=${(s.pe?.oi || 0).toLocaleString("en-IN")} CE_LTP=${s.ce?.ltp || 0} PE_LTP=${s.pe?.ltp || 0}`);
-        return `Option Chain for ${symbol}:\nSpot: ₹${data.data?.spotPrice}\nPCR: ${data.data?.pcr?.toFixed(2)}\nMax Pain: ₹${summary.maxPain}\nATM: ₹${summary.atmStrike}\nTop OI Strikes:\n${topOI.join("\n")}`;
+        return `Option Chain for ${symbol}:\nSpot: ₹${data.data?.spotPrice}\nPCR: ${(summary.pcr ?? data.data?.pcr)?.toFixed(2) ?? "N/A"}\nMax Pain: ₹${summary.maxPain}\nATM: ₹${summary.atmStrike}\nTop OI Strikes:\n${topOI.join("\n")}`;
       } catch { return "Error fetching option chain"; }
     }
 
@@ -1064,12 +1112,12 @@ export async function executeTool(
 
     case "get_scanner_picks": {
       try {
-        const res = await fetch(`${BASE}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/scanner?symbol=${symbol}`, { signal: AbortSignal.timeout(45000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch scanner";
         const picks = (data.data?.candidates || []).slice(0, 10);
         if (picks.length === 0) return "No scanner picks available right now";
-        return `Scanner Top 10:\n${picks.map((p: any, i: number) => `${i + 1}. ${p.symbol} | Score: ${p.totalScore} | Technicals: ${p.technicalsScore} | OI: ${p.oiScore} | ${p.direction}`).join("\n")}`;
+        return `Scanner Top 10:\n${picks.map((p: any, i: number) => `${i + 1}. ${p.symbol} | Score: ${p.totalScore ?? p.unifiedScore} | Technicals: ${p.technicalScore ?? "—"} | OI: ${p.optionsScore ?? "—"} | ${p.direction ?? p.engineDirection ?? "—"}`).join("\n")}`;
       } catch { return "Error fetching scanner"; }
     }
 
@@ -1093,7 +1141,7 @@ export async function executeTool(
 
     case "get_breakout_signals": {
       try {
-        const res = await fetch(`${BASE}/api/breakout?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(`${BASE}/api/breakout?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch breakout data";
         const s = data.data?.signal;
@@ -1133,19 +1181,19 @@ export async function executeTool(
     case "get_sdm_signal": {
       try {
         const isExpiryDay = args.expiryDay ? "true" : "false";
-        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(20000) });
+        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(25000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch SDM signal";
         const s = data.signal;
         if (!s) return "No SDM signal available";
         const gt = s.gammaThetaData || {};
         const sc = s.sdmScores || {};
-        const ms = s.marketStructure || {};
-        return `SDM LIVE SIGNAL — ${symbol} @ ₹${ms.spot ?? "—"}
+        const mc = s.marketContext || {};
+        return `SDM LIVE SIGNAL — ${symbol} @ ₹${mc.spot ?? "—"}
 ═══════════════════════════════════
 DIRECTION: ${s.direction} | MODE: ${s.mode}
-Trend: ${ms.trend} | Structure event: ${ms.structureEvent ?? "none"}
-Support: ${(ms.supportLevels || []).join(", ") || "—"} | Resistance: ${(ms.resistanceLevels || []).join(", ") || "—"}
+Trend: ${mc.trend ?? "—"} | Regime: ${s.marketRegime ?? mc.regime ?? "—"}
+Support: — | Resistance: — (V2 signal has no S/R levels)
 ═══════════════════════════════════
 TRADE: ${s.direction} ${s.strike} (${s.strikeType})
 Entry: ₹${s.entry} | SL: ₹${s.sl}
@@ -1169,11 +1217,20 @@ Trades today: ${s.tradesTakenToday}/${(s.tradesTakenToday ?? 0) + (s.tradesRemai
 
     case "get_market_structure": {
       try {
-        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(`${BASE}/api/sdm-signal?symbol=${symbol}`, { signal: AbortSignal.timeout(25000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch market structure";
-        const ms = data.signal?.marketStructure;
-        if (!ms) return "No market structure data";
+        const s = data.signal || {};
+        const ms = s.marketStructure;
+        if (!ms) {
+          // V2 signal has no structure block — render what it does have (marketContext).
+          const mc = s.marketContext || {};
+          if (!mc.trend) return "No market structure data";
+          return `Market Structure for ${symbol} (V2 context):
+Trend: ${mc.trend} | Regime: ${s.marketRegime ?? mc.regime ?? "—"}
+PCR: ${mc.pcr ?? "—"} | Max Pain: ₹${mc.maxPain ?? "—"} | VIX: ${mc.vix ?? "—"} | Spot: ₹${mc.spot ?? "—"}
+Note: V2 engine reports trend/PCR/maxPain only — swing and S-R levels not computed`;
+        }
         // Note: V2 engine's MarketStructure covers trend/swings/S-R levels only —
         // it doesn't compute VWAP/EMA/pivots the way the old ORCA engine did.
         return `Market Structure for ${symbol}:
@@ -1209,8 +1266,8 @@ Tip: ${data.tip}`;
         const isExpiryDay = args.expiryDay ? "true" : "false";
         // Fetch both SDM and option chain in parallel for a complete picture
         const [sdmRes, chainRes] = await Promise.allSettled([
-          fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
-          fetch(`${BASE}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+          fetch(`${BASE}/api/sdm-signal?symbol=${symbol}&expiryDay=${isExpiryDay}`, { signal: AbortSignal.timeout(25000) }).then(r => r.json()).catch(() => null),
+          fetch(`${BASE}/api/option-chain?symbol=${symbol}`, { signal: AbortSignal.timeout(20000) }).then(r => r.json()).catch(() => null),
         ]);
         if (!sdmRes || sdmRes.status !== "fulfilled" || !sdmRes.value?.success) return "Failed to fetch SDM signal for trade recommendation";
         const s = sdmRes.value.signal;
@@ -1220,6 +1277,7 @@ Tip: ${data.tip}`;
         const ps = s.positionSizing || {};
         const ms = s.marketStructure || {};
         const gt = s.gammaThetaData || {};
+        const pct = (a: any, b: any) => (a > 0 && b != null) ? (((b - a) / a) * 100).toFixed(1) : "—";
 
         // If option chain available, enrich with strike-wise details
         let chainDetail = "";
@@ -1241,9 +1299,9 @@ MARKET BIAS: ${mc.trend ?? "—"} | Regime: ${mc.regime ?? "—"}
 TRADE SETUP:
 - Direction: ${s.direction} ${s.strike} ${s.strikeType}
 - Entry Price: ₹${s.entry}
-- Stop Loss: ₹${s.sl} (${(((s.entry - s.sl) / s.entry) * 100).toFixed(1)}% loss)
-- Target 1: ₹${s.tp1} (${(((s.tp1 - s.entry) / s.entry) * 100).toFixed(1)}% gain)
-- Target 2: ₹${s.tp2} (${(((s.tp2 - s.entry) / s.entry) * 100).toFixed(1)}% gain)
+- Stop Loss: ${s.entry > 0 ? `₹${s.sl} (${pct(s.entry, s.sl)}% loss)` : `₹${s.sl} (entry not set — WAIT mode)`}
+- Target 1: ${s.entry > 0 ? `₹${s.tp1} (${pct(s.entry, s.tp1)}% gain)` : `₹${s.tp1}`}
+- Target 2: ${s.entry > 0 ? `₹${s.tp2} (${pct(s.entry, s.tp2)}% gain)` : `₹${s.tp2}`}
 - Target 3: ₹${s.tp3 ?? "N/A"}
 - Risk:Reward: 1:${s.riskReward}
 - Expected Move: ${s.expectedMove ?? "N/A"}
@@ -1290,7 +1348,7 @@ EXIT CONDITIONS:
         const res = await fetch(`${BASE}/api/gift-nifty`, { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         if (!data.success) return "Gift Nifty data not available (may use estimated spot)";
-        const g = data.data;
+        const g = data.data || data;
         return `GIFT NIFTY (Pre-Open):
 Price: ${g.price} | ${g.change >= 0 ? "+" : ""}${g.change} (${g.changePct >= 0 ? "+" : ""}${g.changePct}%)
 Previous Close: ${g.previousClose}
@@ -1351,7 +1409,7 @@ ${changes.join("\n")}`;
     case "get_unified_ranking": {
       try {
         const forceRefresh = args.forceRefresh || false;
-        const res = await fetch(`${BASE}/api/trade-intelligence?action=ranking&force=${forceRefresh}`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=ranking&force=${forceRefresh}`, { signal: AbortSignal.timeout(40000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch unified ranking";
         const r = data.data;
@@ -1378,7 +1436,7 @@ ${changes.join("\n")}`;
 
     case "get_index_fo": {
       try {
-        const res = await fetch(`${BASE}/api/trade-intelligence?action=index-fo`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=index-fo`, { signal: AbortSignal.timeout(40000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch Index F&O analysis";
         const signals = data.data.signals || [];
@@ -1390,7 +1448,7 @@ ${changes.join("\n")}`;
     case "get_stock_fo": {
       try {
         const maxStocks = args.maxStocks || 10;
-        const res = await fetch(`${BASE}/api/trade-intelligence?action=stock-fo`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=stock-fo`, { signal: AbortSignal.timeout(40000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch Stock F&O analysis";
         const signals = data.data.signals || [];
@@ -1402,7 +1460,7 @@ ${changes.join("\n")}`;
     case "get_equity_swing": {
       try {
         const maxStocks = args.maxStocks || 10;
-        const res = await fetch(`${BASE}/api/trade-intelligence?action=equity-swing`, { signal: AbortSignal.timeout(30000) });
+        const res = await fetch(`${BASE}/api/trade-intelligence?action=equity-swing`, { signal: AbortSignal.timeout(40000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch Equity Swing analysis";
         const signals = data.data.signals || [];
@@ -1429,30 +1487,44 @@ ${changes.join("\n")}`;
 
     case "get_cas_analysis": {
       try {
-        const res = await fetch(BASE + "/api/market/regime?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/cas-straddle?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch CAS analysis";
-        return "CAS Analysis for " + symbol + ":\nRegime: " + (data.regime || "N/A") + " | Bias: " + (data.bias || "N/A") + "\nConfidence: " + (data.confidence || 0) + "%\nFutures Basis: " + (data.futuresBasis ? "₹" + data.futuresBasis.toFixed(2) : "N/A") + "\nMarket: " + (data.marketCondition || "N/A");
+        if (!data.success && !data.signal) return "Failed to fetch CAS analysis";
+        const sig = data.signal || {};
+        return "CAS Analysis for " + symbol + ":\nStrategy: " + (sig.strategy || "N/A") + " | Trade Quality: " + (sig.tradeQuality ?? "N/A") + "/100\nConfidence: " + (sig.confidence ?? 0) + "%\nReasoning:\n" + ((sig.reasoning || []).map((r: string) => "- " + r).join("\n") || "- N/A");
       } catch { return "Error fetching CAS analysis"; }
     }
 
     case "get_institutional_positioning": {
       try {
-        const res = await fetch(BASE + "/api/institutional-greeks?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/institutional-greeks?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch institutional positioning";
-        const inst = data.data?.institutional || {};
-        return "Institutional Positioning for " + symbol + ":\nFII: " + (inst.fiiBias || "N/A") + " (" + (inst.fiiNet || 0) + " Cr)\nDII: " + (inst.diiBias || "N/A") + " (" + (inst.diiNet || 0) + " Cr)\nSmart Money: " + (inst.smartMoneyBias || "N/A") + "\nRetail: " + (inst.retailBias || "N/A") + "\nTrend: " + (inst.trend || "N/A");
+        if (!data.success && !data.data) return "Failed to fetch institutional positioning";
+        const d = data.data || {};
+        const m = d.metrics || {};
+        // Wall fields are objects {strike, type, acceleration, ...} on the live API
+        const w = (v: any) => typeof v === "object" && v !== null
+          ? `₹${v.strike ?? "?"} (${v.type ?? "?"}, accel ${v.acceleration ?? "?"})`
+          : v != null ? `₹${v}` : "N/A";
+        return "Institutional Positioning for " + symbol + ":\nRegime: " + (d.regime || "N/A") + " | Session: " + (d.sessionPhase || "N/A") +
+          "\nDealer Wall: " + w(d.dealerWallStrike) + " | Institutional Strike: " + w(d.institutionalStrike) + " | Trap Risk: " + w(d.trapRiskStrike) +
+          "\nAvg Accel: " + (m.avgAcceleration ?? "N/A") + " | Max Accel: " + (m.maxAcceleration ?? "N/A") + " | Velocity: " + (m.avgVelocity ?? "N/A") +
+          "\nPCR: " + (m.pcr ?? "N/A") + " | VIX: " + (m.vix ?? "N/A") + " | Spot: ₹" + (d.spot ?? "N/A") + (d.stale ? "\n⚠️ STALE DATA" : "");
       } catch { return "Error fetching institutional positioning"; }
     }
 
     case "get_fii_dii": {
       try {
-        const res = await fetch(BASE + "/api/fii-dii", { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/fii-dii", { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch FII/DII data";
-        const latest = data.latest || {};
-        return "FII/DII Cash Flows:\nFII: " + (latest.fiiNet >= 0 ? "+" : "") + "₹" + latest.fiiNet + "Cr (" + (latest.fiiBias || "N/A") + ")\nDII: " + (latest.diiNet >= 0 ? "+" : "") + "₹" + latest.diiNet + "Cr (" + (latest.diiBias || "N/A") + ")\nDate: " + (latest.date || "N/A") + "\n30-day FII trend: " + (data.trend?.fii || "N/A");
+        if (!data.success && data.fiiNet == null) return "Failed to fetch FII/DII data";
+        const latest = data.latest || data;
+        const fii = latest.fiiNet;
+        const dii = latest.diiNet;
+        const fiiBias = latest.fiiBias || (typeof fii === "number" ? (fii >= 0 ? "BUYING" : "SELLING") : "N/A");
+        const diiBias = latest.diiBias || (typeof dii === "number" ? (dii >= 0 ? "BUYING" : "SELLING") : "N/A");
+        return "FII/DII Cash Flows:\nFII: " + (fii >= 0 ? "+" : "") + "₹" + fii + "Cr (" + fiiBias + ")\nDII: " + (dii >= 0 ? "+" : "") + "₹" + dii + "Cr (" + diiBias + ")\nDate: " + (latest.date || "N/A") +
+          "\nFII 5-day avg: ₹" + (data.fiiNet5dAvg ?? "N/A") + "Cr | DII 5-day avg: ₹" + (data.diiNet5dAvg ?? "N/A") + "Cr";
       } catch { return "Error fetching FII/DII data"; }
     }
 
@@ -1460,41 +1532,65 @@ ${changes.join("\n")}`;
       try {
         const { strike, side } = args;
         if (!strike || !side) return "Missing required params: strike, side (CE/PE)";
-        const res = await fetch(BASE + "/api/options-edge?symbol=" + symbol + "&strike=" + strike + "&side=" + side, { signal: AbortSignal.timeout(12000) });
+        const res = await fetch(BASE + "/api/options-edge?symbol=" + symbol + "&strike=" + strike + "&side=" + side, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
         if (!data.success) return "Failed to fetch options edge";
-        const edge = data.data?.optionsEdge?.[0];
-        if (!edge) return "No options edge data for this strike";
-        return "Options Edge: " + symbol + " ₹" + strike + " " + side + "\nDelta: " + (edge.greeks?.delta?.toFixed(4) || "N/A") + " | Gamma: " + (edge.greeks?.gamma?.toFixed(4) || "N/A") + "\nIV: " + (edge.iv ? (edge.iv * 100).toFixed(1) + "%" : "N/A") + " | Melt Score: " + (edge.premiumMelt?.meltScore?.toFixed(1) || "N/A") + "\nEdge Score: " + (edge.edgeScore?.toFixed(1) || "N/A") + " | Edge: " + (edge.edgePercent ? edge.edgePercent.toFixed(2) + "%" : "N/A") + "\nTrade: " + (edge.tradeCard?.action || "N/A") + " | Confidence: " + (edge.tradeCard?.confidence || "N/A") + "%";
+        const rows = data.data?.strikeAnalyses || [];
+        const row = rows.find((r: any) => String(r.strike) === String(strike)) || rows[0];
+        if (!row) return "No options edge data for this strike";
+        const leg = String(side).toUpperCase() === "PE" ? row.pe : row.ce;
+        if (!leg) return "No " + side + " leg data for strike " + row.strike;
+        // premiumMeltScore is {score, level, …} on the live API (number on older shapes)
+        const melt = typeof leg.premiumMeltScore === "object" && leg.premiumMeltScore !== null
+          ? `${leg.premiumMeltScore.score} (${leg.premiumMeltScore.level})`
+          : leg.premiumMeltScore ?? "N/A";
+        return "Options Edge: " + symbol + " ₹" + row.strike + " " + String(side).toUpperCase() + " (spot ₹" + (data.data?.spot ?? "N/A") + ")" +
+          "\nLTP: ₹" + (leg.ltp ?? "N/A") + " | Delta: " + (leg.delta?.toFixed(4) ?? "N/A") + " | Gamma: " + (leg.gamma?.toFixed(4) ?? "N/A") +
+          "\nIV: " + (leg.iv != null ? leg.iv + "%" : "N/A") + " | Theta: " + (leg.theta ?? "N/A") +
+          "\nOI: " + (leg.oi != null ? leg.oi.toLocaleString("en-IN") : "N/A") + " | Melt Score: " + melt +
+          "\nExp. Premium Move: " + (leg.expectedPremiumMove != null ? "₹" + leg.expectedPremiumMove : "N/A") + " | IV State: " + (leg.ivState || "N/A") + " | Velocity: " + (leg.premiumVelocity ?? "N/A") +
+          "\nDecision: " + (data.data?.tradeDecision?.action || "N/A");
       } catch { return "Error fetching options edge"; }
     }
 
     case "get_expiry_liquidity": {
       try {
-        const res = await fetch(BASE + "/api/expiry-liquidity?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(BASE + "/api/expiry-liquidity?symbol=" + symbol, { signal: AbortSignal.timeout(20000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch expiry liquidity";
+        if (!data.success && !data.data) return "Failed to fetch expiry liquidity";
         const d = data.data || {};
-        return "Expiry Liquidity for " + symbol + ":\nCAS State: " + (d.casState || "N/A") + " | Dislocation: " + (d.casDislocation ? "₹" + d.casDislocation.toFixed(2) : "N/A") + "\nFutures Basis: " + (d.futuresBasis ? "₹" + d.futuresBasis.toFixed(2) : "N/A") + "\nIV Velocity: " + (d.ivVelocity || "N/A") + " | OI Classification: " + (d.oiClassification || "N/A") + "\nGamma Pressure: " + (d.gammaPressure || "N/A") + " | Auction State: " + (d.auctionState || "N/A");
+        const of = d.optionFlow || {};
+        return "Expiry Liquidity for " + symbol + ":" +
+          "\nDirection: " + (d.direction ?? "—") + " | Expiry Score: " + (d.expiryScore ?? "—") + " | Bull: " + (d.bullishScore ?? "—") + " | Bear: " + (d.bearishScore ?? "—") +
+          "\nCAS: " + (d.casActive ? "ACTIVE" : "inactive") + " | Reference: ₹" + (d.casReferencePrice ?? "—") + " | Dislocation: " + (d.casDislocationPct ?? "—") + "%" +
+          "\nFutures: ₹" + (d.futuresPrice ?? "—") + (d.futuresConfirmed ? " (confirmed)" : " (unconfirmed)") +
+          "\nATM: ₹" + (d.atmStrike ?? "—") + " | Option Flow: call " + (of.callMomentum ?? "—") + " / put " + (of.putMomentum ?? "—") + " / net " + (of.netFlow ?? "—") +
+          (d.isExpiryDay ? "\n⚠️ EXPIRY DAY" : "");
       } catch { return "Error fetching expiry liquidity"; }
     }
 
     case "get_market_regime": {
       try {
-        const res = await fetch(BASE + "/api/market/regime?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/market/regime?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch market regime";
-        return "Market Regime for " + symbol + ":\nRegime: " + (data.regime || "N/A") + " | Bias: " + (data.bias || "N/A") + "\nConfidence: " + (data.confidence || 0) + "% | Factors: " + (data.factors?.join(", ") || "N/A");
+        if (!data.success && !data.regime) return "Failed to fetch market regime";
+        // factors is an object map ({indexTrend: -26, breadth: -40, …}) on the live route
+        const factors = Array.isArray(data.factors)
+          ? data.factors.join(", ")
+          : data.factors && typeof data.factors === "object"
+            ? Object.entries(data.factors).map(([k, v]) => `${k}=${v}`).join(", ")
+            : null;
+        return "Market Regime for " + symbol + ":\nRegime: " + (data.regime || "N/A") + " | Bias: " + (data.bias || "N/A") + "\nConfidence: " + (data.confidence || 0) + "% | Factors: " + (factors || "N/A");
       } catch { return "Error fetching market regime"; }
     }
 
     case "get_market_breadth": {
       try {
-        const res = await fetch(BASE + "/api/market/breadth", { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/market/breadth", { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch market breadth";
-        const b = data.data || {};
-        return "Market Breadth:\nAdvances: " + (b.advances || 0) + " | Declines: " + (b.declines || 0) + " | Unchanged: " + (b.unchanged || 0) + "\nA/D Ratio: " + (b.adRatio || "N/A") + " | New Highs: " + (b.newHighs || 0) + " | New Lows: " + (b.newLows || 0);
+        if (!data.success && !data.breadth) return "Failed to fetch market breadth";
+        const b = data.breadth || data.data || {};
+        return "Market Breadth:\nScore: " + (b.score ?? "N/A") + (b.label ? " (" + b.label + ")" : "") + "\nAdvances: " + (b.advances || 0) + " | Declines: " + (b.declines || 0) + " | Unchanged: " + (b.unchanged || 0) + "\nA/D Ratio: " + (b.adRatio || "N/A") + " | New Highs: " + (b.newHighs || 0) + " | New Lows: " + (b.newLows || 0);
       } catch { return "Error fetching market breadth"; }
     }
 
@@ -1521,11 +1617,15 @@ ${changes.join("\n")}`;
 
     case "get_atm_straddle": {
       try {
-        const res = await fetch(BASE + "/api/atm-straddle?symbol=" + symbol, { signal: AbortSignal.timeout(10000) });
+        const res = await fetch(BASE + "/api/atm-straddle?symbol=" + symbol, { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch ATM straddle";
-        const s = data.data || {};
-        return "ATM Straddle for " + symbol + ":\nStrike: ₹" + (s.strike || "N/A") + " | Premium: ₹" + (s.premium || "N/A") + "\nIV: " + (s.iv ? (s.iv * 100).toFixed(1) + "%" : "N/A") + "\nExpected Range: ₹" + (s.expectedRange || "N/A") + " (" + (s.expectedRangePercent ? s.expectedRangePercent.toFixed(2) + "%" : "N/A") + ")";
+        if (!data.success && !data.range) return "Failed to fetch ATM straddle";
+        const s = data.range || data.data || {};
+        const combined = typeof s.combinedPremium === "number" ? Math.round(s.combinedPremium * 100) / 100 : (s.combinedPremium ?? s.premium ?? "N/A");
+        return "ATM Straddle for " + symbol + ":\nStrike: ₹" + (s.atmStrike ?? s.strike ?? "N/A") + " | Combined Premium: ₹" + combined +
+          "\nCE: ₹" + (s.cePremium ?? "N/A") + " | PE: ₹" + (s.pePremium ?? "N/A") +
+          "\nIV: " + (s.iv ?? "N/A") + " | PCR: " + (s.pcr ?? "N/A") + " | Max Pain: ₹" + (s.maxPain ?? "N/A") +
+          "\nExpected Move: ₹" + (s.expectedMove ?? "N/A") + " (" + (s.expectedMovePct ?? "N/A") + "%)";
       } catch { return "Error fetching ATM straddle"; }
     }
 
@@ -1554,11 +1654,14 @@ ${changes.join("\n")}`;
 
     case "get_challenge_status": {
       try {
-        const res = await fetch(BASE + "/api/challenge-engine", { signal: AbortSignal.timeout(8000) });
+        const res = await fetch(BASE + "/api/challenge", { signal: AbortSignal.timeout(25000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch challenge status";
-        const c = data.data || {};
-        return "Challenge Engine:\nActive: " + (c.activeChallenges || 0) + " | Completed: " + (c.completedChallenges || 0) + "\nWin Rate: " + (c.winRate ? (c.winRate * 100).toFixed(1) + "%" : "N/A") + " | Avg R: " + (c.avgR?.toFixed(2) || "N/A");
+        if (!data.success && !data.challenge) return "Failed to fetch challenge status";
+        const c = data.challenge || data.data || {};
+        return "Challenge #" + (c.number ?? "N/A") + " (" + (c.status || "N/A") + "):" +
+          "\nCapital: ₹" + (c.currentCapital ?? 0).toLocaleString("en-IN") + " / ₹" + (c.startingCapital ?? 0).toLocaleString("en-IN") + " (" + (c.progressLabel || (c.progressPct ?? 0) + "%") + ")" +
+          "\nTrades: " + (c.totalTrades ?? 0) + " | Wins: " + (c.winCount ?? 0) + " | Losses: " + (c.lossCount ?? 0) +
+          "\nWin Rate: " + (c.winRate ?? "N/A") + "%" + (c.targetCapital ? " | Target: ₹" + c.targetCapital.toLocaleString("en-IN") : "");
       } catch { return "Error fetching challenge status"; }
     }
 
@@ -1871,7 +1974,9 @@ Time: ${Date.now() - start}ms`;
       try {
         const { hermesProFormatted } = await import("./hermes/agent");
         const mode = args.mode || "TRADE";
-        const result = await hermesProFormatted(symbol, { mode: mode as any });
+        // Relative fetches fail server-side — always give Hermes an absolute base
+        const apiBase = (ctx.apiBase as string) || process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+        const result = await hermesProFormatted(symbol, { symbol, mode: mode as any, apiBase });
         return result;
       } catch (err: any) {
         return `Hermes Pro analysis failed: ${err.message}. Falling back to standard analysis.`;
@@ -1928,6 +2033,84 @@ Time: ${Date.now() - start}ms`;
         return parts.join("\n");
       } catch (err: any) {
         return `Error fetching most active contracts: ${err.message}`;
+      }
+    }
+
+    case "strike_selector": {
+      try {
+        const dir = String(args.direction || "").toLowerCase();
+        const spot = Number(args.spot || ctx?.spotPrice || 0);
+        const vix = Number(args.vix || ctx?.summary?.indiaVIX || 0);
+        const days = Number(args.days || 0);
+        const target = Number(args.target || 0);
+        const stop = Number(args.stop || 0);
+        const holdDays = Number(args.holdDays ?? 0.25);
+
+        const missing: string[] = [];
+        if (!(spot > 0)) missing.push("--spot");
+        if (!(vix > 0)) missing.push("--vix (India VIX)");
+        if (!(days > 0)) missing.push("--days");
+        if (!(target > 0)) missing.push("--target");
+        if (!(stop > 0)) missing.push("--stop");
+        if (dir !== "call" && dir !== "put") missing.push("--direction (call|put)");
+
+        const LOT_SIZES: Record<string, number> = { NIFTY: 75, BANKNIFTY: 35, FINNIFTY: 65, MIDCPNIFTY: 140, SENSEX: 20 };
+        let lotSize = Number(args.lotSize || 0);
+        if (!lotSize) {
+          const sym = String(symbol || "").toUpperCase();
+          lotSize = LOT_SIZES[sym] || 0;
+          if (!lotSize) missing.push(`--lot-size (no known lot size for ${sym})`);
+        }
+        if (missing.length) {
+          return `Strike selector needs: ${missing.join(", ")}. Ask Sachin for the missing values — never guess them.`;
+        }
+
+        const script = resolveStrikeSelector();
+        if (!script) {
+          return "Strike selector script not found (skills/option-buying-playbook/scripts/strike_selector.py)";
+        }
+
+        const argv = [
+          script,
+          "--spot", String(spot), "--vix", String(vix), "--days", String(days),
+          "--direction", dir, "--target", String(target), "--stop", String(stop),
+          "--capital", String(Number(args.capital || 200000)),
+          "--risk-pct", String(Number(args.riskPct || 1)),
+          "--lot-size", String(lotSize),
+          "--hold-days", String(holdDays),
+          "--json",
+        ];
+        if (args.ivShift != null && args.ivShift !== "") argv.push("--iv-shift", String(Number(args.ivShift)));
+        if (args.chain) argv.push("--chain", String(args.chain));
+
+        const { stdout } = await execFileP("python3", argv, { timeout: 15000, maxBuffer: 1024 * 1024 });
+        const d = JSON.parse(stdout);
+        const lines: string[] = [];
+        lines.push(`Strike selector (${dir.toUpperCase()}, spot ₹${spot}, VIX ${vix}, ${days}d to expiry, hold ${holdDays}d)`);
+        lines.push(`Expected move: ${d.expected_move_points} pts (${d.expected_move_pct}%) | Underlying R:R: ${d.underlying_reward_risk} | Risk budget: ₹${d.risk_budget_rupees}`);
+        const rec = d.recommendation;
+        if (!rec) {
+          lines.push(`NO strike passes the gates → ${d.note || "SKIP / tighten the stop / consider a spread."}`);
+          if (Array.isArray(d.warnings) && d.warnings.length) lines.push(`Warnings: ${d.warnings.join("; ")}`);
+          return lines.join("\n");
+        }
+        lines.push(`Recommended strike: ${rec.strike} ${rec.type} | Entry premium ₹${rec.entry} (IV ${rec.iv_pct}%)`);
+        lines.push(`Premium stop ₹${rec.price_at_stop} → target ₹${rec.price_at_target} | Option R:R ${rec.reward_risk} | Delta ${rec.delta}`);
+        lines.push(`Lots: ${rec.lots} × ₹${rec.capital_per_lot_premium}/lot premium | Risk/lot ₹${rec.risk_per_lot} | Break-even at exit ${rec.hold_be_points} pts (${rec.be_pct_of_exp_move}% of exp move)`);
+        lines.push(`Theta cost over hold: ₹${rec.theta_hold_cost} (${rec.theta_pct_of_premium}% of premium)`);
+        const rejected = ((d.all_candidates || []) as any[])
+          .filter((c) => !c.passes)
+          .slice(0, 3)
+          .map((c) => `${c.strike}: failed ${Object.entries(c.gates || {}).filter(([, v]) => !v).map(([k]) => k).join(",") || "gates"}`);
+        if (rejected.length) lines.push(`Rejected: ${rejected.join(" | ")}`);
+        if (Array.isArray(d.warnings) && d.warnings.length) lines.push(`Warnings: ${d.warnings.join("; ")}`);
+        return lines.join("\n");
+      } catch (err: any) {
+        const errOut = String(err?.stderr || err?.message || err);
+        if (/required:/.test(errOut)) {
+          return `Strike selector input error: ${errOut.split("\n").pop()}`;
+        }
+        return `Strike selector failed: ${String(errOut).slice(0, 200)}`;
       }
     }
 

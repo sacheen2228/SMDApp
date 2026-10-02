@@ -85,19 +85,22 @@ export async function collectHermesContext(
   const fetches: Record<string, Promise<any>> = {};
 
   if (requiredTools.includes("get_spot") || requiredTools.includes("get_option_chain")) {
-    fetches.optionChain = fetchJSON(`${apiBase}/api/option-chain?symbol=${symbol}`, 12_000);
+    fetches.optionChain = fetchJSON(`${apiBase}/api/option-chain?symbol=${symbol}`, 20_000);
   }
   if (requiredTools.includes("get_fii_dii")) {
     fetches.fiiDii = fetchJSON(`${apiBase}/api/fii-dii`, 8_000);
   }
   if (requiredTools.includes("get_news")) {
-    fetches.news = fetchJSON(`${apiBase}/api/news?symbol=${symbol}`, 8_000);
+    // /api/news WITHOUT ?symbol returns the market wrapper { data: { label, overall, articles } };
+    // the symbol variant returns articles at top level with no sentiment — always fetch plain.
+    fetches.news = fetchJSON(`${apiBase}/api/news`, 8_000);
   }
   if (requiredTools.includes("get_regime")) {
     fetches.regime = fetchJSON(`${apiBase}/api/market/regime?symbol=${symbol}`, 10_000);
   }
   if (requiredTools.includes("get_market_structure")) {
-    fetches.structure = fetchJSON(`${apiBase}/api/sdm-signal?symbol=${symbol}`, 10_000);
+    // sdm-signal takes 13-16s live — 10s timeout always dropped the structure slice
+    fetches.structure = fetchJSON(`${apiBase}/api/sdm-signal?symbol=${symbol}`, 25_000);
   }
   if (requiredTools.includes("get_gamma")) {
     fetches.gamma = fetchJSON(`${apiBase}/api/greek-flow?symbol=${symbol}`, 10_000);
@@ -295,11 +298,11 @@ export async function collectHermesContext(
   } : wrapFresh(null, "nse", "fiiDii");
 
   // News
-  const newsData = data.news?.data;
-  const news: FreshData<NewsData> = newsData ? {
+  const newsData = data.news?.data || data.news;
+  const news: FreshData<NewsData> = newsData?.articles || newsData?.label ? {
     value: {
-      sentiment: newsData.market?.sentiment || "NEUTRAL",
-      score: newsData.market?.score || 0,
+      sentiment: newsData.market?.sentiment || newsData.label || "NEUTRAL",
+      score: newsData.market?.score ?? newsData.overall ?? 0,
       headlines: (newsData.articles || []).slice(0, 5).map((a: any) => a.title?.substring(0, 100) || ""),
       highImpactEvents: [],
     },
@@ -333,7 +336,7 @@ export async function collectHermesContext(
   const sdmData = data.structure?.signal || data.structure;
   const structure: FreshData<StructureData> = sdmData ? {
     value: {
-      trend: sdmData.structure?.trend || "SIDEWAYS",
+      trend: sdmData.structure?.trend || sdmData.marketContext?.trend || "SIDEWAYS",
       swingHigh: sdmData.structure?.swingHigh || spotPrice,
       swingLow: sdmData.structure?.swingLow || spotPrice,
       supportLevels: sdmData.structure?.supportLevels || [],

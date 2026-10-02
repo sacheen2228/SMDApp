@@ -9,8 +9,9 @@
 | Structure | HH/HL | Range | LH/LL |
 | OI change | Put writing up, call unwinding | Mixed | Call writing up, put unwinding |
 | Price vs VWAP/levels | Above | At | Below |
+| VIX (for calls: falling/low = +1; for puts: rising = +1) | Supportive | Flat | Against |
 
-- Total >= +4: look for call setups.
+- (Seven factors: range -7 to +7.) Total >= +4: look for call setups.
 - Total <= -4: look for put setups.
 - In between: smaller size or stay out.
 
@@ -20,7 +21,7 @@
 3. Higher-timeframe structure agrees?
 4. Price at a level with OI support (writing or unwinding)?
 5. Candle confirmation present?
-6. Delta, IV and theta acceptable?
+6. Strike selector passes (option R:R, theta cost, break-even, lots >= 1) and VIX regime acceptable?
 7. Stop on the underlying, reward:risk >= 1:2, risk <= 1%?
 8. No major event or expiry distortion nearby?
 

@@ -442,7 +442,7 @@ export function getToolsByTag(tag: string): ToolDefinition[] {
 
 export function getRequiredTools(intent: string): string[] {
   const intentToolMap: Record<string, string[]> = {
-    LIVE_TRADE: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_oi_analysis", "get_greeks", "get_gamma", "get_fii_dii", "get_news", "get_regime", "get_risk_status", "get_market_session", "get_mtf_signal"],
+    LIVE_TRADE: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_oi_analysis", "get_greeks", "get_gamma", "get_fii_dii", "get_news", "get_regime", "get_risk_status", "get_market_session", "get_mtf_signal", "get_backtest_results"],
     OPTION_ANALYSIS: ["get_option_chain", "get_oi_analysis", "get_greeks", "get_gamma", "get_volume_profile"],
     MCX_ANALYSIS: ["get_mcx_data", "get_market_session"],
     RESEARCH: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_fii_dii", "get_news", "get_regime"],

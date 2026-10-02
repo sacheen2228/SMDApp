@@ -3,7 +3,7 @@
 // Phase 3: Hermes Pro — deterministic trade orchestration layer
 
 import { NextRequest, NextResponse } from "next/server";
-import { agentRespond, type AgentContext } from "@/lib/agent-engine";
+import { agentRespond, type AgentContext, isCasualQuery, respondCasual } from "@/lib/agent-engine";
 import { agentRespondLLM } from "@/lib/agent-brain";
 import { db } from "@/lib/db";
 import { getCurrentSession } from "@/lib/market-session";
@@ -383,6 +383,20 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ response: resp, toolCallsMade: ["journal_direct"] });
         }
       } catch {}
+    }
+
+    // EARLY EXIT: Casual greetings / smalltalk — instant SDM reply.
+    // Without this, "hi" fell through to hermesPro which answered with a
+    // RESEARCH_ONLY data panel after hours (RESEARCH ONLY — delayed data /
+    // UNAVAILABLE) instead of a chat reply. No data fetch, no Hermes, no LLM.
+    if (isCasualQuery(message)) {
+      const resp = respondCasual(message, {
+        symbol: detectedSymbol,
+        spotPrice: spotPrice || 0,
+        session,
+      });
+      conversationHistory.push({ role: "assistant", content: resp });
+      return NextResponse.json({ response: resp, toolCallsMade: ["greeting_direct"] });
     }
 
     // Try LLM first, fall back to pattern matching

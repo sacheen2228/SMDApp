@@ -459,7 +459,9 @@ describe("Hermes Agent", () => {
     // This test runs at any time - if market is open it will proceed, if closed it returns RESEARCH_ONLY
     const decision = await hermesPro("What is NIFTY doing?", { symbol: "NIFTY" });
     expect(["RESEARCH_ONLY", "BUY_CE", "BUY_PE", "NO_TRADE"]).toContain(decision.decision);
-    expect(decision.executionTimeMs).toBeGreaterThan(0);
+    // No apiBase in this test → relative context fetches fail fast; the
+    // closed-market RESEARCH_ONLY path legitimately completes in <1ms (0ms).
+    expect(decision.executionTimeMs).toBeGreaterThanOrEqual(0);
     expect(decision.timestamp).toBeDefined();
   });
 });

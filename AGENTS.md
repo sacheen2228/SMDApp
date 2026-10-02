@@ -58,7 +58,7 @@ bun run dev        # starts on :3000
 | `src/lib/orca-backtest.ts` | ORCA backtest (uses fake option chains) |
 | `src/lib/sdm-trade-tracker.ts` | Trade lifecycle: add/update/expire, DB persistence |
 | `src/stores/useTradingStore.ts` | Zustand store for trading state |
-| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 38 tools, SMDContext, memory, logging |
+| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 49 tools, SMDContext, memory, logging |
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode, 15 quick commands — calls `/api/agent` |
 | `src/lib/smd-context.ts` | SMDContext — centralized market context builder for Hermes (aggregates all data sources) |
 | `src/lib/agent-memory.ts` | Agent Memory — persistent trade patterns, setup memory, predictions, preferences |
@@ -182,7 +182,7 @@ VIX        S/R, Expiry
     ▼      ▼
 ┌─────────────────────┐
 │  HERMES DECISION    │  ← Groq openai/gpt-oss-120b (128K context)
-│  ENGINE             │     41 tools total
+│  ENGINE             │     49 tools total
 └──────────┬──────────┘
            │
     ┌──────┴──────┐
@@ -194,7 +194,7 @@ CANDIDATE    / WAIT
 Risk Validation → Entry/SL/TP → Telegram Alert
 ```
 
-### 41 Hermes Tools (36 original + 5 new)
+### 49 Hermes Tools
 
 **NEW TOOLS (added this session):**
 | Tool | Purpose |
@@ -204,6 +204,7 @@ Risk Validation → Entry/SL/TP → Telegram Alert
 | `get_mcx_data` | MCX commodity data (CRUDEOIL/GOLD/SILVER/GAS) |
 | `morning_scan` | Run morning signal generator → Telegram |
 | `get_trade_recommendation` | Full structured trade card with entry/SL/TP |
+| `strike_selector` | Playbook strike calculator — runs `skills/option-buying-playbook/scripts/strike_selector.py` (BS re-pricing at target/stop, option R:R + theta + break-even + risk-budget gates, lot sizing) |
 
 **ORIGINAL 36 TOOLS:**
 Market Data: `get_option_chain`, `get_sdm_signal`, `get_market_structure`, `get_vix`, `get_atm_straddle`, `get_gift_nifty`, `get_historical_data`
@@ -326,7 +327,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/option-chain` | GET | Option chain data (Breeze → NSE fallback) |
-| `/api/agent` | POST | AI Agent with LLM + 38 tools |
+| `/api/agent` | POST | AI Agent with LLM + 49 tools |
 | `/api/agent-memory` | GET/POST/PATCH | Agent Memory — CRUD for trades, setups, predictions, preferences |
 | `/api/breeze-connect` | GET/POST | Breeze session management |
 | `/api/sdm-signal` | GET | SDM scoring signals |

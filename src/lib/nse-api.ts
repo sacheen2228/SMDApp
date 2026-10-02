@@ -216,21 +216,38 @@ export async function getNSEIndices(): Promise<Array<{ key: string; name: string
     });
     if (!res.ok) return [];
     const json = await res.json();
-    const data = json?.data || [];
-    const mapping: Record<string, string> = {
-      "NIFTY 50": "NIFTY", "NIFTY Bank": "BANKNIFTY", "SENSEX": "SENSEX", "NIFTY Bank": "BANKNIFTY",
-    };
-    return data
-      .filter((i: any) => ["NIFTY 50", "NIFTY Bank", "SENSEX"].includes(i.index))
-      .map((i: any) => ({
-        key: mapping[i.index] || i.index,
-        name: i.index === "NIFTY 50" ? "NIFTY 50" : i.index === "NIFTY Bank" ? "BANK NIFTY" : "SENSEX",
-        ltp: i.last || 0,
-        change: parseFloat(((i.last || 0) - (i.previousClose || i.last || 0)).toFixed(2)),
-        changePct: parseFloat((i.percentChange || 0).toFixed(2)),
-        prevClose: i.previousClose || i.last || 0,
-      }));
+    return mapNSEIndices(json?.data || []);
   } catch { return []; }
+}
+
+// Pure mapping for /api/allIndices rows → app index keys.
+// Live 2026-10-01: NSE sends "NIFTY BANK" (all caps); the old filter matched
+// only "NIFTY Bank" so BANKNIFTY was silently dropped (count=1). Accept both
+// casings; SENSEX is BSE-only but kept defensively.
+export function mapNSEIndices(data: any): Array<{ key: string; name: string; ltp: number; change: number; changePct: number; prevClose: number }> {
+  if (!Array.isArray(data)) return [];
+  const WANTED: Record<string, { key: string; name: string }> = {
+    "NIFTY 50": { key: "NIFTY", name: "NIFTY 50" },
+    "NIFTY BANK": { key: "BANKNIFTY", name: "BANK NIFTY" },
+    "NIFTY Bank": { key: "BANKNIFTY", name: "BANK NIFTY" },
+    "SENSEX": { key: "SENSEX", name: "SENSEX" },
+  };
+  return data
+    .filter((i: any) => i && WANTED[i.index])
+    .map((i: any) => {
+      const want = WANTED[i.index];
+      const ltp = i.last || 0;
+      const prevClose = i.previousClose || i.last || 0;
+      const pct = parseFloat(i.percentChange);
+      return {
+        key: want.key,
+        name: want.name,
+        ltp,
+        change: parseFloat((ltp - prevClose).toFixed(2)),
+        changePct: isNaN(pct) ? parseFloat((((ltp - prevClose) / (prevClose || 1)) * 100).toFixed(2)) : pct,
+        prevClose,
+      };
+    });
 }
 
 // ─── NSE intraday index chart (/api/chart-databyindex) ───
