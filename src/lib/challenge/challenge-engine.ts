@@ -16,7 +16,11 @@ import {
   getChallenge,
   recordTrade,
 } from "./challenge-tracker";
-import { bsPrice, impliedVolFromPremium } from "@/lib/greeks";
+import { bsPrice, impliedVolFromPremium, parseExpiryDate, parseExpiryToYears, roundPremium, OPTION_STOP_PCT } from "@/lib/greeks";
+
+// Back-compat re-exports — impls moved to the greeks leaf module (cycle-free);
+// existing importers (auto-executor, tests) keep their import paths.
+export { parseExpiryDate, parseExpiryToYears, OPTION_STOP_PCT } from "@/lib/greeks";
 import { buildMarketIntelligenceContext, type MarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
 import { analyzeEquitySwing } from "@/lib/trade-intelligence/equity-swing-mode";
 import { analyzeStockFO } from "@/lib/trade-intelligence/stock-fo-mode";
@@ -53,61 +57,8 @@ export function dedupeOpportunities(
   return Array.from(map.values());
 }
 
-// ── Expiry parsing (dd-Mon-yyyy / dd-mm-yyyy / ISO → Date | null) ──
-const MONTHS: Record<string, number> = {
-  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-};
-
-/**
- * Parse a broker/NSE expiry string to a Date (expiry valid until 15:30 IST =
- * 10:00 UTC that day). Returns null when unparseable or long expired.
- */
-export function parseExpiryDate(expiry: string, now: Date = new Date()): Date | null {
-  if (!expiry || typeof expiry !== "string") return null;
-  const s = expiry.trim();
-  let d: Date | null = null;
-  let m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3,9})[-/ ](\d{2,4})$/);
-  if (m) {
-    const mon = MONTHS[m[2].slice(0, 3).toLowerCase()];
-    if (mon !== undefined) {
-      const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
-      d = new Date(Date.UTC(year, mon, Number(m[1]), 10, 0, 0)); // 15:30 IST
-    }
-  }
-  if (!d) {
-    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/); // dd-mm-yyyy
-    if (m) d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 10, 0, 0));
-  }
-  if (!d) {
-    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); // ISO
-    if (m) d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 10, 0, 0));
-  }
-  if (!d || isNaN(d.getTime())) return null;
-  if (d.getTime() < now.getTime() - 43200000) return null; // expired >12h ago
-  return d;
-}
-
-/** Expiry → Black-Scholes time-to-expiry in years (min half a day). */
-export function parseExpiryToYears(expiry: string, now: Date = new Date()): number | null {
-  const d = parseExpiryDate(expiry, now);
-  if (!d) return null;
-  const days = (d.getTime() - now.getTime()) / 86400000;
-  return Math.max(days, 0.5) / 365;
-}
-
 // ── Option setups: spot space → PREMIUM space (playbook repricing) ──
 export type PremiumConvertResult = { ok: true } | { ok: false; reason: string };
-
-const roundPremium = (x: number) => Math.round(x * 20) / 20; // ₹0.05 tick
-
-/**
- * Rule set C: an option buy never risks more than 10% of its premium — the
- * engines' ATR spot stops reprice to 30-50% of premium, which at lot
- * granularity blows the ₹1,500 risk budget for every lot. Floor (tighten) the
- * repriced stop at entry × 90%; targets untouched (R:R only improves).
- */
-export const OPTION_STOP_PCT = 0.10;
 
 /**
  * Convert a CALL/PUT opportunity from spot-based levels to premium-based

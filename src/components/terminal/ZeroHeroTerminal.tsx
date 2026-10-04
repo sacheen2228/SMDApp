@@ -683,6 +683,8 @@ function TodaysTradeView() {
             const dirColor = dirColors[c.direction] || "text-[#dfe6ee]";
             const isFut = c.type === "FUT";
             const isEq = c.type === "EQ";
+            const isOpt = !isEq && !isFut;
+            const premTrade = isOpt && typeof c.spotEntry === "number" && c.spotEntry > 0;
             return (
               <div key={`${c.rank}-${c.symbol}-${c.mode}`}
                 className="flex items-center gap-3 rounded-lg border border-[#1f2733] bg-[#10151d] px-3 py-2.5">
@@ -697,7 +699,14 @@ function TodaysTradeView() {
                     {c.sector && <span className="text-[9px] text-[#7d8ba0]">{c.sector}</span>}
                   </div>
                   <div className="text-[10px] text-[#7d8ba0] mt-0.5">
-                    Entry ₹{fmt(c.entry)} · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}
+                    {premTrade ? (
+                      <>
+                        Entry ₹{fmt(c.entry)} (premium) · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}
+                        <span className="text-[#7d8ba0]/60"> · spot {fmt(c.spotEntry)}→{fmt(c.spotStopLoss)}/{fmt(c.spotTarget1)}/{fmt(c.spotTarget2)}</span>
+                      </>
+                    ) : (
+                      <>Entry ₹{fmt(c.entry)} · SL ₹{fmt(c.stopLoss)} · TP1 ₹{fmt(c.tp1)} · TP2 ₹{fmt(c.tp2)}{isOpt ? " (spot)" : ""}</>
+                    )}
                   </div>
                   {c.instrument && c.instrument !== "NO_TRADE" && (
                     <div className="text-[9px] text-[#9fb0c3] mt-0.5">

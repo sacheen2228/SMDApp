@@ -141,3 +141,118 @@ export function calculateGreeks(
     d2,
   };
 }
+
+// ── Expiry parsing (dd-Mon-yyyy / dd-mm-yyyy / ISO → Date | null) ──
+// Moved from challenge-engine so premium-space conversion can live here too
+// (challenge imports trade-intelligence → trade-intelligence must not import
+// challenge; greeks stays a pure leaf). challenge-engine re-exports both.
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/**
+ * Parse a broker/NSE expiry string to a Date (expiry valid until 15:30 IST =
+ * 10:00 UTC that day). Returns null when unparseable or long expired.
+ */
+export function parseExpiryDate(expiry: string, now: Date = new Date()): Date | null {
+  if (!expiry || typeof expiry !== "string") return null;
+  const s = expiry.trim();
+  let d: Date | null = null;
+  let m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3,9})[-/ ](\d{2,4})$/);
+  if (m) {
+    const mon = MONTHS[m[2].slice(0, 3).toLowerCase()];
+    if (mon !== undefined) {
+      const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+      d = new Date(Date.UTC(year, mon, Number(m[1]), 10, 0, 0)); // 15:30 IST
+    }
+  }
+  if (!d) {
+    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/); // dd-mm-yyyy
+    if (m) d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 10, 0, 0));
+  }
+  if (!d) {
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); // ISO
+    if (m) d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 10, 0, 0));
+  }
+  if (!d || isNaN(d.getTime())) return null;
+  if (d.getTime() < now.getTime() - 43200000) return null; // expired >12h ago
+  return d;
+}
+
+/** Expiry → Black-Scholes time-to-expiry in years (min half a day). */
+export function parseExpiryToYears(expiry: string, now: Date = new Date()): number | null {
+  const d = parseExpiryDate(expiry, now);
+  if (!d) return null;
+  const days = (d.getTime() - now.getTime()) / 86400000;
+  return Math.max(days, 0.5) / 365;
+}
+
+/** ₹0.05 tick rounding for premium display/levels. */
+export const roundPremium = (x: number) => Math.round(x * 20) / 20;
+
+/**
+ * Rule set C: an option buy never risks more than 10% of its premium — the
+ * engines' ATR spot stops reprice to 30-50% of premium, which at lot
+ * granularity blows the ₹1,500 risk budget for every lot. Floor (tighten) the
+ * repriced stop at entry × 90%; targets untouched (R:R only improves).
+ */
+export const OPTION_STOP_PCT = 0.10;
+
+export type SpotToPremiumResult =
+  | { ok: true; entry: number; stopLoss: number; target1: number; target2: number; riskReward: number }
+  | { ok: false; reason: string };
+
+/**
+ * Convert an option setup from SPOT levels to PREMIUM levels: entry = live
+ * premium, SL/TP = Black-Scholes re-price of the spot SL/TP at the IV implied
+ * by that live premium (playbook: "repriced stop premium, not a flat guess"),
+ * stop floored (tightened) at entry × (1 − OPTION_STOP_PCT). Fails cleanly —
+ * never fabricates — when premium, strike, expiry or the IV round-trip is
+ * missing/invalid. Used by Today's Trade (stock/index F&O modes).
+ */
+export function spotToPremiumLevels(input: {
+  spotEntry: number;
+  spotStopLoss: number;
+  spotT1: number;
+  spotT2: number;
+  premium: number;
+  strike: number;
+  expiry: string;
+  isCall: boolean;
+  now?: Date;
+}): SpotToPremiumResult {
+  const { spotEntry, spotStopLoss, spotT1, spotT2, isCall } = input;
+  const now = input.now ?? new Date();
+  const premium = input.premium;
+  const strike = input.strike;
+
+  if (!(premium > 0)) return { ok: false, reason: "No live option premium from chain" };
+  if (!(strike > 0)) return { ok: false, reason: "No strike from chain" };
+  const tte = parseExpiryToYears(input.expiry, now);
+  if (tte === null) return { ok: false, reason: `Missing/unparseable expiry: ${input.expiry || "none"}` };
+
+  const iv = impliedVolFromPremium(premium, spotEntry, strike, tte, isCall);
+  if (iv === null) return { ok: false, reason: "IV inversion from live premium failed" };
+
+  const entry = roundPremium(premium);
+  const bsSl = roundPremium(bsPrice(spotStopLoss, strike, tte, iv, isCall));
+  const floor = roundPremium(entry * (1 - OPTION_STOP_PCT));
+  const stopLoss = Math.max(bsSl, floor);
+  const t1 = roundPremium(bsPrice(spotT1, strike, tte, iv, isCall));
+  const t2 = roundPremium(bsPrice(spotT2, strike, tte, iv, isCall));
+
+  if (!(stopLoss < entry)) return { ok: false, reason: "Repriced stop not below entry — invalid option setup" };
+  if (!(t1 > entry)) return { ok: false, reason: "Repriced target not above entry — invalid option setup" };
+
+  const risk = entry - stopLoss;
+  const reward = t1 - entry;
+  return {
+    ok: true,
+    entry,
+    stopLoss,
+    target1: t1,
+    target2: Math.max(t2, t1),
+    riskReward: risk > 0 ? Math.round((reward / risk) * 10) / 10 : 0,
+  };
+}

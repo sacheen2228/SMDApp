@@ -49,6 +49,11 @@ export async function GET(req: NextRequest) {
           premium: s.premium,
           strike: s.strike,
           expiry: s.expiry,
+          spotEntry: s.spotEntry,
+          spotStopLoss: s.spotStopLoss,
+          spotTarget1: s.spotTarget1,
+          spotTarget2: s.spotTarget2,
+          premiumNote: s.premiumNote,
         })),
       ...stockSignals
         .filter(s => s.direction !== "NO_TRADE")
@@ -77,6 +82,11 @@ export async function GET(req: NextRequest) {
           premium: s.premium,
           strike: s.strike,
           expiry: s.expiry,
+          spotEntry: s.spotEntry,
+          spotStopLoss: s.spotStopLoss,
+          spotTarget1: s.spotTarget1,
+          spotTarget2: s.spotTarget2,
+          premiumNote: s.premiumNote,
         })),
       ...swingSignals
         .filter(s => s.direction !== "NO_TRADE")

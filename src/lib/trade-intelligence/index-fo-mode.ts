@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { MarketIntelligenceContext } from "./market-context";
+import { spotToPremiumLevels } from "@/lib/greeks";
 
 // ── Types ──
 export type IndexTradeDirection = "LONG" | "SHORT" | "CALL" | "PUT" | "NO_TRADE";
@@ -38,6 +39,13 @@ export interface IndexFOSignal {
   strike: number;
   expiry: string;
   premium: number;
+  /** spot-space levels preserved when converted to premium space */
+  spotEntry?: number;
+  spotStopLoss?: number;
+  spotTarget1?: number;
+  spotTarget2?: number;
+  /** honest reason when premium-space conversion was not possible */
+  premiumNote?: string;
   maxRisk: string;
   invalidation: string;
 }
@@ -288,7 +296,7 @@ function scoreIndex(
     target2 = spot - atr * 3;
   }
 
-  const riskReward = direction !== "NO_TRADE"
+  let riskReward = direction !== "NO_TRADE"
     ? Math.abs(target1 - entry) / Math.abs(entry - stopLoss)
     : 0;
 
@@ -308,6 +316,39 @@ function scoreIndex(
     recommendedInstrument = `${symbol} Futures`;
   } else if (direction === "SHORT") {
     recommendedInstrument = `${symbol} Short Futures`;
+  }
+
+  // Option trades → PREMIUM space (playbook repricing) — same policy as
+  // stock-fo-mode; failure keeps honest spot levels + note.
+  let spotEntry: number | undefined;
+  let spotStopLoss: number | undefined;
+  let spotTarget1: number | undefined;
+  let spotTarget2: number | undefined;
+  let premiumNote: string | undefined;
+  if (direction === "CALL" || direction === "PUT") {
+    const conv = spotToPremiumLevels({
+      spotEntry: entry,
+      spotStopLoss: stopLoss,
+      spotT1: target1,
+      spotT2: target2,
+      premium,
+      strike,
+      expiry: chain?.expiry || "",
+      isCall: direction === "CALL",
+    });
+    if (conv.ok) {
+      spotEntry = entry;
+      spotStopLoss = stopLoss;
+      spotTarget1 = target1;
+      spotTarget2 = target2;
+      entry = conv.entry;
+      stopLoss = conv.stopLoss;
+      target1 = conv.target1;
+      target2 = conv.target2;
+      riskReward = conv.riskReward;
+    } else {
+      premiumNote = conv.reason;
+    }
   }
 
   return {
@@ -333,6 +374,11 @@ function scoreIndex(
     target1,
     target2,
     riskReward,
+    spotEntry,
+    spotStopLoss,
+    spotTarget1,
+    spotTarget2,
+    premiumNote,
     holdingPeriod: direction === "NO_TRADE" ? "N/A" : "Intraday to 2 days",
     recommendedInstrument,
     strike,
