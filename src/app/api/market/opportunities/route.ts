@@ -11,10 +11,33 @@ import {
   detectReversal,
   scanStock,
   rrFromLevels,
+  pickOptionLeg,
   TechnicalIndicators,
   ScanContext,
 } from "@/lib/technical-analysis";
 import { runIntradayScan } from "@/lib/intraday-scanner";
+import { getNSEEquityOptionChain } from "@/lib/nse-api";
+
+// ─── Option leg enrichment (live NSE equity chain) ─────────────────
+// Top rows of the card show the option strike to trade. Chain comes from
+// the LIVE NSE Equity v3 endpoint (Breeze data APIs currently 401
+// "Unauthorized User" — entitlement missing server-side; wire Breeze
+// back as fallback when that's restored). 90s cache incl. negative hits
+// so non-F&O symbols don't hammer NSE on every 60s poll. Failures are
+// silent → option: null → UI shows "chain unavailable" honestly.
+const OPTION_CHAIN_TTL_MS = 90_000;
+const optionChainCache = new Map<
+  string,
+  { ts: number; chain: Awaited<ReturnType<typeof getNSEEquityOptionChain>> }
+>();
+
+async function getCachedEquityChain(symbol: string) {
+  const hit = optionChainCache.get(symbol);
+  if (hit && Date.now() - hit.ts < OPTION_CHAIN_TTL_MS) return hit.chain;
+  const chain = await getNSEEquityOptionChain(symbol);
+  optionChainCache.set(symbol, { ts: Date.now(), chain });
+  return chain;
+}
 
 const REGIME_API = process.env.INTERNAL_API_BASE || "";
 
@@ -214,6 +237,23 @@ export async function GET(request: Request) {
     });
 
     const topOpps = opportunities.slice(0, Math.min(topN, 15));
+
+    // Attach the live option leg to the visible card rows (sequential —
+    // gentle on NSE; ~0.7s each cold, cached for 90s after that).
+    const optionBudget = Math.min(topOpps.length, 5);
+    for (let i = 0; i < optionBudget; i++) {
+      const opp: any = topOpps[i];
+      opp.option = null;
+      try {
+        const chain = await getCachedEquityChain(opp.symbol);
+        // Long structure = stop below entry → CE; below → PE
+        const direction = opp.sl < opp.entry ? "LONG" : "SHORT";
+        const leg = pickOptionLeg(chain?.rows, opp.entry, direction);
+        if (leg) opp.option = { ...leg, expiry: chain?.expiry };
+      } catch {
+        // optional enrichment — stay null
+      }
+    }
 
     return NextResponse.json({
       opportunities: topOpps,

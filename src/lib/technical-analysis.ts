@@ -104,6 +104,39 @@ export function rrFromLevels(entry: number, sl: number, tp1: number): number {
   return round2(Math.abs(tp1 - entry) / risk);
 }
 
+export type OptionLegDirection = "LONG" | "SHORT";
+
+/**
+ * Pick the tradeable option leg for an equity setup from LIVE chain rows
+ * (NSE Equity v3 or Breeze normalized: strike + per-side LTP).
+ * LONG → CE, SHORT → PE at the strike nearest the entry; never invents a
+ * strike (price-step tables disagree with the exchange) and returns null
+ * when there is no chain or no priced premium — the caller shows an honest
+ * "chain unavailable" instead of ₹0.
+ */
+export function pickOptionLeg(
+  rows: Array<{ strike: number; ceLtp?: number; peLtp?: number }> | null | undefined,
+  entry: number,
+  direction: OptionLegDirection
+): { strike: number; side: "CE" | "PE"; premium: number } | null {
+  if (!rows?.length || !(entry > 0) || Number.isNaN(entry)) return null;
+  let best: (typeof rows)[number] | null = null;
+  let bestDist = Infinity;
+  for (const r of rows) {
+    if (!(r?.strike > 0)) continue;
+    const d = Math.abs(r.strike - entry);
+    if (d < bestDist) {
+      bestDist = d;
+      best = r;
+    }
+  }
+  if (!best) return null;
+  const side = direction === "LONG" ? "CE" : "PE";
+  const premium = (side === "CE" ? best.ceLtp : best.peLtp) ?? 0;
+  if (!(premium > 0)) return null;
+  return { strike: best.strike, side, premium };
+}
+
 function pctChange(current: number, base: number): number {
   if (base === 0) return 0;
   return round2(((current - base) / base) * 100);

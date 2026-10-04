@@ -123,6 +123,24 @@ export function BestTradesNow() {
               </div>
             </div>
 
+            {/* Option strike — live NSE equity chain, nearest strike to entry */}
+            <div className="mb-2 text-[10px] bg-zinc-900/60 border border-zinc-700/40 rounded px-2 py-1.5 flex items-center justify-between gap-2">
+              {opp.option ? (
+                <>
+                  <span className="text-zinc-500">Option</span>
+                  <span className="font-bold text-white">
+                    BUY {opp.option.strike} {opp.option.side}
+                    <span className="text-zinc-300 font-normal"> @ ₹{opp.option.premium}</span>
+                  </span>
+                  <span className="text-[9px] text-zinc-500" title="Nearest chain strike to entry">
+                    Exp {opp.option.expiry || "—"}
+                  </span>
+                </>
+              ) : (
+                <span className="text-zinc-500">Option chain unavailable — cash setup</span>
+              )}
+            </div>
+
             {/* Reasons */}
             {opp.reasons?.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1">

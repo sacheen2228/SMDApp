@@ -35,6 +35,37 @@ export async function getNSEOptionChain(symbol: string) {
   }
 }
 
+// Equity (stock) option chain, normalized for strike pickers. Optional
+// enrichment (BestTradesNow option rows) — deliberately SILENT on failure:
+// reporting would spam session-health episodes for a non-critical extra, and
+// NSE failures here are cookie/block availability, never session expiry.
+export async function getNSEEquityOptionChain(symbol: string): Promise<{
+  rows: Array<{ strike: number; ceLtp?: number; peLtp?: number }>;
+  expiry?: string;
+  spot?: number;
+} | null> {
+  const client = getNSEClient();
+  try {
+    const data: any = await client.optionChainV3({ symbol, type: "Equity" });
+    const rec = data?.records || data;
+    const src = Array.isArray(rec?.data) ? rec.data : null;
+    if (!src?.length) return null;
+    const rows = src
+      .map((row: any) => ({
+        strike: parseFloat(row?.strikePrice),
+        ceLtp: row?.CE?.lastPrice != null ? parseFloat(row.CE.lastPrice) : undefined,
+        peLtp: row?.PE?.lastPrice != null ? parseFloat(row.PE.lastPrice) : undefined,
+      }))
+      .filter((r: any) => Number.isFinite(r.strike) && r.strike > 0);
+    if (!rows.length) return null;
+    const spot = parseFloat(rec?.underlyingValue);
+    const expiry = rec?.expiryDates?.[0];
+    return { rows, expiry: expiry || undefined, spot: Number.isFinite(spot) ? spot : undefined };
+  } catch {
+    return null;
+  }
+}
+
 export async function getNSEMarketStatus() {
   const client = getNSEClient();
   try {
