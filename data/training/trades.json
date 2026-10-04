@@ -18336,5 +18336,61 @@
       "mostActiveSentiment": "Neutral"
     },
     "createdAt": "2026-10-02T19:53:18.493Z"
+  },
+  {
+    "id": "guard-real-1791096934849",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "CLOSED",
+      "sessionTime": "12:25 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-10-04T06:55:34.864Z"
+    },
+    "createdAt": "2026-10-04T06:55:34.849Z"
+  },
+  {
+    "id": "guard-real-1791097672311",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "CLOSED",
+      "sessionTime": "12:37 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-10-04T07:07:52.321Z"
+    },
+    "createdAt": "2026-10-04T07:07:52.311Z"
   }
 ]

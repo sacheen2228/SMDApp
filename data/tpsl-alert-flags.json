@@ -7970,5 +7970,77 @@
   },
   "sell-1790970796543-24": {
     "SL_HIT": true
+  },
+  "e2e-1791096932301-2": {
+    "TP1_HIT": true
+  },
+  "e2e-1791096932401-4": {
+    "SL_HIT": true
+  },
+  "e2e-1791096932531-6": {
+    "TP1_HIT": true
+  },
+  "e2e-1791096932563-9": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "retry-mon-1791096932674-10": {
+    "TP1_HIT": true
+  },
+  "e2e-1791096932702-12": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "e2e-1791096932786-14": {
+    "TP1_HIT": true
+  },
+  "e2e-1791096932853-19": {
+    "TP1_HIT": true
+  },
+  "persist-1791096932887-22": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1791096932901-23": {
+    "TP1_HIT": true
+  },
+  "sell-1791096932920-24": {
+    "SL_HIT": true
+  },
+  "e2e-1791097669453-2": {
+    "TP1_HIT": true
+  },
+  "e2e-1791097669610-4": {
+    "SL_HIT": true
+  },
+  "e2e-1791097669738-6": {
+    "TP1_HIT": true
+  },
+  "e2e-1791097669775-9": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "retry-mon-1791097669909-10": {
+    "TP1_HIT": true
+  },
+  "e2e-1791097669952-12": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "e2e-1791097670076-14": {
+    "TP1_HIT": true
+  },
+  "e2e-1791097670173-19": {
+    "TP1_HIT": true
+  },
+  "persist-1791097670235-22": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1791097670249-23": {
+    "TP1_HIT": true
+  },
+  "sell-1791097670282-24": {
+    "SL_HIT": true
   }
 }
