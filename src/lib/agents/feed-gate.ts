@@ -44,21 +44,26 @@ function defaultIsMarketOpen(): boolean {
   }
 }
 
-export async function evaluateFeedGate(deps: FeedGateDeps = {}): Promise<FeedGateResult> {
+/**
+ * Unconditional one-shot probe of the Live Option Data Service — used by the
+ * feed gate (market hours) AND /api/health (always, so the sidecar's status
+ * is visible even after hours). Never consults the session clock.
+ */
+export interface LiveServiceProbe {
+  /** /health answered 2xx */
+  reachable: boolean;
+  overall?: string;
+  allLive: boolean;
+  latencyMs: number;
+  /** short honest failure note: "HTTP 503" | "timeout after 1500ms" | error message */
+  failNote?: string;
+}
+
+export async function probeLiveDataService(deps: FeedGateDeps = {}): Promise<LiveServiceProbe> {
   const url = deps.url ?? DEFAULT_URL;
-  const isMarketOpen = deps.isMarketOpen ?? defaultIsMarketOpen;
   const fetchImpl = deps.fetchImpl ?? ((u: string, init?: RequestInit) => fetch(u, init));
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  const marketOpen = isMarketOpen();
-  if (!marketOpen) {
-    return { marketOpen: false, checked: false, allLive: false, blocked: false };
-  }
-
-  let checked = false;
-  let allLive = false;
-  let overall: string | undefined;
-  let failNote = '';
+  const t0 = Date.now();
 
   try {
     const ctrl = new AbortController();
@@ -67,18 +72,40 @@ export async function evaluateFeedGate(deps: FeedGateDeps = {}): Promise<FeedGat
       const res = await fetchImpl(url, { signal: ctrl.signal });
       if (res.ok) {
         const body = (await res.json()) as { overall?: string; all_live?: boolean };
-        overall = typeof body.overall === 'string' ? body.overall : undefined;
-        allLive = body.all_live === true;
-        checked = true;
-      } else {
-        failNote = `HTTP ${res.status}`;
+        return {
+          reachable: true,
+          overall: typeof body.overall === 'string' ? body.overall : undefined,
+          allLive: body.all_live === true,
+          latencyMs: Date.now() - t0,
+        };
       }
+      return { reachable: false, allLive: false, latencyMs: Date.now() - t0, failNote: `HTTP ${res.status}` };
     } finally {
       clearTimeout(timer);
     }
   } catch (err: any) {
-    failNote = err?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : String(err?.message || err);
+    return {
+      reachable: false,
+      allLive: false,
+      latencyMs: Date.now() - t0,
+      failNote: err?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : String(err?.message || err),
+    };
   }
+}
+
+export async function evaluateFeedGate(deps: FeedGateDeps = {}): Promise<FeedGateResult> {
+  const url = deps.url ?? DEFAULT_URL;
+  const isMarketOpen = deps.isMarketOpen ?? defaultIsMarketOpen;
+
+  const marketOpen = isMarketOpen();
+  if (!marketOpen) {
+    return { marketOpen: false, checked: false, allLive: false, blocked: false };
+  }
+
+  const probe = await probeLiveDataService(deps);
+  const checked = probe.reachable;
+  const allLive = probe.allLive;
+  const overall = probe.overall;
 
   const blocked = !(checked && allLive);
   if (!blocked) {
@@ -87,7 +114,7 @@ export async function evaluateFeedGate(deps: FeedGateDeps = {}): Promise<FeedGat
 
   const reason = checked
     ? `Live feeds not all fresh during market hours (all_live=false, overall=${overall})`
-    : `Live data service unreachable at ${url} — ${failNote || 'no response'} (service not running?)`;
+    : `Live data service unreachable at ${url} — ${probe.failNote || 'no response'} (service not running?)`;
   return { marketOpen: true, checked, allLive, blocked, overall, reason };
 }
 

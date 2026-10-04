@@ -6,7 +6,7 @@
 // (after-hours behaviour stays exactly as before).
 
 import { describe, it, expect } from "bun:test";
-import { evaluateFeedGate, feedGateNoTrade, type FeedGateResult } from "@/lib/agents/feed-gate";
+import { evaluateFeedGate, feedGateNoTrade, probeLiveDataService, type FeedGateResult } from "@/lib/agents/feed-gate";
 
 function resp(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
@@ -73,6 +73,54 @@ describe("evaluateFeedGate", () => {
     });
     expect(gate.blocked).toBe(true);
     expect(gate.allLive).toBe(false);
+  });
+});
+
+describe("probeLiveDataService", () => {
+  it("reachable → maps overall/all_live + latency, NO market-hours gating", async () => {
+    let calls = 0;
+    const p = await probeLiveDataService({
+      fetchImpl: async () => { calls++; return resp({ overall: "CLOSED", all_live: false }); },
+    });
+    expect(calls).toBe(1); // probe must fetch even when overall says CLOSED
+    expect(p.reachable).toBe(true);
+    expect(p.overall).toBe("CLOSED");
+    expect(p.allLive).toBe(false);
+    expect(p.failNote).toBeUndefined();
+    expect(p.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("HTTP error → reachable false with HTTP note", async () => {
+    const p = await probeLiveDataService({
+      fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({}) }) as unknown as Response,
+    });
+    expect(p.reachable).toBe(false);
+    expect(p.failNote).toBe("HTTP 503");
+  });
+
+  it("network error → reachable false, error message captured", async () => {
+    const p = await probeLiveDataService({
+      fetchImpl: async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:8765"); },
+    });
+    expect(p.reachable).toBe(false);
+    expect(p.failNote).toContain("ECONNREFUSED");
+  });
+
+  it("abort/timeout → reachable false, note says timeout after the configured budget", async () => {
+    const p = await probeLiveDataService({
+      timeoutMs: 700,
+      fetchImpl: async () => { throw Object.assign(new Error("aborted"), { name: "AbortError" }); },
+    });
+    expect(p.reachable).toBe(false);
+    expect(p.failNote).toBe("timeout after 700ms");
+  });
+
+  it("non-JSON body → reachable false with the parse error", async () => {
+    const p = await probeLiveDataService({
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new Error("invalid json"); } }) as unknown as Response,
+    });
+    expect(p.reachable).toBe(false);
+    expect(p.failNote).toContain("invalid json");
   });
 });
 

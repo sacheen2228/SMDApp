@@ -6,6 +6,7 @@ import { brokerSessionManager } from "@/lib/broker-session-manager";
 import { marketDataManager } from "@/lib/market-data-manager";
 import { providerHealth } from "@/lib/provider-health";
 import { getSessionState as getBreezeState } from "@/lib/icici-breeze/auth";
+import { probeLiveDataService } from "@/lib/agents/feed-gate";
 
 export async function GET() {
   const checks: Record<string, { status: string; message?: string; latencyMs?: number }> = {};
@@ -69,6 +70,24 @@ export async function GET() {
 
   // WebSocket
   checks.websocket = { status: "OK", message: "Socket.io server" };
+
+  // ─── Live Data Service (feed-gate sidecar, 127.0.0.1:8765) ──────
+  // Unconditional probe — visible even after hours, unlike the market-hours gate.
+  try {
+    const probe = await probeLiveDataService();
+    checks.liveDataService = probe.reachable
+      ? {
+          status: "OK",
+          message: `overall=${probe.overall ?? "?"} all_live=${probe.allLive} (${probe.latencyMs}ms)`,
+          latencyMs: probe.latencyMs,
+        }
+      : {
+          status: "ERROR",
+          message: `127.0.0.1:8765 unreachable — ${probe.failNote || "no response"} (service not running?)`,
+        };
+  } catch (error: any) {
+    checks.liveDataService = { status: "ERROR", message: `probe failed: ${error?.message || error}` };
+  }
 
   // Memory usage
   const mem = process.memoryUsage();
