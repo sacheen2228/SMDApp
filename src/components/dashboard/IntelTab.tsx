@@ -81,7 +81,7 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
   regime: any; breadth: any; derivative: any; cas: any;
 }) {
   const regimeLabel = regime?.regime || "—";
-  const breadthLabel = breadth?.breadthScore > 60 ? "BULLISH" : breadth?.breadthScore < 40 ? "BEARISH" : "NEUTRAL";
+  const breadthLabel = breadth ? (breadth.label || (breadth.score > 60 ? "BULLISH" : breadth.score < 40 ? "BEARISH" : "NEUTRAL")) : "—";
   const derivLabel = derivative?.bias || "—";
   const casLabel = cas?.casScore > 60 ? "ACCUMULATION" : cas?.casScore < 40 ? "DISTRIBUTION" : "NEUTRAL";
 
@@ -125,7 +125,7 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
           </div>
           <div>
             <div className="text-muted-foreground uppercase">VIX</div>
-            <div className="font-bold">{fmt(regime?.vix, 0)}</div>
+            <div className="font-bold">{fmt(typeof regime?.vix === "object" ? regime?.vix?.value : regime?.vix, 0)}</div>
           </div>
           <div>
             <div className="text-muted-foreground uppercase">Index-Breadth</div>
@@ -294,12 +294,12 @@ function OISpurtPanel({ data }: { data: any }) {
 function DivergencePanel({ regime, breadth }: { regime: any; breadth: any }) {
   if (!regime || !breadth) return null;
 
-  const indexChange = regime.indexChanges?.NIFTY || 0;
+  const indexChange = regime?.niftyChange ?? 0;
   const adv = breadth.advances || 0;
   const dec = breadth.declines || 0;
   const isDivergent = (indexChange > 0.3 && dec > adv) || (indexChange < -0.3 && adv > dec);
 
-  if (!isDiergent) return null;
+  if (!isDivergent) return null;
 
   return (
     <Card className="border-red-500/30 bg-red-500/5">
@@ -327,7 +327,7 @@ function ResearchCommentary({ regime, breadth, derivative, oi, sector }: {
   const parts: string[] = [];
 
   const regimeLabel = regime?.regime || "NEUTRAL";
-  const breadthScore = breadth?.breadthScore || 50;
+  const breadthScore = breadth?.score || 50;
   const adv = breadth?.advances || 0;
   const dec = breadth?.declines || 0;
   const derivBias = derivative?.bias || "NEUTRAL";
@@ -414,40 +414,45 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
     staleTime: 120_000,
   });
 
-  const { data: oppData } = useQuery({
-    queryKey: ["opportunities-intel"],
-    queryFn: () => fetch("/api/market/opportunities?top=5").then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+  const { data: foData } = useQuery({
+    queryKey: ["intel-index-fo"],
+    queryFn: () => fetch("/api/market/heatmap/fo").then(r => r.json()),
+    refetchInterval: 120_000,
+    staleTime: 60_000,
   });
 
-  // Build derivative flow input from available data
-  const regime = regimeData?.data;
-  const breadth = breadthData?.data;
-  const sectors = sectorData?.data?.sectors || [];
+  // Response shapes (verified against live APIs): regime is top-level,
+  // breadth nests under `.breadth` with `score`/`label`, sectors are
+  // top-level, fii-dii is flat — `.data` on these returned undefined and
+  // silently defaulted the whole header to NEUTRAL/0.
+  const regime = regimeData;
+  const breadth = breadthData?.breadth;
+  const sectors = sectorData?.sectors || [];
   const oi = oiData?.data;
-  const fiiDii = fiiDiiData?.data;
+  const fiiDii = fiiDiiData;
+  const niftyFo = foData?.indexFO?.find((i: any) => i.symbol === "NIFTY");
+  const vixValue = typeof regime?.vix === "object" ? regime?.vix?.value : regime?.vix;
 
   const derivativeInput = {
     oiBias: (oi?.overallBias || "NEUTRAL") as any,
     oiSpurtScore: oi?.spurtScore || 0,
     longBuildupPct: oi?.totalSpurts > 0 ? (oi.longBuildupCount / oi.totalSpurts) * 100 : 50,
     shortBuildupPct: oi?.totalSpurts > 0 ? (oi.shortBuildupCount / oi.totalSpurts) * 100 : 50,
-    fiiNet: fiiDii?.latest?.fiiNetCash || 0,
-    diiNet: fiiDii?.latest?.diiNetCash || 0,
-    fiiBias: (fiiDii?.latest?.fiiNetCash > 0 ? "BULLISH" : fiiDii?.latest?.fiiNetCash < 0 ? "BEARISH" : "NEUTRAL") as any,
-    fiiOi: fiiDii?.latest?.fiiNetFutures || 0,
+    fiiNet: fiiDii?.fiiNet || 0,
+    diiNet: fiiDii?.diiNet || 0,
+    fiiBias: (fiiDii?.fiiNet > 0 ? "BULLISH" : fiiDii?.fiiNet < 0 ? "BEARISH" : "NEUTRAL") as any,
+    fiiOi: 0,
     clientOi: 0,
     participantBias: "NEUTRAL" as any,
-    pcr: regime?.pcr || 1,
+    pcr: niftyFo?.pcr,
     callWall: 0,
     putWall: 0,
-    maxPain: regime?.maxPain || 0,
+    maxPain: niftyFo?.maxPain || 0,
     gammaRegime: "NEUTRAL" as any,
     dealerGammaExposure: 0,
-    vix: regime?.vix || 15,
-    vixRegime: (regime?.vix > 25 ? "HIGH" : regime?.vix > 18 ? "NORMAL" : "LOW") as any,
-    breadthScore: breadth?.breadthScore || 50,
+    vix: vixValue || 15,
+    vixRegime: (vixValue > 25 ? "HIGH" : vixValue > 18 ? "NORMAL" : "LOW") as any,
+    breadthScore: breadth?.score || 50,
     advances: breadth?.advances || 0,
     declines: breadth?.declines || 0,
   };
@@ -457,8 +462,8 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
 
   // CAS score (from existing breadth/sector data)
   const casScore = breadth ? Math.round(
-    (breadth.breadthScore || 50) * 0.5 +
-    ((breadth.volumeRatio || 1) > 1.2 ? 70 : 50) * 0.15 +
+    (breadth.score || 50) * 0.5 +
+    ((breadth.volRatio || 1) > 1.2 ? 70 : 50) * 0.15 +
     (sectors.length > 0 ? sectors.filter((s: any) => (s.avgChangePct || 0) > 0).length / sectors.length * 100 : 50) * 0.15 +
     (regime?.regime?.includes("BULL") ? 70 : regime?.regime?.includes("BEAR") ? 30 : 50) * 0.2
   ) : 50;

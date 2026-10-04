@@ -79,7 +79,7 @@ export function MarketRegimePanel() {
           <div className="mt-3 flex items-center justify-between text-xs">
             <span className="text-zinc-500">VIX</span>
             <span className={`font-bold ${data.vix.value > 20 ? "text-red-400" : data.vix.value > 15 ? "text-yellow-400" : "text-emerald-400"}`}>
-              {data.vix.value} ({data.vix.change >= 0 ? "+" : ""}{data.vix.change})
+              {data.vix.value} ({data.vix.change >= 0 ? "+" : ""}{data.vix.change}%)
             </span>
           </div>
         )}

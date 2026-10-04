@@ -10,6 +10,7 @@ import {
   detectBreakdown,
   detectReversal,
   scanStock,
+  rrFromLevels,
   TechnicalIndicators,
   ScanContext,
 } from "@/lib/technical-analysis";
@@ -168,6 +169,11 @@ export async function GET(request: Request) {
         source = "TECHNICAL_ANALYSIS+INTRADAY";
       }
 
+      const entry = scan.bestSetup?.entryZone?.low || s.ltp;
+      const sl = scan.bestSetup?.stopLoss || s.ltp * 0.985;
+      const tp1 = scan.bestSetup?.targets?.[0] || s.ltp * 1.03;
+      const tp2 = scan.bestSetup?.targets?.[1] || s.ltp * 1.05;
+
       return {
         symbol: s.symbol,
         name: s.name,
@@ -184,11 +190,13 @@ export async function GET(request: Request) {
           scan.bestSetup?.confidence >= 45 ? "MEDIUM" : "LOW",
         reasons: scan.bestSetup?.confirmations || [],
         risks: scan.bestSetup?.warnings || [],
-        entry: scan.bestSetup?.entryZone?.low || s.ltp,
-        sl: scan.bestSetup?.stopLoss || s.ltp * 0.985,
-        tp1: scan.bestSetup?.targets?.[0] || s.ltp * 1.03,
-        tp2: scan.bestSetup?.targets?.[1] || s.ltp * 1.05,
-        rr: scan.bestSetup?.riskReward || 0,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        // Display-truth: same numbers the dashboard row shows (never the
+        // scanner's internal entry — those disagreed on screen)
+        rr: rrFromLevels(entry, sl, tp1),
         falseBreakoutRisk: scan.bestSetup ? "LOW" : "N/A",
         source,
         intradayGrade: intraday?.grade || null,

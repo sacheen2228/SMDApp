@@ -90,6 +90,20 @@ export interface ScanContext {
 function round2(n: number): number { return Math.round(n * 100) / 100; }
 function round1(n: number): number { return Math.round(n * 10) / 10; }
 
+/**
+ * R:R from the SAME entry/SL/TP numbers a dashboard row displays.
+ * The opportunities API used to emit the scanner's internal riskReward
+ * alongside entry/sl/tp1 built from a different entry (entryZone.low) —
+ * displayed levels and displayed R:R disagreed. Direction-agnostic (abs),
+ * 0 on degenerate inputs (never NaN/Infinity).
+ */
+export function rrFromLevels(entry: number, sl: number, tp1: number): number {
+  if (!(entry > 0) || !(sl > 0) || !(tp1 > 0)) return 0;
+  const risk = Math.abs(entry - sl);
+  if (!(risk > 0)) return 0;
+  return round2(Math.abs(tp1 - entry) / risk);
+}
+
 function pctChange(current: number, base: number): number {
   if (base === 0) return 0;
   return round2(((current - base) / base) * 100);

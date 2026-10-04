@@ -28,10 +28,13 @@ export function CASPanel() {
   });
 
   // Derive CAS signal from available data
-  const breadthScore = breadth?.breadthScore || 50;
-  const advances = breadth?.advances || 0;
-  const declines = breadth?.declines || 0;
-  const volRatio = breadth?.volRatio || 1;
+  // Breadth API shape: { breadth: { score, advances, declines, volRatio, ... } }
+  // (reading `.breadthScore` off the envelope always defaulted to 50/0/0.)
+  const b = breadth?.breadth;
+  const breadthScore = b?.score || 50;
+  const advances = b?.advances || 0;
+  const declines = b?.declines || 0;
+  const volRatio = b?.volRatio || 1;
   const sectorStrength = sectors?.sectorStrengthScore || 50;
   const regimeData = regime?.regime || "NEUTRAL";
 
@@ -57,9 +60,10 @@ export function CASPanel() {
     casScore >= 45 ? "bg-yellow-500/20 text-yellow-400" : casScore >= 30 ? "bg-orange-500/20 text-orange-400" :
     "bg-red-600";
 
-  // Price vs CAS matrix
+  // Price vs CAS matrix (sectors API field is avgChangePct, not changePct —
+  // reading changePct gave NaN/undefined: matrix stuck on FLAT, flows "%")
   const avgChange = sectors?.sectors?.length
-    ? sectors.sectors.reduce((sum: number, s: any) => sum + s.changePct, 0) / sectors.sectors.length
+    ? sectors.sectors.reduce((sum: number, s: any) => sum + (s.avgChangePct || 0), 0) / sectors.sectors.length
     : 0;
   const priceUp = avgChange > 0.2;
   const priceDown = avgChange < -0.2;
@@ -77,9 +81,9 @@ export function CASPanel() {
   // Sector accumulation/distribution
   const sectorSignals = (sectors?.sectors || []).map((s: any) => ({
     name: s.name,
-    signal: s.changePct > 0.5 ? "ACCUMULATION" : s.changePct < -0.5 ? "DISTRIBUTION" : "NEUTRAL",
-    changePct: s.changePct,
-    color: s.changePct > 0.5 ? "text-emerald-400" : s.changePct < -0.5 ? "text-red-400" : "text-zinc-400",
+    signal: s.avgChangePct > 0.5 ? "ACCUMULATION" : s.avgChangePct < -0.5 ? "DISTRIBUTION" : "NEUTRAL",
+    changePct: s.avgChangePct,
+    color: s.avgChangePct > 0.5 ? "text-emerald-400" : s.avgChangePct < -0.5 ? "text-red-400" : "text-zinc-400",
   }));
 
   return (

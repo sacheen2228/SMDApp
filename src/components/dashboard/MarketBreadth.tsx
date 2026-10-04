@@ -179,7 +179,7 @@ export function MarketBreadth() {
         <div className="mt-3 grid grid-cols-2 gap-2">
           <div>
             <div className="text-[10px] text-zinc-500 mb-1 flex items-center gap-1"><TrendingUp className="h-3 w-3" /> TOP GAINERS</div>
-            {b.topGainers?.slice(0, 3).map((s: any) => (
+            {data.topGainers?.slice(0, 3).map((s: any) => (
               <div key={s.symbol} className="flex justify-between text-[10px]">
                 <span className="text-zinc-400">{s.symbol}</span>
                 <span className="text-emerald-400">+{s.changePct}%</span>
@@ -188,7 +188,7 @@ export function MarketBreadth() {
           </div>
           <div>
             <div className="text-[10px] text-zinc-500 mb-1 flex items-center gap-1"><TrendingDown className="h-3 w-3" /> TOP LOSERS</div>
-            {b.topLosers?.slice(0, 3).map((s: any) => (
+            {data.topLosers?.slice(0, 3).map((s: any) => (
               <div key={s.symbol} className="flex justify-between text-[10px]">
                 <span className="text-zinc-400">{s.symbol}</span>
                 <span className="text-red-400">{s.changePct}%</span>

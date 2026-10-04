@@ -731,30 +731,30 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
               <div key={idx.symbol} className="bg-zinc-800/50 border border-zinc-700 rounded p-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] font-bold text-white">{idx.symbol}</span>
-                  <span className="text-[9px] text-zinc-400">Spot: ₹{idx.spot?.toLocaleString()}</span>
+                  <span className="text-[9px] text-zinc-400">Spot: ₹{idx.spot ? idx.spot.toLocaleString() : '—'}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-1 text-[8px]">
                   <div>
                     <span className="text-zinc-500">PCR</span>
                     <span className={`ml-1 font-bold ${idx.pcr > 1 ? 'text-emerald-400' : idx.pcr < 0.8 ? 'text-red-400' : 'text-yellow-400'}`}>
-                      {idx.pcr?.toFixed(2) || '—'}
+                      {idx.pcr ? idx.pcr.toFixed(2) : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Max Pain</span>
-                    <span className="ml-1 font-bold text-white">{idx.maxPain?.toLocaleString() || '—'}</span>
+                    <span className="ml-1 font-bold text-white">{idx.maxPain ? idx.maxPain.toLocaleString() : '—'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Call OI</span>
-                    <span className="ml-1 font-bold text-red-400">{(idx.totalCallOI / 1e6)?.toFixed(1) || '—'}M</span>
+                    <span className="ml-1 font-bold text-red-400">{idx.totalCallOI ? `${(idx.totalCallOI / 1e6).toFixed(1)}M` : '—'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Put OI</span>
-                    <span className="ml-1 font-bold text-emerald-400">{(idx.totalPutOI / 1e6)?.toFixed(1) || '—'}M</span>
+                    <span className="ml-1 font-bold text-emerald-400">{idx.totalPutOI ? `${(idx.totalPutOI / 1e6).toFixed(1)}M` : '—'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Futures</span>
-                    <span className="ml-1 font-bold text-white">₹{idx.futuresLtp?.toLocaleString() || '—'}</span>
+                    <span className="ml-1 font-bold text-white">₹{idx.futuresLtp ? idx.futuresLtp.toLocaleString() : '—'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">Basis</span>
@@ -764,7 +764,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   </div>
                   <div>
                     <span className="text-zinc-500">Fut OI</span>
-                    <span className="ml-1 font-bold text-white">{(idx.futuresOI / 1e6)?.toFixed(1) || '—'}M</span>
+                    <span className="ml-1 font-bold text-white">{idx.futuresOI ? `${(idx.futuresOI / 1e6).toFixed(1)}M` : '—'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500">OI Chg</span>
@@ -774,7 +774,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                   </div>
                 </div>
                 <div className="mt-1 text-[7px] text-zinc-500">
-                  Expiry: {idx.expiry || '—'} | Call Wall: {idx.callWall?.toLocaleString() || '—'} | Put Floor: {idx.putFloor?.toLocaleString() || '—'}
+                  Expiry: {idx.expiry || '—'} | Call Wall: {idx.callWall ? idx.callWall.toLocaleString() : '—'} | Put Floor: {idx.putFloor ? idx.putFloor.toLocaleString() : '—'}
                 </div>
               </div>
             ))}

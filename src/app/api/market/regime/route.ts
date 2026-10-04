@@ -224,7 +224,10 @@ export async function GET() {
             const meta = data?.chart?.result?.[0]?.meta;
             if (!meta?.regularMarketPrice) return null;
             const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-            return { value: parseFloat(meta.regularMarketPrice.toFixed(2)), change: parseFloat((meta.regularMarketPrice - prev).toFixed(2)) };
+            // Same unit as getNSEIndiaVIX: PERCENT change (this used to
+            // return points — dashboards mixed +7.04% NSE with +0.85 Yahoo)
+            const changePct = prev > 0 ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0;
+            return { value: parseFloat(meta.regularMarketPrice.toFixed(2)), change: parseFloat(changePct.toFixed(2)) };
           },
         }];
         const { data } = await fetchWithFallback(vixSources);
