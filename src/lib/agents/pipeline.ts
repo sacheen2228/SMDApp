@@ -10,6 +10,8 @@ import type {
 import { runAllAgents } from './registry-30';
 import { analyzeCrossConfluence } from './cross-confluence';
 import { runGrokSupervisor, getGrokBackstopFireCount } from './supervisor';
+import { evaluateFeedGate, feedGateNoTrade, type FeedGateResult } from './feed-gate';
+import { evaluatePlaybookCheck, playbookNoTrade, type PlaybookCheckResult } from './playbook-check';
 import { runOptionEngine, type OptionEngineDecision } from './option-engine';
 import { runCashFuturesEngine, type CashFuturesDecision } from './cash-futures-engine';
 import {
@@ -33,6 +35,14 @@ export interface PipelineResult {
   agentOutputs: AgentResearchOutput[];
   crossConfluence: CrossConfluenceOutput;
   grokDecision: GrokDecision;
+
+  // Playbook live-data gate — market-hours all_live check against
+  // live-data-service (127.0.0.1:8765). blocked=true → NO_TRADE, no levels.
+  feedGate: FeedGateResult;
+
+  // Playbook 8-item pre-trade checklist — post-engine conjunction gate over
+  // existing agent evidence (no re-scoring). pass=false → NO_TRADE.
+  playbookCheck: PlaybookCheckResult;
 
   // Decision phase
   engineDecision: OptionEngineDecision | CashFuturesDecision;
@@ -85,11 +95,21 @@ export async function runFullPipeline(
     /* shadow must never break pipeline */
   }
 
+  // PHASE 3.5: Playbook live-data gate — during market hours the engines
+  // only run when live-data-service reports all_live=true (fresh spot/VIX +
+  // every chain). Blocked → honest NO_TRADE, no levels produced.
+  const feedGate = await evaluateFeedGate();
+  if (feedGate.blocked) {
+    console.warn(`[Pipeline] Feed gate BLOCKED for ${symbol}: ${feedGate.reason}`);
+  }
+
   // PHASE 4: Engine routing
   let engineDecision: OptionEngineDecision | CashFuturesDecision;
   let engine: 'OPTION' | 'CASH_FUTURES' | 'NONE' = 'NONE';
 
-  if (grokDecision.selectedEngine === 'OPTION') {
+  if (feedGate.blocked) {
+    engineDecision = feedGateNoTrade(feedGate) as OptionEngineDecision | CashFuturesDecision;
+  } else if (grokDecision.selectedEngine === 'OPTION') {
     engineDecision = await runOptionEngine(symbol, grokDecision, agentOutputs);
     engine = 'OPTION';
   } else if (grokDecision.selectedEngine === 'CASH_FUTURES') {
@@ -103,6 +123,19 @@ export async function runFullPipeline(
       confidence: 0,
       grade: 'F',
     };
+  }
+
+  // PHASE 4.5: Playbook 8-item checklist — conjunction gate over existing
+  // agent evidence + the engine candidate. Any "no" → NO_TRADE (playbook:
+  // any no = skip). Research outputs are never gated; only trade levels.
+  const playbookCheck = evaluatePlaybookCheck(
+    (engineDecision as { candidate?: any }).candidate,
+    agentOutputs,
+    { participantOI: ctx.participantOI },
+  );
+  if (playbookCheck.checked && !playbookCheck.pass) {
+    console.warn(`[Pipeline] Playbook checklist FAILED for ${symbol}: items ${playbookCheck.failedItems.join(', ')}`);
+    engineDecision = playbookNoTrade(playbookCheck) as OptionEngineDecision | CashFuturesDecision;
   }
 
   // Second shadow sample: final engine action (still non-blocking)
@@ -247,6 +280,8 @@ export async function runFullPipeline(
     agentOutputs,
     crossConfluence,
     grokDecision,
+    feedGate,
+    playbookCheck,
     engineDecision,
     engine,
     tradeRegistered,
