@@ -1,6 +1,6 @@
 ---
 name: option-buying-playbook
-description: "Playbook for buying index and stock options (Nifty, Bank Nifty, stocks; NSE/India): support/resistance, option-chain OI and change in OI, PCR, Greeks, India VIX, ATM/ITM/OTM strike selection with option math (expected move, Black-Scholes repricing, break-even, lot sizing), hedging a CE/PE buy (debit spreads, profit lock-in, portfolio hedges), market structure (BOS, CHoCH), stop-loss placement, and FII/DII/Pro/Client data. Use whenever the user asks how to trade or buy calls/puts, read an option chain or OI, interpret Greeks or IV, pick a strike or expiry, calculate expected move, break-even, premium stop or lots, hedge or reduce loss on an option position, find support/resistance, see who the buyers and writers are, read FII/DII or participant OI, build a trade plan or journal, or score a setup, even without the word playbook. Also use when the user pastes option chain or participant data to analyse."
+description: "Playbook for buying index and stock options (Nifty, Bank Nifty, stocks; NSE/India): support/resistance, option-chain OI and change in OI, PCR, Greeks, India VIX, ATM/ITM/OTM strike selection with option math (expected move, Black-Scholes repricing, break-even, lot sizing), hedging a CE/PE buy (debit spreads, profit lock-in, portfolio hedges), market structure (BOS, CHoCH), stop-loss placement, and FII/DII/Pro/Client data. Use whenever the user asks how to trade or buy calls/puts, read an option chain or OI, interpret Greeks or IV, pick a strike or expiry, calculate expected move, break-even, premium stop or lots, hedge or reduce loss on an option position, find support/resistance, see who the buyers and writers are, read FII/DII or participant OI, build a trade plan or journal, or score a setup, even without the word playbook. Also use when the user pastes option chain or participant data, or has a live data feed to verify."
 ---
 
 # Option Buying Playbook (NSE / India)
@@ -34,6 +34,17 @@ When the user wants a strike (or asks "ATM, ITM or OTM?"), run `python scripts/s
 ## Hedging: reduce loss with defined risk
 
 A long CE/PE already has capped loss, so hedging means lowering theta, vega and break-even distance at the cost of capped profit. Say this plainly; never present a hedge as free or as a substitute for a stop. When VIX is elevated, an event is near, expiry is within about 1-4 days, or the risk budget cannot fit one naked lot, run `python scripts/hedge_calculator.py spread ...` to compare the naked option with debit spreads (default: short strike at or beyond the target) and report net debit, hard max loss, R:R, lots and what upside is given up. For profit protection, for portfolio hedges (`hedge_calculator.py portfolio`), butterflies, calendars and event structures, read `references/hedging-strategies.md`. Always warn: buy leg first then sell leg, exit both legs together, never leave a short leg naked, and verify margin, costs and lot size with the broker.
+
+## Live data: verify before analysing
+
+If the user runs the Live Option Data Service (http://127.0.0.1:8765, or the file live_data.json), read it instead of asking for numbers: `GET /selector?symbol=NIFTY&direction=call&target=T&stop=S` returns spot, VIX, days to expiry, live premiums and a ready `strike_selector.py` command; `GET /snapshot` returns everything (spot, VIX, chains with OI/change in OI/PCR/walls/max pain, FII/DII, participant OI).
+Freshness rules (strict):
+- Give trade levels only when `meta.all_live` is true (or `/selector` returns `ok: true`). Always state the data's exchange timestamp and age in the answer.
+- `CLOSED`: say the market is closed; offer last-close analysis only (`allow_closed=1`) and label it as such.
+- `STALE`, `UNVERIFIED`, `NO_DATA`, `ERROR`: say the data is not live, name the feed, its age and error, and do not produce entries, stops or targets from it; ask the user to check the dashboard.
+- `DEMO`: never use for decisions.
+- FII/DII and participant OI are end-of-day bias only; use them when status is `EOD_OK`, and say so if `EOD_OLD`.
+- Never invent or reuse remembered prices; if no service is running, ask for current spot, VIX and chain premiums.
 
 ## How to respond to common requests
 

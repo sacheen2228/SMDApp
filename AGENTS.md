@@ -81,6 +81,7 @@ bun run dev        # starts on :3000
 | `src/components/terminal/EnhancedOptionChain.tsx` | Enhanced Option Chain (Greeks, IV skew, OI bars, click-to-trade, sorting) |
 | `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
 | `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |
+| `live-data-service/` | Standalone NSE Live Option Data Service (pure Python, port 8765) — spot/VIX/chain/PCR/FII feeds with read-time LIVE/STALE/CLOSED status; `live_data.json` + `/snapshot` + `/selector`; used by the option-buying-playbook skill (chain calls NSE `option-chain-v3`, not the retired `option-chain-indices`) |
 | `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
 | `src/lib/trade-audit-client.ts` | Client lib for the audit engine (record/price/close/stats/trades) |
 | `src/lib/audit-recorders.ts` | Records Terminal-tab Zero Hero + Smart Money candidates into the audit engine |
