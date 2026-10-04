@@ -8042,5 +8042,113 @@
   },
   "sell-1791097670282-24": {
     "SL_HIT": true
+  },
+  "e2e-1791099443111-2": {
+    "TP1_HIT": true
+  },
+  "e2e-1791099444457-4": {
+    "SL_HIT": true
+  },
+  "e2e-1791099444748-6": {
+    "TP1_HIT": true
+  },
+  "e2e-1791099445074-9": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "retry-mon-1791099445707-10": {
+    "TP1_HIT": true
+  },
+  "e2e-1791099445864-12": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "e2e-1791099446323-14": {
+    "TP1_HIT": true
+  },
+  "e2e-1791099446614-19": {
+    "TP1_HIT": true
+  },
+  "persist-1791099446894-22": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1791099446945-23": {
+    "TP1_HIT": true
+  },
+  "sell-1791099447029-24": {
+    "SL_HIT": true
+  },
+  "e2e-1791104864246-2": {
+    "TP1_HIT": true
+  },
+  "e2e-1791104864414-4": {
+    "SL_HIT": true
+  },
+  "e2e-1791104864629-6": {
+    "TP1_HIT": true
+  },
+  "e2e-1791104864765-9": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "retry-mon-1791104865067-10": {
+    "TP1_HIT": true
+  },
+  "e2e-1791104865122-12": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "e2e-1791104865454-14": {
+    "TP1_HIT": true
+  },
+  "e2e-1791104865618-19": {
+    "TP1_HIT": true
+  },
+  "persist-1791104865793-22": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1791104865832-23": {
+    "TP1_HIT": true
+  },
+  "sell-1791104865889-24": {
+    "SL_HIT": true
+  },
+  "e2e-1791105616949-2": {
+    "TP1_HIT": true
+  },
+  "e2e-1791105617057-4": {
+    "SL_HIT": true
+  },
+  "e2e-1791105617192-6": {
+    "TP1_HIT": true
+  },
+  "e2e-1791105617287-9": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "retry-mon-1791105617543-10": {
+    "TP1_HIT": true
+  },
+  "e2e-1791105617573-12": {
+    "TP1_HIT": true,
+    "SL_HIT": true
+  },
+  "e2e-1791105617788-14": {
+    "TP1_HIT": true
+  },
+  "e2e-1791105617919-19": {
+    "TP1_HIT": true
+  },
+  "persist-1791105618046-22": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1791105618064-23": {
+    "TP1_HIT": true
+  },
+  "sell-1791105618098-24": {
+    "SL_HIT": true
   }
 }
