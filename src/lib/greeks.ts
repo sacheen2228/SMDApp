@@ -207,9 +207,13 @@ export type SpotToPremiumResult =
  * Convert an option setup from SPOT levels to PREMIUM levels: entry = live
  * premium, SL/TP = Black-Scholes re-price of the spot SL/TP at the IV implied
  * by that live premium (playbook: "repriced stop premium, not a flat guess"),
- * stop floored (tightened) at entry × (1 − OPTION_STOP_PCT). Fails cleanly —
- * never fabricates — when premium, strike, expiry or the IV round-trip is
- * missing/invalid. Used by Today's Trade (stock/index F&O modes).
+ * stop floored (tightened) at entry × (1 − OPTION_STOP_PCT) — Rule Set C /
+ * Today's Trade. Pass `applyStopFloor: false` for the plain skill-faithful
+ * conversion (stop lives on the underlying, converts via repricing — used by
+ * BestTradesNow; the cap there exits before the underlying stop and inflates
+ * option R:R). Fails cleanly — never fabricates — when premium, strike,
+ * expiry or the IV round-trip is missing/invalid, or the repriced stop ≤ 0.
+ * Used by Today's Trade (stock/index F&O modes) and the opportunities API.
  */
 export function spotToPremiumLevels(input: {
   spotEntry: number;
@@ -221,6 +225,8 @@ export function spotToPremiumLevels(input: {
   expiry: string;
   isCall: boolean;
   now?: Date;
+  /** default true = Rule Set C 10% cap; false = pure underlying-converted stop */
+  applyStopFloor?: boolean;
 }): SpotToPremiumResult {
   const { spotEntry, spotStopLoss, spotT1, spotT2, isCall } = input;
   const now = input.now ?? new Date();
@@ -237,11 +243,14 @@ export function spotToPremiumLevels(input: {
 
   const entry = roundPremium(premium);
   const bsSl = roundPremium(bsPrice(spotStopLoss, strike, tte, iv, isCall));
-  const floor = roundPremium(entry * (1 - OPTION_STOP_PCT));
+  const floor = input.applyStopFloor === false
+    ? Number.NEGATIVE_INFINITY
+    : roundPremium(entry * (1 - OPTION_STOP_PCT));
   const stopLoss = Math.max(bsSl, floor);
   const t1 = roundPremium(bsPrice(spotT1, strike, tte, iv, isCall));
   const t2 = roundPremium(bsPrice(spotT2, strike, tte, iv, isCall));
 
+  if (!(stopLoss > 0)) return { ok: false, reason: "Repriced stop ≤ 0 — no tradeable premium stop" };
   if (!(stopLoss < entry)) return { ok: false, reason: "Repriced stop not below entry — invalid option setup" };
   if (!(t1 > entry)) return { ok: false, reason: "Repriced target not above entry — invalid option setup" };
 

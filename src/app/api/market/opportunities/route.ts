@@ -17,6 +17,7 @@ import {
 } from "@/lib/technical-analysis";
 import { runIntradayScan } from "@/lib/intraday-scanner";
 import { getNSEEquityOptionChain } from "@/lib/nse-api";
+import { spotToPremiumLevels } from "@/lib/greeks";
 
 // ─── Option leg enrichment (live NSE equity chain) ─────────────────
 // Top rows of the card show the option strike to trade. Chain comes from
@@ -249,7 +250,31 @@ export async function GET(request: Request) {
         // Long structure = stop below entry → CE; below → PE
         const direction = opp.sl < opp.entry ? "LONG" : "SHORT";
         const leg = pickOptionLeg(chain?.rows, opp.entry, direction);
-        if (leg) opp.option = { ...leg, expiry: chain?.expiry };
+        if (leg) {
+          opp.option = { ...leg, expiry: chain?.expiry };
+          // Playbook: stop lives on the underlying, then re-priced to
+          // premium space (IV inversion + BS re-price). applyStopFloor:false
+          // = skill-faithful conversion — the Rule Set C 10% cap (Today's
+          // Trade) exits before the underlying stop and inflates R:R.
+          // Absent on failure → card shows strike only, never fake levels.
+          const levels = spotToPremiumLevels({
+            spotEntry: opp.entry,
+            spotStopLoss: opp.sl,
+            spotT1: opp.tp1,
+            spotT2: opp.tp2,
+            premium: leg.premium,
+            strike: leg.strike,
+            expiry: chain?.expiry || "",
+            isCall: leg.side === "CE",
+            applyStopFloor: false,
+          });
+          if (levels.ok) {
+            opp.option.sl = levels.stopLoss;
+            opp.option.tp1 = levels.target1;
+            opp.option.tp2 = levels.target2;
+            opp.option.rr = levels.riskReward;
+          }
+        }
       } catch {
         // optional enrichment — stay null
       }

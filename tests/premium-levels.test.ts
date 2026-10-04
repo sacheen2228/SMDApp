@@ -112,4 +112,38 @@ describe("spotToPremiumLevels", () => {
     if (r.ok) return;
     expect(r.reason).toMatch(/stop|target|invalid/i);
   });
+
+  // ── Card mode: skill-faithful conversion (no Rule Set C 10% cap) ──
+  // The playbook stop lives on the underlying and converts to premium
+  // via repricing; the 10% floor (Today's Trade / Rule Set C) exits long
+  // before the underlying stop and inflates option R:R to fiction.
+
+  it("applyStopFloor:false → pure underlying-converted stop (floor bypassed)", () => {
+    const common = {
+      spotEntry: 178, spotStopLoss: 182, spotT1: 172.66, spotT2: 169.99,
+      premium: 8.4, strike: 177.5, expiry: EXPIRY, isCall: false, now: NOW,
+    };
+    const floored = spotToPremiumLevels(common);
+    const pure = spotToPremiumLevels({ ...common, applyStopFloor: false });
+    expect(floored.ok).toBe(true);
+    expect(pure.ok).toBe(true);
+    if (!floored.ok || !pure.ok) return;
+    const cap = Math.round(common.premium * (1 - OPTION_STOP_PCT) * 20) / 20; // 7.55
+    // default still applies the cap (existing Rule Set C behavior);
+    // card mode sits BELOW the cap — the delta-converted stop
+    expect(floored.stopLoss).toBeGreaterThanOrEqual(cap - 0.01);
+    expect(pure.stopLoss).toBeLessThan(cap);
+    expect(pure.stopLoss).toBeLessThan(pure.entry);
+    // wider risk → honest (smaller) option R:R, no 1:11 fiction
+    expect(pure.riskReward).toBeLessThan(floored.riskReward);
+  });
+
+  it("applyStopFloor:false with repriced stop ≤ 0 → honest fail, never ₹0 SL", () => {
+    const r = spotToPremiumLevels({
+      spotEntry: 100, spotStopLoss: 30, spotT1: 110, spotT2: 115,
+      premium: 5, strike: 100, expiry: EXPIRY, isCall: true, now: NOW,
+      applyStopFloor: false,
+    });
+    expect(r.ok).toBe(false);
+  });
 });

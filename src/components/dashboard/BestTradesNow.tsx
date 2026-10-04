@@ -123,18 +123,43 @@ export function BestTradesNow() {
               </div>
             </div>
 
-            {/* Option strike — live NSE equity chain, nearest strike to entry */}
-            <div className="mb-2 text-[10px] bg-zinc-900/60 border border-zinc-700/40 rounded px-2 py-1.5 flex items-center justify-between gap-2">
+            {/* Option leg — live NSE equity chain; SL/TP re-priced in
+                premium space (playbook: stop on underlying → repriced) */}
+            <div className="mb-2 text-[10px] bg-zinc-900/60 border border-zinc-700/40 rounded px-2 py-1.5">
               {opp.option ? (
                 <>
-                  <span className="text-zinc-500">Option</span>
-                  <span className="font-bold text-white">
-                    BUY {opp.option.strike} {opp.option.side}
-                    <span className="text-zinc-300 font-normal"> @ ₹{opp.option.premium}</span>
-                  </span>
-                  <span className="text-[9px] text-zinc-500" title="Nearest chain strike to entry">
-                    Exp {opp.option.expiry || "—"}
-                  </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500">Option</span>
+                    <span className="font-bold text-white">
+                      BUY {opp.option.strike} {opp.option.side}
+                      <span className="text-zinc-300 font-normal"> @ ₹{opp.option.premium}</span>
+                    </span>
+                    <span className="text-[9px] text-zinc-500" title="Nearest chain strike to entry">
+                      Exp {opp.option.expiry || "—"}
+                    </span>
+                  </div>
+                  {opp.option.sl != null && (
+                    <div className="grid grid-cols-4 gap-2 mt-1.5 border-t border-zinc-800 pt-1.5">
+                      <div>
+                        <span className="text-zinc-500">Opt SL</span>
+                        <div className="font-bold text-red-400">₹{opp.option.sl}</div>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Opt TP1</span>
+                        <div className="font-bold text-emerald-400">₹{opp.option.tp1}</div>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Opt TP2</span>
+                        <div className="font-bold text-emerald-400">₹{opp.option.tp2}</div>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Opt R:R</span>
+                        <div className={`font-bold ${opp.option.rr >= 2 ? "text-emerald-400" : opp.option.rr >= 1.5 ? "text-yellow-400" : "text-red-400"}`}>
+                          1:{opp.option.rr}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <span className="text-zinc-500">Option chain unavailable — cash setup</span>
