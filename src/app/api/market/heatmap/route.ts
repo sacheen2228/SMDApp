@@ -80,11 +80,11 @@ export async function GET(request: Request) {
           if (!sectors[s.sector]) sectors[s.sector] = [];
           sectors[s.sector].push(s);
         }
-        const sectorData = Object.entries(sectors).map(([name, stks]) => ({
+const sectorData = Object.entries(sectors).map(([name, stks]) => ({
           name,
           stocks: stks,
-          avgChangePct: parseFloat((stks.reduce((sum, s) => sum + s.changePct, 0) / stks.length).toFixed(2)),
-          avgWeeklyChangePct: parseFloat((stks.reduce((sum, s) => sum + (s.weeklyChangePct || 0), 0) / stks.length).toFixed(2)),
+          avgChangePct: parseFloat((stks.reduce((sum, s) => sum + (s.changePct || 0), 0) / stks.length).toFixed(2)),
+          avgWeeklyChangePct: parseFloat((stks.reduce((sum, s) => sum + (s.changePct || 0), 0) / stks.length).toFixed(2)),
           totalVolume: stks.reduce((sum, s) => sum + s.volume, 0),
           advanceCount: stks.filter(s => s.changePct > 0).length,
           declineCount: stks.filter(s => s.changePct < 0).length,
@@ -110,15 +110,15 @@ export async function GET(request: Request) {
       sectors[s.sector].push(s);
     }
 
-    const sectorData = Object.entries(sectors).map(([name, stks]) => ({
-      name,
-      stocks: stks,
-      avgChangePct: parseFloat((stks.reduce((sum, s) => sum + s.changePct, 0) / stks.length).toFixed(2)),
-      avgWeeklyChangePct: parseFloat((stks.reduce((sum, s) => sum + s.weeklyChangePct, 0) / stks.length).toFixed(2)),
-      totalVolume: stks.reduce((sum, s) => sum + s.volume, 0),
-      advanceCount: stks.filter(s => s.changePct > 0).length,
-      declineCount: stks.filter(s => s.changePct < 0).length,
-    }));
+const sectorData = Object.entries(sectors).map(([name, stks]) => ({
+          name,
+          stocks: stks,
+          avgChangePct: parseFloat((stks.reduce((sum, s) => sum + (s.changePct || 0), 0) / stks.length).toFixed(2)),
+          avgWeeklyChangePct: parseFloat((stks.reduce((sum, s) => sum + (s.changePct || 0), 0) / stks.length).toFixed(2)),
+          totalVolume: stks.reduce((sum, s) => sum + s.volume, 0),
+          advanceCount: stks.filter(s => s.changePct > 0).length,
+          declineCount: stks.filter(s => s.changePct < 0).length,
+        }));
 
     return NextResponse.json({
       stocks: filteredStocks,

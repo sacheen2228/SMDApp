@@ -17,7 +17,7 @@ import { getInstrument } from "@/stores/useTerminalStore";
 import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
-import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
+import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { getLotSize } from "@/lib/symbol-config";
 import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
@@ -1047,7 +1047,7 @@ export function ZeroHeroTerminal() {
           ce: row.ce ? { ltp: row.ce.ltp, oi: row.ce.oi, oiChg: row.ce.oiChg, volume: row.ce.vol, iv: row.iv || 15, delta: row.ce.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
           pe: row.pe ? { ltp: row.pe.ltp, oi: row.pe.oi, oiChg: row.pe.oiChg, volume: row.pe.vol, iv: row.iv || 15, delta: row.pe.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
         }));
-        const unifiedDecision = scoreTrade({
+        const unifiedDecision = scoreTrade(withCandleContext({
           symbol,
           strategy: "HERO_ZERO",
           direction: type === "CE" ? "BULLISH" : "BEARISH",
@@ -1063,7 +1063,7 @@ export function ZeroHeroTerminal() {
           target2: r.tp2,
           historicalWinRate: 0.65,
           historicalRR: r.rr,
-        });
+        }, candles));
 
         list.push({
           rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2,
@@ -1077,7 +1077,7 @@ export function ZeroHeroTerminal() {
     }
     list.sort((a, b) => b.conf - a.conf);
     return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [chain, spot, isEligible, vix, symbol]);
+  }, [chain, spot, isEligible, vix, symbol, candles]);
 
   // ─── FII/DII flow from OI ───────────────────────────────────────
   const flowData = useMemo(() => {
@@ -1787,7 +1787,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalWinRate: 0.65,
           historicalRR: 2.0,
         };
-        const ceDecision = scoreTrade(ceInput);
+        const ceDecision = scoreTrade(withCandleContext(ceInput, candles));
         if (ceDecision.entry >= 5 && ceDecision.stopLoss > 0 && ceDecision.stopLoss < ceDecision.entry &&
             (ceDecision.decision === "TRADE" || ceDecision.grade === "WATCH" || ceDecision.score >= 50)) {
           results.push({
@@ -1827,7 +1827,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           historicalWinRate: 0.65,
           historicalRR: 2.0,
         };
-        const peDecision = scoreTrade(peInput);
+        const peDecision = scoreTrade(withCandleContext(peInput, candles));
         // PE floor raised — historical PE win rate on this book is ~0%.
         if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
             (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {
@@ -1965,7 +1965,11 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           {!smcCandidates.length ? (
               <div className="text-center py-6 text-[#7d8ba0] text-[12px]">
               <div className="font-bold text-[#e8a33d] mb-1">No SMC Candidates</div>
-              <div>Market structure is ranging — no strong directional signals detected. Candidates require OI confirmation + favorable risk:reward.</div>
+              <div>
+                {(candles?.length ?? 0) >= 5
+                  ? "Market structure is ranging — no strong directional signals detected. Candidates require OI confirmation + favorable risk:reward."
+                  : "Candle feed unavailable (no structure/volume data) — candidates suppressed until real candles return. Never scoring simulated data."}
+              </div>
             </div>
           ) : (
             <>

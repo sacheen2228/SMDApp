@@ -13,6 +13,11 @@
 
 export const SCORING_VERSION = "2.0";
 
+// Candle-derived context enrichment (Smart Money / Zero Hero partial inputs).
+// market-structure + ml-engine have no dependency back into this module.
+import { analyzeMarketStructure } from "@/lib/market-structure-engine";
+import { calculateVWAP, calculateADX } from "@/lib/ml-engine";
+
 // ─── Strategy Profiles ─────────────────────────────────────────────
 
 export type StrategyProfile = "EQUITY_SWING" | "FO" | "OPTIONS" | "CAS" | "HERO_ZERO" | "MCX_COMMODITY" | "HERMES";
@@ -823,6 +828,100 @@ function runHardGates(input: MarketDataInput): HardGateResult {
     failedGates,
     warningGates,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CANDLE CONTEXT ENRICHMENT
+// Some production callers (Smart Money tab, Zero Hero) score from the option
+// chain only and never set marketStructure/swings/S-R/vwap/volume metrics.
+// Those factors then return available=false with weighted=0 while the score
+// denominator stays totalWeight → the score is pinned below any meaningful
+// threshold DETERMINISTICALLY ("0 candidates" regardless of the market).
+// This derives the missing inputs from the caller's REAL candles — no
+// thresholds are lowered and no values are fabricated. Explicit caller values
+// are never overwritten; with no candles the input passes through unchanged
+// (score stays low = honest degradation). Never use for trade decisions on
+// simulated data — callers must pass real candles only.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface CandleLike {
+  time?: number | string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export function withCandleContext(
+  input: MarketDataInput,
+  candles?: CandleLike[] | null
+): MarketDataInput {
+  if (!candles || candles.length < 5) return input;
+
+  const mapped = candles.map((c, i) => ({
+    time:
+      typeof c.time === "number"
+        ? c.time
+        : Number.isFinite(Date.parse(String(c.time ?? "")))
+          ? Date.parse(String(c.time ?? ""))
+          : i,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
+
+  const enriched: MarketDataInput = { ...input };
+
+  try {
+    const ms = analyzeMarketStructure(mapped);
+    const trend = ms.currentTrend; // UP | DOWN | SIDEWAYS
+
+    if (input.marketStructure == null) {
+      enriched.marketStructure =
+        trend === "UP" ? "BULLISH" : trend === "DOWN" ? "BEARISH" : "NEUTRAL";
+    }
+
+    const highs = ms.swings.filter((s) => s.type === "HIGH").map((s) => s.price);
+    const lows = ms.swings.filter((s) => s.type === "LOW").map((s) => s.price);
+
+    if (input.swingHigh == null && highs.length) {
+      enriched.swingHigh = highs[highs.length - 1];
+    }
+    if (input.swingLow == null && lows.length) {
+      enriched.swingLow = lows[lows.length - 1];
+    }
+    if (!input.support?.length && lows.length) {
+      enriched.support = lows.slice(-3);
+    }
+    if (!input.resistance?.length && highs.length) {
+      enriched.resistance = highs.slice(-3);
+    }
+  } catch {
+    // structure unavailable — leave fields unset (factor stays honest-unavail)
+  }
+
+  if (input.vwap == null) {
+    const vwap = calculateVWAP(mapped);
+    if (vwap > 0) enriched.vwap = vwap;
+  }
+  if (input.adx == null) enriched.adx = calculateADX(mapped);
+
+  if (input.avgVolume == null || input.currentVolume == null) {
+    const volumes = mapped.map((c) => c.volume).filter((v) => Number.isFinite(v) && v > 0);
+    if (volumes.length) {
+      if (input.avgVolume == null) {
+        enriched.avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+      }
+      if (input.currentVolume == null) {
+        enriched.currentVolume = volumes[volumes.length - 1];
+      }
+    }
+  }
+
+  return enriched;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
