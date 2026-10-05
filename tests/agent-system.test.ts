@@ -87,6 +87,18 @@ function mockContext(overrides?: Partial<AgentContext>): AgentContext {
   };
 }
 
+/** Real-shaped snapshot for engine tests (engines are data-only now). */
+function engineCtx(): AgentContext {
+  const now = new Date().toISOString();
+  return mockContext({
+    fetchedAtIso: now,
+    dataTimestamp: now,
+    expiry: new Date(Date.now() + 7 * 86_400_000).toISOString().split('T')[0],
+    daysToExpiry: 7,
+    rawContext: { spot: { source: 'nse' }, optionChain: { source: 'nse' } },
+  });
+}
+
 function mockAgentOutput(overrides?: Partial<AgentResearchOutput>): AgentResearchOutput {
   return {
     agentId: 'MARKET_REGIME',
@@ -324,14 +336,11 @@ describe('Option Engine', () => {
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
     const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
-    // Provide valid candidate data
-    grokDecision.candidate = {
-      symbol: 'NIFTY', direction: 'BUY_CE', entry: 150, stopLoss: 130,
-      tp1: 170, tp2: 190, confidence: 75, grade: 'B',
-      reasons: [], risks: [],
-    };
-    const result = await runOptionEngine('NIFTY', grokDecision, outputs);
+    // Candidate comes from the snapshot (real chain + structure) — Grok never invents levels
+    const result = await runOptionEngine('NIFTY', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY_CE');
+    expect(result.candidate?.spot).toBe(24500);
+    expect(result.candidate?.volume).toBe(10000);
   });
 
   it('produces BUY_PE for bearish with valid candidate', async () => {
@@ -344,13 +353,9 @@ describe('Option Engine', () => {
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
     const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
-    grokDecision.candidate = {
-      symbol: 'NIFTY', direction: 'BUY_PE', entry: 140, stopLoss: 120,
-      tp1: 160, tp2: 180, confidence: 75, grade: 'B',
-      reasons: [], risks: [],
-    };
-    const result = await runOptionEngine('NIFTY', grokDecision, outputs);
+    const result = await runOptionEngine('NIFTY', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY_PE');
+    expect(result.candidate?.spot).toBe(24500);
   });
 
   it('rejects SELL CE', async () => {
@@ -398,13 +403,9 @@ describe('Cash/Futures Engine', () => {
     ];
     const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
     const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
-    grokDecision.candidate = {
-      symbol: 'RELIANCE', direction: 'BUY', entry: 2500, stopLoss: 2425,
-      tp1: 2575, tp2: 2650, confidence: 75, grade: 'B',
-      reasons: [], risks: [],
-    };
-    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs);
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY');
+    expect(result.candidate?.entry).toBe(24500);
   });
 
   it('produces SELL for bearish', async () => {
@@ -417,13 +418,9 @@ describe('Cash/Futures Engine', () => {
     ];
     const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
     const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
-    grokDecision.candidate = {
-      symbol: 'RELIANCE', direction: 'SELL', entry: 2500, stopLoss: 2575,
-      tp1: 2425, tp2: 2350, confidence: 75, grade: 'B',
-      reasons: [], risks: [],
-    };
-    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs);
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('SELL');
+    expect(result.candidate?.stopLoss).toBeGreaterThan(24500);
   });
 
   it('allows SELL for equity', async () => {
@@ -436,7 +433,7 @@ describe('Cash/Futures Engine', () => {
       directionReason: 'test', validation: { passed: true, failures: [], warnings: [] },
       evidenceQuality: { totalAgents: 2, activeAgents: 2, freshData: 2, staleData: 0, missingData: 0 },
     };
-    const result = await runCashFuturesEngine('RELIANCE', grokDecision, []);
+    const result = await runCashFuturesEngine('RELIANCE', grokDecision, [], engineCtx());
     expect(result.action).toBe('SELL');
   });
 });

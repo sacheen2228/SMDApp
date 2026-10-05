@@ -14,10 +14,11 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get('symbol') || 'NIFTY').toUpperCase();
   const dryRun = req.nextUrl.searchParams.get('dryRun') !== '0';
+  const compare = req.nextUrl.searchParams.get('compare') === '1';
 
   try {
     const { ctx, fetchedAtIso } = await buildAgentSnapshot(symbol);
-    const result = await runFullPipeline(symbol, ctx, { dryRun });
+    const result = await runFullPipeline(symbol, ctx, { dryRun, compare });
 
     return Response.json({
       ok: true,

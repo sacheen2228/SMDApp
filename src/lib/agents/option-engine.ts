@@ -1,15 +1,25 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Canonical Option Engine — BUY CE / BUY PE / NO_TRADE only
 // Reuses existing SDM V2, acceleration, buyer confluence, strike selector
+//
+// Candidate construction is data-only (v2 §3 / never fabricate):
+//  · spot / strikes / premium / OI / VIX / expiry / timestamps / sources
+//    all come from the shared AgentContext snapshot
+//  · SL/TP come from snapshot structure re-priced to premium space via
+//    greeks.spotToPremiumLevels (the production conversion used by
+//    Today's Trade and the opportunities API)
+//  · missing or untradeable data → NO_TRADE with an honest reason
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type {
-  AgentResearchOutput, GrokDecision, AgentBias,
+  AgentResearchOutput, GrokDecision, AgentContext,
 } from './agent-contract';
 import { validateCandidateTrade, rejectOptionSelling, type TradeCandidate } from '../trade-validator-gate';
-import { isTradeActive, acquireTradeLock } from '../active-trade-lock';
+import { isTradeActive } from '../active-trade-lock';
+import { deriveUnderlyingLevels } from './underlying-levels';
+import { spotToPremiumLevels } from '../greeks';
 
-// ─── Option Engine Decision ───────────────────────────────────────
+// ─── Option Engine Decision ───────────────────────────────────────────────
 
 export interface OptionEngineDecision {
   action: 'BUY_CE' | 'BUY_PE' | 'NO_TRADE';
@@ -20,12 +30,140 @@ export interface OptionEngineDecision {
   grade: string;
 }
 
-// ─── Main Option Engine ───────────────────────────────────────────
+export type OptionBuildResult =
+  | { ok: true; candidate: TradeCandidate }
+  | { ok: false; reason: string };
+
+function getExchange(symbol: string): string {
+  if (symbol === 'SENSEX' || symbol === 'BANKEX') return 'BSE';
+  if (['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'].includes(symbol)) return 'MCX';
+  return 'NFO';
+}
+
+function providerSource(raw: any): string | undefined {
+  const s = raw?.source;
+  return typeof s === 'string' && s.length > 0 ? s.toUpperCase() : undefined;
+}
+
+// ─── Candidate builder (pure — no validation side effects) ───────────────
+
+export function buildOptionCandidate(
+  symbol: string,
+  grokDecision: GrokDecision,
+  _agentOutputs: AgentResearchOutput[],
+  ctx?: AgentContext
+): OptionBuildResult {
+  if (!ctx) {
+    return { ok: false, reason: 'Snapshot context unavailable — no market data for candidate' };
+  }
+
+  const optionSide = grokDecision.direction === 'BUY_CE' ? 'CE'
+    : grokDecision.direction === 'BUY_PE' ? 'PE'
+    : undefined;
+  if (!optionSide) {
+    return { ok: false, reason: `Direction ${grokDecision.direction} is not an option buy` };
+  }
+
+  if (!(ctx.spot > 0)) {
+    return { ok: false, reason: 'Spot unavailable from snapshot — no underlying entry' };
+  }
+
+  // Strike: Grok override → STRIKE_SELECTION agent → chain ATM. All real.
+  const chain = (ctx.optionChain || {}) as any;
+  const strikeSel = _agentOutputs.find(o => o.agentId === 'STRIKE_SELECTION');
+  const strike = Number(
+    grokDecision.candidate?.strike ??
+    (strikeSel?.data as any)?.atmStrike ??
+    chain.atmStrike ??
+    0
+  );
+  if (!(strike > 0)) {
+    return { ok: false, reason: 'Strike selection unavailable (no ATM/strike data in snapshot)' };
+  }
+
+  const row = (ctx.strikes || []).find((s: any) => Number(s?.strike) === strike) as any;
+  if (!row) {
+    return { ok: false, reason: `No option chain row for strike ${strike} — chain data unavailable` };
+  }
+  const leg = optionSide === 'CE' ? row.ce : row.pe;
+  const premium = Number(leg?.ltp ?? 0);
+  if (!(premium > 0)) {
+    return { ok: false, reason: `${optionSide} premium unavailable for strike ${strike}` };
+  }
+  if (!ctx.expiry) {
+    return { ok: false, reason: 'Expiry unavailable from chain snapshot' };
+  }
+
+  // SL/TP: stop lives on the underlying (structure), then re-priced to
+  // premium space — Rule Set C stop floor applied by spotToPremiumLevels.
+  const isCall = optionSide === 'CE';
+  const levels = deriveUnderlyingLevels(ctx, isCall);
+  if (!levels.ok) {
+    return { ok: false, reason: levels.reason };
+  }
+  const conv = spotToPremiumLevels({
+    spotEntry: levels.entry,
+    spotStopLoss: levels.stopLoss,
+    spotT1: levels.target1,
+    spotT2: levels.target2,
+    premium,
+    strike,
+    expiry: ctx.expiry,
+    isCall,
+  });
+  if (!conv.ok) {
+    return { ok: false, reason: `Premium level reprice failed: ${conv.reason}` };
+  }
+
+  const h = (ctx.rawContext || {}) as any;
+  const iso = ctx.fetchedAtIso || ctx.dataTimestamp || undefined;
+  const vix = Number(ctx.vix) > 0 ? Number(ctx.vix) : undefined;
+  const iv = Number(leg?.iv) > 0 ? Number(leg.iv) : undefined;
+
+  const candidate: TradeCandidate = {
+    symbol,
+    exchange: getExchange(symbol) as TradeCandidate['exchange'],
+    instrument: isCall ? 'CALL' : 'PUT',
+    optionType: optionSide,
+    strike,
+    entry: conv.entry,
+    stopLoss: conv.stopLoss,
+    target1: conv.target1,
+    target2: conv.target2,
+    direction: grokDecision.direction,
+    strategy: 'AGENT_SYSTEM',
+    score: grokDecision.consensusConfidence,
+    spot: ctx.spot,
+    premium: conv.entry,
+    bid: typeof leg?.bid === 'number' ? leg.bid : null,
+    ask: typeof leg?.ask === 'number' ? leg.ask : null,
+    volume: Number(leg?.volume) || 0,
+    oi: Number(leg?.oi) || 0,
+    ...(iv !== undefined ? { iv } : {}),
+    ...(vix !== undefined ? { vix } : {}),
+    expiry: ctx.expiry,
+    expiryValid: ctx.daysToExpiry >= 0,
+    daysToExpiry: ctx.daysToExpiry,
+    ...(iso ? { dataTimestamp: iso, snapshotTimestamp: iso } : {}),
+    ...(providerSource(h.spot) ? { dataSource: providerSource(h.spot) } : {}),
+    ...(providerSource(h.optionChain) ? { optionChainSource: providerSource(h.optionChain) } : {}),
+    signalSource: 'GROK_SUPERVISOR',
+    riskReward: conv.riskReward,
+    // marketOpen is intentionally NOT set here: the pipeline registration
+    // gate owns the session clock (engines are pure level builders; after-
+    // hours runs still produce an observable would-be decision).
+  };
+
+  return { ok: true, candidate };
+}
+
+// ─── Main Option Engine ───────────────────────────────────────────────────
 
 export async function runOptionEngine(
   symbol: string,
   grokDecision: GrokDecision,
-  agentOutputs: AgentResearchOutput[]
+  agentOutputs: AgentResearchOutput[],
+  ctx?: AgentContext
 ): Promise<OptionEngineDecision> {
   const reasons: string[] = [];
   const risks: string[] = [];
@@ -66,68 +204,20 @@ export async function runOptionEngine(
     };
   }
 
-  // 4. Determine option side from Grok direction
-  const optionSide = grokDecision.direction === 'BUY_CE' ? 'CE' : 'PE';
+  // 4. Build candidate from the shared snapshot — real data only
+  const built = buildOptionCandidate(symbol, grokDecision, agentOutputs, ctx);
+  if (!built.ok) {
+    return {
+      action: 'NO_TRADE',
+      reasons: [built.reason],
+      risks: [],
+      confidence: 0,
+      grade: 'F',
+    };
+  }
+  const candidate = built.candidate;
 
-  // 5. Collect evidence from agents
-  const oiAgent = agentOutputs.find(o => o.agentId === 'OI_PCR');
-  const structureAgent = agentOutputs.find(o => o.agentId === 'MARKET_STRUCTURE');
-  const vwapAgent = agentOutputs.find(o => o.agentId === 'VWAP');
-  const mtfAgent = agentOutputs.find(o => o.agentId === 'MTF_CONFIRMATION');
-  const buyerAgent = agentOutputs.find(o => o.agentId === 'BUYER_CONFLUENCE');
-  const accelerationAgent = agentOutputs.find(o => o.agentId === 'OPTION_ACCELERATION');
-  const regimeAgent = agentOutputs.find(o => o.agentId === 'MARKET_REGIME');
-  const vixAgent = agentOutputs.find(o => o.agentId === 'INDIA_VIX');
-
-  // 6. Build candidate from Grok candidate or compute defaults
-  const grokCandidate = grokDecision.candidate;
-  const spot = grokCandidate?.entry || 0;
-  const entry = grokCandidate?.entry || spot;
-  const stopLoss = grokCandidate?.stopLoss || entry * 0.9;
-  const tp1 = grokCandidate?.tp1 || entry * 1.1;
-  const tp2 = grokCandidate?.tp2 || entry * 1.15;
-
-  // 7. Determine strike from agent data
-  const chainAgent = agentOutputs.find(o => o.agentId === 'STRIKE_SELECTION');
-  const strike = grokCandidate?.strike || Math.round((spot || entry) / 50) * 50; // Round to nearest 50 for indices
-
-  // 8. Compute expiry (next Thursday)
-  const now = new Date();
-  const daysUntilThursday = (4 - now.getDay() + 7) % 7 || 7;
-  const expiryDate = new Date(now.getTime() + daysUntilThursday * 24 * 60 * 60 * 1000);
-  const expiry = expiryDate.toISOString().split('T')[0];
-  const daysToExpiry = Math.ceil((expiryDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-
-  // 9. Build trade candidate
-  const candidate: TradeCandidate = {
-    symbol,
-    exchange: exchange as any,
-    instrument: 'CALL',
-    optionType: optionSide,
-    strike,
-    entry,
-    stopLoss,
-    target1: tp1,
-    target2: tp2,
-    direction: grokDecision.direction,
-    strategy: 'AGENT_SYSTEM',
-    score: grokDecision.consensusConfidence,
-    spot: spot || entry,
-    vix: vixAgent?.data?.vix || 15,
-    premium: entry,
-    volume: 50000,
-    oi: 100000,
-    expiry,
-    expiryValid: true,
-    daysToExpiry,
-    dataTimestamp: new Date().toISOString(),
-    snapshotTimestamp: new Date().toISOString(),
-    dataSource: 'AGENT_SYSTEM',
-    optionChainSource: 'AGENT_SYSTEM',
-    signalSource: 'GROK_SUPERVISOR',
-  };
-
-  // 9. Validate through canonical validator
+  // 5. Validate through canonical validator (freshness, market hours, liquidity)
   const validation = validateCandidateTrade(candidate);
   if (!validation.valid) {
     return {
@@ -139,7 +229,15 @@ export async function runOptionEngine(
     };
   }
 
-  // 10. Build reasons from agents
+  // 6. Collect evidence for reasons
+  const oiAgent = agentOutputs.find(o => o.agentId === 'OI_PCR');
+  const structureAgent = agentOutputs.find(o => o.agentId === 'MARKET_STRUCTURE');
+  const vwapAgent = agentOutputs.find(o => o.agentId === 'VWAP');
+  const mtfAgent = agentOutputs.find(o => o.agentId === 'MTF_CONFIRMATION');
+  const buyerAgent = agentOutputs.find(o => o.agentId === 'BUYER_CONFLUENCE');
+  const accelerationAgent = agentOutputs.find(o => o.agentId === 'OPTION_ACCELERATION');
+  const regimeAgent = agentOutputs.find(o => o.agentId === 'MARKET_REGIME');
+
   if (regimeAgent?.bias === 'BULLISH') reasons.push(`Regime: ${regimeAgent.observation}`);
   if (oiAgent?.bias === 'BULLISH') reasons.push(`OI: ${oiAgent.observation}`);
   if (structureAgent?.bias === 'BULLISH') reasons.push(`Structure: ${structureAgent.observation}`);
@@ -155,8 +253,8 @@ export async function runOptionEngine(
   if (vwapAgent?.bias === 'BEARISH') reasons.push(`VWAP: ${vwapAgent.observation}`);
   if (mtfAgent?.bias === 'BEARISH') reasons.push(`MTF: ${mtfAgent.observation}`);
 
-  // Risks
-  if (vixAgent && parseFloat(String(vixAgent.data?.vix || 15)) > 20) {
+  // Risks — real VIX only, never a fabricated fallback
+  if (ctx && ctx.vix > 20) {
     risks.push('High VIX — expensive premiums');
   }
   risks.push('Option buying has theta decay risk');
@@ -174,12 +272,4 @@ export async function runOptionEngine(
     confidence,
     grade,
   };
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────
-
-function getExchange(symbol: string): string {
-  if (symbol === 'SENSEX' || symbol === 'BANKEX') return 'BSE';
-  if (['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'].includes(symbol)) return 'MCX';
-  return 'NFO';
 }

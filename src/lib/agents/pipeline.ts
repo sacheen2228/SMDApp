@@ -24,6 +24,125 @@ import { validateCandidateTrade } from '../trade-validator-gate';
 import { acquireTradeLock } from '../active-trade-lock';
 import { isTradingHalted } from './kill-switch';
 import { maybeRecordJevShadow } from '../jev/shadow';
+import { sendTradeAlert } from '../telegram';
+import { defaultApiBase } from './snapshot';
+import { getCurrentSession, type MarketInstrument } from '../market-session';
+
+// ─── Pipeline Observation (v2 §3 — dry-run visible decisions) ─────
+// Complete, comparable record of ONE pipeline run: what Grok wanted, what
+// the engine produced, which agents supported/opposed it, what data was
+// missing, what the gates said, and how it compares with the existing
+// production engine (SDM) when requested. Never fabricates — absent
+// fields stay absent.
+
+export interface PipelineObservation {
+  symbol: string;
+  timestamp: string;
+  dryRun: boolean;
+  finalAction: string;
+  engine: 'OPTION' | 'CASH_FUTURES' | 'NONE';
+  grokDirection: string;
+  grokConsensus: string;
+  consensusConfidence: number;
+  engineReason: string;
+  directionReason: string;
+  strike?: number;
+  optionSide?: 'CE' | 'PE';
+  confidence: number;
+  grade: string;
+  supportingAgents: string[];
+  rejectingAgents: string[];
+  missingData: string[];
+  feedGate: { blocked: boolean; reason?: string };
+  playbook: { checked: boolean; pass: boolean; failedItems: number[] };
+  validation?: { valid: boolean; reasons: string[] };
+  noTradeReasons: string[];
+  tradeRegistered: boolean;
+  tradeId?: string;
+  telegramAlert: boolean;
+  blockedByMarketClosed?: boolean;
+  existingEngine: null | {
+    engine: 'SDM_SIGNAL';
+    direction: string;
+    confidence: number;
+    agreement?: boolean;
+  };
+}
+
+/** Entry-alert gate: ONLY a real, registered, non-dry-run trade may alert. */
+export function resolveEntryAlert(params: {
+  dryRun: boolean;
+  tradeRegistered: boolean;
+  action: string;
+}): boolean {
+  if (params.dryRun) return false;
+  if (!params.tradeRegistered) return false;
+  if (!params.action || params.action === 'NO_TRADE') return false;
+  return true;
+}
+
+/** Registration gate — the ONE choke point that may create a trade. */
+export function resolveRegistration(params: {
+  dryRun: boolean;
+  action: string;
+  marketOpen: boolean;
+  halted: boolean;
+}): { register: boolean; reason?: 'dry-run' | 'no-trade' | 'kill-switch' | 'market-closed' } {
+  if (params.dryRun) return { register: false, reason: 'dry-run' };
+  if (!params.action || params.action === 'NO_TRADE') return { register: false, reason: 'no-trade' };
+  if (params.halted) return { register: false, reason: 'kill-switch' };
+  if (!params.marketOpen) return { register: false, reason: 'market-closed' };
+  return { register: true };
+}
+
+const MCX_SYMBOLS = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'];
+const INDEX_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX'];
+
+/**
+ * Session clock for the registration gate. MCX hours are not modelled by
+ * market-session → never blocked here (feed gate + freshness still guard).
+ * On a session-clock failure behave like feed-gate: leave the door open so
+ * the feed/freshness gates still guard (fail-open, consistent with feed-gate).
+ */
+export function isSessionOpenFor(symbol: string): boolean {
+  if (MCX_SYMBOLS.includes(symbol)) return true;
+  const instrument: MarketInstrument = INDEX_SYMBOLS.includes(symbol) ? 'index' : 'cash-stock';
+  try {
+    return getCurrentSession(instrument).isMarketOpen;
+  } catch {
+    return true;
+  }
+}
+
+/** Best-effort read of the existing production engine (SDM signal) for comparison. */
+async function fetchExistingEngineSignal(
+  apiBase: string,
+  symbol: string,
+  timeoutMs = 30000
+): Promise<PipelineObservation['existingEngine']> {
+  try {
+    const res = await fetch(
+      `${apiBase}/api/sdm-signal?symbol=${encodeURIComponent(symbol)}`,
+      { signal: AbortSignal.timeout(timeoutMs) }
+    );
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    const sig = json?.signal ?? json;
+    const direction = sig?.direction != null ? String(sig.direction) : null;
+    if (!direction) return null;
+    const rawConf = sig?.confidence;
+    const confidence = typeof rawConf === 'object' && rawConf !== null
+      ? Number(rawConf?.total ?? 0)
+      : Number(rawConf ?? 0);
+    return {
+      engine: 'SDM_SIGNAL',
+      direction,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+    };
+  } catch {
+    return null;
+  }
+}
 
 // ─── Pipeline Result ──────────────────────────────────────────────
 
@@ -54,6 +173,12 @@ export interface PipelineResult {
   telegramAlert: boolean;
   /** v2 §10 — true when the kill switch blocked this registration attempt */
   blockedByKillSwitch?: boolean;
+  /** true when the session clock blocked registration (market closed) */
+  blockedByMarketClosed?: boolean;
+
+  // Observation record (Phase 6) — complete decision for comparison,
+  // recorded in dry-run too (no registration, no alerts).
+  observation: PipelineObservation;
 }
 
 // ─── Full Pipeline Execution ──────────────────────────────────────
@@ -64,10 +189,23 @@ export async function runFullPipeline(
   options?: {
     agentIds?: AgentId[];
     dryRun?: boolean;
+    /** Phase 7 — also record the existing production engine's signal for comparison */
+    compare?: boolean;
+    apiBase?: string;
+    /** test seam — production uses the real sendTradeAlert */
+    deps?: {
+      sendTradeAlert?: typeof sendTradeAlert;
+    };
   }
 ): Promise<PipelineResult> {
   const timestamp = new Date().toISOString();
   const dryRun = options?.dryRun ?? false;
+
+  // Phase 7 — kick the existing-engine comparison off in parallel (best-effort;
+  // unreachable → null, never blocks or alters the decision).
+  const existingEngineP: Promise<PipelineObservation['existingEngine']> = options?.compare
+    ? fetchExistingEngineSignal(options.apiBase ?? defaultApiBase(), symbol)
+    : Promise.resolve(null);
 
   // PHASE 1: Run all 30 agents
   console.log(`[Pipeline] Running agents for ${symbol}...`);
@@ -110,10 +248,10 @@ export async function runFullPipeline(
   if (feedGate.blocked) {
     engineDecision = feedGateNoTrade(feedGate) as OptionEngineDecision | CashFuturesDecision;
   } else if (grokDecision.selectedEngine === 'OPTION') {
-    engineDecision = await runOptionEngine(symbol, grokDecision, agentOutputs);
+    engineDecision = await runOptionEngine(symbol, grokDecision, agentOutputs, ctx);
     engine = 'OPTION';
   } else if (grokDecision.selectedEngine === 'CASH_FUTURES') {
-    engineDecision = await runCashFuturesEngine(symbol, grokDecision, agentOutputs);
+    engineDecision = await runCashFuturesEngine(symbol, grokDecision, agentOutputs, ctx);
     engine = 'CASH_FUTURES';
   } else {
     engineDecision = {
@@ -152,23 +290,35 @@ export async function runFullPipeline(
     /* ignore */
   }
 
-  // PHASE 5: Trade registration (if not dry run and action is trade)
+  // PHASE 5: Trade registration — single choke point (dry-run / no-trade /
+  // kill switch / session clock / canonical validator / active lock).
   let tradeRegistered = false;
   let tradeId: string | undefined;
   let telegramAlert = false;
   let blockedByKillSwitch = false;
+  let blockedByMarketClosed = false;
+  let registrationValidation: { valid: boolean; reasons: string[] } | undefined;
 
-  if (!dryRun && engineDecision.action !== 'NO_TRADE') {
-    if (isTradingHalted()) {
-      // v2 §10 — kill switch blocks NEW registrations; monitoring of
-      // existing trades (and their TP/SL alerts) is never gated.
-      blockedByKillSwitch = true;
-      console.warn(`[KillSwitch] registration blocked for ${symbol} (engine action ${engineDecision.action})`);
-    } else
-    if ((engineDecision as any).candidate) {
+  const registration = resolveRegistration({
+    dryRun,
+    action: engineDecision.action,
+    marketOpen: isSessionOpenFor(symbol),
+    halted: isTradingHalted(),
+  });
+
+  if (registration.reason === 'kill-switch') {
+    // v2 §10 — kill switch blocks NEW registrations; monitoring of
+    // existing trades (and their TP/SL alerts) is never gated.
+    blockedByKillSwitch = true;
+    console.warn(`[KillSwitch] registration blocked for ${symbol} (engine action ${engineDecision.action})`);
+  } else if (registration.reason === 'market-closed') {
+    blockedByMarketClosed = true;
+    console.log(`[Pipeline] registration blocked for ${symbol} — market closed`);
+  } else if (registration.register && (engineDecision as any).candidate) {
       const candidate = (engineDecision as any).candidate;
       // Validate through canonical validator
       const validation = validateCandidateTrade(candidate);
+      registrationValidation = { valid: validation.valid, reasons: validation.reasons };
       if (validation.valid) {
         // Acquire trade lock
         const lock = await acquireTradeLock({
@@ -271,8 +421,146 @@ export async function runFullPipeline(
       } else {
         console.log(`[Pipeline] Trade validation failed: ${validation.reasons.join(', ')}`);
       }
+  }
+
+  // PHASE 5b: Entry alert — ONLY an approved, validated, registered,
+  // non-dry-run trade may reach Telegram (full-day dedup + send window
+  // still enforced inside sendTradeAlert).
+  if (resolveEntryAlert({ dryRun, tradeRegistered, action: engineDecision.action })) {
+    const c = (engineDecision as any).candidate || {};
+    try {
+      const send = options?.deps?.sendTradeAlert ?? sendTradeAlert;
+      telegramAlert = await send({
+        symbol,
+        action: engineDecision.action,
+        strike: Number(c.strike) || 0,
+        type: c.optionType || (c.instrument === 'EQUITY' ? 'EQ' : c.instrument) || 'OPTION',
+        confidence: grokDecision.consensusConfidence,
+        entry: c.entry,
+        stopLoss: c.stopLoss,
+        target1: c.target1,
+        target2: c.target2,
+        source: 'Grok Supervisor',
+        instrument: c.instrument,
+      });
+      console.log(`[Pipeline] Entry alert ${telegramAlert ? 'sent' : 'not sent'} for ${symbol}`);
+    } catch (err: any) {
+      console.warn(`[Pipeline] entry alert failed for ${symbol}: ${err.message}`);
+      telegramAlert = false;
     }
   }
+
+  // PHASE 6: Observation record — complete decision, dry-run included.
+  const candidate = (engineDecision as any).candidate;
+  const directionSide = /PE|SELL|SHORT/.test(engineDecision.action) ? 'BEARISH' : 'BULLISH';
+  const supportingAgents = agentOutputs
+    .filter(o => o.bias === directionSide && o.confidence > 0)
+    .map(o => o.agentId);
+  const rejectingAgents = agentOutputs
+    .filter(o => o.confidence > 0 && (o.bias === 'BULLISH' || o.bias === 'BEARISH') && o.bias !== directionSide)
+    .map(o => o.agentId);
+  const missingData = agentOutputs
+    .filter(o => o.dataFreshness === 'MISSING' || o.dataFreshness === 'ERROR')
+    .map(o => o.agentId);
+  const existingEngine = await existingEngineP;
+  let agreement: boolean | undefined;
+  if (existingEngine) {
+    const d = existingEngine.direction.toUpperCase();
+    const optionDir = d === 'CALL' || d === 'PUT' || d === 'BUY_CE' || d === 'BUY_PE';
+    if (engineDecision.action === 'BUY_CE') agreement = d === 'CALL' || d === 'BUY_CE';
+    else if (engineDecision.action === 'BUY_PE') agreement = d === 'PUT' || d === 'BUY_PE';
+    else if (engineDecision.action === 'NO_TRADE') agreement = !optionDir;
+    // equity BUY/SELL is not comparable to an index-option signal → absent
+  }
+
+  const observation: PipelineObservation = {
+    symbol,
+    timestamp,
+    dryRun,
+    finalAction: engineDecision.action,
+    engine,
+    grokDirection: grokDecision.direction,
+    grokConsensus: grokDecision.consensus,
+    consensusConfidence: grokDecision.consensusConfidence,
+    engineReason: grokDecision.engineReason,
+    directionReason: grokDecision.directionReason,
+    ...(candidate?.strike ? { strike: candidate.strike } : {}),
+    ...(candidate?.optionType ? { optionSide: candidate.optionType } : {}),
+    confidence: (engineDecision as any).confidence ?? grokDecision.consensusConfidence,
+    grade: (engineDecision as any).grade || 'F',
+    supportingAgents,
+    rejectingAgents,
+    missingData,
+    feedGate: { blocked: feedGate.blocked, ...(feedGate.reason ? { reason: feedGate.reason } : {}) },
+    playbook: {
+      checked: playbookCheck.checked,
+      pass: playbookCheck.pass,
+      failedItems: playbookCheck.failedItems,
+    },
+    ...(registrationValidation ? { validation: registrationValidation } : {}),
+    noTradeReasons: engineDecision.action === 'NO_TRADE' ? engineDecision.reasons : [],
+    tradeRegistered,
+    ...(tradeId ? { tradeId } : {}),
+    telegramAlert,
+    ...(blockedByMarketClosed ? { blockedByMarketClosed: true } : {}),
+    existingEngine: existingEngine
+      ? { ...existingEngine, ...(agreement !== undefined ? { agreement } : {}) }
+      : null,
+  };
+
+  // Persist the full decision for comparison (dry-run included; registered
+  // trades already store their record above under the trade id).
+  if (!tradeRegistered) {
+    try {
+      await storeDecisionRecord({
+        id: `obs-${symbol}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timestamp,
+        agentsUsed: agentOutputs.map(o => o.agentId),
+        agentOutputs,
+        crossConfluence,
+        grokDecision,
+        direction: engineDecision.action,
+        optionSide: candidate?.optionType,
+        strike: candidate?.strike,
+        entry: candidate?.entry ?? 0,
+        stopLoss: candidate?.stopLoss ?? 0,
+        tp1: candidate?.target1 ?? 0,
+        tp2: candidate?.target2 ?? 0,
+        confidence: grokDecision.consensusConfidence,
+        grade: observation.grade,
+        regime: grokDecision.marketRegime,
+        vix: ctx.vix,
+        pcr: ctx.optionChain?.pcr || 0,
+        fiiNet: ctx.fiiNet,
+        diiNet: ctx.diiNet,
+      });
+    } catch (err: any) {
+      console.warn(`[Pipeline] observation record failed: ${err.message}`);
+    }
+  }
+
+  console.log(`[PipelineObservation] ${JSON.stringify({
+    symbol,
+    timestamp,
+    dryRun,
+    finalAction: observation.finalAction,
+    engine: observation.engine,
+    grokDirection: observation.grokDirection,
+    grokConsensus: observation.grokConsensus,
+    confidence: observation.confidence,
+    strike: observation.strike,
+    supportingAgents: observation.supportingAgents,
+    rejectingAgents: observation.rejectingAgents,
+    missingDataCount: observation.missingData.length,
+    feedGateBlocked: observation.feedGate.blocked,
+    playbookPassed: observation.playbook.pass,
+    validation: observation.validation,
+    noTradeReasons: observation.noTradeReasons,
+    tradeRegistered: observation.tradeRegistered,
+    telegramAlert: observation.telegramAlert,
+    existingEngine: observation.existingEngine,
+  })}`);
 
   return {
     symbol,
@@ -288,6 +576,8 @@ export async function runFullPipeline(
     tradeId,
     telegramAlert,
     ...(blockedByKillSwitch ? { blockedByKillSwitch: true } : {}),
+    ...(blockedByMarketClosed ? { blockedByMarketClosed: true } : {}),
+    observation,
   };
 }
 

@@ -1,43 +1,114 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Canonical Cash/Futures Engine — BUY / SELL / NO_TRADE
 // For: equity, index futures, stock futures, MCX commodities
+//
+// Candidate construction is data-only (v2 §3 / never fabricate):
+//  · entry = real spot from the shared AgentContext snapshot
+//  · SL/TP = snapshot structure (supports/resistances/swings/pdh-pdl)
+//  · timestamps / sources / market hours come from the snapshot + session clock
+//  · missing structure or spot → NO_TRADE with an honest reason
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type {
-  AgentResearchOutput, GrokDecision,
+  AgentResearchOutput, GrokDecision, AgentContext,
 } from './agent-contract';
 import { isTradeActive } from '../active-trade-lock';
+import { validateCandidateTrade, type TradeCandidate } from '../trade-validator-gate';
+import { deriveUnderlyingLevels } from './underlying-levels';
 
-// ─── Cash/Futures Engine Decision ─────────────────────────────────
+// ─── Cash/Futures Engine Decision ─────────────────────────────────────────
 
 export interface CashFuturesDecision {
   action: 'BUY' | 'SELL' | 'NO_TRADE';
-  candidate?: {
-    symbol: string;
-    exchange: string;
-    instrument: 'EQUITY' | 'FUTURES';
-    direction: 'BUY' | 'SELL';
-    entry: number;
-    stopLoss: number;
-    tp1: number;
-    tp2: number;
-    confidence: number;
-    grade: string;
-    reasons: string[];
-    risks: string[];
-  };
+  candidate?: TradeCandidate;
   reasons: string[];
   risks: string[];
   confidence: number;
   grade: string;
 }
 
-// ─── Main Cash/Futures Engine ─────────────────────────────────────
+export type CashBuildResult =
+  | { ok: true; candidate: TradeCandidate }
+  | { ok: false; reason: string };
+
+const MCX_SYMBOLS = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'];
+
+function getExchange(symbol: string): string {
+  if (symbol === 'SENSEX' || symbol === 'BANKEX') return 'BSE';
+  if (MCX_SYMBOLS.includes(symbol)) return 'MCX';
+  return 'NSE';
+}
+
+function providerSource(raw: any): string | undefined {
+  const s = raw?.source;
+  return typeof s === 'string' && s.length > 0 ? s.toUpperCase() : undefined;
+}
+
+// ─── Candidate builder (pure — no validation side effects) ───────────────
+
+export function buildCashCandidate(
+  symbol: string,
+  grokDecision: GrokDecision,
+  _agentOutputs: AgentResearchOutput[],
+  ctx?: AgentContext
+): CashBuildResult {
+  if (!ctx) {
+    return { ok: false, reason: 'Snapshot context unavailable — no market data for candidate' };
+  }
+
+  const direction = grokDecision.direction === 'BUY' || grokDecision.direction === 'SELL'
+    ? grokDecision.direction
+    : undefined;
+  if (!direction) {
+    return { ok: false, reason: `Invalid direction for cash/futures: ${grokDecision.direction}` };
+  }
+
+  const levels = deriveUnderlyingLevels(ctx, direction === 'BUY');
+  if (!levels.ok) {
+    return { ok: false, reason: levels.reason };
+  }
+
+  const isMCX = MCX_SYMBOLS.includes(symbol);
+  const instrument: TradeCandidate['instrument'] = isMCX ? 'FUTURES' : 'EQUITY';
+  const h = (ctx.rawContext || {}) as any;
+  const iso = ctx.fetchedAtIso || ctx.dataTimestamp || undefined;
+  const vix = Number(ctx.vix) > 0 ? Number(ctx.vix) : undefined;
+
+  const risk = Math.abs(levels.entry - levels.stopLoss);
+  const reward = Math.abs(levels.target1 - levels.entry);
+  const riskReward = risk > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
+
+  const candidate: TradeCandidate = {
+    symbol,
+    exchange: getExchange(symbol) as TradeCandidate['exchange'],
+    instrument,
+    direction,
+    entry: levels.entry,
+    stopLoss: levels.stopLoss,
+    target1: levels.target1,
+    target2: levels.target2,
+    strategy: 'AGENT_SYSTEM',
+    score: grokDecision.consensusConfidence,
+    spot: ctx.spot,
+    ...(vix !== undefined ? { vix } : {}),
+    ...(iso ? { dataTimestamp: iso, snapshotTimestamp: iso } : {}),
+    ...(providerSource(h.spot) ? { dataSource: providerSource(h.spot) } : {}),
+    signalSource: 'GROK_SUPERVISOR',
+    ...(riskReward > 0 ? { riskReward } : {}),
+    // marketOpen is intentionally NOT set here: the pipeline registration
+    // gate owns the session clock (engines are pure level builders).
+  };
+
+  return { ok: true, candidate };
+}
+
+// ─── Main Cash/Futures Engine ─────────────────────────────────────────────
 
 export async function runCashFuturesEngine(
   symbol: string,
   grokDecision: GrokDecision,
-  agentOutputs: AgentResearchOutput[]
+  agentOutputs: AgentResearchOutput[],
+  ctx?: AgentContext
 ): Promise<CashFuturesDecision> {
   const reasons: string[] = [];
   const risks: string[] = [];
@@ -80,31 +151,41 @@ export async function runCashFuturesEngine(
     };
   }
 
-  // 4. Collect evidence
+  // 4. Build candidate from the shared snapshot — real data only
+  const built = buildCashCandidate(symbol, grokDecision, agentOutputs, ctx);
+  if (!built.ok) {
+    return {
+      action: 'NO_TRADE',
+      reasons: [built.reason],
+      risks: [],
+      confidence: 0,
+      grade: 'F',
+    };
+  }
+  const candidate = built.candidate;
+
+  // 5. Validate through canonical validator (freshness, market hours, …)
+  const validation = validateCandidateTrade(candidate);
+  if (!validation.valid) {
+    return {
+      action: 'NO_TRADE',
+      reasons: validation.reasons,
+      risks: [],
+      confidence: 0,
+      grade: 'F',
+    };
+  }
+
+  // 6. Collect evidence
   const regimeAgent = agentOutputs.find(o => o.agentId === 'MARKET_REGIME');
   const structureAgent = agentOutputs.find(o => o.agentId === 'MARKET_STRUCTURE');
   const momentumAgent = agentOutputs.find(o => o.agentId === 'MOMENTUM');
   const volumeAgent = agentOutputs.find(o => o.agentId === 'VOLUME');
   const breakoutAgent = agentOutputs.find(o => o.agentId === 'BREAKOUT');
   const fiiAgent = agentOutputs.find(o => o.agentId === 'FII_DII');
-  const btstAgent = agentOutputs.find(o => o.agentId === 'BTST');
 
-  // 5. Determine instrument type
-  const mcxSymbols = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'];
-  const isMCX = mcxSymbols.includes(symbol);
-  const instrument = isMCX ? 'FUTURES' : 'EQUITY';
+  const isMCX = MCX_SYMBOLS.includes(symbol);
 
-  // 6. Build candidate
-  const spot = grokDecision.candidate?.entry || 0;
-  const entry = grokDecision.candidate?.entry || spot;
-  const stopLoss = grokDecision.candidate?.stopLoss ||
-    (direction === 'BUY' ? entry * 0.97 : entry * 1.03);
-  const tp1 = grokDecision.candidate?.tp1 ||
-    (direction === 'BUY' ? entry * 1.03 : entry * 0.97);
-  const tp2 = grokDecision.candidate?.tp2 ||
-    (direction === 'BUY' ? entry * 1.05 : entry * 0.95);
-
-  // 7. Build reasons
   if (regimeAgent) reasons.push(`Regime: ${regimeAgent.observation}`);
   if (structureAgent) reasons.push(`Structure: ${structureAgent.observation}`);
   if (momentumAgent) reasons.push(`Momentum: ${momentumAgent.observation}`);
@@ -123,31 +204,10 @@ export async function runCashFuturesEngine(
 
   return {
     action: direction,
-    candidate: {
-      symbol,
-      exchange,
-      instrument,
-      direction,
-      entry,
-      stopLoss,
-      tp1,
-      tp2,
-      confidence,
-      grade,
-      reasons: [...new Set(reasons)],
-      risks: [...new Set(risks)].slice(0, 5),
-    },
+    candidate,
     reasons: [...new Set(reasons)],
     risks: [...new Set(risks)].slice(0, 5),
     confidence,
     grade,
   };
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────
-
-function getExchange(symbol: string): string {
-  if (symbol === 'SENSEX' || symbol === 'BANKEX') return 'BSE';
-  if (['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'].includes(symbol)) return 'MCX';
-  return 'NSE';
 }
