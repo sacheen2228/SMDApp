@@ -40,7 +40,7 @@ import {
 import { mapHermesToAgentContext } from '@/lib/agents/snapshot';
 import { runAllAgents } from '@/lib/agents/registry-30';
 import { analyzeCrossConfluence } from '@/lib/agents/cross-confluence';
-import { runGrokSupervisor } from '@/lib/agents/supervisor';
+import { deterministicDecision } from '@/lib/agents/supervisor';
 import { validateCandidateTrade } from '@/lib/trade-validator-gate';
 import { acquireTradeLock, releaseTradeLock } from '@/lib/active-trade-lock';
 import { sendTradeAlert } from '@/lib/telegram';
@@ -217,7 +217,7 @@ describe('2–3 — research reaches the Grok supervisor', () => {
   it('agent outputs reach Grok as evidence and drive the direction', () => {
     const outputs = BULLISH_OUTPUTS();
     const cc = analyzeCrossConfluence('NIFTY', outputs);
-    const d = runGrokSupervisor('NIFTY', outputs, cc);
+    const d = deterministicDecision('NIFTY', outputs, cc);
 
     expect(d.bullishEvidence.length).toBeGreaterThan(0);
     expect(d.bullishEvidence.some(e => e.includes('Regime trending up'))).toBe(true);
@@ -229,7 +229,7 @@ describe('2–3 — research reaches the Grok supervisor', () => {
   it('cross-confluence output reaches Grok verbatim (evidence, conflicts, confidence)', () => {
     const outputs = BULLISH_OUTPUTS();
     const cc = analyzeCrossConfluence('NIFTY', outputs);
-    const d = runGrokSupervisor('NIFTY', outputs, cc);
+    const d = deterministicDecision('NIFTY', outputs, cc);
 
     expect(d.bullishEvidence).toEqual(cc.bullishEvidence);
     expect(d.conflicts).toEqual(cc.conflicts);

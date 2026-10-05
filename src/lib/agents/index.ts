@@ -21,7 +21,7 @@ export {
 export { analyzeCrossConfluence } from './cross-confluence';
 
 // Grok Supervisor
-export { runGrokSupervisor, grokBackstop, getGrokBackstopFireCount, resetGrokBackstopFireCount } from './supervisor';
+export { deterministicDecision, grokBackstop, getGrokBackstopFireCount, resetGrokBackstopFireCount } from './supervisor';
 
 // Engines
 export { runOptionEngine } from './option-engine';

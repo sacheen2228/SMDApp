@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
-  runGrokSupervisor, grokBackstop,
+  deterministicDecision, grokBackstop,
   getGrokBackstopFireCount, resetGrokBackstopFireCount,
 } from '../src/lib/agents/supervisor';
 import { analyzeCrossConfluence } from '../src/lib/agents/cross-confluence';
@@ -57,7 +57,7 @@ async function fixtureDecision() {
   const ctx = ctxFixture();
   const outputs = await runAllAgents(ctx);
   const cc = analyzeCrossConfluence('NIFTY', outputs);
-  return { outputs, cc, decision: runGrokSupervisor('NIFTY', outputs, cc) };
+  return { outputs, cc, decision: deterministicDecision('NIFTY', outputs, cc) };
 }
 
 beforeEach(() => {

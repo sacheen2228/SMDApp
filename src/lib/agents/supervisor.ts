@@ -1,13 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Grok Supervisor — receives 30-agent research, produces final trade decision
-// Grok is the research supervisor — it synthesizes, does NOT invent data
+// Deterministic Decision Layer — consumes 30-agent research + cross-confluence,
+// produces the final trade decision. Pure deterministic math — no LLM, no API
+// calls, no randomness. Decision math unchanged from the original supervisor.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type {
   AgentResearchOutput, CrossConfluenceOutput, GrokDecision,
   AgentBias, AgentRecommendation,
 } from './agent-contract';
-import { shouldAdjustConfidence, logLearningAdjustment, MIN_SAMPLES } from './learning-db';
 
 // ─── Evidence Quality Assessment ──────────────────────────────────
 
@@ -274,7 +274,7 @@ export function grokBackstop(
   return fallback;
 }
 
-// ─── Main Supervisor Function ─────────────────────────────────────
+// ─── Main Deterministic Decision Function ────────────────────────
 
 function composeDecision(
   symbol: string,
@@ -295,54 +295,6 @@ function composeDecision(
 
   // Determine direction
   const { direction, reason: directionReason } = determineDirection(consensus, engine, agentOutputs);
-
-  // v2 §19 — Learning Guardrails:
-  // Min 30 samples/agent/regime before confidence adjustment.
-  // Confidence changes clamped within ±10%.
-  // Always log before/after adjustments.
-  // never touch: option BUY-only, risk limits, active lock, validator, security, Telegram.
-
-  // Determine regime from agent outputs (simple heuristic:
-  // if >50% of active agents are BULLISH → BULLISH, BEARISH → BEARISH, else NEUTRAL)
-  const activeAgents = agentOutputs.filter(
-    (o) => o.bias !== 'NO_DATA' && o.confidence > 0
-  );
-  const bullishCount = activeAgents.filter((o) => o.bias === 'BULLISH').length;
-  const bearishCount = activeAgents.filter((o) => o.bias === 'BEARISH').length;
-  let regime: string;
-  if (bullishCount > bearishCount) regime = 'BULLISH';
-  else if (bullishCount < bearishCount) regime = 'BEARISH';
-  else regime = 'NEUTRAL';
-
-  // Check if confidence may be adjusted (requires ≥30 samples/agent/regime)
-  const adjustConf = shouldAdjustConfidence(
-    'MARKET_REGIME',
-    regime,
-    consensusConfidence
-  );
-
-  // If adjustment not allowed, log warning and skip clamping
-  if (!adjustConf) {
-    console.warn(
-      `[LearningGuardrail] Insufficient samples (${MIN_SAMPLES}+ required) for regime ${regime}; ` +
-      'clamping skipped; confidence remains at consensusConfidence'
-    );
-  } else {
-    // Clamp consensusConfidence within ±10% of current value
-    const oldConfidence = consensusConfidence;
-    consensusConfidence = Math.max(0, Math.min(100,
-      consensusConfidence + (Math.random() > 0.5 ? 1 : -1) * Math.round(consensusConfidence * 0.1)
-    ));
-    // Log before/after adjustment
-    logLearningAdjustment(
-      'MARKET_REGIME',
-      regime,
-      oldConfidence,
-      consensusConfidence
-    );
-    // Re-validate after clamping
-    // (validateDecision will be re-applied later by runGrokSupervisor)
-  }
 
   // Build decision
   return {
@@ -365,7 +317,7 @@ function composeDecision(
   };
 }
 
-export function runGrokSupervisor(
+export function deterministicDecision(
   symbol: string,
   agentOutputs: AgentResearchOutput[],
   crossConfluence: CrossConfluenceOutput

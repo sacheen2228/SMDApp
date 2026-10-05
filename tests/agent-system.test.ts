@@ -7,7 +7,7 @@ import {
   REGISTRY, getAgentDef, getAgentCount, getAllAgentIds, runAllAgents,
 } from '../src/lib/agents/registry-30';
 import { analyzeCrossConfluence } from '../src/lib/agents/cross-confluence';
-import { runGrokSupervisor } from '../src/lib/agents/supervisor';
+import { deterministicDecision } from '../src/lib/agents/supervisor';
 import { runOptionEngine } from '../src/lib/agents/option-engine';
 import { runCashFuturesEngine } from '../src/lib/agents/cash-futures-engine';
 import {
@@ -275,19 +275,31 @@ describe('Cross-Confluence', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// GROK SUPERVISOR TESTS
+// DETERMINISTIC DECISION LAYER TESTS
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Grok Supervisor', () => {
+describe('Deterministic Decision Layer', () => {
   it('routes to OPTION engine for indices', () => {
     const outputs = [
       mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 70 }),
       mockAgentOutput({ agentId: 'OI_PCR', bias: 'BULLISH', confidence: 65 }),
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const decision = deterministicDecision('NIFTY', outputs, crossConfluence);
     expect(decision.selectedEngine).toBe('OPTION');
     expect(decision.direction).toBe('BUY_CE');
+  });
+
+  it('produces identical decisions for identical inputs (no randomness)', () => {
+    const outputs = [
+      mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BULLISH', confidence: 70 }),
+      mockAgentOutput({ agentId: 'OI_PCR', bias: 'BULLISH', confidence: 65 }),
+      mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BEARISH', confidence: 55 }),
+    ];
+    const a = deterministicDecision('NIFTY', outputs, analyzeCrossConfluence('NIFTY', outputs));
+    const b = deterministicDecision('NIFTY', outputs, analyzeCrossConfluence('NIFTY', outputs));
+    const strip = ({ timestamp: _t, ...rest }: typeof a) => rest;
+    expect(strip(a)).toEqual(strip(b));
   });
 
   it('routes to CASH_FUTURES for stocks', () => {
@@ -296,7 +308,7 @@ describe('Grok Supervisor', () => {
       mockAgentOutput({ agentId: 'MOMENTUM', bias: 'BEARISH', confidence: 65 }),
     ];
     const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
-    const decision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    const decision = deterministicDecision('RELIANCE', outputs, crossConfluence);
     expect(decision.selectedEngine).toBe('CASH_FUTURES');
     expect(decision.direction).toBe('SELL');
   });
@@ -306,7 +318,7 @@ describe('Grok Supervisor', () => {
       mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'BEARISH', confidence: 70 }),
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const decision = deterministicDecision('NIFTY', outputs, crossConfluence);
     // For options, bearish should route to BUY_PE, not SELL
     expect(decision.direction).not.toBe('SELL');
   });
@@ -316,7 +328,7 @@ describe('Grok Supervisor', () => {
       mockAgentOutput({ agentId: 'MARKET_REGIME', bias: 'NEUTRAL', confidence: 30 }),
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const decision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const decision = deterministicDecision('NIFTY', outputs, crossConfluence);
     expect(decision.validation.passed).toBe(true); // Neutral = no trade, but valid
   });
 });
@@ -335,7 +347,7 @@ describe('Option Engine', () => {
       mockAgentOutput({ agentId: 'MTF_CONFIRMATION', bias: 'BULLISH', confidence: 70 }),
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const grokDecision = deterministicDecision('NIFTY', outputs, crossConfluence);
     // Candidate comes from the snapshot (real chain + structure) — Grok never invents levels
     const result = await runOptionEngine('NIFTY', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY_CE');
@@ -352,7 +364,7 @@ describe('Option Engine', () => {
       mockAgentOutput({ agentId: 'MTF_CONFIRMATION', bias: 'BEARISH', confidence: 70 }),
     ];
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const grokDecision = deterministicDecision('NIFTY', outputs, crossConfluence);
     const result = await runOptionEngine('NIFTY', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY_PE');
     expect(result.candidate?.spot).toBe(24500);
@@ -402,7 +414,7 @@ describe('Cash/Futures Engine', () => {
       mockAgentOutput({ agentId: 'BREAKOUT', bias: 'BULLISH', confidence: 70 }),
     ];
     const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
-    const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    const grokDecision = deterministicDecision('RELIANCE', outputs, crossConfluence);
     const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('BUY');
     expect(result.candidate?.entry).toBe(24500);
@@ -417,7 +429,7 @@ describe('Cash/Futures Engine', () => {
       mockAgentOutput({ agentId: 'BREAKOUT', bias: 'BEARISH', confidence: 70 }),
     ];
     const crossConfluence = analyzeCrossConfluence('RELIANCE', outputs);
-    const grokDecision = runGrokSupervisor('RELIANCE', outputs, crossConfluence);
+    const grokDecision = deterministicDecision('RELIANCE', outputs, crossConfluence);
     const result = await runCashFuturesEngine('RELIANCE', grokDecision, outputs, engineCtx());
     expect(result.action).toBe('SELL');
     expect(result.candidate?.stopLoss).toBeGreaterThan(24500);
@@ -669,7 +681,7 @@ describe('End-to-End Pipeline', () => {
     const ctx = mockContext();
     const outputs = await runAllAgents(ctx);
     const crossConfluence = analyzeCrossConfluence('NIFTY', outputs);
-    const grokDecision = runGrokSupervisor('NIFTY', outputs, crossConfluence);
+    const grokDecision = deterministicDecision('NIFTY', outputs, crossConfluence);
 
     expect(grokDecision.symbol).toBe('NIFTY');
     expect(grokDecision.selectedEngine).toBeDefined();

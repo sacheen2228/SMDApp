@@ -9,7 +9,7 @@ import type {
 } from './agent-contract';
 import { runAllAgents } from './registry-30';
 import { analyzeCrossConfluence } from './cross-confluence';
-import { runGrokSupervisor, getGrokBackstopFireCount } from './supervisor';
+import { deterministicDecision, getGrokBackstopFireCount } from './supervisor';
 import { evaluateFeedGate, feedGateNoTrade, type FeedGateResult } from './feed-gate';
 import { evaluatePlaybookCheck, playbookNoTrade, type PlaybookCheckResult } from './playbook-check';
 import { runOptionEngine, type OptionEngineDecision } from './option-engine';
@@ -215,17 +215,17 @@ export async function runFullPipeline(
   console.log(`[Pipeline] Cross-confluence for ${symbol}...`);
   const crossConfluence = analyzeCrossConfluence(symbol, agentOutputs);
 
-  // PHASE 3: Grok supervisor
-  console.log(`[Pipeline] Grok supervisor for ${symbol}...`);
-  const grokDecision = runGrokSupervisor(symbol, agentOutputs, crossConfluence);
+  // PHASE 3: Deterministic decision layer (30 agents → cross-confluence math)
+  console.log(`[Pipeline] Deterministic decision for ${symbol}...`);
+  const decision = deterministicDecision(symbol, agentOutputs, crossConfluence);
 
-  // Jev shadow comparison — fire-and-forget; never mutates grokDecision
+  // Jev shadow comparison — fire-and-forget; never mutates the decision
   try {
     maybeRecordJevShadow({
       source: 'AGENT_PIPELINE',
       symbol,
-      productionDecision: grokDecision.direction,
-      grokDirection: grokDecision.direction,
+      productionDecision: decision.direction,
+      grokDirection: decision.direction,
       agentOutputs,
       crossConfluence,
     });
@@ -247,11 +247,11 @@ export async function runFullPipeline(
 
   if (feedGate.blocked) {
     engineDecision = feedGateNoTrade(feedGate) as OptionEngineDecision | CashFuturesDecision;
-  } else if (grokDecision.selectedEngine === 'OPTION') {
-    engineDecision = await runOptionEngine(symbol, grokDecision, agentOutputs, ctx);
+  } else if (decision.selectedEngine === 'OPTION') {
+    engineDecision = await runOptionEngine(symbol, decision, agentOutputs, ctx);
     engine = 'OPTION';
-  } else if (grokDecision.selectedEngine === 'CASH_FUTURES') {
-    engineDecision = await runCashFuturesEngine(symbol, grokDecision, agentOutputs, ctx);
+  } else if (decision.selectedEngine === 'CASH_FUTURES') {
+    engineDecision = await runCashFuturesEngine(symbol, decision, agentOutputs, ctx);
     engine = 'CASH_FUTURES';
   } else {
     engineDecision = {
@@ -282,7 +282,7 @@ export async function runFullPipeline(
       source: 'AGENT_PIPELINE',
       symbol,
       productionDecision: engineDecision.action,
-      grokDirection: grokDecision.direction,
+      grokDirection: decision.direction,
       agentOutputs,
       crossConfluence,
     });
@@ -367,7 +367,7 @@ export async function runFullPipeline(
               sentAt: timestamp,
               source: 'AGENT_SYSTEM',
               exchange: candidate.exchange || 'NSE',
-              confidence: grokDecision.consensusConfidence,
+              confidence: decision.consensusConfidence,
             }, true); // skipAlert — pipeline handles Telegram separately
           } catch (err: any) {
             console.warn(`[Pipeline] activeTradeTracker addTrade failed: ${err.message}`);
@@ -397,7 +397,7 @@ export async function runFullPipeline(
             agentsUsed: agentOutputs.map(o => o.agentId),
             agentOutputs,
             crossConfluence,
-            grokDecision,
+            grokDecision: decision,
             direction: engineDecision.action,
             optionSide: candidate.optionType,
             strike: candidate.strike,
@@ -405,9 +405,9 @@ export async function runFullPipeline(
             stopLoss: candidate.stopLoss,
             tp1: candidate.tp1 || candidate.target1,
             tp2: candidate.tp2 || candidate.target2,
-            confidence: grokDecision.consensusConfidence,
+            confidence: decision.consensusConfidence,
             grade: (engineDecision as any).grade || 'C',
-            regime: grokDecision.marketRegime,
+            regime: decision.marketRegime,
             vix: ctx.vix,
             pcr: ctx.optionChain?.pcr || 0,
             fiiNet: ctx.fiiNet,
@@ -435,7 +435,7 @@ export async function runFullPipeline(
         action: engineDecision.action,
         strike: Number(c.strike) || 0,
         type: c.optionType || (c.instrument === 'EQUITY' ? 'EQ' : c.instrument) || 'OPTION',
-        confidence: grokDecision.consensusConfidence,
+        confidence: decision.consensusConfidence,
         entry: c.entry,
         stopLoss: c.stopLoss,
         target1: c.target1,
@@ -479,14 +479,14 @@ export async function runFullPipeline(
     dryRun,
     finalAction: engineDecision.action,
     engine,
-    grokDirection: grokDecision.direction,
-    grokConsensus: grokDecision.consensus,
-    consensusConfidence: grokDecision.consensusConfidence,
-    engineReason: grokDecision.engineReason,
-    directionReason: grokDecision.directionReason,
+    grokDirection: decision.direction,
+    grokConsensus: decision.consensus,
+    consensusConfidence: decision.consensusConfidence,
+    engineReason: decision.engineReason,
+    directionReason: decision.directionReason,
     ...(candidate?.strike ? { strike: candidate.strike } : {}),
     ...(candidate?.optionType ? { optionSide: candidate.optionType } : {}),
-    confidence: (engineDecision as any).confidence ?? grokDecision.consensusConfidence,
+    confidence: (engineDecision as any).confidence ?? decision.consensusConfidence,
     grade: (engineDecision as any).grade || 'F',
     supportingAgents,
     rejectingAgents,
@@ -519,7 +519,7 @@ export async function runFullPipeline(
         agentsUsed: agentOutputs.map(o => o.agentId),
         agentOutputs,
         crossConfluence,
-        grokDecision,
+        grokDecision: decision,
         direction: engineDecision.action,
         optionSide: candidate?.optionType,
         strike: candidate?.strike,
@@ -527,9 +527,9 @@ export async function runFullPipeline(
         stopLoss: candidate?.stopLoss ?? 0,
         tp1: candidate?.target1 ?? 0,
         tp2: candidate?.target2 ?? 0,
-        confidence: grokDecision.consensusConfidence,
+        confidence: decision.consensusConfidence,
         grade: observation.grade,
-        regime: grokDecision.marketRegime,
+        regime: decision.marketRegime,
         vix: ctx.vix,
         pcr: ctx.optionChain?.pcr || 0,
         fiiNet: ctx.fiiNet,
@@ -567,7 +567,7 @@ export async function runFullPipeline(
     timestamp,
     agentOutputs,
     crossConfluence,
-    grokDecision,
+    grokDecision: decision,
     feedGate,
     playbookCheck,
     engineDecision,
