@@ -251,7 +251,7 @@ const FNO_LOT_SIZES: Record<string, number> = {
   SBICARD: 800,
   SBILIFE: 375,
   SBIN: 750,
-  SENSEX: 15,
+  SENSEX: 20,
   SHREECEM: 25,
   SHRIRAMFIN: 825,
   SIEMENS: 175,

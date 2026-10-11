@@ -6,6 +6,46 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCachedMarketNews, fetchStockNews } from "@/lib/news-engine";
 import { analyzeSentiment } from "@/lib/sentiment-analyzer";
 
+// ── Phase 5 Web Intelligence ────────────────────────────────────────────
+// Stored web records are merged into the SAME articles array hermes already
+// fetches (/api/news, zero extra fetches → ≤12 budget untouched). Evidence
+// only: no order can be created from here, and market data sources
+// (MOAPI/NSE/BSE/Breeze) are never touched by this layer.
+let lastWebSyncAt = 0;
+const WEB_SYNC_MIN_INTERVAL_MS = 60_000;
+
+async function maybeSyncWebIntel(): Promise<void> {
+  // Fire-and-forget: sync failure must NEVER block or fail /api/news.
+  const now = Date.now();
+  if (now - lastWebSyncAt < WEB_SYNC_MIN_INTERVAL_MS) return;
+  lastWebSyncAt = now;
+  try {
+    const { syncWebIntel } = await import("@/lib/web-intel/sync");
+    await syncWebIntel({ now });
+  } catch (e: any) {
+    console.warn("[WebIntel] background sync skipped:", String(e?.message ?? e));
+  }
+}
+
+async function mergeWebIntel(articles: any[]): Promise<{ articles: any[]; meta: any }> {
+  try {
+    const { mergeWithStoredArticles } = await import("@/lib/web-intel/merge");
+    const res = await mergeWithStoredArticles(articles, { limit: 50, sinceHours: 48 });
+    return {
+      articles: res.articles,
+      meta: {
+        storedMerged: res.storedMerged,
+        storedTotal: res.storedTotal,
+        evidenceOnly: true,
+      },
+    };
+  } catch (e: any) {
+    // Local store down → live-only. News never fails the request.
+    console.warn("[WebIntel] merge skipped:", String(e?.message ?? e));
+    return { articles, meta: { storedMerged: 0, storedTotal: 0, evidenceOnly: true } };
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -50,9 +90,15 @@ export async function GET(request: NextRequest) {
 
     // Fetch market-wide sentiment
     const sentiment = await getCachedMarketNews();
+
+    // Background incremental sync (never blocks this response) + merge of
+    // already-synced stored records into the articles list agents consume.
+    maybeSyncWebIntel().catch(() => {});
+    const merged = await mergeWebIntel(sentiment.articles || []);
+
     return NextResponse.json({
       success: true,
-      data: sentiment,
+      data: { ...sentiment, articles: merged.articles, webIntel: merged.meta },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

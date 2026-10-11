@@ -9,6 +9,7 @@ import {
 } from "../repositories/tradeRepository";
 import { CloseTradeInput, ExitReason, NewSignalInput, PriceUpdateInput, TradeRecord } from "../types";
 import { inferMarketSession, nowIst } from "../utils/ist";
+import { computeClosePnl, defaultQuantity, estimateFees } from "../utils/sizing";
 import { verifyClosedTrade } from "./verification";
 
 const JOB_INSERT = "insert_trade";
@@ -28,7 +29,7 @@ registerHandler(JOB_PRICE_UPDATE, (payload: { tradeId: string; price: number; ti
 
 registerHandler(
   JOB_CLOSE_TRADE,
-  (payload: { tradeId: string; exitPrice: number; exitReason: ExitReason; exitTimeIst: string; fees: number }) => {
+  (payload: { tradeId: string; exitPrice: number; exitReason: ExitReason; exitTimeIst: string; fees: number | null }) => {
     applyClose(payload.tradeId, payload.exitPrice, payload.exitReason, payload.exitTimeIst, payload.fees);
   }
 );
@@ -65,6 +66,9 @@ export function recordSignal(input: NewSignalInput): { tradeId: string } {
     tp1: input.tp1,
     tp2: input.tp2 ?? null,
     tp3: input.tp3 ?? null,
+    quantity: input.quantity && input.quantity > 0
+      ? input.quantity
+      : defaultQuantity(input.instrumentType, input.symbol, input.entryPrice),
     riskRewardRatio,
     signalConfidence: input.signalConfidence,
     aiConfidence: input.aiConfidence ?? null,
@@ -77,6 +81,7 @@ export function recordSignal(input: NewSignalInput): { tradeId: string } {
 
     status: "open",
     entryFilled: true,
+    archived: 0,
     highestPrice: input.entryPrice,
     lowestPrice: input.entryPrice,
     mfe: 0,
@@ -126,7 +131,7 @@ export function closeTrade(tradeId: string, input: CloseTradeInput): void {
     exitPrice: input.exitPrice,
     exitReason: input.exitReason,
     exitTimeIst: input.exitTimeIst ?? nowIst(),
-    fees: input.fees ?? 0,
+    fees: input.fees ?? null, // null → estimate realistic round-trip fees
   });
 }
 
@@ -170,9 +175,9 @@ function applyPriceUpdate(tradeId: string, price: number, timestampIst: string):
 
   // Auto-close on final target or stop-loss touch.
   if (slHit && !trade.slHit) {
-    applyClose(tradeId, trade.stopLoss, "stop_loss", timestampIst, 0);
+    applyClose(tradeId, trade.stopLoss, "stop_loss", timestampIst, null);
   } else if (tp3Hit && !trade.tp3Hit && trade.tp3 != null) {
-    applyClose(tradeId, trade.tp3, "tp3", timestampIst, 0);
+    applyClose(tradeId, trade.tp3, "tp3", timestampIst, null);
   }
 }
 
@@ -181,20 +186,22 @@ function applyClose(
   exitPrice: number,
   exitReason: ExitReason,
   exitTimeIst: string,
-  fees: number
+  fees: number | null
 ): void {
   const trade = findById(tradeId);
   if (!trade || trade.status !== "open") return;
 
   const isLong = trade.entryPrice <= trade.tp1;
-  const grossPnl = isLong
-    ? (exitPrice - trade.entryPrice)
-    : (trade.entryPrice - exitPrice);
-  const netPnl = grossPnl - (fees ?? 0);
-  const roiPct = trade.entryPrice !== 0 ? (grossPnl / trade.entryPrice) * 100 : 0;
-
-  const risk = Math.abs(trade.entryPrice - trade.stopLoss);
-  const rMultiple = risk > 0 ? Number((netPnl / risk).toFixed(3)) : 0;
+  const quantity = trade.quantity && trade.quantity > 0 ? trade.quantity : 1;
+  const feesApplied = fees ?? estimateFees(trade.entryPrice, exitPrice, quantity);
+  const { grossPnl, netPnl, roiPct, rMultiple } = computeClosePnl({
+    isLong,
+    entryPrice: trade.entryPrice,
+    exitPrice,
+    quantity,
+    fees: feesApplied,
+    stopLoss: trade.stopLoss,
+  });
 
   const entryMs = Date.parse(trade.createdAtIst);
   const exitMs = Date.parse(exitTimeIst);
@@ -216,7 +223,7 @@ function applyClose(
     exitReason,
     grossPnl,
     netPnl,
-    fees: fees ?? 0,
+    fees: feesApplied,
     roiPct,
     rMultiple,
     timeInTradeSec,

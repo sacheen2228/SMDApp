@@ -4,8 +4,9 @@
 import { NextResponse } from "next/server";
 import { fetchWithFallback, FallbackSource } from "@/lib/fetch-with-fallback";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
-import { buildFreshnessMeta } from "@/lib/api-freshness";
+import { buildFreshnessMeta, withSessionAwareFreshness } from "@/lib/api-freshness";
 import { getNSEIndiaVIX, getNSEIndices } from "@/lib/nse-api";
+import { getTradingSession } from "@/lib/expiry-liquidity/market-session-config";
 
 const INDICES = [
   { key: "NIFTY", yahoo: "^NSEI", mcId: "NIFTY 50", name: "NIFTY 50" },
@@ -322,34 +323,21 @@ export async function GET() {
 
     const regimeResult = calculateRegime(factors, vix);
 
-    // Market session
-    const now = new Date();
-    const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-    const hours = ist.getHours();
-    const mins = ist.getMinutes();
-    const day = ist.getDay();
-    const timeNum = hours * 100 + mins;
-    const iso = ist.toISOString().split('T')[0];
+    // Market session — canonical calendar + clock (IST), shared with
+    // isTradingDay()/isHoliday(). This route used to inline its own weekend
+    // check, holiday list and time-of-day ladder.
+    const session = getTradingSession();
 
-    const NSE_HOLIDAYS = new Set([
-      '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-      '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
-    ]);
-
-    let session: string;
-    if (day === 0 || day === 6) session = "CLOSED";
-    else if (NSE_HOLIDAYS.has(iso)) session = "CLOSED";
-    else if (timeNum < 915) session = "PRE_OPEN";
-    else if (timeNum < 930) session = "OPEN";
-    else if (timeNum < 1530) session = "REGULAR";
-    else if (timeNum < 1600) session = "POST_MARKET";
-    else session = "CLOSED";
-
-    const freshness = buildFreshnessMeta({
-      provider: indexData.some((i: any) => !i.estimated) ? "nse-india" : "moneycontrol+yahoo",
-      dataTimestamp: new Date(),
-      dataType: "regime",
-    });
+    // Collected just now — but "now" is outside market hours on a weekend /
+    // holiday / after-hours. LIVE is only truthful while the exchange is open.
+    const freshness = withSessionAwareFreshness(
+      buildFreshnessMeta({
+        provider: indexData.some((i: any) => !i.estimated) ? "nse-india" : "moneycontrol+yahoo",
+        dataTimestamp: new Date(),
+        dataType: "regime",
+      }),
+      session,
+    );
 
     const result = {
       regime: regimeResult.regime,

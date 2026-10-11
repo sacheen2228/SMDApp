@@ -49,7 +49,10 @@ async function fetchBreezeSnapshot(
 
     let chain: Awaited<ReturnType<typeof getOptionChain>> = null;
     let chosenExpiry = '';
-    for (const exp of expiries) {
+    // Front month only. A spot snapshot is always the nearest contract; if
+    // that has no data, walking every back month just burns the caller's
+    // timeout — and with a dead session each attempt costs a full SDK hang.
+    for (const exp of expiries.slice(0, 2)) {
       const result = await getOptionChain(symbol, exp);
       if (result && result.calls.length + result.puts.length > 0) {
         chain = result;
@@ -326,23 +329,6 @@ export function nseChainToSnapshot(
   };
 }
 
-// First non-null result wins; nulls decrement a pending counter. Used to race
-// Breeze and NSE against each other without waiting for the slower provider.
-function firstNonNull<T>(promises: Promise<T | null>[]): Promise<T | null> {
-  return new Promise((resolve) => {
-    let pending = promises.length;
-    if (pending === 0) return resolve(null);
-    for (const p of promises) {
-      p.then((v) => {
-        if (v != null) resolve(v);
-        else if (--pending === 0) resolve(null);
-      }).catch(() => {
-        if (--pending === 0) resolve(null);
-      });
-    }
-  });
-}
-
 // Bound a provider attempt: slow = unavailable for this call. Without this a
 // hanging Breeze SDK (session retry loop, 10-20s) starves the probe race even
 // though NSE would answer in seconds.
@@ -371,18 +357,12 @@ export async function fetchOptionChainSnapshot(
   symbol: string,
   spot: number
 ): Promise<OptionChainSnapshot | null> {
-  const useBreeze = Date.now() >= breezeOptionsCooldownUntil;
-  const breezeP: Promise<OptionChainSnapshot | null> = useBreeze
-    ? withTimeout(
-        fetchBreezeSnapshot(symbol, spot).then((r) => {
-          breezeOptionsCooldownUntil = r ? 0 : Date.now() + OPTION_CHAIN_COOLDOWN;
-          return r;
-        }),
-        6_000,
-        () => { breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN; }
-      )
-    : Promise.resolve(null);
-
+  // PROVIDER HIERARCHY (see SOP.md §1): NSE is the designated primary for
+  // NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY and NSE equities. Breeze is an
+  // explicit opt-in fallback only — it is consulted solely when NSE fails or
+  // returns an unusable chain, and never while it is in failure cooldown.
+  // This used to race Breeze ∥ NSE, which issued a doomed Breeze call on every
+  // single fetch even with the session long dead.
   const nseP = withTimeout(
     (async (): Promise<OptionChainSnapshot | null> => {
       try {
@@ -392,14 +372,28 @@ export async function fetchOptionChainSnapshot(
         return snap;
       } catch (err) {
         const msg = typeof err === 'string' ? err : (err as any)?.message || String(err);
-        console.warn(`[F&O] NSE fallback chain failed for ${symbol}: ${msg.substring(0, 100)}`);
+        console.warn(`[F&O] NSE chain failed for ${symbol}: ${msg.substring(0, 100)}`);
         return null;
       }
     })(),
     10_000
   );
 
-  return firstNonNull([breezeP, nseP]);
+  const nse = await nseP;
+  if (nse) return nse;
+
+  // NSE failed — Breeze is the opt-in fallback, and only if it is not already
+  // in cooldown from a prior failure.
+  if (Date.now() < breezeOptionsCooldownUntil) return null;
+
+  return withTimeout(
+    fetchBreezeSnapshot(symbol, spot).then((r) => {
+      breezeOptionsCooldownUntil = r ? 0 : Date.now() + OPTION_CHAIN_COOLDOWN;
+      return r;
+    }),
+    6_000,
+    () => { breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN; }
+  );
 }
 
 // Concurrent batch fetch of per-stock option chains with a module-level cache
@@ -464,13 +458,20 @@ export async function fetchFuturesData(symbol: string, spot: number): Promise<Fu
     const exchangeCode = getExchangeCode(symbol);
     const breezeStockCode = bfoStockCode(symbol);
 
-    const result = await withAuthRetry(async (breeze) => {
-      return breeze.getOptionChainQuotes({
-        stockCode: breezeStockCode,
-        exchangeCode: exchangeCode as any,
-        productType: 'futures',
-      });
-    });
+    // Futures quotes have no public NSE equivalent — Breeze is the only feed.
+    // Bound it: a dead session makes the SDK's generateSession() hang, which
+    // used to stall the whole F&O scan for tens of seconds.
+    const result = await withTimeout(
+      withAuthRetry(async (breeze) => {
+        return breeze.getOptionChainQuotes({
+          stockCode: breezeStockCode,
+          exchangeCode: exchangeCode as any,
+          productType: 'futures',
+        });
+      }),
+      6_000,
+      () => { breezeOptionsCooldownUntil = Date.now() + OPTION_CHAIN_COOLDOWN; }
+    );
 
     const rows = result?.Success || [];
     if (!rows || rows.length === 0) return null;

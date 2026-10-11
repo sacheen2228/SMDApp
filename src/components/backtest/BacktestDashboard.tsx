@@ -300,8 +300,9 @@ export default function BacktestDashboard() {
   const [sort, setSort] = useState<"newest" | "pnl" | "r" | "conf">("newest");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [includeArchived, setIncludeArchived] = useState(false);
 
-  const KNOWN_STRATEGIES = ["BTST", "ZERO_HERO_AI", "SMC"];
+  const KNOWN_STRATEGIES = ["SMART_MONEY", "BTST", "ZERO_HERO_AI"];
 
   // Strategy dropdown: the three known strategies + any others seen in the ledger
   const strategyOptions = useMemo(() => {
@@ -341,10 +342,11 @@ export default function BacktestDashboard() {
       symbol: symbol || undefined,
       dateFrom: dateFrom || undefined,
       dateTo: dateTo || undefined,
+      includeArchived: includeArchived || undefined,
       pageSize: 50,
       page,
     }),
-    [strategyId, status, outcome, symbol, dateFrom, dateTo, page]
+    [strategyId, status, outcome, symbol, dateFrom, dateTo, includeArchived, page]
   );
 
   const fetchData = useCallback(async () => {
@@ -395,6 +397,17 @@ export default function BacktestDashboard() {
             <span className={`w-1.5 h-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-red-400"}`} />
             {connected ? "Connected :4001" : "Disconnected"}
           </span>
+          <button
+            onClick={() => { setIncludeArchived((v) => !v); setPage(1); }}
+            title="Toggle: Live book (active strategies only) vs Full history (includes retired/dead recorders)"
+            className={`text-[9px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+              includeArchived
+                ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                : "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+            }`}
+          >
+            {includeArchived ? "Full history" : "Live book"}
+          </button>
         </div>
         <div className="flex gap-1">
           <a href={exportUrl("csv", buildFilters())} target="_blank" rel="noreferrer" className={btnCls}>

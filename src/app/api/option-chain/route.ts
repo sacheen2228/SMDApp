@@ -7,10 +7,12 @@ import { initSession } from '@/lib/icici-breeze/auth';
 import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
 import { calculateGreeks } from '@/lib/greeks';
+import { normalizeOptionChain } from '@/lib/data-layer';
 import { getNSEOptionChain } from '@/lib/nse-api';
 import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
-import { buildFreshnessMeta } from '@/lib/api-freshness';
+import { buildFreshnessMeta, withSessionAwareFreshness, providerTimestamp } from '@/lib/api-freshness';
+import { getTradingSession } from '@/lib/expiry-liquidity/market-session-config';
 import { providerHealth } from '@/lib/provider-health';
 import { getCurrentSession } from '@/lib/market-session';
 import { isPlausibleOptionSymbol } from '@/lib/stockUniverse';
@@ -107,16 +109,145 @@ export async function GET(request: NextRequest) {
     }
 
     let chainData: any = null;
-    let source = 'simulation';
+    let source = 'NO_DATA';
+    let dataTimestamp: Date = new Date();
+    // The provider's own publication timestamp, when it ships one. Null means
+    // "we collected this, but cannot verify how current it is" — never LIVE.
+    let providerTs: Date | null = null;
     
-    // FINAL PROVIDER TREE: MOAPI → Breeze (bounded timeout) → NSE/BSE
+    // FINAL PROVIDER TREE (see SOP.md §1) — exchange-aware:
+    //   1. NSE primary  — NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities
+    //   2. BSE primary  — SENSEX/BANKEX (NSE has no contract for these)
+    //   3. MOAPI fallback
+    //   4. Breeze opt-in last resort
+    //   Yahoo must NEVER enter this path.
     // If all valid sources fail: OPTION_CHAIN=UNAVAILABLE → NO_TRADE
     
     // Off-hours fast path: MO/Breeze can only serve live sessions (MO times
     // out, Breeze needs auth) — NSE + Yahoo carry the last session's data.
     const offHours = !getCurrentSession('index').isMarketOpen;
+    const bseIndex = isBSEIndex(symbol);
 
-    // 1. Try MOAPI first (preferred primary provider) - 6s timeout (includes auto-login)
+    // ── 1. NSE PRIMARY — NSE indices and equities ──────────────────
+    let rawNse: any = null;
+    const nseStart = Date.now();
+    if (!chainData && !bseIndex) {
+      // NSE path for NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + equities
+      try {
+        const nseData = await Promise.race([
+          getNSEOptionChain(symbol),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 7000))
+        ]);
+        rawNse = nseData;
+        if (nseData?.records?.data) {
+          chainData = {
+            data: nseData.records.data.map((row: any) => ({
+              strike: row.strikePrice,
+              ce: row.CE ? {
+                ltp: row.CE.lastPrice || 0,
+                oi: row.CE.openInterest || 0,
+                oiChg: row.CE.changeinOpenInterest || 0,
+                volume: row.CE.totalTradedVolume || 0,
+                iv: row.CE.impliedVolatility || 0,
+                delta: row.CE.greeks?.delta || 0,
+                gamma: row.CE.greeks?.gamma || 0,
+                theta: row.CE.greeks?.theta || 0,
+                vega: row.CE.greeks?.vega || 0,
+                bid: row.CE.bid || 0,
+                ask: row.CE.ask || 0,
+              } : null,
+              pe: row.PE ? {
+                ltp: row.PE.lastPrice || 0,
+                oi: row.PE.openInterest || 0,
+                oiChg: row.PE.changeinOpenInterest || 0,
+                volume: row.PE.totalTradedVolume || 0,
+                iv: row.PE.impliedVolatility || 0,
+                delta: row.PE.greeks?.delta || 0,
+                gamma: row.PE.greeks?.gamma || 0,
+                theta: row.PE.greeks?.theta || 0,
+                vega: row.PE.greeks?.vega || 0,
+                bid: row.PE.bid || 0,
+                ask: row.PE.ask || 0,
+              } : null,
+            })),
+            spotPrice: (nseData as any).records?.underlyingValue || 0,
+            expiries: ((nseData as any).records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
+            selectedExpiry: (nseData as any).records?.expiryDates?.[0] || '',
+            summary: { spotPrice: (nseData as any).records?.underlyingValue || 0 },
+          };
+          source = 'nse-api';
+          // Use the exchange's own timestamp when it ships one — collecting
+          // "now" is collection time, not a quote time, and would fabricate LIVE.
+          providerTs = providerTimestamp(nseData);
+          dataTimestamp = providerTs ?? new Date();
+          providerHealth.recordSuccess("nse", Date.now() - nseStart);
+          console.log('[API] NSE API data fetched successfully');
+        }
+      } catch (nseError) {
+        console.warn('[API] NSE API failed:', nseError);
+        providerHealth.recordFailure("nse", "NETWORK", String(nseError).substring(0, 200));
+      }
+    }
+
+    // ── 2. BSE PRIMARY — SENSEX/BANKEX only ────────────────────────
+    // NSE has no contract for these, so BSE is not a "fallback" here.
+    if (!chainData && bseIndex) {
+      try {
+        const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
+        const bseExpiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
+        const selectedExpiry = expiry || bseExpiries[0] || '';
+
+        if (selectedExpiry) {
+          const bseStart = Date.now();
+          const bseChain = await Promise.race([
+            getBSEOptionChain(symbol, selectedExpiry),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('BSE_TIMEOUT')), 5000))
+          ]).catch(() => null);
+          if (bseChain?.data?.length) {
+            chainData = {
+              data: bseChain.data.map((row) => ({
+                strike: row.strike,
+                ce: row.ce ? {
+                  ltp: row.ce.ltp || 0,
+                  oi: row.ce.oi || 0,
+                  oiChg: row.ce.oiChg || 0,
+                  volume: row.ce.volume || 0,
+                  iv: row.ce.iv || 0,
+                  chg: row.ce.chg || 0,
+                  bid: row.ce.bid || 0,
+                  ask: row.ce.ask || 0,
+                } : null,
+                pe: row.pe ? {
+                  ltp: row.pe.ltp || 0,
+                  oi: row.pe.oi || 0,
+                  oiChg: row.pe.oiChg || 0,
+                  volume: row.pe.volume || 0,
+                  iv: row.pe.iv || 0,
+                  chg: row.pe.chg || 0,
+                  bid: row.pe.bid || 0,
+                  ask: row.pe.ask || 0,
+                } : null,
+              })),
+              spotPrice: bseChain.spotPrice,
+              expiries: bseExpiries.map((e: string) => ({ date: e, label: e, daysToExpiry: 0 })),
+              selectedExpiry,
+              summary: { spotPrice: bseChain.spotPrice },
+            };
+            source = 'bse-api';
+            // BSE DeriOptionChain_IV ships no publication timestamp — leave
+            // providerTs null so freshness cannot claim LIVE.
+            providerTs = providerTimestamp(bseChain);
+            dataTimestamp = providerTs ?? new Date();
+            providerHealth.recordSuccess("nse", Date.now() - bseStart); // reuse nse slot for BSE
+            console.log('[API] BSE option chain fetched for', symbol);
+          }
+        }
+      } catch (bseError) {
+        console.warn('[API] BSE API failed for', symbol, ':', String(bseError).substring(0, 200));
+      }
+    }
+
+    // ── 3. MOAPI FALLBACK — only when the exchange's own API failed ──
     const moapiStart = Date.now();
     if (!chainData && !offHours && !providerHealth.shouldSkip("moapi")) {
     try {
@@ -173,10 +304,10 @@ export async function GET(request: NextRequest) {
       console.log('[API] Skipping MOAPI —', offHours ? 'market closed' : 'circuit open');
     }
 
-    // 2. Breeze fallback — bounded timeout (5s) + fast failover
-    // AUTH_REQUIRED, TIMEOUT, ERROR → immediately skip to NSE/BSE
-    // No offHours gate here: a valid session serves frozen off-hours data
-    // fine, and dead auth is already encoded in the circuit (shouldSkip).
+    // ── 4. BREEZE OPT-IN LAST RESORT — bounded 7s + fast failover ──
+    // AUTH_REQUIRED, TIMEOUT, ERROR → immediately give up (NO_DATA).
+    // No offHours gate: a valid session serves frozen off-hours data fine,
+    // and dead auth is already encoded in the circuit (shouldSkip).
     const breezeStart = Date.now();
     if (!chainData && !providerHealth.shouldSkip("breeze")) {
       try {
@@ -184,8 +315,10 @@ export async function GET(request: NextRequest) {
           if (expiry) {
             return await getOptionChain(symbol, expiry);
           } else {
+            // Front month only — a spot snapshot is always the nearest
+            // contract, and walking every back month burns the whole budget.
             const expiries = await getOptionChainExpiries(symbol);
-            for (const exp of expiries) {
+            for (const exp of expiries.slice(0, 2)) {
               const chain = await getOptionChain(symbol, exp);
               if (chain) return { ...chain, expiries };
             }
@@ -193,8 +326,8 @@ export async function GET(request: NextRequest) {
           }
         };
 
-        // Bounded timeout: 8 seconds max for Breeze
-        const BREEZE_TIMEOUT_MS = 7000; // expiries cached after first call (~3-4s chain)
+        // Bounded timeout: 7 seconds max for Breeze
+        const BREEZE_TIMEOUT_MS = 7000;
         const chain = await Promise.race([
           fetchBreezeChain(),
           new Promise<null>((_, reject) =>
@@ -214,116 +347,41 @@ export async function GET(request: NextRequest) {
         if (errMsg.includes('AUTH') || errMsg.includes('401') || errMsg.includes('403') ||
             errMsg.includes('Unauthorized') || errMsg.includes('BREEZE_TIMEOUT')) {
           providerHealth.recordFailure("breeze", errMsg.includes('TIMEOUT') ? "TIMEOUT" : "AUTH", errMsg.substring(0, 120));
-          console.warn(`[API] Breeze ${errMsg.includes('TIMEOUT') ? 'timeout' : 'auth error'} — fast failover to NSE/BSE`);
+          console.warn(`[API] Breeze ${errMsg.includes('TIMEOUT') ? 'timeout' : 'auth error'} — no data from last resort`);
         } else {
-          providerHealth.recordFailure("breeze", "ERROR", errMsg.substring(0, 120));
-          console.warn('[API] Breeze error, trying NSE/BSE:', errMsg.substring(0, 120));
+          providerHealth.recordFailure("breeze", "NETWORK", errMsg.substring(0, 120));
+          console.warn('[API] Breeze error:', errMsg.substring(0, 120));
         }
       }
     } else if (!chainData) {
-      console.log('[API] Skipping Breeze — circuit open or MOAPI succeeded');
+      console.log('[API] Skipping Breeze — circuit open or an earlier provider succeeded');
     }
 
-    // 3. Fallback to NSE API (with timeout)
-    const nseStart = Date.now();
-    if (!chainData) {
-      try {
-        const nseData = await Promise.race([
-          getNSEOptionChain(symbol),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 7000))
-        ]);
-        if (nseData?.records?.data) {
-          chainData = {
-            data: nseData.records.data.map((row: any) => ({
-              strike: row.strikePrice,
-              ce: row.CE ? {
-                ltp: row.CE.lastPrice || 0,
-                oi: row.CE.openInterest || 0,
-                oiChg: row.CE.changeinOpenInterest || 0,
-                volume: row.CE.totalTradedVolume || 0,
-                iv: row.CE.impliedVolatility || 0,
-                delta: row.CE.greeks?.delta || 0,
-                gamma: row.CE.greeks?.gamma || 0,
-                theta: row.CE.greeks?.theta || 0,
-                vega: row.CE.greeks?.vega || 0,
-                bid: row.CE.bid || 0,
-                ask: row.CE.ask || 0,
-              } : null,
-              pe: row.PE ? {
-                ltp: row.PE.lastPrice || 0,
-                oi: row.PE.openInterest || 0,
-                oiChg: row.PE.changeinOpenInterest || 0,
-                volume: row.PE.totalTradedVolume || 0,
-                iv: row.PE.impliedVolatility || 0,
-                delta: row.PE.greeks?.delta || 0,
-                gamma: row.PE.greeks?.gamma || 0,
-                theta: row.PE.greeks?.theta || 0,
-                vega: row.PE.greeks?.vega || 0,
-                bid: row.PE.bid || 0,
-                ask: row.PE.ask || 0,
-              } : null,
-            })),
-            spotPrice: nseData.records?.underlyingValue || 0,
-            expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
-            selectedExpiry: nseData.records?.expiryDates?.[0] || '',
-            summary: { spotPrice: nseData.records?.underlyingValue || 0 },
-          };
-          source = 'nse-api';
-          providerHealth.recordSuccess("nse", Date.now() - nseStart);
-          console.log('[API] NSE API data fetched successfully');
-        }
-      } catch (nseError) {
-        console.warn('[API] NSE API also failed:', nseError);
-        providerHealth.recordFailure("nse", "NETWORK", String(nseError).substring(0, 200));
+    // Normalize option chain via central data layer (only when no chain was
+    // already found by the provider tree — normalize is a structure adapter,
+    // not a data source)
+    if (!chainData && rawNse) {
+      const normResult = normalizeOptionChain(rawNse, expiry, symbol);
+      if (normResult.data) {
+        chainData = {
+          data: normResult.data.strikes.map((s: any) => ({
+            strike: s.strike,
+            ce: s.ce ? { ltp: s.ce.ltp || 0, oi: s.ce.oi || 0, oiChg: s.ce.oiChange || 0, volume: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: 0, bid: s.ce.bid || 0, ask: s.ce.ask || 0 } : null,
+            pe: s.pe ? { ltp: s.pe.ltp || 0, oi: s.pe.oi || 0, oiChg: s.pe.oiChange || 0, volume: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: 0, bid: s.pe.bid || 0, ask: s.pe.ask || 0 } : null,
+          })),
+          spotPrice: normResult.data.spot || 0,
+          expiry: normResult.data.expiry,
+          selectedExpiry: normResult.data.expiry || '',
+          summary: { spotPrice: normResult.data.spot },
+        };
+        source = normResult.source;
+        providerTs = providerTimestamp(normResult.data);
+        dataTimestamp = providerTs ?? new Date();
       }
     }
-    
-    // 4. BSE indices (SENSEX, BANKEX) — use BSE public API (with timeout)
-    if (!chainData && isBSEIndex(symbol)) {
-      try {
-        const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
-        const bseExpiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
-        const selectedExpiry = expiry || bseExpiries[0] || '';
-
-        if (selectedExpiry) {
-          const bseChain = await Promise.race([
-            getBSEOptionChain(symbol, selectedExpiry),
-            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('BSE_TIMEOUT')), 5000))
-          ]).catch(() => null);
-          if (bseChain?.data?.length) {
-            chainData = {
-              data: bseChain.data.map((row) => ({
-                strike: row.strike,
-                ce: row.ce ? {
-                  ltp: row.ce.ltp || 0,
-                  oi: row.ce.oi || 0,
-                  oiChg: row.ce.oiChg || 0,
-                  volume: row.ce.volume || 0,
-                  iv: row.ce.iv || 0,
-                  chg: row.ce.chg || 0,
-                  bid: row.ce.bid || 0,
-                  ask: row.ce.ask || 0,
-                } : null,
-                pe: row.pe ? {
-                  ltp: row.pe.ltp || 0,
-                  oi: row.pe.oi || 0,
-                  oiChg: row.pe.oiChg || 0,
-                  volume: row.pe.volume || 0,
-                  iv: row.pe.iv || 0,
-                  chg: row.pe.chg || 0,
-                  bid: row.pe.bid || 0,
-                  ask: row.pe.ask || 0,
-                } : null,
-              })),
-              spotPrice: bseChain.spotPrice,
-              expiries: bseExpiries.map((e: string) => ({ date: e, label: e, daysToExpiry: 0 })),
-              selectedExpiry,
-              summary: { spotPrice: bseChain.spotPrice },
-            };
-            source = 'bse-api';
-          }
-        }
-      } catch {}
+    if (!chainData) {
+      chainData = {};
+      source = 'NO_DATA';
     }
 
     // Yahoo is NOT option-chain fallback per FINAL PROVIDER TREE.
@@ -341,7 +399,7 @@ export async function GET(request: NextRequest) {
       } else {
         return NextResponse.json({
           success: false,
-          error: "No option chain data available for this symbol. Breeze, Motilal, NSE, and Yahoo Finance all failed.",
+          error: `No option chain data available for ${symbol}. NSE, BSE, MOAPI and Breeze all failed or returned no contract.`,
         }, { status: 503 });
       }
     }
@@ -512,87 +570,10 @@ export async function GET(request: NextRequest) {
       };
     }
     
-    // Run full SDM analysis
-    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
-
-    // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
-    // Throttled: only sends once per trade signature per day
-    if (analysis?.recommendation && source !== "simulation") {
-      const rec = analysis.recommendation;
-      const isTradeAction = rec.action && !["HOLD", "NEUTRAL", "WAIT"].includes(rec.action);
-      const isPut = !!(rec.action?.includes("PUT") || rec.optionType === "PE");
-      // PE historically 0 wins on this book — demand a higher confidence floor.
-      const confFloor = isPut ? 70 : 60;
-      const conf = Number(rec.confidence || rec.sdmScore || 0);
-      const hasConfidence = conf >= confFloor;
-      // Quality gates — Final Validator rules (MIN_PREMIUM=5, no zero levels).
-      // option-chain-api historically wrote ₹0.05 PE stubs that always lost.
-      const entryPx = Number(rec.entryPrice || 0);
-      const slPx = Number(rec.stopLoss || 0);
-      const tp1Px = Number(rec.tp1 || 0);
-      const entryOk = entryPx >= 5;
-      // BUY options: SL must sit below entry for both CE and PE.
-      const levelsOk = slPx > 0 && tp1Px > 0 && entryPx > slPx && tp1Px > entryPx;
-      // Session gate — POST_CLOSE auto-entries historically won 0/17 (-4299).
-      // market-session.ts allowedActions is the single source of truth.
-      const { isTradeAllowed } = await import("@/lib/market-session");
-      const sessGate = isTradeAllowed(isPut || rec.optionType === "PE" ? "PUT" : "CALL");
-      if (isTradeAction && hasConfidence && entryOk && levelsOk && sessGate.allowed) {
-        const { getActiveTrades, addTrade } = await import('@/lib/activeTradeTracker');
-        const tradeSig = `${symbol}|${rec.strike || analysis.atmStrike || spotPrice}|${rec.optionType || ''}|${rec.action}`;
-        const alreadyActive = getActiveTrades().some(t =>
-          t.symbol === symbol && t.strike === (rec.strike || analysis.atmStrike || spotPrice)
-        );
-        if (!alreadyActive) {
-          sendTradeAlert({
-            symbol,
-            action: rec.action,
-            strike: rec.strike || analysis.atmStrike || spotPrice,
-            type: rec.optionType || rec.direction || "OPTION",
-            confidence: rec.confidence || rec.sdmScore || 0,
-            entry: rec.entryPrice,
-            stopLoss: rec.stopLoss,
-            target1: rec.tp1,
-            target2: rec.tp2,
-            source: `📊 SDM Analysis (${source})`,
-            instrument: rec.optionType === 'PE' ? 'PUT' : 'CALL',
-          }).then(() => {
-            addTrade({
-              id: `api-${Date.now()}`,
-              symbol,
-              side: 'BUY' as const, // option-chain route is options-only
-              instrument: `${symbol} ${rec.strike || ''} ${rec.optionType || ''}`.trim(),
-              strike: rec.strike || analysis.atmStrike || spotPrice || 0,
-              optionType: rec.optionType || '',
-              entry: entryPx,
-              sl: slPx,
-              tp1: tp1Px,
-              tp2: rec.tp2 || 0,
-              status: 'ACTIVE',
-              sentAt: new Date().toISOString(),
-              source: `option-chain-api`,
-              expiry: selectedExpiry || undefined,
-            }, true); // skipAlert=true — sendTradeAlert already sent above
-          }).catch(() => {});
-        }
-      } else if (isTradeAction && hasConfidence) {
-        console.log(`[option-chain] Signal skipped: entryOk=${entryOk} levelsOk=${levelsOk} session=${sessGate.allowed ? "ok" : sessGate.reason} conf=${rec.confidence || rec.sdmScore}`);
-      }
-    }
-
-    // Transform expiry strings into objects the frontend expects
-    const rawExpiries = chainData.expiries || [];
-    const expiries = rawExpiries.map((e: any) => {
-      const dateStr = typeof e === 'string' ? e : e?.date || '';
-      const dateObj = parseBreezeDate(dateStr);
-      const now = new Date();
-      const diffMs = dateObj.getTime() - now.getTime();
-      const daysToExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-      return { date: dateStr, label: dateStr, daysToExpiry };
-    });
-
     // Generate candles — try Breeze 5-min intraday first (bounded), fallback to
     // Yahoo daily candles so the SMC engine always has structure data.
+    // (Moved ABOVE the SDM alert gate so the PE falling-market technical
+    // confirmation can use them — isFallingMarket needs candles + spot.)
     // Skip Breeze when its circuit is open (AUTH dead) — otherwise the
     // 3×4s attempts eat the remaining endpoint budget after a successful chain.
     let candles5m: any[] = [];
@@ -664,6 +645,91 @@ export async function GET(request: NextRequest) {
       } catch {}
     }
 
+    // Run full SDM analysis
+    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
+
+    // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
+    // Throttled: only sends once per trade signature per day
+    if (analysis?.recommendation && source !== "simulation") {
+      const rec = analysis.recommendation;
+      const isTradeAction = rec.action && !["HOLD", "NEUTRAL", "WAIT"].includes(rec.action);
+      const isPut = !!(rec.action?.includes("PUT") || rec.optionType === "PE");
+      // PE historically 0 wins on this book — demand a higher confidence floor.
+      const confFloor = isPut ? 70 : 60;
+      const conf = Number(rec.confidence || rec.sdmScore || 0);
+      const hasConfidence = conf >= confFloor;
+      // Quality gates — Final Validator rules (MIN_PREMIUM=5, no zero levels).
+      // option-chain-api historically wrote ₹0.05 PE stubs that always lost.
+      const entryPx = Number(rec.entryPrice || 0);
+      const slPx = Number(rec.stopLoss || 0);
+      const tp1Px = Number(rec.tp1 || 0);
+      const entryOk = entryPx >= 5;
+      // BUY options: SL must sit below entry for both CE and PE.
+      const levelsOk = slPx > 0 && tp1Px > 0 && entryPx > slPx && tp1Px > entryPx;
+      // Session gate — POST_CLOSE auto-entries historically won 0/17 (-4299).
+      // market-session.ts allowedActions is the single source of truth.
+      const { isTradeAllowed } = await import("@/lib/market-session");
+      const sessGate = isTradeAllowed(isPut || rec.optionType === "PE" ? "PUT" : "CALL");
+      // PE technical confirmation — price must be DEMONSTRABLY falling
+      // (spot < VWAP + DOWN structure + sustained momentum, ≥2 of 3 layers).
+      // OI flow alone is positioning, not price action. TDD: falling-market.test.ts
+      const { isFallingMarket } = await import("@/lib/technical-analysis");
+      const peFallingOk = !isPut || isFallingMarket(candles5m, spotPrice).falling;
+      if (isTradeAction && hasConfidence && entryOk && levelsOk && sessGate.allowed && peFallingOk) {
+        const { getActiveTrades, addTrade } = await import('@/lib/activeTradeTracker');
+        const tradeSig = `${symbol}|${rec.strike || analysis.atmStrike || spotPrice}|${rec.optionType || ''}|${rec.action}`;
+        const alreadyActive = getActiveTrades().some(t =>
+          t.symbol === symbol && t.strike === (rec.strike || analysis.atmStrike || spotPrice)
+        );
+        if (!alreadyActive) {
+          sendTradeAlert({
+            symbol,
+            action: rec.action,
+            strike: rec.strike || analysis.atmStrike || spotPrice,
+            type: rec.optionType || rec.direction || "OPTION",
+            confidence: rec.confidence || rec.sdmScore || 0,
+            entry: rec.entryPrice,
+            stopLoss: rec.stopLoss,
+            target1: rec.tp1,
+            target2: rec.tp2,
+            source: `📊 SDM Analysis (${source})`,
+            instrument: rec.optionType === 'PE' ? 'PUT' : 'CALL',
+          }).then(() => {
+            addTrade({
+              id: `api-${Date.now()}`,
+              symbol,
+              side: 'BUY' as const, // option-chain route is options-only
+              instrument: `${symbol} ${rec.strike || ''} ${rec.optionType || ''}`.trim(),
+              strike: rec.strike || analysis.atmStrike || spotPrice || 0,
+              optionType: rec.optionType || '',
+              entry: entryPx,
+              sl: slPx,
+              tp1: tp1Px,
+              tp2: rec.tp2 || 0,
+              status: 'ACTIVE',
+              sentAt: new Date().toISOString(),
+              source: `option-chain-api`,
+              expiry: selectedExpiry || undefined,
+            }, true); // skipAlert=true — sendTradeAlert already sent above
+          }).catch(() => {});
+        }
+      } else if (isTradeAction && hasConfidence) {
+        console.log(`[option-chain] Signal skipped: entryOk=${entryOk} levelsOk=${levelsOk} session=${sessGate.allowed ? "ok" : sessGate.reason} conf=${rec.confidence || rec.sdmScore}`);
+      }
+    }
+
+    // Transform expiry strings into objects the frontend expects
+    const rawExpiries = chainData.expiries || [];
+    const expiries = rawExpiries.map((e: any) => {
+      const dateStr = typeof e === 'string' ? e : e?.date || '';
+      const dateObj = parseBreezeDate(dateStr);
+      const now = new Date();
+      const diffMs = dateObj.getTime() - now.getTime();
+      const daysToExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+      return { date: dateStr, label: dateStr, daysToExpiry };
+    });
+
+
     // Attach live India VIX + previous close to the response summary (and the
     // SDM analysis) for every source path. We never fabricate these — when the
     // live feed was unavailable they stay null and the UI shows "—". Also copy
@@ -706,14 +772,34 @@ export async function GET(request: NextRequest) {
       analysis.spot.changePct = livePrevClose > 0 ? Math.round((spotChg / livePrevClose) * 10000) / 100 : 0;
     }
     
-    const dataTimestamp = new Date();
-    const freshness = buildFreshnessMeta({
-      provider: source,
-      dataTimestamp,
-      dataType: "optionChain",
-      fallbackUsed: source !== "icici-breeze",
-      fallbackReason: source === "nse-api" ? "Breeze/MO unavailable — NSE fallback used" : source === "motilal-api" ? "Breeze + NSE failed" : undefined,
-    });
+    // NSE and BSE are the DESIGNATED PRIMARY providers for their own
+    // exchanges (NSE for NIFTY/BANKNIFiny/MIDCPNIFTY + equities, BSE for
+    // SENSEX/BANKEX). Serving from them is NOT a fallback. Breeze/MO only
+    // enter when explicitly opted in. Report a fallback only when something
+    // other than the designated primary had to stand in.
+    const isDesignatedPrimary =
+      source === 'nse-api' || source === 'bse-api' ||
+      source === 'icici-breeze' || source === 'motilal-api';
+    // Prefer the exchange's own publication timestamp. BSE ships none, so an
+    // absent timestamp means we can only prove we just collected the payload,
+    // not that it is current — cap that at FRESH, never LIVE.
+    // LIVE is only truthful while the exchange is open and printing. A fetch
+    // on a weekend / holiday / pre-open / after-hours returns the last known
+    // state — never let it claim LIVE.
+    const freshness = withSessionAwareFreshness(
+      buildFreshnessMeta({
+        provider: source,
+        dataTimestamp: providerTs ?? new Date(),
+        dataType: "optionChain",
+        fallbackUsed: !isDesignatedPrimary && source !== 'NO_DATA',
+        fallbackReason: source === 'NO_DATA' ? "All providers unavailable" : undefined,
+      }),
+      getTradingSession(),
+    );
+    if (!providerTs && freshness.freshness === 'LIVE') {
+      freshness.freshness = 'FRESH';
+      freshness.delayed = false;
+    }
 
     // Build canonical OptionChain from normalized strikes (backward-compatible addition)
     let canonical: any = null;
@@ -725,6 +811,8 @@ export async function GET(request: NextRequest) {
           ltp: s.ce.ltp || 0,
           bid: s.ce.bid ?? null,
           ask: s.ce.ask ?? null,
+          spread: (s.ce.bid != null && s.ce.ask != null) ? (s.ce.ask - s.ce.bid) : null,
+          quoteQuality: ((s.ce.bid != null && s.ce.ask != null)) ? 'COMPLETE' as const : 'PARTIAL' as const,
           oi: s.ce.oi || 0,
           oiChange: s.ce.oiChg || 0,
           volume: s.ce.volume || 0,
@@ -739,6 +827,8 @@ export async function GET(request: NextRequest) {
           ltp: s.pe.ltp || 0,
           bid: s.pe.bid ?? null,
           ask: s.pe.ask ?? null,
+          spread: (s.pe.bid != null && s.pe.ask != null) ? (s.pe.ask - s.pe.bid) : null,
+          quoteQuality: ((s.pe.bid != null && s.pe.ask != null)) ? 'COMPLETE' as const : 'PARTIAL' as const,
           oi: s.pe.oi || 0,
           oiChange: s.pe.oiChg || 0,
           volume: s.pe.volume || 0,
@@ -767,7 +857,7 @@ export async function GET(request: NextRequest) {
       provenance: {
         source,
         retrievedAt: dataTimestamp.toISOString(),
-        freshness: freshness.freshness === 'LIVE' ? 'LIVE' : freshness.freshness === 'FRESH' ? 'FRESH' : 'DELAYED',
+        freshness: freshness.freshness, // LIVE | FRESH | DELAYED | STALE | UNAVAILABLE
         isLive: freshness.freshness === 'LIVE',
         ageSeconds: Math.round(freshness.ageMs / 1000),
         status: optionChainStrikes.length > 0 ? 'AVAILABLE' : 'PARTIAL',

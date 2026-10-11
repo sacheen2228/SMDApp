@@ -4,6 +4,97 @@
 
 import { fetchMarketNews, type NewsArticle } from '@/lib/news-engine';
 
+// ── Pure helpers (exported for the Phase 5 Web Intel sync layer) ──
+// The class below USES these — single source of truth, no duplicate lexicon.
+
+// Entity symbols recognized by the intelligence layer (index + F&O heavyweights).
+export const KNOWN_ENTITIES = [
+  'NIFTY', 'BANKNIFTY', 'SENSEX', 'MIDCPNIFTY', 'FINNIFTY',
+  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'ITC', 'SBIN',
+  'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI',
+  'SUNPHARMA', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'TATAMOTORS', 'WIPRO', 'M&M',
+  'HCLTECH', 'POWERGRID', 'NTPC', 'ONGC', 'TATASTEEL', 'JSWSTEEL', 'ADANIENT',
+  'ADANIPORTS', 'TECHM', 'HDFCLIFE', 'SBILIFE', 'BRITANNIA', 'CIPLA', 'DRREDDY',
+  'DIVISLAB', 'EICHERMOT', 'GRASIM', 'HEROMOTOCO', 'HINDALCO', 'INDUSINDBK',
+  'BAJAJFINSV', 'COALINDIA', 'BPCL', 'TRENT', 'APOLLOHOSP', 'LTIM', 'HDFCAMC',
+  'CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS',
+] as const;
+
+export function extractNewsEntities(text: string): string[] {
+  const entities: string[] = [];
+  for (const sym of KNOWN_ENTITIES) {
+    if (text.includes(sym)) entities.push(sym);
+  }
+  return [...new Set(entities)];
+}
+
+export function detectNewsSector(text: string, entities: string[]): string {
+  for (const [sector, keywords] of Object.entries(SECTOR_KEYWORDS)) {
+    for (const kw of keywords) {
+      if (text.includes(kw.toUpperCase()) || entities.some(e => kw.toUpperCase().includes(e))) {
+        return sector;
+      }
+    }
+  }
+  return 'Unknown';
+}
+
+export function detectNewsCategory(text: string): string {
+  for (const [cat, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const kw of keywords) {
+      if (text.includes(kw.toUpperCase())) return cat;
+    }
+  }
+  return 'general';
+}
+
+export function detectNewsBias(text: string): NewsBias {
+  const positiveWords = ['surge', 'rally', 'gain', 'profit', 'growth', 'bullish', 'upgrade', 'buy', 'outperform', 'beat', 'strong', 'record high', 'breakout'];
+  const negativeWords = ['crash', 'fall', 'drop', 'loss', 'decline', 'bearish', 'downgrade', 'sell', 'underperform', 'miss', 'weak', 'record low', 'breakdown', 'ban', 'restrict'];
+
+  let posCount = 0;
+  let negCount = 0;
+  for (const w of positiveWords) { if (text.includes(w.toUpperCase())) posCount++; }
+  for (const w of negativeWords) { if (text.includes(w.toUpperCase())) negCount++; }
+
+  if (posCount > negCount + 1) return 'POSITIVE';
+  if (negCount > posCount + 1) return 'NEGATIVE';
+  if (posCount > 0 && negCount > 0) return 'MIXED';
+  return 'NEUTRAL';
+}
+
+export function assessNewsImpact(text: string, entities: string[], category: string): NewsImpact {
+  let score = 0;
+
+  // Category weight
+  if (category === 'regulatory') score += 3;
+  else if (category === 'earnings') score += 2;
+  else if (category === 'geopolitical') score += 2;
+  else if (category === 'macro') score += 1;
+
+  // Entity weight (indices = higher impact)
+  if (entities.some(e => ['NIFTY', 'BANKNIFTY', 'SENSEX'].includes(e))) score += 2;
+  if (entities.length > 3) score += 1;
+
+  // Sentiment intensity
+  const intenseWords = ['surge', 'crash', 'record', 'ban', 'war', 'crisis', 'emergency'];
+  for (const w of intenseWords) {
+    if (text.includes(w.toUpperCase())) score += 1;
+  }
+
+  if (score >= 5) return 'CRITICAL';
+  if (score >= 3) return 'HIGH';
+  if (score >= 1) return 'MEDIUM';
+  return 'LOW';
+}
+
+export function isNewsOvernightRelevant(text: string, category: string, impact: NewsImpact): boolean {
+  if (impact === 'CRITICAL' || impact === 'HIGH') return true;
+  if (category === 'geopolitical' || category === 'macro') return true;
+  if (text.includes('US MARKET') || text.includes('ASIAN MARKET') || text.includes('GLOBAL')) return true;
+  return false;
+}
+
 // ── News Event Types ──
 export type NewsImpact = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 export type NewsBias = 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
@@ -180,98 +271,31 @@ class NewsIntelligence {
     };
   }
 
-  // ── Entity Extraction ──
+  // ── Delegates to the exported pure helpers (Phase 5: the Web Intel
+  //    sync layer enriches stored records with THESE SAME functions —
+  //    one lexicon, zero duplication) ──
   private extractEntities(text: string): string[] {
-    const entities: string[] = [];
-    const allSymbols = [
-      'NIFTY', 'BANKNIFTY', 'SENSEX', 'MIDCPNIFTY', 'FINNIFTY',
-      'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'ITC', 'SBIN',
-      'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI',
-      'SUNPHARMA', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'TATAMOTORS', 'WIPRO', 'M&M',
-      'HCLTECH', 'POWERGRID', 'NTPC', 'ONGC', 'TATASTEEL', 'JSWSTEEL', 'ADANIENT',
-      'ADANIPORTS', 'TECHM', 'HDFCLIFE', 'SBILIFE', 'BRITANNIA', 'CIPLA', 'DRREDDY',
-      'DIVISLAB', 'EICHERMOT', 'GRASIM', 'HEROMOTOCO', 'HINDALCO', 'INDUSINDBK',
-      'BAJAJFINSV', 'COALINDIA', 'BPCL', 'TRENT', 'APOLLOHOSP', 'LTIM', 'HDFCAMC',
-      'CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS',
-    ];
-
-    for (const sym of allSymbols) {
-      if (text.includes(sym)) entities.push(sym);
-    }
-
-    return [...new Set(entities)];
+    return extractNewsEntities(text);
   }
 
-  // ── Sector Detection ──
   private detectSector(text: string, entities: string[]): string {
-    for (const [sector, keywords] of Object.entries(SECTOR_KEYWORDS)) {
-      for (const kw of keywords) {
-        if (text.includes(kw.toUpperCase()) || entities.some(e => kw.toUpperCase().includes(e))) {
-          return sector;
-        }
-      }
-    }
-    return 'Unknown';
+    return detectNewsSector(text, entities);
   }
 
-  // ── Category Detection ──
   private detectCategory(text: string): string {
-    for (const [cat, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-      for (const kw of keywords) {
-        if (text.includes(kw.toUpperCase())) return cat;
-      }
-    }
-    return 'general';
+    return detectNewsCategory(text);
   }
 
-  // ── Bias Detection ──
   private detectBias(text: string): NewsBias {
-    const positiveWords = ['surge', 'rally', 'gain', 'profit', 'growth', 'bullish', 'upgrade', 'buy', 'outperform', 'beat', 'strong', 'record high', 'breakout'];
-    const negativeWords = ['crash', 'fall', 'drop', 'loss', 'decline', 'bearish', 'downgrade', 'sell', 'underperform', 'miss', 'weak', 'record low', 'breakdown', 'ban', 'restrict'];
-
-    let posCount = 0;
-    let negCount = 0;
-    for (const w of positiveWords) { if (text.includes(w.toUpperCase())) posCount++; }
-    for (const w of negativeWords) { if (text.includes(w.toUpperCase())) negCount++; }
-
-    if (posCount > negCount + 1) return 'POSITIVE';
-    if (negCount > posCount + 1) return 'NEGATIVE';
-    if (posCount > 0 && negCount > 0) return 'MIXED';
-    return 'NEUTRAL';
+    return detectNewsBias(text);
   }
 
-  // ── Impact Assessment ──
   private assessImpact(text: string, entities: string[], category: string): NewsImpact {
-    let score = 0;
-
-    // Category weight
-    if (category === 'regulatory') score += 3;
-    else if (category === 'earnings') score += 2;
-    else if (category === 'geopolitical') score += 2;
-    else if (category === 'macro') score += 1;
-
-    // Entity weight (indices = higher impact)
-    if (entities.some(e => ['NIFTY', 'BANKNIFTY', 'SENSEX'].includes(e))) score += 2;
-    if (entities.length > 3) score += 1;
-
-    // Sentiment intensity
-    const intenseWords = ['surge', 'crash', 'record', 'ban', 'war', 'crisis', 'emergency'];
-    for (const w of intenseWords) {
-      if (text.includes(w.toUpperCase())) score += 1;
-    }
-
-    if (score >= 5) return 'CRITICAL';
-    if (score >= 3) return 'HIGH';
-    if (score >= 1) return 'MEDIUM';
-    return 'LOW';
+    return assessNewsImpact(text, entities, category);
   }
 
-  // ── Overnight Relevance ──
   private isOvernightRelevant(text: string, category: string, impact: NewsImpact): boolean {
-    if (impact === 'CRITICAL' || impact === 'HIGH') return true;
-    if (category === 'geopolitical' || category === 'macro') return true;
-    if (text.includes('US MARKET') || text.includes('ASIAN MARKET') || text.includes('GLOBAL')) return true;
-    return false;
+    return isNewsOvernightRelevant(text, category, impact);
   }
 
   // ── Get recent events ──

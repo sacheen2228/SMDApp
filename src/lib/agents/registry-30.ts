@@ -702,6 +702,39 @@ async function analyzeBuyerConfluence(ctx: AgentContext): Promise<AgentResearchO
   if (vix > 25) { score -= 2; riskFlags.push(`VIX ${vix} — expensive premiums`); }
   if (ctx.trend === 'SIDEWAYS') { score -= 1; riskFlags.push('Sideways market — poor directional conviction'); }
 
+  // Phase 4 — technical confluence (evidence only; grouped, not one vote
+  // per indicator). Absent technical layer → NO_DATA, never assumed.
+  const ta = ctx.technical;
+  if (ta) {
+    const align = ta.movingAverages.emaAlignment;
+    if (align === 'BULLISH' || align === 'BEARISH') {
+      score += 1;
+      evidence.push(`EMA alignment ${align.toLowerCase()} — trend conviction`);
+    } else if (align === 'MIXED') {
+      riskFlags.push('EMA alignment mixed — no trend conviction');
+    }
+    if (ta.mtf.mtfConsensus !== 'NO_DATA') {
+      evidence.push(`MTF consensus: ${ta.mtf.mtfConsensus}`);
+      if (ta.mtf.mtfConflict) { score -= 1; riskFlags.push('Multi-timeframe conflict'); }
+    }
+    if (ta.momentum.rsiState === 'OVERBOUGHT') { score -= 1; riskFlags.push('RSI overbought — chase risk'); }
+    else if (ta.momentum.rsiState === 'OVERSOLD') { score -= 1; riskFlags.push('RSI oversold — falling-knife risk'); }
+
+    // Recent candle patterns (last 3 completed bars) — single grouped block
+    const recentPatterns = ta.candlePatterns.slice(-3);
+    if (recentPatterns.length > 0) {
+      const bull = recentPatterns.filter(p => p.direction === 'BULLISH');
+      const bear = recentPatterns.filter(p => p.direction === 'BEARISH');
+      if (bull.length > bear.length) {
+        score += 1;
+        evidence.push(`Recent bullish candle pattern${bull.length > 1 ? 's' : ''}: ${[...new Set(bull.map(p => p.pattern))].join(', ')}`);
+      } else if (bear.length > bull.length) {
+        score -= 1;
+        riskFlags.push(`Recent bearish candle pattern${bear.length > 1 ? 's' : ''}: ${[...new Set(bear.map(p => p.pattern))].join(', ')}`);
+      }
+    }
+  }
+
   confidence = Math.max(20, Math.min(80, 40 + score * 8));
 
   if (score >= 3) { bias = 'BULLISH'; }
@@ -979,15 +1012,61 @@ async function analyzeMarketStructure(ctx: AgentContext): Promise<AgentResearchO
     evidence.push(`Swing High: ${ctx.swingHigh}, Swing Low: ${ctx.swingLow}`);
   }
 
+  // Phase 4 — SMC evidence from real candles (§15): structure, liquidity,
+  // imbalance, institutional zones, positioning. Evidence only — FVG/OB/BOS
+  // never auto-trigger trades; conflicts are preserved for Grok.
+  const conflicts: string[] = [];
+  const ta = ctx.technical;
+  if (ta) {
+    const pa = ta.priceAction;
+    if (pa.higherHigh && pa.higherLow) evidence.push('Swing sequence: HH + HL');
+    if (pa.lowerHigh && pa.lowerLow) evidence.push('Swing sequence: LH + LL');
+
+    const s = ta.smc;
+    if (s.bos) evidence.push(`Break of structure (BOS): ${s.bos.direction}`);
+    if (s.choch) evidence.push(`Change of character (CHoCH): ${s.choch.direction}`);
+    if (s.mss) {
+      evidence.push(`MSS: ${s.mss.direction}${s.mss.displacement ? ' + displacement' : ''}${s.mss.sweepGated ? ' (sweep-gated)' : ''}`);
+    }
+    if (s.fvg && s.fvg.status !== 'FILLED') {
+      evidence.push(`${s.fvg.direction} FVG ${s.fvg.lower}-${s.fvg.upper} (${s.fvg.status}, ${(s.fvg.filledPercent * 100).toFixed(0)}% filled)`);
+    }
+    if (s.orderBlock && !s.orderBlock.mitigated) {
+      evidence.push(`${s.orderBlock.direction} order block ${s.orderBlock.low}-${s.orderBlock.high} (unmitigated${s.orderBlock.strength != null ? `, strength ${s.orderBlock.strength}x ATR` : ''})`);
+    }
+    if (s.liquidity) {
+      evidence.push(`Liquidity ${s.liquidity.levelType} @ ${s.liquidity.price}${s.liquidity.swept ? ' swept' : ''}${s.liquidity.reclaimed ? ', reclaimed' : ''}`);
+    }
+    if (s.premiumDiscount) {
+      evidence.push(`Dealing range: ${s.premiumDiscount.currentZone} (equilibrium ${s.premiumDiscount.equilibrium})`);
+    }
+
+    // Align or preserve conflict with the existing structural read
+    const structureDir = s.bos?.direction ?? s.choch?.direction ?? null;
+    if (structureDir === 'BULLISH' && bias === 'BEARISH') conflicts.push('SMC structure bullish vs bearish structure read');
+    if (structureDir === 'BEARISH' && bias === 'BULLISH') conflicts.push('SMC structure bearish vs bullish structure read');
+    if (structureDir && ((structureDir === 'BULLISH' && bias === 'BULLISH') || (structureDir === 'BEARISH' && bias === 'BEARISH'))) {
+      confidence = Math.min(confidence + 5, 80);
+    }
+  }
+
   return createOutput(def, ctx, {
     observation: `Structure: ${trend}, Event: ${lastEvent}`,
     bias,
     confidence,
     evidence,
     riskFlags: [],
+    conflicts,
     recommendationContext: confidence >= 55 ? 'TRADE' : 'RESEARCH_ONLY',
     recommendationReason: `Market structure: ${trend}`,
-    data: { trend, lastEvent, swingHigh: ctx.swingHigh, swingLow: ctx.swingLow },
+    data: {
+      trend, lastEvent, swingHigh: ctx.swingHigh, swingLow: ctx.swingLow,
+      smc: ta?.smc ?? null,
+      priceAction: ta ? {
+        higherHigh: ta.priceAction.higherHigh, higherLow: ta.priceAction.higherLow,
+        lowerHigh: ta.priceAction.lowerHigh, lowerLow: ta.priceAction.lowerLow,
+      } : null,
+    },
   });
 }
 
@@ -1056,6 +1135,25 @@ async function analyzeSupportResistance(ctx: AgentContext): Promise<AgentResearc
     evidence.push(`Resistance: ${ctx.resistanceLevels.join(', ')}`);
   }
 
+  // Phase 4 — strongest confirmed zones with provenance (§13): clustered
+  // swings + PDH/PDL + volume profile + OI walls (never a blind merge).
+  const ta = ctx.technical;
+  const srData = ta?.supportResistance ?? null;
+  if (srData?.available) {
+    for (const lv of srData.levels.slice(0, 4)) {
+      evidence.push(`${lv.type} ${lv.level} (${lv.source}, strength ${lv.strength}, touches ${lv.touchCount})`);
+    }
+    confidence += 5;
+  }
+  const vp = ta?.volumeProfile;
+  if (vp?.profileAvailable && vp.poc != null && vp.vah != null && vp.val != null) {
+    evidence.push(`Volume profile: POC ${vp.poc}, VAH ${vp.vah}, VAL ${vp.val}`);
+    if (spot > vp.vah) evidence.push('Spot above value area — acceptance zone overhead');
+    else if (spot < vp.val) evidence.push('Spot below value area — acceptance zone below');
+    else evidence.push('Spot inside value area — balanced zone');
+    confidence += 5;
+  }
+
   return createOutput(def, ctx, {
     observation: `S/R: PDH ${pdh}, PDL ${pdl}, Supports: ${ctx.supportLevels.length}, Resistances: ${ctx.resistanceLevels.length}${lv ? `, OI walls ${lv.levels.oiSupport ?? '?'}/${lv.levels.oiResistance ?? '?'}` : ''}`,
     bias,
@@ -1066,6 +1164,10 @@ async function analyzeSupportResistance(ctx: AgentContext): Promise<AgentResearc
     recommendationReason: 'S/R levels define trade zones',
     data: {
       pdh, pdl, supports: ctx.supportLevels, resistances: ctx.resistanceLevels,
+      levels: srData?.levels ?? [],
+      volumeProfile: vp?.profileAvailable
+        ? { poc: vp.poc, vah: vp.vah, val: vp.val }
+        : null,
       jarvisLevels: lv ? {
         oiSupport: lv.levels.oiSupport, oiResistance: lv.levels.oiResistance,
         maxPain: lv.levels.maxPain, confluenceZones: lv.confluenceZones.length,
@@ -1087,8 +1189,20 @@ async function analyzeVWAP(ctx: AgentContext): Promise<AgentResearchOutput> {
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 50;
 
-  // Use POC as VWAP proxy
-  const vwap = ctx.poc || 0;
+  // Phase 4 — real session VWAP computed from OHLCV candles (preferred).
+  // Falls back to the existing POC proxy when no candle VWAP exists.
+  const ta = ctx.technical;
+  let vwap = 0;
+  let vwapSource = '';
+  if (ta) {
+    for (const tf of ['15m', '5m', '30m', '1h', '1d']) {
+      const ind = ta.timeframes[tf]?.indicators;
+      if (ind && ind.vwap.value > 0) { vwap = ind.vwap.value; vwapSource = tf; break; }
+    }
+  }
+  if (vwap <= 0) vwap = ctx.poc || 0;
+  if (vwap > 0 && vwapSource) evidence.push(`VWAP source: ${vwapSource} candles`);
+
   if (vwap <= 0) {
     return createOutput(def, ctx, {
       observation: 'VWAP/POC data unavailable',
@@ -1140,10 +1254,20 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 50;
 
+  // Phase 4 — candle-derived volume evidence (bar-level, completed bars).
+  // Hermes values still win when present; technical fills genuine gaps.
+  const ta = ctx.technical;
+  const tv = ta?.volume;
+  if (tv) {
+    if (tv.volumeTrend !== 'NO_DATA') evidence.push(`Volume trend: ${tv.volumeTrend}`);
+    if (tv.relativeVolume > 0) evidence.push(`Relative volume: ${tv.relativeVolume}x 20-bar average`);
+    if (tv.volumeSpike) { evidence.push('Volume spike ≥ 2x average'); confidence = Math.min(confidence + 5, 80); }
+  }
+
   const vol = ctx.volume || 0;
-  const poc = ctx.poc || 0;
-  const vah = ctx.vah || 0;
-  const val = ctx.val || 0;
+  const poc = ctx.poc || (tv?.poc ?? 0);
+  const vah = ctx.vah || (tv?.vah ?? 0);
+  const val = ctx.val || (tv?.val ?? 0);
 
   if (vol > 0) {
     evidence.push(`Volume: ${vol.toLocaleString()}`);
@@ -1154,11 +1278,11 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
     if (ctx.spot > poc) {
       evidence.push('Price above POC — bullish acceptance');
       bias = 'BULLISH';
-      confidence = 55;
+      confidence = Math.max(confidence, 55);
     } else if (ctx.spot < poc) {
       evidence.push('Price below POC — bearish acceptance');
       bias = 'BEARISH';
-      confidence = 55;
+      confidence = Math.max(confidence, 55);
     }
   }
 
@@ -1177,7 +1301,13 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
     riskFlags: [],
     recommendationContext: confidence >= 55 ? 'TRADE' : 'RESEARCH_ONLY',
     recommendationReason: 'Volume confirms price action',
-    data: { vol, poc, vah, val },
+    data: {
+      vol, poc, vah, val,
+      relativeVolume: tv?.relativeVolume ?? null,
+      volumeSpike: tv?.volumeSpike ?? false,
+      volumeTrend: tv?.volumeTrend ?? 'NO_DATA',
+      profileAvailable: ta?.volumeProfile.profileAvailable ?? false,
+    },
   });
 }
 
@@ -1191,6 +1321,7 @@ async function analyzeBreakout(ctx: AgentContext): Promise<AgentResearchOutput> 
   const def = REGISTRY.find(a => a.id === 'BREAKOUT')!;
   const evidence: string[] = [];
   const riskFlags: string[] = [];
+  const conflicts: string[] = [];
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 45;
 
@@ -1222,12 +1353,38 @@ async function analyzeBreakout(ctx: AgentContext): Promise<AgentResearchOutput> 
     evidence.push('No breakout — price within range');
   }
 
+  // Phase 4 — breakout confirmations from real candles: volume spike,
+  // momentum candle, structure, retest (§23). Evidence only.
+  const ta = ctx.technical;
+  if (ta) {
+    const v = ta.volume;
+    if (bias === 'BULLISH' || bias === 'BEARISH') {
+      if (v.volumeSpike) { evidence.push('Volume spike confirms breakout pressure'); confidence = Math.min(confidence + 5, 80); }
+      else if (v.volumeTrend === 'NO_DATA') riskFlags.push('No candle volume data — breakout unconfirmed');
+      if (ta.priceAction.momentumCandle === bias) { evidence.push('Momentum candle confirms direction'); confidence = Math.min(confidence + 5, 80); }
+      if (bias === 'BULLISH' && ta.priceAction.lowerHigh && !ta.priceAction.higherHigh) {
+        conflicts.push('Breakout above PDH but swing sequence still LH/LL');
+      }
+      if (bias === 'BEARISH' && ta.priceAction.higherLow && !ta.priceAction.lowerLow) {
+        conflicts.push('Breakdown below PDL but swing sequence still HH/HL');
+      }
+      // Simple retest: price hovering at the broken level (±0.15%)
+      if (bias === 'BULLISH' && pdh > 0 && spot >= pdh && spot <= pdh * 1.0015) {
+        evidence.push('Retesting PDH from above');
+      }
+      if (bias === 'BEARISH' && pdl > 0 && spot <= pdl && spot >= pdl * 0.9985) {
+        evidence.push('Retesting PDL from below');
+      }
+    }
+  }
+
   return createOutput(def, ctx, {
     observation: `Breakout: ${spot > pdh ? 'Above PDH' : spot < pdl ? 'Below PDL' : 'In range'}`,
     bias,
     confidence,
     evidence,
     riskFlags,
+    conflicts,
     recommendationContext: confidence >= 55 ? 'TRADE' : 'WAIT',
     recommendationReason: `Breakout ${confidence >= 55 ? 'confirmed' : 'unconfirmed'}`,
     data: { pdh, pdl, spot },
@@ -1243,10 +1400,71 @@ async function analyzeBreakout(ctx: AgentContext): Promise<AgentResearchOutput> 
 async function analyzeMTFConfirmation(ctx: AgentContext): Promise<AgentResearchOutput> {
   const def = REGISTRY.find(a => a.id === 'MTF_CONFIRMATION')!;
   const evidence: string[] = [];
+  const riskFlags: string[] = [];
+  const conflicts: string[] = [];
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 50;
 
-  // Use trend as MTF proxy
+  // Phase 4 — real per-timeframe trends + consensus (§20). Conflicts are
+  // NEVER forced into agreement; absent technical → legacy trend proxy.
+  const ta = ctx.technical;
+  if (ta) {
+    const m = ta.mtf;
+    evidence.push(`Timeframes — 5m: ${m.trend5m}, 15m: ${m.trend15m}, 30m: ${m.trend30m}, 1h: ${m.trend1h}, Daily: ${m.trendDaily}`);
+    if (m.trend3m === 'NO_DATA') evidence.push('3m: NO_DATA (provider does not supply 3m candles)');
+
+    if (m.mtfConflict) {
+      evidence.push('Higher and lower timeframes disagree — no MTF confirmation');
+      conflicts.push('MTF: bullish and bearish timeframes conflict');
+      riskFlags.push('Multi-timeframe conflict');
+      confidence = 40;
+    } else if (m.mtfConsensus === 'BULLISH') {
+      evidence.push('MTF consensus: BULLISH');
+      bias = 'BULLISH';
+      confidence = 65;
+    } else if (m.mtfConsensus === 'BEARISH') {
+      evidence.push('MTF consensus: BEARISH');
+      bias = 'BEARISH';
+      confidence = 65;
+    } else if (m.mtfConsensus === 'RANGING') {
+      evidence.push('MTF consensus: RANGING');
+      confidence = 45;
+    } else {
+      evidence.push('MTF: NO_DATA — no timeframe indicators available');
+      confidence = 30;
+    }
+
+    if (m.higherTFTrend !== 'NO_DATA') evidence.push(`Higher-TF trend: ${m.higherTFTrend}`);
+    if (m.lowerTFTrend !== 'NO_DATA') evidence.push(`Lower-TF trend: ${m.lowerTFTrend}`);
+
+    // Structural confirmation still applies (existing behavior)
+    if (ctx.lastEvent === 'BOS_UP' || ctx.lastEvent === 'CHOCH_UP') {
+      evidence.push(`Structure confirms: ${ctx.lastEvent}`);
+      confidence = Math.max(confidence, 65);
+    } else if (ctx.lastEvent === 'BOS_DOWN' || ctx.lastEvent === 'CHOCH_DOWN') {
+      evidence.push(`Structure confirms: ${ctx.lastEvent}`);
+      confidence = Math.max(confidence, 65);
+    }
+
+    return createOutput(def, ctx, {
+      observation: `MTF: consensus ${m.mtfConsensus}${m.mtfConflict ? ' (conflict)' : ''}, Structure ${ctx.lastEvent}`,
+      bias,
+      confidence,
+      evidence,
+      riskFlags,
+      conflicts,
+      recommendationContext: confidence >= 55 ? 'TRADE' : 'WAIT',
+      recommendationReason: `MTF ${confidence >= 55 ? 'confirmed' : 'not confirmed'}`,
+      data: {
+        mtfConsensus: m.mtfConsensus, mtfConflict: m.mtfConflict,
+        higherTFTrend: m.higherTFTrend, lowerTFTrend: m.lowerTFTrend,
+        trend3m: m.trend3m, trend5m: m.trend5m, trend15m: m.trend15m, trend1h: m.trend1h, trendDaily: m.trendDaily,
+        lastEvent: ctx.lastEvent,
+      },
+    });
+  }
+
+  // Legacy path — no technical layer: use trend as MTF proxy
   const trend = ctx.trend || 'SIDEWAYS';
   if (trend === 'UP') {
     evidence.push('Higher timeframe trend: UP');
@@ -1291,6 +1509,8 @@ async function analyzeMTFConfirmation(ctx: AgentContext): Promise<AgentResearchO
 async function analyzeMomentum(ctx: AgentContext): Promise<AgentResearchOutput> {
   const def = REGISTRY.find(a => a.id === 'MOMENTUM')!;
   const evidence: string[] = [];
+  const riskFlags: string[] = [];
+  const conflicts: string[] = [];
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 50;
 
@@ -1310,15 +1530,68 @@ async function analyzeMomentum(ctx: AgentContext): Promise<AgentResearchOutput> 
     confidence = 40;
   }
 
+  // Phase 4 — momentum indicators as ONE grouped evidence block (§34:
+  // RSI/MACD/EMA/SuperTrend are correlated — grouped, bounded bumps,
+  // never five independent votes).
+  const ta = ctx.technical;
+  if (ta) {
+    const mo = ta.momentum;
+    let bump = 0;
+
+    if (mo.rsiState !== 'NO_DATA') {
+      evidence.push(`RSI ${mo.rsi} (${mo.rsiState}${mo.rsiSlope !== 'NO_DATA' ? `, slope ${mo.rsiSlope}` : ''})`);
+      if (mo.rsiState === 'OVERBOUGHT') riskFlags.push('RSI overbought');
+      else if (mo.rsiState === 'OVERSOLD') riskFlags.push('RSI oversold');
+      else if (mo.rsiState === 'BULLISH' && bias === 'BEARISH') conflicts.push('RSI bullish while price momentum bearish');
+      else if (mo.rsiState === 'BEARISH' && bias === 'BULLISH') conflicts.push('RSI bearish while price momentum bullish');
+      else if ((mo.rsiState === 'BULLISH' && bias === 'BULLISH') || (mo.rsiState === 'BEARISH' && bias === 'BEARISH')) bump += 3;
+    }
+
+    if (mo.macdState !== 'NO_DATA') {
+      evidence.push(`MACD ${mo.macd} / signal ${mo.signal} (${mo.macdState}, histogram ${mo.histogramSlope})`);
+      if ((mo.macdState === 'BULLISH' && bias === 'BULLISH') || (mo.macdState === 'BEARISH' && bias === 'BEARISH')) bump += 3;
+      else if ((mo.macdState === 'BULLISH' && bias === 'BEARISH') || (mo.macdState === 'BEARISH' && bias === 'BULLISH')) conflicts.push('MACD disagrees with price momentum');
+    }
+
+    if (ta.supertrend) {
+      evidence.push(`SuperTrend ${ta.supertrend.direction} @ ${ta.supertrend.value} (${ta.supertrend.distance.toFixed(2)}% away)`);
+      const stBull = ta.supertrend.direction === 'UP' && bias === 'BULLISH';
+      const stBear = ta.supertrend.direction === 'DOWN' && bias === 'BEARISH';
+      if (stBull || stBear) bump += 2;
+      else if ((ta.supertrend.direction === 'UP' && bias === 'BEARISH') || (ta.supertrend.direction === 'DOWN' && bias === 'BULLISH')) conflicts.push('SuperTrend disagrees with price momentum');
+    }
+
+    if (ta.movingAverages.emaTrend !== 'NO_DATA') {
+      evidence.push(`EMA trend: ${ta.movingAverages.emaTrend}`);
+      if ((ta.movingAverages.emaTrend === 'BULLISH' && bias === 'BULLISH') || (ta.movingAverages.emaTrend === 'BEARISH' && bias === 'BEARISH')) bump += 2;
+    }
+
+    if (mo.roc !== null) evidence.push(`5-bar ROC: ${mo.roc > 0 ? '+' : ''}${mo.roc}%`);
+    if (ta.priceAction.momentumCandle !== 'NO_DATA' && ta.priceAction.momentumCandle !== 'NEUTRAL') {
+      evidence.push(`Momentum candle: ${ta.priceAction.momentumCandle}`);
+      if (ta.priceAction.momentumCandle === bias) bump += 2;
+    }
+
+    confidence = Math.max(20, Math.min(80, confidence + bump));
+  }
+
   return createOutput(def, ctx, {
     observation: `Momentum: ${priceChangePct.toFixed(2)}%`,
     bias,
     confidence,
     evidence,
-    riskFlags: [],
+    riskFlags,
+    conflicts,
     recommendationContext: confidence >= 55 ? 'TRADE' : 'WAIT',
     recommendationReason: `Momentum ${Math.abs(priceChangePct) > 0.3 ? 'present' : 'weak'}`,
-    data: { priceChangePct },
+    data: {
+      priceChangePct,
+      rsi: ta?.momentum.rsi ?? null,
+      rsiState: ta?.momentum.rsiState ?? 'NO_DATA',
+      macdState: ta?.momentum.macdState ?? 'NO_DATA',
+      supertrend: ta?.supertrend ?? null,
+      roc: ta?.momentum.roc ?? null,
+    },
   });
 }
 
@@ -1344,7 +1617,19 @@ async function analyzeATR(ctx: AgentContext): Promise<AgentResearchOutput> {
     for (const n of g.notes.slice(0, 3)) evidence.push(n);
   }
 
-  const atr = (ctx.rawContext as any)?.atr || 0;
+  // Phase 4 — real candle ATR preferred (completed bars); rawContext.atr
+  // remains the fallback. Regime + IV rank/percentile reported when known.
+  const ta = ctx.technical;
+  const taAtr = ta && ta.volatility.atrRegime !== 'NO_DATA' ? ta.volatility.atr : 0;
+  const atr = taAtr > 0 ? taAtr : (ctx.rawContext as any)?.atr || 0;
+  if (ta && taAtr > 0) {
+    evidence.push(`ATR regime: ${ta.volatility.atrRegime} (${ta.volatility.atrPercent.toFixed(2)}% of spot, ${ta.timeframes['15m']?.available ? '15m' : 'primary'} TF)`);
+    if (ta.volatility.iv > 0) {
+      evidence.push(`IV: ${ta.volatility.iv.toFixed(1)}${ta.volatility.ivRank != null ? `, IV Rank ${ta.volatility.ivRank.toFixed(0)}` : ''}${ta.volatility.ivPercentile != null ? `, IV Percentile ${ta.volatility.ivPercentile.toFixed(0)}` : ''}`);
+    } else {
+      evidence.push('IV: NO_DATA (broker chain IV unavailable)');
+    }
+  }
   if (atr > 0) {
     const atrPct = ctx.spot > 0 ? (atr / ctx.spot) * 100 : 0;
     evidence.push(`ATR: ${atr.toFixed(2)} (${atrPct.toFixed(2)}% of spot)`);
@@ -1367,7 +1652,14 @@ async function analyzeATR(ctx: AgentContext): Promise<AgentResearchOutput> {
     riskFlags,
     recommendationContext: 'RESEARCH_ONLY',
     recommendationReason: 'ATR informs stop loss and position sizing',
-    data: { atr, expectedMove1Sigma: g?.expectedMove1Sigma ?? null, hoursToExpiry: g?.hoursToExpiry ?? null },
+    data: {
+      atr, expectedMove1Sigma: g?.expectedMove1Sigma ?? null, hoursToExpiry: g?.hoursToExpiry ?? null,
+      atrRegime: ta?.volatility.atrRegime ?? 'NO_DATA',
+      atrPercent: ta?.volatility.atrPercent ?? null,
+      iv: ta?.volatility.iv ?? 0,
+      ivRank: ta?.volatility.ivRank ?? null,
+      ivPercentile: ta?.volatility.ivPercentile ?? null,
+    },
   });
 }
 

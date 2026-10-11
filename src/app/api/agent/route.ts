@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 import { getCurrentSession } from "@/lib/market-session";
 import { sendTradeAlert } from "@/lib/telegram";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
-import type { LLMMessage } from "@/lib/llm-client";
+import { callLLM, type LLMMessage } from "@/lib/llm-client";
 import { buildSMDContext, summarizeContext, type SMDContext } from "@/lib/smd-context";
 import { recordTrade, getMemorySummary } from "@/lib/agent-memory";
 import { logToolCall, logLLMCall, logAgentError, logConversation } from "@/lib/agent-logger";
@@ -886,7 +886,37 @@ Note: Score = setup quality (0-100), NOT probability.
       actions: toolCallsMade,
     });
 
-    return NextResponse.json({
+    // ═══════════════════════════════════════════════════════════
+    // GROQ LLM FALLBACK — ChatGPT-style trading assistant
+    // If no pattern-matched early exit handled the query, use Groq LLM
+    // with full SMD context to answer any trading question.
+    if (true) {
+      try {
+        // Build messages for LLM
+        const systemMsg = { role: "system", content: "You are SDM — an institutional options intelligence engine. Provide real data-driven analysis." };
+        const userMsg = conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === "user"
+          ? conversationHistory[conversationHistory.length - 1]
+          : { role: "user", content: message };
+        const messages: any[] = [systemMsg, userMsg];
+
+        const llmResp = await callLLM(messages, undefined, "groq");
+        if (llmResp && llmResp.content) {
+          const resp = llmResp.content;
+          conversationHistory.push({ role: "assistant", content: resp });
+          // Return early with LLM response — skip rest of processing
+          return NextResponse.json({
+            response: resp,
+            toolCallsMade: ["groq_llm_fallback"],
+            model: "groq",
+            symbol: detectedSymbol,
+          });
+        }
+      } catch (e) {
+        console.warn("[Agent] Groq LLM fallback error:", e?.message || e);
+      }
+    }
+
+        return NextResponse.json({
       response,
       toolCallsMade,
       timestamp: new Date().toISOString(),

@@ -39,7 +39,11 @@ export const HEDGE_CONFIG = {
 
 export const LOT_SIZES: Record<string, number> = {
   NIFTY: 65,
+  BANKNIFTY: 30,
+  FINNIFTY: 60,
+  MIDCPNIFTY: 120,
   SENSEX: 20,
+  BANKEX: 30,
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════

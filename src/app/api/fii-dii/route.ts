@@ -6,9 +6,12 @@ export async function GET() {
   try {
     const data = await fetchFiiDiiData();
     const dataDate = data.latest.date;
+    // An undated feed is not LIVE — it is an undated snapshot. Fall back to
+    // epoch 0 so classifyFreshness() honestly reports STALE/UNAVAILABLE
+    // rather than fabricating "collected right now".
     const freshness = buildFreshnessMeta({
       provider: data.latest.source || "nse",
-      dataTimestamp: dataDate ? new Date(dataDate) : new Date(),
+      dataTimestamp: dataDate ? new Date(dataDate) : new Date(0),
       dataType: "fiiDii",
     });
 
@@ -29,7 +32,8 @@ export async function GET() {
       provenance: {
         source: data.latest.source || 'NSE',
         retrievedAt: new Date().toISOString(),
-        freshness: freshness.freshness === 'LIVE' ? 'LIVE' : freshness.freshness === 'FRESH' ? 'FRESH' : 'DELAYED',
+        // Surface the real level — STALE must not collapse to DELAYED.
+        freshness: freshness.freshness,
         isLive: freshness.freshness === 'LIVE',
         ageSeconds: Math.round(freshness.ageMs / 1000),
         status: 'AVAILABLE',

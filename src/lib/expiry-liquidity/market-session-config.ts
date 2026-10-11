@@ -100,6 +100,10 @@ export const NSE_SESSION_CONFIG: MarketSessionConfig = {
     },
   },
   expiryRules: {
+    // SEBI staggered expiries (canonical: expiry-calculator.ts):
+    //   NIFTY/FINNIFTY = Tuesday (2), MIDCPNIFTY = Wednesday (3),
+    //   BANKNIFTY/SENSEX/BANKEX = Thursday (4).
+    // This engine is NIFTY-centric — weeklyWeekday=2 matches NIFTY.
     weeklyWeekday: 2,  // Tuesday (NIFTY/FINNIFTY)
     monthlyLastWeekday: 2,  // Last Tuesday
     holidayShift: 'PREVIOUS_TRADING_DAY',
@@ -123,20 +127,51 @@ export function getISTMinutes(): number {
 }
 
 // ─── Check if Holiday ────────────────────────────────────────────────
+// IST wall-clock date — the calendar lists Indian exchange holidays, so a
+// UTC `toISOString()` date (or the server's local timezone) would shift the
+// answer for anything after 18:30 IST / before 05:30 IST.
+
+export function getISTDate(date: Date = new Date()): Date {
+  return new Date(date.getTime() + 5.5 * 60 * 60 * 1000);
+}
+
 export function isHoliday(date: Date = new Date()): boolean {
-  const iso = date.toISOString().split('T')[0];
+  const iso = getISTDate(date).toISOString().split('T')[0];
   return NSE_SESSION_CONFIG.holidayCalendar.includes(iso);
 }
 
 // ─── Check if Weekend ────────────────────────────────────────────────
+// Weekday must be read from the IST-shifted date, not the server's local
+// timezone — a UTC-hosted server would see Saturday 01:00 IST as Friday.
+
 export function isWeekend(date: Date = new Date()): boolean {
-  const day = date.getDay();
+  const day = getISTDate(date).getUTCDay();
   return day === 0 || day === 6;
 }
 
 // ─── Check if Trading Day ────────────────────────────────────────────
 export function isTradingDay(date: Date = new Date()): boolean {
   return !isWeekend(date) && !isHoliday(date);
+}
+
+// ─── Coarse trading session (public enum) ────────────────────────────
+// The 5-value vocabulary consumed by technical-analysis.ts and returned by
+// the /api/market/regime route. Derived from the SAME calendar and clock
+// as isTradingDay() so the two can never disagree.
+
+export type TradingSessionLabel = "PRE_OPEN" | "OPEN" | "REGULAR" | "POST_MARKET" | "CLOSED";
+
+export function getTradingSession(date: Date = new Date()): TradingSessionLabel {
+  if (!isTradingDay(date)) return "CLOSED";
+
+  const ist = getISTDate(date);
+  const timeNum = ist.getUTCHours() * 100 + ist.getUTCMinutes();
+
+  if (timeNum < 915) return "PRE_OPEN";
+  if (timeNum < 930) return "OPEN";
+  if (timeNum < 1530) return "REGULAR";
+  if (timeNum < 1600) return "POST_MARKET";
+  return "CLOSED";
 }
 
 // ─── Get Session State ──────────────────────────────────────────────

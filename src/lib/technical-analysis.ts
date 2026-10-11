@@ -1231,3 +1231,112 @@ export function analyzeOptionChain(data: {
 }
 
 // ============================================================
+// ============================================================
+// FALLING-MARKET DETECTOR (PE regime gate)
+// Bearish option trades require price DEMONSTRABLY falling —
+// OI flow alone (sellers vs buyers) is not enough. Three layers,
+// need ≥2 of 3 (a single noisy check is not a trend):
+//   L1 VWAP       spot < session VWAP
+//   L2 Structure  analyzeMarketStructure trend === DOWN
+//   L3 Momentum   last close vs ~5 bars back dropped ≥ minDropPct
+//                 AND ≥2 of last 5 candles red
+// Relative thresholds → identical behaviour on NIFTY (~25k) and
+// SENSEX (~80k). TDD: tests/falling-market.test.ts
+// ============================================================
+
+import { analyzeMarketStructure } from "./market-structure-engine";
+
+export interface FallingMarketInput {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface FallingMarketResult {
+  falling: boolean;
+  /** Which layers fired (for alert evidence / debugging) */
+  layers: { vwap: boolean; structure: boolean; momentum: boolean };
+  reasons: string[];
+}
+
+export function isFallingMarket(
+  candles: FallingMarketInput[] | null | undefined,
+  spot: number,
+  opts?: { minDropPct?: number }
+): FallingMarketResult {
+  const layers = { vwap: false, structure: false, momentum: false };
+  const reasons: string[] = [];
+
+  if (!candles || candles.length < 5 || !Number.isFinite(spot) || spot <= 0) {
+    return { falling: false, layers, reasons: ["insufficient data"] };
+  }
+
+  // L1 — VWAP (typical price; volume fallback 1, close-weighted fallback)
+  let sumPV = 0;
+  let sumV = 0;
+  let sumC = 0;
+  for (const c of candles) {
+    const v = c.volume && c.volume > 0 ? c.volume : 1;
+    const tp = (c.high + c.low + c.close) / 3;
+    sumPV += tp * v;
+    sumV += v;
+    sumC += c.close;
+  }
+  const vwap = sumV > 0 ? sumPV / sumV : sumC / candles.length;
+  if (spot < vwap) {
+    layers.vwap = true;
+    reasons.push(`spot ${spot.toFixed(0)} < VWAP ${vwap.toFixed(0)}`);
+  }
+
+  // L2 — market structure trend (reuse engine; EXCLUDE last 2 bars so a
+  // single spike cannot fake a bearish structure — the trend must already
+  // have been down before the latest candle)
+  try {
+    const structSource = candles.length > 8 ? candles.slice(0, -2) : candles;
+    const structCandles = structSource.slice(-60).map((c, i) => ({
+      time: i,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 1,
+    }));
+    if (analyzeMarketStructure(structCandles).currentTrend === "DOWN") {
+      layers.structure = true;
+      reasons.push("structure trend DOWN");
+    }
+  } catch {
+    /* structure engine failed — layer stays false */
+  }
+
+  // L3 — momentum: SUSTAINED decline, not a one-bar spike.
+  // total drop over ~5 bars AND pre-drop (excluding last bar) ≥ minDropPct
+  // AND ≥2 of last 5 candles red.
+  const minDropPct = opts?.minDropPct ?? 0.08; // 0.08% — 20pts @25k, 65pts @80k
+  const lookback = Math.min(5, candles.length - 1);
+  const past = candles[candles.length - 1 - lookback].close;
+  const last = candles[candles.length - 1].close;
+  const dropPct = past > 0 ? ((past - last) / past) * 100 : 0;
+  const recent = candles.slice(-5);
+  const redCount = recent.filter((c) => c.close < c.open).length;
+  // pre-drop: decline already underway BEFORE the final bar (spike filter)
+  let preDropPct = 0;
+  if (candles.length >= 7) {
+    const before = candles[candles.length - 6].close;
+    const beforeLast = candles[candles.length - 2].close;
+    preDropPct = before > 0 ? ((before - beforeLast) / before) * 100 : 0;
+  } else {
+    preDropPct = dropPct; // no spike-filter data — treat total as pre-drop
+  }
+  if (dropPct >= minDropPct && preDropPct >= minDropPct && redCount >= 2) {
+    layers.momentum = true;
+    reasons.push(
+      `momentum −${dropPct.toFixed(2)}% over ${lookback} bars (pre-spike −${preDropPct.toFixed(2)}%), ${redCount}/5 red`
+    );
+  }
+
+  const hits = Number(layers.vwap) + Number(layers.structure) + Number(layers.momentum);
+  return { falling: hits >= 2, layers, reasons };
+}

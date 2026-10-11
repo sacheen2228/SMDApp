@@ -13,6 +13,7 @@ import {
   type DataFreshnessLevel,
 } from './agent-contract';
 import { runInstitutionalPositioning } from '@/lib/institutional-positioning-engine';
+import { buildTechnicalSnapshot, fetchTechnicalCandles } from '@/lib/technical-snapshot';
 
 export interface AgentSnapshot {
   ctx: AgentContext;
@@ -23,6 +24,11 @@ export interface AgentSnapshot {
 export interface BuildSnapshotOptions {
   apiBase?: string;
   timeframe?: string;
+  // Phase 4 technical layer: fetch real OHLCV (5m/15m/1d, parallel) and
+  // compute ctx.technical. Off by default so the v2 §3 fetch-budget tests
+  // and non-production callers stay at the deliberate ≤12 set; the
+  // production pipeline route enables it.
+  technical?: boolean;
 }
 
 export function defaultApiBase(): string {
@@ -51,6 +57,29 @@ export async function buildAgentSnapshot(
   try {
     ctx.institutional = await runInstitutionalPositioning({ dbOnly: true });
   } catch { /* non-fatal — agents guard on undefined */ }
+
+  // Phase 4 — technical evidence layer from REAL candles (best-effort).
+  // Failure at any point → ctx.technical stays absent → technical agents
+  // report NO_DATA (never fabricated evidence).
+  if (opts.technical) {
+    try {
+      const candlesByTF = await fetchTechnicalCandles(symbol);
+      ctx.technical = buildTechnicalSnapshot({
+        candlesByTF,
+        spot: ctx.spot,
+        prevClose: ctx.prevClose,
+        pdh: ctx.pdh,
+        pdl: ctx.pdl,
+        iv: ctx.atmIV > 0 ? ctx.atmIV : null,
+        oiSupportLevels: ctx.supportLevels,
+        oiResistanceLevels: ctx.resistanceLevels,
+        fetchedAtIso,
+      });
+    } catch (err) {
+      console.warn('[Snapshot] technical layer unavailable:', err);
+    }
+  }
+
   return { ctx, fetchedAtIso, hermes };
 }
 

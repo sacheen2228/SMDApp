@@ -79,6 +79,8 @@ export interface TradeRecord {
   tp1: number;
   tp2: number | null;
   tp3: number | null;
+  /** units traded — engine default: fit lots/shares within ₹20k budget */
+  quantity: number;
   riskRewardRatio: number;
   signalConfidence: number;
   aiConfidence: number | null;
@@ -120,6 +122,8 @@ export interface TradeFilters {
   maxConfidence?: number;
   dateFrom?: string;
   dateTo?: string;
+  /** include archived (retired-recorder) rows; default live book only */
+  includeArchived?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -149,6 +153,8 @@ export interface SignalInput {
   tp1: number;
   tp2?: number | null;
   tp3?: number | null;
+  /** units traded (lots×lotSize / shares); omit → engine sizes to ₹20k budget */
+  quantity?: number;
   signalConfidence: number;
   aiConfidence?: number | null;
   probabilityScore?: number | null;

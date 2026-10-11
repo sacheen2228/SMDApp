@@ -33,7 +33,7 @@ bun run dev        # starts on :3000
 - **Database**: SQLite via Prisma (`db/custom.db`), schema has Trade model (active), User/Post (unused)
 - **UI**: shadcn/ui (new-york style), Tailwind CSS v4, lucide icons
 - **State**: React Query for server state, Zustand for global state (`src/stores/useTradingStore.ts`), React useState for local UI state
-- **Data flow**: Three-tier fallback: ICICI Breeze API → NSE API → Yahoo Finance
+- **Data flow**: Exchange-aware — NSE primary (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities), BSE primary (SENSEX/BANKEX), MOAPI fallback → NO_DATA. Breeze = explicit opt-in only; Yahoo never enters the option-chain path. **Canonical document: [`SOP.md`](./SOP.md)** (provider hierarchy, live-verified endpoints/headers, freshness rules, circuit breaker, session clocks, pre-market readiness, cron schedule)
 - **Analysis**: SDM Options Intelligence Engine (`src/lib/sdm-engine.ts`) + ORCA Engine (`src/lib/orca-engine.ts`)
 - **Market Intelligence**: Technical analysis engines, sector heatmap, breadth, regime, F&O scanner, expiry liquidity engine
 - **Trade Backtest**: Real trade backtest against Yahoo Finance historical candles (99/100 trades backtestable)

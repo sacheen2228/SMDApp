@@ -92,3 +92,34 @@ Use the columns in `assets/trade-journal-template.csv` and help compute win rate
 ## Output style
 
 Lead with the bottom line (bias + plan or "skip"), then the supporting layers. Use tables for level maps and scoring. Always include: entry trigger, stop (underlying + premium), target(s), reward:risk, position size, and what invalidates the idea. Keep the disclaimer to one line.
+
+## SMDApp validated strategy rules (audit-derived, Oct 2026)
+
+Computed from the Trade Audit ledger (543+ closed trades, P&L at real ₹20k budget sizing). These override generic playbook instincts on this book:
+
+| Rule | Evidence | Where enforced |
+|---|---|---|
+| **SMART_MONEY: CE always; PE only with OI-flow BEARISH confirmation + market hours (09:15–15:30) + score ≥65.** Not a ban — a regime gate. | CE 29/29 wins (+₹4.46L, avgR 3.29) vs PE 0/51 in a bull run (−₹78K, 0% in EVERY session, PRE_OPEN alone −₹64K). PE loses when bears aren't in control; the flow gate blocks PE exactly then. | `ZeroHeroTerminal.tsx` scoredCandidates (PE block with `flowBias === "BEARISH" && peSessionOk`) |
+| **ZERO_HERO: no trades 12:00–13:00 or after 15:00 IST** (MIDDAY/CLOSING/POST_CLOSE). Expiry-day morning/afternoon only. | Toxic sessions 15.8% WR / −₹184K vs other sessions 43.4% WR / +₹34K | `ZeroHeroTerminal.tsx` zhCandidates session gate; POST_CLOSE also gated in `/api/option-chain` via `isTradeAllowed` |
+| **PE requires the market to be DEMONSTRABLY falling** — OI flow BEARISH (who's winning positioning) AND `isFallingMarket()` (price actually falling: spot<VWAP + DOWN structure + sustained momentum, ≥2 of 3 layers; one-bar spikes don't count). PE strikes: ATM/ITM + OTM ≤3 strikes. | PE 0/51 in bull run; OI flow alone is positioning, not price action. Detector TDD'd: `tests/falling-market.test.ts` 8/8 (clean fall ✓, bull run ✗, distribution ✗, one-spike chop ✗, SENSEX-scale ✓) | `isFallingMarket()` in `technical-analysis.ts`; wired in `ZeroHeroTerminal.tsx` scoredCandidates PE block + `/api/option-chain` PE alert gate |
+| **Minimum premium ₹5** — never touch sub-₹5 options (stale/lottery stubs). | option-chain-api book: 41 entry<₹5 PE stubs, 0 wins; PE entry≥5 alone flips to +₹4.6K | `trade-validator-gate.ts` MIN_PREMIUM; `/api/trade/register`; `/api/option-chain` |
+| **Strike style: ATM or ITM only; OTM = max 2–3 strikes from ATM; never deep OTM.** Target delta 0.45–0.65; a 2–3-strike OTM entry sits ~0.35–0.45 and needs the underlying to actually travel, so check TP2 against the VIX expected move before taking it. | Desk rule. Ledger proof it's already followed: 95/118 July ZH trades were ATM/ITM (₹60+ premium) and still lost −₹77K at 39% WR — strike *quality* was never the problem, direction/regime was (deep-OTM was only 2 trades). So the live gates that matter are session + regime, not a delta filter. | Hermes `strike_selector` (delta 0.45–0.65 band, expected-move ceiling); `agent-brain.ts` strike guidance |
+| **PE confidence floors** — PE needs stronger signal than CE (register floor PE 65 / CE 55; SDM alert floor PE 70 / CE 60). | PE has historically near-0 win rate on auto-generated books | `/api/trade/register`, `/api/option-chain` alert gate |
+| **Position sizing = max ₹20k per trade**, lots = floor(20000 / (premium × lot)) — works for NIFTY/SENSEX index options and stock F&O alike. Min 1 lot even if it exceeds budget (SENSEX-size premiums). | User's live sizing; audit engine now records quantity so ₹ stats are real | `trade-audit/src/utils/sizing.ts` (`AUDIT_TRADE_BUDGET`) |
+| **Costs are real** — ≈₹40 round-trip + 1.5bps. Trades whose expected profit is under ~₹50 cannot pay costs; don't microlot expensive underlyings. | BTST 1-share trades: sub-₹40 winners flip negative after fees | audit `estimateFees` |
+| **Retired recorders — ignore their ledger history**: `option-chain-api` (−₹3.3L: ₹0.05 PE stubs + POST_CLOSE conf=0 rows), `SMC` (−₹1.9L, July only). No longer record; losses are pre-gate history. | 470 + 18 stale rows Jul–Sep 2026 | gates in `/api/option-chain`, no active recorder |
+| **SMART_MONEY and BTST are the only ledger-proven edges.** ZERO_HERO stays paper/terminal until post-gate data accumulates ≥100 closed trades. | SMART_MONEY +₹3.67L (67% WR, PF 5.71); BTST ~breakeven; all else negative | audit `/api/stats` |
+
+### 5-day backtest replay lessons (Oct 5–9, 2026, sent to Telegram)
+
+Replayed 51 ATM CE/PE trades across NIFTY/SENSEX/BANKNIFTY + RELIANCE/TCS/HDFCBANK/SBIN/INFY
+(BS premium proxy at live IV, 20% SL / +50% TP1, ₹20k budget sizing, SL-first on same-day touch):
+
+- **CE 1W/1L/24 TIME-exit · PE 0W/3L/22 TIME-exit** — a low-IV week (NIFTY IV≈11%) bleeds option
+  buyers through *time*, not through stops. 46/51 trades neither hit TP nor SL.
+- **Lesson: skip buying options when IV < ~12 and the expected move (VIX-based) is smaller than
+  the distance to TP1** — the trade can be right on direction and still exit flat/negative on decay.
+- **Lesson: TIME-exit is the hidden loss column.** Even flat premium pays ₹40+ costs per trade;
+  in quiet weeks the playbook's edge comes from staying out, not from tighter stops.
+- Bull-week replay also confirms the PE regime gate: PE was net-negative across every symbol
+  while OI flow stayed bullish — the new `flowBias === "BEARISH"` gate would have blocked all of them.

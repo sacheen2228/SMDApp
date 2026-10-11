@@ -15,6 +15,10 @@
 
 export type MarketInstrument = 'index' | 'fno-stock' | 'cash-stock';
 
+// Shared IST clock + exchange calendar (single source of truth).
+// market-session-config.ts imports nothing, so this direction is cycle-free.
+import { isTradingDay, getISTMinutes as getConfigISTMinutes } from './expiry-liquidity/market-session-config';
+
 export type MarketSession =
   | 'pre_open'          // 09:00 - 09:15
   | 'opening'           // 09:15 - 09:30
@@ -50,8 +54,8 @@ function getISTTime(): Date {
 }
 
 function getISTMinutes(): number {
-  const ist = getISTTime();
-  return ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  // Delegated to the shared config clock so both session modules agree.
+  return getConfigISTMinutes();
 }
 
 function timeStr(minutes: number): string {
@@ -60,8 +64,9 @@ function timeStr(minutes: number): string {
   return `${h}:${m}`;
 }
 
-/** Add isMarketOpen to any SessionInfo — single source of truth */
-function withMarketOpen(info: SessionInfo): SessionInfo {
+/** Add isMarketOpen to any SessionInfo — single source of truth.
+ *  Input deliberately omits isMarketOpen: it is derived, not declared. */
+function withMarketOpen(info: Omit<SessionInfo, 'isMarketOpen'>): SessionInfo {
   return { ...info, isMarketOpen: info.confidenceMultiplier > 0 };
 }
 
@@ -243,6 +248,19 @@ function casStockSession(minutes: number): SessionInfo {
 // ─── Determine Market Session (instrument-aware) ─────────────────
 export function getCurrentSession(instrument: MarketInstrument = 'index'): SessionInfo {
   const minutes = getISTMinutes();
+
+  // Weekend / exchange holiday — nothing below can be "open". Without this
+  // guard Saturday 10:00 IST reported `primary` with confidence 1.0.
+  if (!isTradingDay()) {
+    return withMarketOpen({
+      session: 'closed',
+      label: 'Market Closed',
+      description: 'Non-trading day (weekend or exchange holiday).',
+      confidenceMultiplier: 0,
+      allowedActions: ['WAIT'],
+      notes: ['No live trading possible', 'Next session starts at 09:15 IST on the next trading day'],
+    });
+  }
 
   // All instruments share the same pre-15:00 schedule
   if (minutes < 900) return withMarketOpen(baseSession(minutes));

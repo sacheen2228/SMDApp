@@ -2,7 +2,7 @@
 // Fast endpoint — never fetches F&O data (that's in /api/market/heatmap/fo)
 
 import { NextResponse } from "next/server";
-import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import { fetchNIFTY50Stocks, getStockQuoteProvenance } from "@/lib/nse-stock-data";
 
 const MARKET_SYMBOLS: Record<string, string[]> = {
   NIFTY50: [
@@ -103,6 +103,7 @@ const sectorData = Object.entries(sectors).map(([name, stks]) => ({
 
     // Single market
     const filteredStocks = filterStocksByMarket(stocks, market);
+    const prov = getStockQuoteProvenance();
 
     const sectors: Record<string, any[]> = {};
     for (const s of filteredStocks) {
@@ -127,10 +128,15 @@ const sectorData = Object.entries(sectors).map(([name, stks]) => ({
       stockCount: filteredStocks.length,
       timestamp: new Date().toISOString(),
       provenance: {
-        source: 'NSE India',
-        retrievedAt: new Date().toISOString(),
-        freshness: 'LIVE',
-        isLive: true,
+        source: prov.source === 'nse' ? 'NSE India'
+          : prov.source === 'moneycontrol' ? 'Moneycontrol'
+          : prov.source === 'yahoo' ? 'Yahoo Finance'
+          : 'UNAVAILABLE',
+        retrievedAt: prov.retrievedAt,
+        freshness: prov.freshness,
+        isLive: prov.isLive,
+        fallbackUsed: prov.fallbackUsed,
+        ageMs: prov.ageMs,
         status: filteredStocks.length > 0 ? 'AVAILABLE' : 'UNAVAILABLE',
       },
     });

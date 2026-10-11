@@ -336,12 +336,15 @@ describe('7 — invalid candidate never trades', () => {
     const h = fakeHermes(iso);
     const strikes = (h.optionChain.value as any).strikes;
     strikes[0].ce = { ...strikes[0].ce, ltp: 2, bid: 1, ask: 3, volume: 100, oi: 500 };
+    strikes[1].ce = { ...strikes[1].ce, ltp: 2, bid: 1, ask: 3, volume: 100, oi: 500 };
     const ctx = mapHermesToAgentContext(h, iso, '15m');
 
     const r = await runOptionEngine('GROKCHEAP1', grok('BUY_CE', 'OPTION'), [], ctx);
     expect(r.action).toBe('NO_TRADE');
     expect(r.reasons.length).toBeGreaterThan(0);
     expect(r.candidate).toBeUndefined();
+    // New: reason now includes "premium" since strike-selection layer enforces ₹5 minimum
+    expect(r.reasons.join(' ')).toMatch(/premium|strike|chain/i);
   });
 
   it('the canonical validator blocks a sub-minimum premium', () => {

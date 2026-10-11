@@ -18,6 +18,7 @@ import {
 import { runIntradayScan } from "@/lib/intraday-scanner";
 import { getNSEEquityOptionChain } from "@/lib/nse-api";
 import { spotToPremiumLevels } from "@/lib/greeks";
+import { isTradingDay } from "@/lib/expiry-liquidity/market-session-config";
 
 // ─── Option leg enrichment (live NSE equity chain) ─────────────────
 // Top rows of the card show the option strike to trade. Chain comes from
@@ -137,6 +138,21 @@ function estimateIndicators(stock: any, sectorAvg: number, marketAvg: number): T
 
 export async function GET(request: Request) {
   try {
+    // Intraday opportunity detection needs a live tape. On a weekend or
+    // exchange holiday NSE publishes no new prices, so scanning would re-read
+    // Friday's close and report stale moves as fresh setups.
+    if (!isTradingDay()) {
+      return NextResponse.json({
+        opportunities: [],
+        totalStocks: 0,
+        avgScore: 0,
+        topOppCount: 0,
+        marketContext: {},
+        reason: 'Non-trading day — no new prices are published on weekends or exchange holidays',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const { searchParams } = new URL(request.url);
     const topN = parseInt(searchParams.get("top") || "10");
 
@@ -283,7 +299,10 @@ export async function GET(request: Request) {
     return NextResponse.json({
       opportunities: topOpps,
       totalStocks: stocks.length,
-      avgScore: Math.round(opportunities.reduce((sum: number, o: any) => sum + o.score, 0) / opportunities.length),
+      // Guard the divisor: an empty scan produced NaN before.
+      avgScore: opportunities.length
+        ? Math.round(opportunities.reduce((sum: number, o: any) => sum + o.score, 0) / opportunities.length)
+        : 0,
       topOppCount: opportunities.filter((o: any) => o.score >= 70).length,
       marketContext: {
         regime: context.marketRegime,

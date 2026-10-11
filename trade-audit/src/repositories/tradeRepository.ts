@@ -24,6 +24,8 @@ interface TradeRow {
   tp1: number;
   tp2: number | null;
   tp3: number | null;
+  quantity: number;
+  archived: number;
   risk_reward_ratio: number;
   signal_confidence: number;
   ai_confidence: number | null;
@@ -83,6 +85,8 @@ function rowToRecord(row: TradeRow): TradeRecord {
     tp1: row.tp1,
     tp2: row.tp2,
     tp3: row.tp3,
+    quantity: row.quantity ?? 1,
+    archived: row.archived ?? 0,
     riskRewardRatio: row.risk_reward_ratio,
     signalConfidence: row.signal_confidence,
     aiConfidence: row.ai_confidence,
@@ -132,15 +136,15 @@ export function insertTrade(record: TradeRecord): void {
     `INSERT INTO trades (
       id, strategy_id, strategy_version, created_at_ist, symbol, exchange, instrument_type,
       spot_price, strike_price, expiry, option_type, entry_price, stop_loss, tp1, tp2, tp3,
-      risk_reward_ratio, signal_confidence, ai_confidence, probability_score, trend_direction,
+      quantity, risk_reward_ratio, signal_confidence, ai_confidence, probability_score, trend_direction,
       signal_reason, market_session, user_account, market_context_json,
-      status, entry_filled, fees
+      status, entry_filled, fees, archived
     ) VALUES (
       @id, @strategyId, @strategyVersion, @createdAtIst, @symbol, @exchange, @instrumentType,
       @spotPrice, @strikePrice, @expiry, @optionType, @entryPrice, @stopLoss, @tp1, @tp2, @tp3,
-      @riskRewardRatio, @signalConfidence, @aiConfidence, @probabilityScore, @trendDirection,
+      @quantity, @riskRewardRatio, @signalConfidence, @aiConfidence, @probabilityScore, @trendDirection,
       @signalReason, @marketSession, @userAccount, @marketContextJson,
-      @status, @entryFilled, @fees
+      @status, @entryFilled, @fees, @archived
     )`
   ).run({
     id: record.id,
@@ -159,6 +163,8 @@ export function insertTrade(record: TradeRecord): void {
     tp1: record.tp1,
     tp2: record.tp2,
     tp3: record.tp3,
+    quantity: record.quantity,
+    archived: record.archived ?? 0,
     riskRewardRatio: record.riskRewardRatio,
     signalConfidence: record.signalConfidence,
     aiConfidence: record.aiConfidence,
@@ -297,6 +303,10 @@ export function queryTrades(filters: TradeFilters): PaginatedResult<TradeRecord>
   const where: string[] = [];
   const params: Record<string, unknown> = {};
 
+  // Live book only unless includeArchived (matches stats behaviour).
+  if (!filters.includeArchived) {
+    where.push("archived = 0");
+  }
   if (filters.strategyId) {
     where.push("strategy_id = @strategyId");
     params.strategyId = filters.strategyId;
@@ -365,6 +375,12 @@ export function queryAllForStats(filters: Omit<TradeFilters, "page" | "pageSize"
   const where: string[] = [];
   const params: Record<string, unknown> = {};
 
+  // Default: live book only. Archived = retired recorders (option-chain-api,
+  // SMC, pre-gate July rows, sdm guard-real junk) whose losses are history,
+  // not the current system. Pass includeArchived=true to see everything.
+  if (!filters.includeArchived) {
+    where.push("archived = 0");
+  }
   if (filters.strategyId) {
     where.push("strategy_id = @strategyId");
     params.strategyId = filters.strategyId;

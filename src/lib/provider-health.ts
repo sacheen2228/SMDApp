@@ -2,7 +2,7 @@
 // Circuit breaker, cooldown, health tracking for all external providers
 // Used by: LLM client, Breeze session, NSE scraper, market data APIs
 
-export type ProviderType = "tokenra" | "groq" | "openrouter" | "ollama" | "breeze" | "nse" | "moapi" | "yahoo";
+export type ProviderType = "tokenra" | "groq" | "openrouter" | "ollama" | "breeze" | "nse" | "bse" | "moapi" | "yahoo" | "website";
 export type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 export type ProviderStatus =
   | "ready"
@@ -68,6 +68,10 @@ const PROVIDER_COOLDOWNS: Partial<Record<ProviderType, Partial<CooldownConfig>>>
   ollama: { baseMs: 5_000, maxMs: 60_000 },     // 5s base, 1min max
   breeze: { baseMs: 60_000, maxMs: 3600_000 },  // 1min base, 1hr max
   nse: { baseMs: 5_000, maxMs: 60_000 },        // 5s base, 1min max
+  bse: { baseMs: 5_000, maxMs: 60_000 },        // 5s base, 1min max
+  moapi: { baseMs: 15_000, maxMs: 300_000 },    // 15s base, 5min max
+  yahoo: { baseMs: 30_000, maxMs: 600_000 },    // 30s base, 10min max
+  website: { baseMs: 30_000, maxMs: 600_000 },  // 30s base, 10min max
 };
 
 class ProviderHealthManager {
@@ -76,7 +80,7 @@ class ProviderHealthManager {
 
   private constructor() {
     // Initialize all providers
-    const providers: ProviderType[] = ["tokenra", "groq", "openrouter", "ollama", "breeze", "nse", "moapi", "yahoo"];
+    const providers: ProviderType[] = ["tokenra", "groq", "openrouter", "ollama", "breeze", "nse", "bse", "moapi", "yahoo", "website"];
     for (const p of providers) {
       this.providers.set(p, this.createInitialHealth(p));
     }

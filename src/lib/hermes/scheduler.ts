@@ -81,9 +81,12 @@ export function isExpiryDay(now?: Date): { nse: boolean; sensex: boolean } {
   const ist = getISTDate(now);
   const day = getDayOfWeek(ist);
 
-  // Current SEBI rules: NIFTY/indices expire Tuesday, SENSEX Thursday
+  // SEBI staggered expiries (canonical: expiry-calculator.ts):
+  //   NIFTY/FINNIFTY = Tuesday, MIDCPNIFTY = Wednesday,
+  //   BANKNIFTY/SENSEX/BANKEX = Thursday.
+  // This flag is NIFTY-centric (primary NSE index).
   return {
-    nse: day === 2, // Tuesday for NIFTY/indices
+    nse: day === 2, // Tuesday (NIFTY/FINNIFTY primary)
     sensex: day === 4, // Thursday for SENSEX
   };
 }

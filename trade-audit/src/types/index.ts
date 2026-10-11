@@ -112,6 +112,12 @@ export interface NewSignalInput {
   marketSession: MarketSession;
   userAccount?: string | null;
   marketContext: MarketContext;
+  /**
+   * Units traded (1 lot of options = exchange lot size, equity = share count).
+   * Omitted → engine default: index lot size for OPTIONS/FUTURES, ₹50k
+   * deployment for EQUITY, 1 for unknown stock F&O.
+   */
+  quantity?: number;
   /** signal generation timestamp; defaults to now (IST) if omitted */
   signalTimeIst?: string;
 }
@@ -143,6 +149,10 @@ export interface TradeRecord {
   marketSession: MarketSession;
   userAccount: string | null;
   marketContext: MarketContext;
+  /** units traded (1 lot of options = exchange lot size, equity = share count). */
+  quantity: number;
+  /** 1 = retired/dead-recorder row; excluded from /api/stats by default. */
+  archived: number;
 
   // live tracking
   status: TradeStatus;
@@ -209,6 +219,8 @@ export interface TradeFilters {
   maxConfidence?: number;
   dateFrom?: string; // ISO date
   dateTo?: string; // ISO date
+  /** include archived (retired-recorder) rows; default live book only */
+  includeArchived?: boolean;
   page?: number;
   pageSize?: number;
 }

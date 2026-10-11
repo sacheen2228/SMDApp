@@ -137,6 +137,7 @@ export async function fetchOISpurts(): Promise<OISpurtSummary> {
 
     const data = await res.json();
     const rows = data?.data || data?.records || [];
+    const fetchedAt = Date.now();
 
     if (!Array.isArray(rows) || rows.length === 0) return empty;
 
@@ -163,6 +164,12 @@ export async function fetchOISpurts(): Promise<OISpurtSummary> {
         volume: vol,
       });
 
+      // Use the row's own event timestamp when NSE provides one; else fetch time.
+      const rowTs = row.lastUpdate || row.lastUpdateTime || row.timestamp || row.tradeDate;
+      const ts = rowTs && !isNaN(new Date(rowTs).getTime())
+        ? new Date(rowTs).toISOString()
+        : new Date(fetchedAt).toISOString();
+
       return {
         symbol,
         underlying,
@@ -179,9 +186,9 @@ export async function fetchOISpurts(): Promise<OISpurtSummary> {
         iv,
         classification,
         spurtScore,
-        timestamp: new Date().toISOString(),
+        timestamp: ts,
         source: "nse-api",
-        freshness: classifyFreshness(new Date().toISOString()),
+        freshness: classifyFreshness(ts),
       };
     });
 
@@ -211,9 +218,15 @@ export async function fetchOISpurts(): Promise<OISpurtSummary> {
       overallBias,
       spurtScore: avgScore,
       topSpurts: spurs.slice(0, 20),
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(fetchedAt).toISOString(),
       source: "nse-api",
-      freshness: "LIVE",
+      // Derived from the newest row's own timestamp — a successful fetch alone
+      // does not make data LIVE (rows can carry older event times).
+      freshness: classifyFreshness(
+        new Date(
+          spurs.reduce((newest, s) => Math.max(newest, new Date(s.timestamp).getTime()), 0) || fetchedAt
+        ).toISOString()
+      ),
     };
   } catch (err: any) {
     console.error("[OISpurts] Error:", err.message);

@@ -115,16 +115,22 @@ function toSDMOptionStrike(chain: OptionLeg[]): SDMOptionStrike[] {
 // Reused here as the production implementation per the Architecture Guardian
 // (no import of the deprecated module) and validation requirement #2 — it is
 // the only FVG/Order-Block logic in the repository.
+// Epoch ms for a candle that may be either CandleData (time: number) or
+// canonical Candle (timestamp: string) — callers cast both shapes.
+function eventTime(c: any): number {
+  return Number(c?.time) || Date.parse(String(c?.timestamp ?? '')) || 0;
+}
+
 export function detectFVG(candles: Candle[]): SmcEvent[] {
   const out: SmcEvent[] = [];
   for (let i = 1; i < candles.length - 1; i++) {
     const prev = candles[i - 1];
     const next = candles[i + 1];
     if (prev.high < next.low) {
-      out.push({ type: "FVG", direction: "BULLISH", price: (next.low + prev.high) / 2, details: { top: next.low, bottom: prev.high, direction: "UP" } });
+      out.push({ type: "FVG", direction: "BULLISH", price: (next.low + prev.high) / 2, details: { top: next.low, bottom: prev.high, direction: "UP", time: eventTime(next) } });
     }
     if (prev.low > next.high) {
-      out.push({ type: "FVG", direction: "BEARISH", price: (prev.low + next.high) / 2, details: { top: prev.low, bottom: next.high, direction: "DOWN" } });
+      out.push({ type: "FVG", direction: "BEARISH", price: (prev.low + next.high) / 2, details: { top: prev.low, bottom: next.high, direction: "DOWN", time: eventTime(next) } });
     }
   }
   return out;
@@ -137,10 +143,10 @@ export function detectOrderBlocks(candles: Candle[]): SmcEvent[] {
     const curr = candles[i];
     const next = candles[i + 1];
     if (curr.close < curr.open && curr.close < prev.close && next.close > curr.open) {
-      out.push({ type: "ORDER_BLOCK", direction: "BULLISH", price: (curr.open + curr.low) / 2, details: { top: curr.open, bottom: curr.low, direction: "BULLISH" } });
+      out.push({ type: "ORDER_BLOCK", direction: "BULLISH", price: (curr.open + curr.low) / 2, details: { top: curr.open, bottom: curr.low, direction: "BULLISH", time: eventTime(curr) } });
     }
     if (curr.close > curr.open && curr.close > prev.close && next.close < curr.open) {
-      out.push({ type: "ORDER_BLOCK", direction: "BEARISH", price: (curr.high + curr.open) / 2, details: { top: curr.high, bottom: curr.open, direction: "BEARISH" } });
+      out.push({ type: "ORDER_BLOCK", direction: "BEARISH", price: (curr.high + curr.open) / 2, details: { top: curr.high, bottom: curr.open, direction: "BEARISH", time: eventTime(curr) } });
     }
   }
   return out;

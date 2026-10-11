@@ -8,7 +8,6 @@ import { calculateGreeks } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
 import { sendTradeAlert } from "@/lib/telegram";
 import { getOptionChain, getOptionChainExpiries } from "@/lib/icici-breeze/option-chain";
-import { initSession } from "@/lib/icici-breeze/auth";
 import { getNSEOptionChain } from "@/lib/nse-api";
 import { isBSEIndex } from "@/lib/bse-api";
 import type { SDMOptionStrike } from "@/types/sdm";
@@ -25,106 +24,21 @@ export async function GET(request: NextRequest) {
     const config = getSymbolConfig(symbol);
     const today = new Date().toISOString().split("T")[0];
 
-    // Initialize Breeze session once
-    if (!globalThis.__breezeSessionInited) {
-      globalThis.__breezeSessionInited = true;
-      await initSession().catch(() => {});
-    }
+    // Breeze is strictly the last-resort provider (see hierarchy below), so
+    // its session is warmed lazily at the point of use rather than on every
+    // cold start. The SDK self-initialises and retries on auth errors anyway.
 
-    // Fetch real option chain data: MOAPI → Breeze → NSE → BSE
+    // PROVIDER HIERARCHY (see SOP.md §1) — exchange-aware:
+    //   SENSEX/BANKEX  → BSE primary → MOAPI → Breeze (opt-in) → NO_DATA
+    //   everything else → NSE primary → MOAPI → Breeze (opt-in) → NO_DATA
+    // Yahoo NEVER enters this path. Breeze is consulted last, and only when a
+    // public source failed — it is not a primary provider.
     let chainData: any = null;
     let source = "simulation";
+    const bseIndex = isBSEIndex(symbol);
 
-    // 1. Try MOAPI first (preferred primary provider)
-    try {
-      const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
-      const motilalChain = await Promise.race([
-        getMotilalOptionChain(symbol, expiry),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 8000))
-      ]);
-      if (motilalChain?.data?.length) {
-        chainData = {
-          spotPrice: motilalChain.spotPrice,
-          data: motilalChain.data.map((row: any) => ({
-            strike: row.strike,
-            ce: row.ce ? {
-              ltp: row.ce.ltp || 0, oi: row.ce.oi || 0,
-              oiChg: 0, volume: row.ce.volume || 0,
-              iv: row.ce.iv || 0,
-            } : null,
-            pe: row.pe ? {
-              ltp: row.pe.ltp || 0, oi: row.pe.oi || 0,
-              oiChg: 0, volume: row.pe.volume || 0,
-              iv: row.pe.iv || 0,
-            } : null,
-          })),
-          expiries: motilalChain.expiries.map((e: string) => ({ date: e })),
-          selectedExpiry: motilalChain.selectedExpiry,
-        };
-        source = "moapi";
-      }
-    } catch (e) {
-      console.warn("[SDM Signal] MOAPI failed:", e);
-    }
-
-    // 2. Try Breeze if MOAPI failed
-    if (!chainData) {
-      try {
-        const expiries = expiry ? [expiry] : await getOptionChainExpiries(symbol);
-        for (const exp of expiries.slice(0, 3)) {
-          const chain = await getOptionChain(symbol, exp);
-          if (chain) {
-            chainData = {
-              spotPrice: chain.spotPrice,
-              data: chain.strikes.map((strike) => ({
-                strike,
-                ce: chain.calls.find((c) => c.strikePrice === strike) || null,
-                pe: chain.puts.find((p) => p.strikePrice === strike) || null,
-              })),
-              expiries: expiries.map((e) => ({ date: e })),
-              selectedExpiry: exp,
-            };
-            source = "icici-breeze";
-            break;
-          }
-        }
-      } catch (e) {
-        console.warn("[SDM Signal] Breeze failed:", e);
-      }
-    }
-
-    // Try NSE if Breeze failed
-    if (!chainData) {
-      try {
-        const nseData = await getNSEOptionChain(symbol);
-        if (nseData?.records?.data) {
-          chainData = {
-            spotPrice: nseData.records?.underlyingValue || 0,
-            data: nseData.records.data.map((row: any) => ({
-              strike: row.strikePrice,
-              ce: row.CE ? {
-                ltp: row.CE.lastPrice || 0, oi: row.CE.openInterest || 0,
-                oiChg: row.CE.changeinOpenInterest || 0, volume: row.CE.totalTradedVolume || 0,
-                iv: row.CE.impliedVolatility || 0,
-              } : null,
-              pe: row.PE ? {
-                ltp: row.PE.lastPrice || 0, oi: row.PE.openInterest || 0,
-                oiChg: row.PE.changeinOpenInterest || 0, volume: row.PE.totalTradedVolume || 0,
-                iv: row.PE.impliedVolatility || 0,
-              } : null,
-            })),
-            expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d })),
-            selectedExpiry: nseData.records?.expiryDates?.[0] || "",
-          };
-          source = "nse-api";
-        }
-      } catch (e) {
-        console.warn("[SDM Signal] NSE failed:", e);
-      }
-    }
-
-    // BSE indices (SENSEX, BANKEX) — use BSE public API for option chain
-    if (!chainData && isBSEIndex(symbol)) {
+    // 1. PRIMARY for SENSEX/BANKEX — BSE. NSE has no contract for these.
+    if (bseIndex) {
       try {
         const { getBSEOptionChain, getBSEExpiryDates: getBSEExpiries } = await import('@/lib/bse-api');
         const bseExpiries = await getBSEExpiries(symbol);
@@ -160,11 +74,102 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // 2. PRIMARY for NSE indices and equities — NSE.
+    if (!chainData && !bseIndex) {
+      try {
+        const nseData = await getNSEOptionChain(symbol);
+        if (nseData?.records?.data) {
+          chainData = {
+            spotPrice: nseData.records?.underlyingValue || 0,
+            data: nseData.records.data.map((row: any) => ({
+              strike: row.strikePrice,
+              ce: row.CE ? {
+                ltp: row.CE.lastPrice || 0, oi: row.CE.openInterest || 0,
+                oiChg: row.CE.changeinOpenInterest || 0, volume: row.CE.totalTradedVolume || 0,
+                iv: row.CE.impliedVolatility || 0,
+              } : null,
+              pe: row.PE ? {
+                ltp: row.PE.lastPrice || 0, oi: row.PE.openInterest || 0,
+                oiChg: row.PE.changeinOpenInterest || 0, volume: row.PE.totalTradedVolume || 0,
+                iv: row.PE.impliedVolatility || 0,
+              } : null,
+            })),
+            expiries: (nseData.records?.expiryDates || []).map((d: string) => ({ date: d })),
+            selectedExpiry: nseData.records?.expiryDates?.[0] || "",
+          };
+          source = "nse-api";
+        }
+      } catch (e) {
+        console.warn("[SDM Signal] NSE failed:", e);
+      }
+    }
+
+    // 3. FALLBACK — MOAPI.
+    if (!chainData) {
+      try {
+        const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
+        const motilalChain = await Promise.race([
+          getMotilalOptionChain(symbol, expiry),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 8000))
+        ]);
+        if (motilalChain?.data?.length) {
+          chainData = {
+            spotPrice: motilalChain.spotPrice,
+            data: motilalChain.data.map((row: any) => ({
+              strike: row.strike,
+              ce: row.ce ? {
+                ltp: row.ce.ltp || 0, oi: row.ce.oi || 0,
+                oiChg: 0, volume: row.ce.volume || 0,
+                iv: row.ce.iv || 0,
+              } : null,
+              pe: row.pe ? {
+                ltp: row.pe.ltp || 0, oi: row.pe.oi || 0,
+                oiChg: 0, volume: row.pe.volume || 0,
+                iv: row.pe.iv || 0,
+              } : null,
+            })),
+            expiries: motilalChain.expiries.map((e: string) => ({ date: e })),
+            selectedExpiry: motilalChain.selectedExpiry,
+          };
+          source = "moapi";
+        }
+      } catch (e) {
+        console.warn("[SDM Signal] MOAPI failed:", e);
+      }
+    }
+
+    // 4. OPT-IN LAST RESORT — Breeze. Only reached when every public source
+    //    failed. Bounded: a dead session makes the SDK hang on generateSession.
+    if (!chainData) {
+      try {
+        const expiries = expiry ? [expiry] : await getOptionChainExpiries(symbol);
+        for (const exp of expiries.slice(0, 3)) {
+          const chain = await getOptionChain(symbol, exp);
+          if (chain) {
+            chainData = {
+              spotPrice: chain.spotPrice,
+              data: chain.strikes.map((strike) => ({
+                strike,
+                ce: chain.calls.find((c) => c.strikePrice === strike) || null,
+                pe: chain.puts.find((p) => p.strikePrice === strike) || null,
+              })),
+              expiries: expiries.map((e) => ({ date: e })),
+              selectedExpiry: exp,
+            };
+            source = "icici-breeze";
+            break;
+          }
+        }
+      } catch (e) {
+        console.warn("[SDM Signal] Breeze failed:", e);
+      }
+    }
+
     // If no real data available, return error
     if (!chainData) {
       return NextResponse.json({
         success: false,
-        error: "No real option chain data available. Breeze and NSE both failed.",
+        error: `No option chain data available for ${symbol}. BSE, NSE, MOAPI and Breeze all failed or returned no contract.`,
       }, { status: 503 });
     }
 

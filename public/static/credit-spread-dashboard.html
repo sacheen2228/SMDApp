@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Credit Spread Dashboard</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mu:#667085;--bd:#e3e6eb;--ac:#0b6e4f;--gn:#0b8a5a;--rd:#c62d3a;--am:#b7791f}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1317;--card:#171c22;--tx:#e8ecf1;--mu:#8b95a3;--bd:#262d36;--ac:#3ecf9a;--gn:#3ecf9a;--rd:#ff6b76;--am:#e0b45a}}
+:root[data-theme="dark"]{--bg:#0f1317;--card:#171c22;--tx:#e8ecf1;--mu:#8b95a3;--bd:#262d36;--ac:#3ecf9a;--gn:#3ecf9a;--rd:#ff6b76;--am:#e0b45a}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.w{max-width:1000px;margin:0 auto;padding:14px}
+h1{font-size:20px;margin:4px 0}h2{font-size:15px;margin:0 0 10px}
+.sub{color:var(--mu);font-size:13px;margin-bottom:12px}
+.tabs{display:flex;gap:6px;margin:10px 0}
+.tabs button{flex:1;padding:9px 2px;font-size:13px;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;font:inherit;cursor:pointer}
+.tabs button.on{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}
+.g{display:grid;gap:12px;grid-template-columns:1fr}@media(min-width:760px){.g{grid-template-columns:1fr 1fr}}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px}
+.f{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+label{font-size:12px;color:var(--mu);display:block}
+input,select{width:100%;padding:8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+.btn{padding:9px 12px;border:0;border-radius:8px;background:var(--ac);color:#fff;font:inherit;font-weight:600;cursor:pointer;width:100%;margin-top:10px}
+.btn.s{background:var(--bg);color:var(--tx);border:1px solid var(--bd)}
+.k{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.k div{background:var(--bg);border-radius:8px;padding:8px 10px}.k b{display:block;font-size:17px}.k span{font-size:11px;color:var(--mu)}
+.gn{color:var(--gn)}.rd{color:var(--rd)}.am{color:var(--am)}
+.ck{list-style:none;padding:0;margin:0}.ck li{padding:5px 0;border-bottom:1px solid var(--bd);font-size:14px}.ck li:last-child{border:0}
+.sc{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:6px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+.note{font-size:12px;color:var(--mu);margin-top:8px}.hide{display:none}
+svg{width:100%;height:auto}
+</style></head><body><div class="w">
+<h1>Credit Spread Dashboard</h1>
+<div class="sub">Low-capital, defined-risk option selling (NSE). Educational tool, not financial advice.</div>
+<div class="tabs"><button class="on" data-t="t1">Calculator</button><button data-t="t2">Playbook</button><button data-t="t4">Hedging</button><button data-t="t5">Intraday</button><button data-t="t3">Journal</button></div>
+
+<div id="t1">
+<div class="g">
+<div class="c"><h2>1. Setup</h2>
+<div class="f">
+<div><label>Index</label><select id="idx"><option value="75,50">Nifty</option><option value="35,100">Bank Nifty</option><option value="65,50">Fin Nifty</option><option value="20,100">Sensex</option></select></div>
+<div><label>View</label><select id="view"><option value="bull">Bull Put (stay above)</option><option value="bear">Bear Call (stay below)</option></select></div>
+<div><label>Spot</label><input id="spot" type="number" value="25000"></div>
+<div><label>Lot size (verify with broker)</label><input id="lot" type="number" value="75"></div>
+<div><label>India VIX</label><input id="vix" type="number" step="0.1" value="14"></div>
+<div><label>Days to expiry</label><input id="dte" type="number" value="5"></div>
+<div><label>Capital (₹)</label><input id="cap" type="number" value="50000"></div>
+<div><label>Risk per trade %</label><input id="rp" type="number" step="0.5" value="2"></div>
+<div><label>Spread width (points)</label><input id="wd" type="number" value="100"></div>
+<div><label>Target short delta</label><input id="td" type="number" step="0.01" value="0.12"></div>
+<div style="grid-column:1/-1"><label>Day type</label><select id="day"><option value="normal">Normal day (best for spreads)</option><option value="expiry">Expiry day (high risk)</option><option value="event">Event day (RBI, budget, results)</option></select></div>
+</div>
+<button class="btn" id="sug">Suggest strikes (estimated premiums)</button>
+<div class="note">Suggestion uses Black-Scholes from VIX. Always replace premiums with live prices.</div>
+</div>
+
+<div class="c"><h2>2. Your trade</h2>
+<div class="f">
+<div><label>Sell strike</label><input id="sk" type="number" value="24800"></div>
+<div><label>Sell premium ₹</label><input id="sp" type="number" step="0.05" value="60"></div>
+<div><label>Buy strike (hedge)</label><input id="lk" type="number" value="24700"></div>
+<div><label>Buy premium ₹</label><input id="lp" type="number" step="0.05" value="35"></div>
+<div><label>Lots</label><input id="lots" type="number" min="1" value="1"></div>
+<div><label>Stop = x times credit</label><input id="sm" type="number" step="0.1" value="1.5"></div>
+</div>
+<div class="k" style="margin-top:12px" id="kp"></div>
+</div>
+
+<div class="c"><h2>3. Payoff at expiry</h2><div id="ch"></div></div>
+<div class="c"><h2>4. Trade checks</h2><ul class="ck" id="ck"></ul>
+<div class="note" id="mg"></div></div>
+</div></div>
+
+<div id="t2" class="hide"><div class="g">
+<div class="c"><h2>How it works</h2><p style="margin:0;font-size:14px">Sell a near option for premium, buy a farther one as insurance. Your max loss is fixed. Profit comes from time decay when price stays away from your sold strike.</p>
+<div class="sc" style="margin-top:10px"><table><tr><th>Type</th><th>Sell</th><th>Buy</th></tr><tr><td>Bull Put</td><td>Higher PE</td><td>Lower PE</td></tr><tr><td>Bear Call</td><td>Lower CE</td><td>Higher CE</td></tr></table></div></div>
+<div class="c"><h2>Low-capital rules</h2><ul class="ck">
+<li>Risk 1-2% of capital per trade. If 1 lot exceeds it, narrow the width or skip.</li>
+<li>Sell about 10-15 delta. Prefer 2-8 days to expiry.</li>
+<li>Credit should be at least 25-30% of width.</li>
+<li>Exit at 50% of credit as profit, or at stop (1.5x credit loss).</li>
+<li>Higher VIX means richer premium; low VIX means thin credit, so skip.</li>
+<li>Skip event days (RBI, budget, results, global shocks).</li>
+<li>Be careful on expiry day; gamma risk is highest.</li>
+<li>Stop for the day after 2 straight losses or 3% daily loss.</li>
+<li>Never average a losing spread or remove the hedge leg.</li></ul></div>
+<div class="c"><h2>Entry steps</h2><ul class="ck">
+<li>1. Mark support/resistance and highest PE/CE OI strikes.</li>
+<li>2. Sell strike beyond that OI wall, not inside range.</li>
+<li>3. Buy hedge leg first, then sell leg.</li>
+<li>4. Place stop alert on the spread or on Nifty level.</li>
+<li>5. Exit both legs together.</li></ul></div>
+<div class="c"><h2>Reality check</h2><p style="margin:0;font-size:14px">High win rate does not mean safe: one max-loss trade can erase several winners. Realistic goal is steady small gains, not quick big profit. Paper trade for a few weeks first. Margin, brokerage, taxes and lot size change, so verify with your broker.</p></div>
+</div></div>
+
+<div id="t4" class="hide"><div class="g">
+<div class="c"><h2>1. Distance check (your sold strike)</h2><div class="k" id="hd"></div><div class="note">Uses spot, VIX and days from the Calculator. 1 SD is the typical expected move until expiry.</div></div>
+<div class="c"><h2>2. Profit lock-in / exit</h2><label>Current price to close the spread (₹)</label><input id="cur" type="number" step="0.05" placeholder="e.g. 12"><div class="k" id="hl" style="margin-top:10px"></div></div>
+<div class="c"><h2>3. Iron condor: hedge the other side</h2><div class="note" style="margin:0 0 8px">Add the opposite spread to your trade (Bull Put + Bear Call, or the reverse). Best on range-bound normal days.</div><div class="f"><div><label>Opposite sell strike</label><input id="hs" type="number" placeholder="e.g. 25200"></div><div><label>Sell premium ₹</label><input id="hp" type="number" step="0.05"></div><div><label>Opposite buy strike</label><input id="hk" type="number" placeholder="e.g. 25300"></div><div><label>Buy premium ₹</label><input id="hq" type="number" step="0.05"></div></div><div class="k" id="hc" style="margin-top:10px"></div><div class="note">Only one side can lose at expiry, so max loss uses the wider side. Broker margin may be lower than two spreads; verify.</div></div>
+<div class="c"><h2>4. Hedging rules</h2><ul class="ck">
+<li>Your long leg is already the hedge. Extra hedges cost premium or margin.</li>
+<li>Normal day: sell far OTM, set a stop, no extra hedge needed.</li>
+<li>Range-bound market: add the other side (iron condor) for more credit.</li>
+<li>Spot within 0.5 SD of sold strike: exit both legs, do not add a naked leg.</li>
+<li>Event or gap risk: skip, or cut lots in half.</li>
+<li>50% profit: book it, or move stop to break-even.</li>
+<li>Never remove the long leg, never leg out leaving a short leg naked, never average a loser.</li></ul></div>
+</div></div>
+
+<div id="t5" class="hide"><div class="g">
+<div class="c" style="grid-column:1/-1"><h2>1. Intraday Go / No-go</h2><div class="k" id="gg"></div><ul class="ck" id="gl" style="margin-top:8px"></ul><div class="note">This mode cuts avoidable losses with strict rules. It cannot promise high profit: intraday credit spreads give modest, capped gains.</div></div>
+<div class="c"><h2>2. Time window (IST)</h2><div class="k" id="tw"></div><label style="margin-top:8px"><input id="ig" type="checkbox" style="width:auto"> Ignore time (paper test)</label><div class="note">Uses your device clock. Best entries 9:30-11:30. No new trades after 13:30. Exit all by 15:15.</div></div>
+<div class="c"><h2>3. Exit plan</h2><div class="f"><div><label>Profit target % of credit</label><input id="tpp" type="number" value="50"></div><div><label>Stop = x times credit</label><input type="number" value="1.5" disabled title="Set in Calculator"></div></div><div class="k" id="xp" style="margin-top:10px"></div></div>
+<div class="c"><h2>4. Costs (4 orders)</h2><div class="f"><div><label>Brokerage per order ₹</label><input id="bk" type="number" value="20"></div><div><label>STT % on sold premium</label><input id="cx" type="number" step="0.01" value="0.1"></div><div><label>Other charges % turnover</label><input id="ox" type="number" step="0.01" value="0.05"></div></div><div class="k" id="cs" style="margin-top:10px"></div><div class="note">Approximate. Rates change, so check your broker's contract note.</div></div>
+<div class="c"><h2>5. Daily limits</h2><div class="f"><div><label>Daily loss limit % of capital</label><input id="dl" type="number" step="0.5" value="2"></div><div><label>Max trades per day</label><input id="mt" type="number" value="2"></div><div><label>Closed trade P&amp;L ₹</label><input id="tn" type="number"></div><div><label>&nbsp;</label><button class="btn s" id="ta" style="margin:0">Add</button></div></div><div class="k" id="dy" style="margin-top:10px"></div><button class="btn s" id="tr">Reset today</button></div>
+<div class="c"><h2>6. Intraday rules</h2><ul class="ck"><li>Trade with the trend. No bull put on a falling day.</li><li>Sell 10-15 delta beyond an OI wall and support/resistance.</li><li>Take profit at 40-50% of credit. Do not wait for full premium.</li><li>Exit at the stop price or the index exit level, whichever comes first.</li><li>Time stop: if flat after 1-2 hours, close.</li><li>Max 1-2 trades. Stop after 2 losses in a row.</li><li>Exit both legs together. Never average or widen the stop.</li></ul></div>
+</div></div>
+
+<div id="t3" class="hide"><div class="g">
+<div class="c"><h2>Log a trade</h2><div class="f">
+<div><label>Date</label><input id="jd" type="date"></div>
+<div><label>Setup</label><input id="js" placeholder="Nifty 24800/24700 PE"></div>
+<div><label>Max loss ₹ (risked)</label><input id="jr" type="number"></div>
+<div><label>Result P&amp;L ₹</label><input id="jp" type="number"></div></div>
+<button class="btn" id="ja">Add trade</button>
+<button class="btn s" id="jc">Clear all</button>
+<div class="note">Saved only in this browser.</div></div>
+<div class="c"><h2>Stats</h2><div class="k" id="st"></div></div>
+<div class="c" style="grid-column:1/-1"><div class="sc"><table id="jt"></table></div></div>
+</div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id),v=id=>parseFloat($(id).value)||0,R=x=>Math.round(x).toLocaleString('en-IN');
+const Nf=x=>{const t=1/(1+.2316419*Math.abs(x)),d=.3989423*Math.exp(-x*x/2),p=d*t*(.3193815+t*(-.3565638+t*(1.781478+t*(-1.821256+t*1.330274))));return x>0?1-p:p};
+const r0=.065;
+function bs(S,K,T,s,ty){const q=s*Math.sqrt(T),d1=(Math.log(S/K)+(r0+s*s/2)*T)/q,d2=d1-q;
+const p=ty=='C'?S*Nf(d1)-K*Math.exp(-r0*T)*Nf(d2):K*Math.exp(-r0*T)*Nf(-d2)-S*Nf(-d1);
+return{p:p,d:ty=='C'?Nf(d1):Nf(d1)-1}}
+// tabs
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x==b));['t1','t2','t3','t4','t5'].forEach(t=>$(t).classList.toggle('hide',t!=b.dataset.t))});
+let step=50;
+$('idx').onchange=()=>{const[a,b]=$('idx').value.split(',');$('lot').value=a;step=+b;$('wd').value=step*2;calc()};
+$('sug').onclick=()=>{const S=v('spot'),T=Math.max(v('dte'),.5)/365,s=v('vix')/100,bull=$('view').value=='bull',ty=bull?'P':'C',w=v('wd'),td=v('td');
+let best=null,atm=Math.round(S/step)*step;
+for(let i=1;i<=80;i++){const K=atm+(bull?-1:1)*i*step,o=bs(S,K,T,s,ty),df=Math.abs(o.d-(bull?-td:td)); if(!best||df<best.df)best={K,df}}
+const L=best.K+(bull?-w:w),a=bs(S,best.K,T,s,ty).p,b=bs(S,L,T,s,ty).p,rd=x=>Math.max(.05,Math.round(x/.05)*.05).toFixed(2);
+$('sk').value=best.K;$('lk').value=L;$('sp').value=rd(a);$('lp').value=rd(b);calc()};
+['view','spot','lot','vix','dte','cap','rp','wd','td','sk','sp','lk','lp','lots','sm','day','hs','hp','hk','hq','cur','tpp','bk','cx','ox','dl','mt','ig'].forEach(i=>$(i).oninput=calc);$('view').onchange=calc;
+function calc(){
+const bull=$('view').value=='bull',S=v('spot'),lot=v('lot'),lots=Math.max(1,v('lots')),sk=v('sk'),lk=v('lk'),sp=v('sp'),lp=v('lp'),cr=sp-lp,w=Math.abs(sk-lk),
+mp=cr*lot*lots,ml=(w-cr)*lot*lots,be=bull?sk-cr:sk+cr,T=Math.max(v('dte'),.5)/365,sg=v('vix')/100,
+ty=bull?'P':'C',sd=Math.abs(bs(S,sk,T,sg,ty).d),q=sg*Math.sqrt(T),d2=(Math.log(S/be)+(r0-sg*sg/2)*T)/q,pop=(bull?Nf(d2):1-Nf(d2))*100,
+bud=v('cap')*v('rp')/100,perLot=(w-cr)*lot,maxLots=perLot>0?Math.floor(bud/perLot):0,stopL=cr*v('sm')*lot*lots;
+const wrong=bull?(lk>=sk):(lk<=sk);
+$('kp').innerHTML=wrong?'<div style="grid-column:1/-1" class="rd">Hedge strike is on the wrong side. Bull put: buy lower. Bear call: buy higher.</div>':
+[['Net credit/unit','₹'+cr.toFixed(2),'gn'],['Max profit','₹'+R(mp),'gn'],['Max loss','₹'+R(ml),'rd'],['Break-even',R(be),''],['Est. win chance',pop.toFixed(0)+'%',pop>=70?'gn':'am'],['Reward : risk','1 : '+(ml/Math.max(mp,1)).toFixed(1),''],['Take profit (50%)','₹'+R(mp/2),'gn'],['Stop loss','₹'+R(-stopL),'rd']].map(x=>`<div><span>${x[0]}</span><b class="${x[2]}">${x[1]}</b></div>`).join('');
+const c=[[!wrong&&cr>0,'Net credit is positive'],[cr/Math.max(w,1)>=.25,`Credit is ${(cr/Math.max(w,1)*100).toFixed(0)}% of width (aim 25%+)`],[sd<=.16,`Short delta ~${sd.toFixed(2)} (aim 0.10-0.15)`],[pop>=70,`Est. win chance ${pop.toFixed(0)}% (aim 70%+)`],[ml<=bud,`Max loss ₹${R(ml)} vs risk budget ₹${R(bud)}`],[$('day').value=='normal'&&v('dte')>=2,$('day').value=='expiry'?'Expiry day: gamma is high, use half size and a tight stop':$('day').value=='event'?'Event day: skip, or use half size':'Normal day with 2+ days to expiry (best for spreads)'],[v('vix')>=12,'VIX not too low (thin premiums below ~12)'],[ml<=v('cap')*.5,'Margin need is within half of capital']];
+$('ck').innerHTML=c.map(x=>`<li>${x[0]?'<span class="gn">✔</span>':'<span class="rd">✘</span>'} ${x[1]}</li>`).join('');
+$('mg').innerHTML=`Approx. margin: ₹${R(w*lot*lots)} (max-loss based; broker SPAN may differ). Lots allowed by risk budget: <b>${maxLots}</b>${maxLots<1?' - narrow width or skip':''}.`;
+G={pop:pop,ok:c.filter(x=>x[0]).length,n:c.length};chart(bull,S,sk,lk,cr,lot*lots,be);hedge();intra()}
+function chart(bull,S,sk,lk,cr,q,be){
+const lo=S*.94,hi=S*1.06,n=60,pts=[];let mn=0,mx=0;
+for(let i=0;i<=n;i++){const x=lo+(hi-lo)*i/n,p=(bull?cr-Math.max(0,sk-x)+Math.max(0,lk-x):cr-Math.max(0,x-sk)+Math.max(0,x-lk))*q;pts.push([x,p]);mn=Math.min(mn,p);mx=Math.max(mx,p)}
+const W=420,H=200,P=14,sx=x=>P+(x-lo)/(hi-lo)*(W-2*P),rg=(mx-mn)||1,sy=y=>H-P-(y-mn)/rg*(H-2*P);
+const path=pts.map((p,i)=>(i?'L':'M')+sx(p[0]).toFixed(1)+' '+sy(p[1]).toFixed(1)).join('');
+$('ch').innerHTML=`<svg viewBox="0 0 ${W} ${H}"><line x1="${P}" x2="${W-P}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--mu)" stroke-dasharray="3"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5"/><line x1="${sx(S)}" x2="${sx(S)}" y1="${P}" y2="${H-P}" stroke="var(--am)" stroke-dasharray="4"/><line x1="${sx(be)}" x2="${sx(be)}" y1="${P}" y2="${H-P}" stroke="var(--rd)" stroke-dasharray="2"/><text x="${sx(S)+4}" y="${P+8}" font-size="10" fill="var(--am)">spot</text><text x="${sx(be)+4}" y="${H-P-4}" font-size="10" fill="var(--rd)">BE</text><text x="${P}" y="${sy(mx)-3}" font-size="10" fill="var(--gn)">+₹${R(mx)}</text><text x="${P}" y="${sy(mn)+10}" font-size="10" fill="var(--rd)">-₹${R(-mn)}</text></svg>`}
+function hedge(){
+const bull=$('view').value=='bull',lot=v('lot'),lots=Math.max(1,v('lots')),q=lot*lots,sk=v('sk'),lk=v('lk'),S=v('spot'),cr=v('sp')-v('lp'),sm=v('sm'),
+sd=S*v('vix')/100*Math.sqrt(Math.max(v('dte'),.5)/365),dist=bull?S-sk:sk-S,z=dist/(sd||1);
+const st=z<0?['Sold strike breached: exit','rd']:z>=1?['Safe zone','gn']:z>=.5?['Watch closely','am']:['Danger: exit or roll away','rd'];
+$('hd').innerHTML=[['Distance',R(Math.abs(dist))+' pts'+(dist<0?' (inside)':''),''],['In SD units',z.toFixed(2)+' SD',st[1]],['1 SD move',R(sd)+' pts',''],['Status',st[0],st[1]]].map(x=>`<div><span>${x[0]}</span><b class="${x[2]}">${x[1]}</b></div>`).join('');
+const cur=v('cur'),pnl=(cr-cur)*q,cap=cr>0?(cr-cur)/cr*100:0;let act;
+if(!cur)act='Enter the current close price';else if(cur>=cr*(1+sm))act='Stop hit: exit both legs';else if(cap>=50)act='50% reached: book it or trail stop to ₹'+cr.toFixed(2);else if(cur>cr)act='In loss, above stop: respect stop, do not average';else act='Hold; trail stop to break-even after 50% profit';
+$('hl').innerHTML=cur?[['P&L now','₹'+R(pnl),pnl>=0?'gn':'rd'],['Profit captured',cap.toFixed(0)+'%',''],['Stop exit price','₹'+(cr*(1+sm)).toFixed(2),'rd'],['Action',act,'']].map(x=>`<div><span>${x[0]}</span><b class="${x[2]}" style="font-size:${x[0]=='Action'?13:17}px">${x[1]}</b></div>`).join(''):'<div style="grid-column:1/-1" class="note">Type the current price to close your spread to see P&L and the action.</div>';
+const hs=v('hs'),hk=v('hk'),cb=v('hp')-v('hq'),tot=cr+cb,w=Math.max(Math.abs(sk-lk),Math.abs(hs-hk)),ps=bull?sk:hs,cs=bull?hs:sk,ok=hs>0&&hk>0&&ps<cs&&(bull?hk>hs:hk<hs)&&cb>0,ml=(w-tot)*q,bud=v('cap')*v('rp')/100;
+$('hc').innerHTML=ok?[['Total credit','₹'+tot.toFixed(2),'gn'],['Max profit','₹'+R(tot*q),'gn'],['Max loss','₹'+R(ml),'rd'],['Risk budget',ml<=bud?'Within':'Over','' + (ml<=bud?'gn':'rd')],['Lower break-even',R(ps-tot),''],['Upper break-even',R(cs+tot),'']].map(x=>`<div><span>${x[0]}</span><b class="${x[2]}">${x[1]}</b></div>`).join(''):'<div style="grid-column:1/-1" class="note">Fill the opposite spread (sell strike, buy strike further away, positive credit) to see condor numbers.</div>'}
+let G={},T=[],dkey='csd'+new Date().toISOString().slice(0,10);
+try{T=JSON.parse(localStorage.getItem(dkey)||'[]')}catch(e){}
+function svT(){try{localStorage.setItem(dkey,JSON.stringify(T))}catch(e){}}
+const K=a=>a.map(x=>`<div><span>${x[0]}</span><b class='${x[2]||''}' style='font-size:${x[3]||17}px'>${x[1]}</b></div>`).join('');
+const pd=n=>String(n).padStart(2,'0');
+function ist(){const p=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',hour12:false,weekday:'short'}).formatToParts(new Date()),g=k=>p.find(x=>x.type==k).value;return{h:+g('hour')%24,m:+g('minute'),wd:g('weekday')}}
+function intra(){
+const bull=$('view').value=='bull',lot=v('lot'),lots=Math.max(1,v('lots')),q=lot*lots,sk=v('sk'),S=v('spot'),sp=v('sp'),lp=v('lp'),cr=sp-lp,sm=v('sm'),cap=v('cap'),dsd=S*v('vix')/100/Math.sqrt(252),zd=(bull?S-sk:sk-S)/(dsd||1);
+const t=ist(),mn=t.h*60+t.m,wk=t.wd=='Sat'||t.wd=='Sun',ign=$('ig').checked;
+let tw=['Market closed','rd'],can=false;
+if(!wk){if(mn>=555&&mn<570)tw=['Wait: first 15 min is noisy','am'];else if(mn>=570&&mn<690){tw=['Best entry window','gn'];can=true}else if(mn>=690&&mn<810){tw=['Slow midday: clear setups only','am'];can=true}else if(mn>=810&&mn<885)tw=['Late: no new trades','am'];else if(mn>=885&&mn<915)tw=['No new trades, close positions','rd'];else if(mn>=915&&mn<930)tw=['EXIT NOW: close all legs','rd']}
+$('tw').innerHTML=K([['Time (IST)',pd(t.h)+':'+pd(t.m),''],['Status',tw[0],tw[1],13],['To 15:15 exit',(!wk&&mn>=555&&mn<915)?(915-mn)+' min':'-','']]);
+const tp=v('tpp')/100,tgtC=cr*(1-tp),stopC=cr*(1+sm),tgtP=cr*tp*q,stopL=cr*sm*q,lvl=bull?sk+.5*dsd:sk-.5*dsd;
+const turn=(sp+lp)*q,brk=4*v('bk'),stt=turn*v('cx')/100,oth=2*turn*v('ox')/100,gst=.18*(brk+oth),cost=brk+stt+oth+gst;
+const netP=tgtP-cost,netL=stopL+cost,be=netP>0?netL/(netP+netL)*100:100,rr=netL>0?netP/netL:0;
+const bud=cap*v('rp')/100,per=cr*sm*lot*1.25+cost/lots,sl=per>0?Math.floor(bud/per):0;
+$('xp').innerHTML=K([['Take profit: close at','₹'+tgtC.toFixed(2),'gn'],['Net profit','₹'+R(netP),netP>0?'gn':'rd'],['Stop: close at','₹'+stopC.toFixed(2),'rd'],['Net loss','₹'+R(-netL),'rd'],['Index exit level',R(lvl),'am'],['Profit per ₹1 risked',rr.toFixed(2),''],['Break-even win rate',be.toFixed(0)+'%',''],['Lots (1% style sizing)',sl,sl>=lots?'gn':'rd']]);
+$('cs').innerHTML=K([['Brokerage','₹'+R(brk),''],['STT','₹'+R(stt),''],['Other + GST','₹'+R(oth+gst),''],['Total cost','₹'+R(cost),'rd'],['% of target profit',(tgtP>0?cost/tgtP*100:0).toFixed(0)+'%',cost<=tgtP*.25?'gn':'rd']]);
+const lim=cap*v('dl')/100,tot=T.reduce((a,b)=>a+b,0);let cl=0;for(let i=T.length-1;i>=0&&T[i]<0;i--)cl++;
+let stop=null;if(tot<=-lim)stop='Daily loss limit hit: stop today';else if(cl>=2)stop='2 losses in a row: stop today';else if(T.length>=v('mt'))stop='Max trades reached: stop today';
+$('dy').innerHTML=K([['Today P&L','₹'+R(tot),tot>=0?'gn':'rd'],['Trades',T.length,''],['Loss streak',cl,cl>=2?'rd':''],['Loss limit','₹'+R(-lim),''],['Status',stop||'OK to trade',stop?'rd':'gn',13]]);
+const pop=G.pop||0,L=[[ign||can,'Time window allows a new entry'],[$('day').value=='normal','Normal day (not expiry or event)'],[!stop,'Daily limits not hit'],[(G.ok||0)>=(G.n||1)-1,'Trade checks passed: '+(G.ok||0)+'/'+(G.n||0)],[cost<=tgtP*.25,'Costs are '+(tgtP>0?(cost/tgtP*100).toFixed(0):'-')+'% of target profit (keep under 25%)'],[zd>=.8,'Sold strike is '+zd.toFixed(2)+' daily SD away (aim 0.8+)'],[pop>=be+10,'Win chance '+pop.toFixed(0)+'% vs break-even '+be.toFixed(0)+'% (need 10 points margin)'],[sl>=lots,'Lots '+lots+' vs size allowed '+sl]];
+const f=L.filter(x=>!x[0]).length,vd=stop?['STOP','rd']:f==0?['GO','gn']:f==1?['CAUTION','am']:['SKIP','rd'];
+$('gg').innerHTML=K([['Verdict',vd[0],vd[1],22],['Checks passed',(L.length-f)+' / '+L.length,'']]);
+$('gl').innerHTML=L.map(x=>`<li>${x[0]?"<span class='gn'>✔</span>":"<span class='rd'>✘</span>"} ${x[1]}</li>`).join('')}
+$('ta').onclick=()=>{if($('tn').value!==''){T.push(v('tn'));$('tn').value='';svT();intra()}};
+$('tr').onclick=()=>{T=[];svT();intra()};
+setInterval(intra,30000);
+// journal
+let J=[];try{J=JSON.parse(localStorage.getItem('csj')||'[]')}catch(e){}
+function sv(){try{localStorage.setItem('csj',JSON.stringify(J))}catch(e){}}
+function jr(){const n=J.length,w=J.filter(t=>t.p>0).length,tp=J.reduce((a,t)=>a+t.p,0),rs=J.filter(t=>t.r>0).map(t=>t.p/t.r),ar=rs.length?rs.reduce((a,b)=>a+b,0)/rs.length:0;
+let eq=0,pk=0,dd=0;J.forEach(t=>{eq+=t.p;pk=Math.max(pk,eq);dd=Math.max(dd,pk-eq)});
+$('st').innerHTML=[['Trades',n,''],['Win rate',n?(w/n*100).toFixed(0)+'%':'-',''],['Net P&L','₹'+R(tp),tp>=0?'gn':'rd'],['Avg R',ar.toFixed(2),ar>=0?'gn':'rd'],['Max drawdown','₹'+R(dd),'rd']].map(x=>`<div><span>${x[0]}</span><b class="${x[2]}">${x[1]}</b></div>`).join('');
+$('jt').innerHTML='<tr><th>Date</th><th>Setup</th><th>Risk</th><th>P&L</th><th></th></tr>'+J.map((t,i)=>`<tr><td>${t.d}</td><td>${t.s.replace(/</g,'&lt;')}</td><td>${R(t.r)}</td><td class="${t.p>=0?'gn':'rd'}">${R(t.p)}</td><td><a href="#" data-i="${i}">x</a></td></tr>`).join('')}
+$('jd').valueAsDate=new Date();
+$('ja').onclick=()=>{J.push({d:$('jd').value,s:$('js').value||'-',r:v('jr'),p:v('jp')});sv();jr()};
+$('jc').onclick=()=>{if(J.length&&confirm('Delete all trades?')){J=[];sv();jr()}};
+$('jt').onclick=e=>{const i=e.target.dataset.i;if(i!==undefined){e.preventDefault();J.splice(+i,1);sv();jr()}};
+calc();jr();
+</script></body></html>

@@ -14,10 +14,13 @@
 import type {
   AgentResearchOutput, GrokDecision, AgentContext,
 } from './agent-contract';
+import { SDMOptionStrike } from '@/types/sdm';
 import { validateCandidateTrade, rejectOptionSelling, type TradeCandidate } from '../trade-validator-gate';
 import { isTradeActive } from '../active-trade-lock';
 import { deriveUnderlyingLevels } from './underlying-levels';
 import { spotToPremiumLevels } from '../greeks';
+import { getChallenge } from '../challenge/challenge-tracker';
+import { getLotSize } from '../challenge/capital-manager';
 
 // ─── Option Engine Decision ───────────────────────────────────────────────
 
@@ -68,17 +71,65 @@ export function buildOptionCandidate(
     return { ok: false, reason: 'Spot unavailable from snapshot — no underlying entry' };
   }
 
-  // Strike: Grok override → STRIKE_SELECTION agent → chain ATM. All real.
-  const chain = (ctx.optionChain || {}) as any;
-  const strikeSel = _agentOutputs.find(o => o.agentId === 'STRIKE_SELECTION');
-  const strike = Number(
-    grokDecision.candidate?.strike ??
-    (strikeSel?.data as any)?.atmStrike ??
-    chain.atmStrike ??
-    0
-  );
-  if (!(strike > 0)) {
-    return { ok: false, reason: 'Strike selection unavailable (no ATM/strike data in snapshot)' };
+  // Strike: evaluate ALL available strikes, pick best by deterministic scoring.
+  // ATM is NOT the default — ITM/ATM/OTM all considered from actual chain.
+  const strikes: SDMOptionStrike[] = ctx.strikes || [];
+  const spot = ctx.spot;
+
+  if (!strikes.length) {
+    return { ok: false, reason: 'No option strikes available in snapshot' };
+  }
+
+  // Classify moneyness and find best candidate
+  // ATM is NOT the default — ITM/ATM/OTM all considered from actual chain.
+  // CE and PE scoring is symmetrical: both use |delta| proximity bonus.
+  let bestStrike: number | null = null;
+  let bestScore = -1;
+  let strike: number | null = null;
+
+  for (const s of strikes) {
+    const legData = optionSide === 'CE' ? s.ce : s.pe;
+    if (!legData || legData.ltp <= 0 || legData.ltp < 5) continue; // skip zero/negative and sub-minimum premium
+
+    // classify moneyness
+    const diff = Math.abs(s.strike - spot);
+    const pctDiff = spot > 0 ? diff / spot * 100 : 999;
+    let moneyness: 'ATM' | 'ITM' | 'OTM';
+    if (pctDiff < 0.3) moneyness = 'ATM';
+    else if (optionSide === 'CE') moneyness = s.strike < spot ? 'ITM' : 'OTM';
+    else moneyness = s.strike > spot ? 'ITM' : 'OTM';
+
+    // Simple scoring: ITM>ATM>OTM, higher OI/volume preferred, real delta preferred
+    // Symmetric for CE and PE — both use |delta| proximity bonus
+    let score = 0;
+    if (moneyness === 'ITM') score += 3;
+    else if (moneyness === 'ATM') score += 2;
+    else if (moneyness === 'OTM') score += 1;
+    if (legData.oi > 100000) score += 2;
+    if (legData.volume > 10000) score += 2;
+    // Use provider delta if available, prefer |delta| near 0.5 for BOTH CE and PE
+    const delta = legData.delta;
+    if (delta !== undefined) {
+      const dAbs = Math.abs(delta);
+      if (dAbs >= 0.4 && dAbs <= 0.6) score += 3;
+      else if (dAbs >= 0.3 && dAbs < 0.4) score += 2;
+      else if (dAbs >= 0.2 && dAbs < 0.3) score += 1;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestStrike = s.strike;
+    }
+  }
+
+  if (bestStrike !== null) {
+    strike = bestStrike;
+  }
+
+  if (strike === null) {
+    // NO FALLBACK — if no valid chain strike passes scoring, return NO_TRADE.
+    // Grok does not supply the strike; the Option Engine selects only from actual chain.
+    return { ok: false, reason: 'No valid option strike available from chain — cannot select strike' };
   }
 
   const row = (ctx.strikes || []).find((s: any) => Number(s?.strike) === strike) as any;
@@ -90,6 +141,18 @@ export function buildOptionCandidate(
   if (!(premium > 0)) {
     return { ok: false, reason: `${optionSide} premium unavailable for strike ${strike}` };
   }
+if (premium < 5) {
+    return { ok: false, reason: `${optionSide} premium too low (₹${premium}) for minimum ₹5 premium` };
+  }
+
+  // ₹15,000 capital early gate — check affordability before proceeding
+  const lotSize = getLotSize(symbol);
+  const maxDeployable = 15000 * 75 / 100; // ₹11,250 (75% of ₹15K starting capital)
+  const minLotCost = premium * lotSize; // cost of 1 lot
+  if (minLotCost > maxDeployable) {
+    return { ok: false, reason: `Option not affordable within ₹15,000 capital limit (₹${minLotCost} lot cost > ₹${maxDeployable} max deployable)` };
+  }
+
   if (!ctx.expiry) {
     return { ok: false, reason: 'Expiry unavailable from chain snapshot' };
   }
@@ -119,6 +182,8 @@ export function buildOptionCandidate(
   const iso = ctx.fetchedAtIso || ctx.dataTimestamp || undefined;
   const vix = Number(ctx.vix) > 0 ? Number(ctx.vix) : undefined;
   const iv = Number(leg?.iv) > 0 ? Number(leg.iv) : undefined;
+  const ivSource: 'PROVIDER' | 'CALCULATED' | 'UNAVAILABLE' = leg?.iv > 0
+    ? 'PROVIDER' : 'UNAVAILABLE';
 
   const candidate: TradeCandidate = {
     symbol,

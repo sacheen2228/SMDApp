@@ -804,9 +804,9 @@ export function calculateTradePnLV2(
 // ─── Lot Size ─────────────────────────────────────────────────────
 export function getLotSize(symbol: string, _date?: string): number {
   const lots: Record<string, number> = {
-    NIFTY: 25, BANKNIFTY: 15, FINNIFTY: 40, MIDCPNIFTY: 50, SENSEX: 20,
+    NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60, MIDCPNIFTY: 120, SENSEX: 20,
   };
-  return lots[symbol] || 25;
+  return lots[symbol] || 65;
 }
 
 // ─── Data Quality ─────────────────────────────────────────────────

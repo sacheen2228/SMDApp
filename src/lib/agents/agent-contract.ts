@@ -5,6 +5,10 @@
 
 import type { OptionChain } from '../jarvis/types';
 
+import type { CandleData } from '@/types/sdm';
+import type { TimeframeIndicators, MTFIndicatorResult } from '@/lib/mtf-indicator-engine';
+import type { CandlePatternResult } from '@/lib/candle-patterns';
+
 // ─── Agent Identity ───────────────────────────────────────────────
 
 export type AgentId =
@@ -69,6 +73,21 @@ export interface AgentDefinition {
 }
 
 // ─── Agent Context (what gets passed to each agent) ───────────────
+
+// Per-timeframe technical info. `indicators` is null when the timeframe
+// has no valid candle series (missing / insufficient) — consumers must
+// check `available` and treat null as NO_DATA, never as neutral signals.
+export interface TechnicalTimeframeInfo {
+  available: boolean;
+  reason?: string;
+  candleCount: number;
+  latestCandle: CandleData | null;
+  latestTimestamp: number;
+  ageSeconds: number;
+  isFresh: boolean;    // age within ~2.5 bars of the timeframe
+  isComplete: boolean; // last candle is closed (not the forming bar)
+  indicators: TimeframeIndicators | null;
+}
 
 export interface AgentContext {
   symbol: string;
@@ -160,6 +179,161 @@ export interface AgentContext {
 
   // Raw context (for agents that need specific data)
   rawContext?: any;
+
+  // Technical analysis snapshot — computed from real OHLCV candles by
+  // buildTechnicalSnapshot() (src/lib/technical-snapshot.ts).
+  // Optional: when absent, technical agents MUST report NO_DATA — never
+  // fabricate bullish/bearish evidence (Phase 4 no-fabrication rule).
+  technical?: {
+    timeframes: Record<string, TechnicalTimeframeInfo>;
+    trend: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+    movingAverages: {
+      ema9: number;
+      ema20: number;
+      ema50: number;
+      ema200: number;
+      sma20: number;
+      sma50: number;
+      sma200: number;
+      emaTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'NO_DATA';
+      emaAlignment: 'BULLISH' | 'BEARISH' | 'MIXED' | 'NEUTRAL' | 'NO_DATA';
+    };
+    momentum: {
+      rsi: number;
+      rsiState: 'OVERBOUGHT' | 'OVERSOLD' | 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'NO_DATA';
+      rsiSlope: 'UP' | 'DOWN' | 'FLAT' | 'NO_DATA';
+      macd: number;
+      signal: number;
+      histogram: number;
+      histogramSlope: 'UP' | 'DOWN' | 'FLAT' | 'NO_DATA';
+      macdState: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'NO_DATA';
+      roc: number | null; // 5-bar rate of change % on primary TF; null = NO_DATA
+    };
+    volatility: {
+      atr: number;
+      atrPercent: number;
+      atrRegime: 'HIGH' | 'NORMAL' | 'LOW' | 'NO_DATA';
+      iv: number;
+      ivRank: number | null;
+      ivPercentile: number | null;
+      // null = insufficient closes (<20) → NO_DATA, never fabricated bands
+      bollinger: {
+        upper: number;
+        middle: number;
+        lower: number;
+        bandwidth: number;   // (upper-lower)/middle
+        percentB: number;    // (close-lower)/(upper-lower), 0..1+
+        squeezeState: 'SQUEEZE' | 'EXPANSION' | 'NORMAL' | 'NO_DATA';
+      } | null;
+    };
+    // ATR-based SuperTrend of the primary timeframe (null = NO_DATA)
+    supertrend: {
+      value: number;
+      direction: 'UP' | 'DOWN';
+      distance: number; // (close-value)/value * 100
+    } | null;
+    volume: {
+      relativeVolume: number;
+      volumeSpike: boolean;
+      volumeTrend: 'INCREASING' | 'DECREASING' | 'STABLE' | 'NO_DATA';
+      poc: number | null;
+      vah: number | null;
+      val: number | null;
+      volumeProfileAvailable: boolean;
+    };
+    priceAction: {
+      higherHigh: boolean;
+      higherLow: boolean;
+      lowerHigh: boolean;
+      lowerLow: boolean;
+      swingHigh: number;
+      swingLow: number;
+      dayHigh: number;
+      dayLow: number;
+      pdh: number;
+      pdl: number;
+      openingRangeHigh: number;
+      openingRangeLow: number;
+      gapUp: boolean;
+      gapDown: boolean;
+      momentumCandle: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'NO_DATA';
+      reversalCandle: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'NO_DATA';
+    };
+    volumeProfile: {
+      poc: number | null;
+      vah: number | null;
+      val: number | null;
+      valueAreaLow: number | null;
+      valueAreaHigh: number | null;
+      valueAreaWidth: number | null;
+      profileAvailable: boolean;
+    };
+    // Strongest confirmed zones with provenance (§13) — clustered, never a
+    // blind merge of every level. Empty + available:false = NO_DATA.
+    supportResistance: {
+      available: boolean;
+      levels: {
+        level: number;
+        type: 'SUPPORT' | 'RESISTANCE';
+        strength: number; // 0-100
+        touchCount: number;
+        source: 'SWING' | 'PDH_PDL' | 'DAY_HIGH_LOW' | 'VOLUME_PROFILE' | 'OI_WALL';
+        timeframe: string;
+      }[];
+    };
+    candlePatterns: CandlePatternResult[];
+    smc: {
+      // null = not detected / insufficient candles — never a directional claim
+      bos: { direction: 'BULLISH' | 'BEARISH'; timestamp: number } | null;
+      choch: { direction: 'BULLISH' | 'BEARISH'; timestamp: number } | null;
+      mss: { direction: 'BULLISH' | 'BEARISH'; timestamp: number; displacement: boolean; sweepGated: boolean } | null;
+      fvg: {
+        direction: 'BULLISH' | 'BEARISH';
+        upper: number;
+        lower: number;
+        timestamp: number;
+        status: 'OPEN' | 'PARTIAL' | 'FILLED';
+        filledPercent: number; // 0..1
+      } | null;
+      orderBlock: {
+        direction: 'BULLISH' | 'BEARISH';
+        high: number;
+        low: number;
+        timestamp: number;
+        mitigated: boolean;
+        strength: number | null; // OB body / ATR ratio; null when ATR unavailable
+      } | null;
+      liquidity: { levelType: 'HIGH' | 'LOW'; price: number; time: number; swept: boolean; reclaimed: boolean } | null;
+      // Deterministic dealing-range zone (null = no valid range → NO_DATA)
+      premiumDiscount: {
+        rangeHigh: number;
+        rangeLow: number;
+        equilibrium: number;
+        currentZone: 'PREMIUM' | 'DISCOUNT' | 'EQUILIBRIUM';
+      } | null;
+    };
+    mtf: {
+      trend3m: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      trend5m: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      trend15m: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      trend30m: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      trend1h: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      trendDaily: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      higherTFTrend: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      lowerTFTrend: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      mtfConsensus: 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL' | 'NO_DATA';
+      mtfConflict: boolean;
+    };
+    dataQuality: {
+      fetchedAt: string;
+      latestCandleAt: string;
+      ageSeconds: number;
+      dataFresh: 'FRESH' | 'STALE' | 'MISSING';
+      candleCount: number;
+      missingData: string[];
+      incompleteCandle: boolean;
+    };
+  };
 }
 
 // ─── Freshness from the single snapshot timestamp (v2 §21) ─────────────

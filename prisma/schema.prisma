@@ -670,3 +670,38 @@ model NotificationDelivery {
   @@index([channel])
   @@index([status])
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 5 — Web Intelligence: locally synced + enriched news records.
+// Raw source of truth is the market-history sidecar (db/market_history.db
+// web_records). This table holds the ENRICHED copy SMDApp agents read.
+// Raw fields (source/url/publishedAt/collectedAt/hash/provenance) are
+// never overwritten after insert; enrichment happens once at sync.
+// ═══════════════════════════════════════════════════════════════════
+model WebRecord {
+  id            String   @id // content hash (sha256) — dedup key
+  source        String
+  sourceFeed    String?
+  url           String
+  title         String
+  description   String   @default("")
+  publishedAt   DateTime
+  collectedAt   DateTime
+  syncedAt      DateTime @default(now())
+  backfilled    Boolean  @default(false) // collected after a PC-off gap
+  symbols       String   @default("[]") // JSON: extracted stock/index entities
+  eventType     String   @default("general")
+  sentiment     Float    @default(0) // -1..+1
+  sentimentLabel String  @default("NEUTRAL") // BULLISH | BEARISH | NEUTRAL
+  impact        String   @default("LOW") // CRITICAL | HIGH | MEDIUM | LOW
+  confidence    Float    @default(0)
+  freshness     String   @default("UNKNOWN") // LIVE | FRESH | DELAYED | STALE | BACKFILLED | UNKNOWN
+  provenance    String   @default("{}") // JSON: collector, http status, fetcher, etc.
+  createdAt     DateTime @default(now())
+
+  @@index([publishedAt])
+  @@index([collectedAt])
+  @@index([source])
+  @@index([syncedAt])
+  @@index([eventType])
+}

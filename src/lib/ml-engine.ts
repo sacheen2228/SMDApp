@@ -52,6 +52,54 @@ export function calculateEMA(data: number[], period: number): number[] {
   return ema
 }
 
+export function calculateSMA(data: number[], period: number): number {
+  if (data.length < period || period <= 0) return 0
+  const slice = data.slice(-period)
+  return slice.reduce((a, b) => a + b, 0) / period
+}
+
+export interface MACDResult {
+  macd: number
+  signal: number
+  histogram: number
+  prevHistogram: number
+  prevMacd: number
+  prevSignal: number
+  valid: boolean
+}
+
+// Standard MACD: EMA12 - EMA26, signal = EMA9 of MACD line.
+// `valid` only when the series is long enough for a seeded EMA
+// (slow + signal - 1 bars) — callers must treat invalid as NO_DATA.
+export function calculateMACD(
+  data: number[],
+  fast = 12,
+  slow = 26,
+  signalPeriod = 9
+): MACDResult {
+  const invalid: MACDResult = {
+    macd: 0, signal: 0, histogram: 0,
+    prevHistogram: 0, prevMacd: 0, prevSignal: 0,
+    valid: false,
+  }
+  if (data.length < slow + signalPeriod - 1) return invalid
+
+  const emaFast = calculateEMA(data, fast)
+  const emaSlow = calculateEMA(data, slow)
+  const macdLine: number[] = []
+  for (let i = 0; i < data.length; i++) macdLine.push(emaFast[i] - emaSlow[i])
+  const signalLine = calculateEMA(macdLine, signalPeriod)
+
+  const i = data.length - 1
+  const macd = macdLine[i]
+  const signal = signalLine[i]
+  const histogram = macd - signal
+  const prevMacd = macdLine[i - 1]
+  const prevSignal = signalLine[i - 1]
+  const prevHistogram = prevMacd - prevSignal
+  return { macd, signal, histogram, prevHistogram, prevMacd, prevSignal, valid: true }
+}
+
 export function calculateBollingerBands(
   closes: number[],
   period = 20,

@@ -16,6 +16,7 @@ import { recordSignal, closeTrade, updatePrice } from "./trade-audit-client";
 import { computeEodClose, holdingMinutes } from "./eod-squareoff";
 import { istSession } from "./audit-recorders";
 import { acquireTradeLock, releaseTradeLock, updateTradeStatus as updateLockStatus, isTradeActive } from "./active-trade-lock";
+import { getLotSize } from "./symbol-config";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -154,8 +155,9 @@ export function isTerminalTradeStatus(trade: ActiveTrade, status: ActiveTrade['s
 }
 
 function getPnl(trade: ActiveTrade, hitPrice: number): number {
-  if (trade.side === 'BUY') return hitPrice - trade.entry;
-  return trade.entry - hitPrice;
+  const lotSize = getLotSize(trade.symbol) ?? 65;
+  if (trade.side === 'BUY') return (hitPrice - trade.entry) * lotSize;
+  return (trade.entry - hitPrice) * lotSize;
 }
 
 function getPnlPct(trade: ActiveTrade, hitPrice: number): number {

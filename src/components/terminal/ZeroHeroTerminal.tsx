@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  Home, Link2, Target, Wallet, Clock, Star, Briefcase,
+  Home, Link2, Target, Wallet, Clock, Star,
   TrendingUp, TrendingDown, ChevronDown, Search, X, RefreshCw,
   Wifi, WifiOff, Zap, Activity, ArrowUpRight, ArrowDownRight,
   Building2, AlertTriangle, Brain, Shield, Minus, BarChart3,
-  Flame, Trophy, Crosshair, Layers, CalendarClock,
+  Flame, Trophy, Layers, CalendarClock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
@@ -18,8 +18,8 @@ import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
+import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
-import { CASStraddleTab } from "@/components/terminal/CASStraddleTab";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 import MostActiveContracts from "@/components/terminal/MostActiveContracts";
 
@@ -111,7 +111,7 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "positions" | "straddle" | "ide" | "daily" | "top5" | "mostactive";
+type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "ide" | "daily" | "top5" | "mostactive";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -119,12 +119,10 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "optionsedge", icon: <Target size={19} />, label: "Options Edge" },
   { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
-  { id: "straddle", icon: <Crosshair size={19} />, label: "CAS Straddle" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
   { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
   { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
-  { id: "positions", icon: <Briefcase size={19} />, label: "Positions & P&L" },
   { id: "ide", icon: <Layers size={19} />, label: "Institutional Derivatives" },
   { id: "top5", icon: <Flame size={19} />, label: "Today's Trade" },
   { id: "mostactive", icon: <Activity size={19} />, label: "Most Active F&O" },
@@ -772,9 +770,6 @@ export function ZeroHeroTerminal() {
   const [showModal, setShowModal] = useState(false);
   const [pendingTrade, setPendingTrade] = useState<any>(null);
   const [modalQty, setModalQty] = useState(1);
-  // Real broker positions from Breeze — 15s poll (null = not yet loaded /
-  // Breeze unavailable).
-  const [brokerPositions, setBrokerPositions] = useState<any[] | null>(null);
 
   // Live LTP for open paper positions — every 15s fetch each position's
   // option chain and update matching strike premiums. deps exclude `ltp`
@@ -812,19 +807,6 @@ export function ZeroHeroTerminal() {
     return () => { alive = false; clearInterval(iv); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions.length, positions.map((p) => p.sym).join(",")]);
-
-  // Broker positions (Breeze) — 15s poll; failures leave the last value.
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("/api/positions")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => { if (alive && j?.success) setBrokerPositions(Array.isArray(j.data?.positions) ? j.data.positions : []); })
-        .catch(() => {});
-    load();
-    const iv = setInterval(load, 15000); // auto-update every 15s
-    return () => { alive = false; clearInterval(iv); };
-  }, []);
 
   // Watchlist
   const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set(["NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK"]));
@@ -1014,6 +996,13 @@ export function ZeroHeroTerminal() {
     if (!isEligible) return [];
     // SAFETY: Zero Hero is ONLY allowed on expiry day
     if (!getExpiryTypeForDate(symbol)) return []; // Not expiry day — no Zero Hero trades
+    // Session gate — audit-validated Oct 2026 (July book): ZERO_HERO in
+    // MIDDAY/CLOSING/POST_CLOSE = 15.8% WR, −₹184K; all other sessions =
+    // 43.4% WR, +₹34K. Never generate candidates in the toxic windows.
+    const istNow = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const istMins = istNow.getHours() * 60 + istNow.getMinutes();
+    const toxicSession = (istMins >= 720 && istMins < 780) || istMins >= 900; // 12:00-13:00, 15:00+
+    if (toxicSession) return [];
     const threshold = spot * 0.02;
     const nearStrikes = chain.filter((s) => Math.abs(s.strike - spot) <= threshold);
     // Chain-wide context computed ONCE (reuses sdm-oianalysis, gamma-blast, expiry-calculator)
@@ -1116,10 +1105,6 @@ export function ZeroHeroTerminal() {
     }]);
     setShowModal(false);
     setPendingTrade(null);
-  }
-
-  function closePosition(id: number) {
-    setPositions((prev) => prev.filter((p) => p.id !== id));
   }
 
   const totalPnl = positions.reduce((s, p) => s + (p.ltp - p.entry) * p.qty * p.lot, 0);
@@ -1283,12 +1268,6 @@ export function ZeroHeroTerminal() {
           {activeTab === "watchlist" && (
             <WatchlistTab watchlist={watchlist} setWatchlist={setWatchlist} setSymbol={setSymbol} symbol={symbol} />
           )}
-          {activeTab === "positions" && (
-            <PositionsTab positions={positions} closePosition={closePosition} totalPnl={totalPnl} brokerPositions={brokerPositions} />
-          )}
-          {activeTab === "straddle" && (
-            <CASStraddleTab />
-          )}
           {activeTab === "ide" && (
             <InstitutionalDerivativesView />
           )}
@@ -1428,7 +1407,8 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
 // ─── Option Chain Table ────────────────────────────────────────────
 function OptionChainTable({ chain, atmStrike, openTrade, rec }: { chain: ChainRow[]; atmStrike: number; openTrade: (strike: number, type: "CE" | "PE", ltp: number) => void; rec?: TradeRec | null }) {
   return (
-    <table className="w-full border-collapse font-mono text-[12px]">
+    <div className="overflow-x-auto">
+    <table className="w-full min-w-[640px] border-collapse font-mono text-[12px]">
       <thead>
         <tr>
           {["OI", "OI Chg", "Vol", "IV", "Delta", "M", "LTP"].map((h) => (
@@ -1472,6 +1452,7 @@ function OptionChainTable({ chain, atmStrike, openTrade, rec }: { chain: ChainRo
         })}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -1767,6 +1748,44 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
       const results: any[] = [];
       const nearStrikes = chain.filter((row: any) => Math.abs(row.strike - spot) / spot < 0.03);
 
+      // OI-flow direction filter (same math as flowData memo):
+      // call OI rising = call writing = BEARISH; put OI rising = put writing = BULLISH.
+      // SMART_MONEY PE historically lost in EVERY session (0/51, −₹78K) during a
+      // bull run — so PE is allowed ONLY when live OI flow confirms bears in
+      // control. In a bull market this gate blocks PE automatically.
+      let callOiChg = 0, putOiChg = 0;
+      for (const row of chain) {
+        if (row.ce) callOiChg += row.ce.oiChg || 0;
+        if (row.pe) putOiChg += row.pe.oiChg || 0;
+      }
+      const oiTot = Math.abs(callOiChg) + Math.abs(putOiChg);
+      const oiRatio = oiTot > 0 ? (callOiChg - putOiChg) / oiTot : 0;
+      const flowBias: "BULLISH" | "BEARISH" | "NEUTRAL" =
+        oiRatio < -0.1 ? "BULLISH" : oiRatio > 0.1 ? "BEARISH" : "NEUTRAL";
+
+      // Falling-market detector (TECHNICAL confirmation, Oct 2026):
+      // OI flow says who's winning the positioning war; this says whether
+      // price is DEMONSTRABLY falling (spot < VWAP + DOWN structure +
+      // sustained momentum — ≥2 of 3 layers). PE requires BOTH.
+      const falling = isFallingMarket(candles, spot);
+
+      // PE strike window per desk style: ATM/ITM + OTM max 2–3 strikes.
+      // Strike interval derived from the chain itself (works for NIFTY 50,
+      // SENSEX 100, stock F&O steps alike).
+      const sortedStrikes = chain.map((r: any) => r.strike).sort((a: number, b: number) => a - b);
+      let strikeStep = 0;
+      for (let i = 1; i < sortedStrikes.length; i++) {
+        const d = sortedStrikes[i] - sortedStrikes[i - 1];
+        if (d > 0 && (!strikeStep || d < strikeStep)) strikeStep = d;
+      }
+      if (!strikeStep) strikeStep = spot * 0.002; // fallback ~0.2%
+      const peMinStrike = spot - 4 * strikeStep;  // ITM depth cap
+      const peMaxStrike = spot + 3 * strikeStep;  // OTM cap: 3 strikes
+      // PE session gate — PRE_OPEN PE alone was −₹64K (0% WR); market-hours only.
+      const peIst = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const peMins = peIst.getHours() * 60 + peIst.getMinutes();
+      const peSessionOk = peMins >= 555 && peMins < 930; // 09:15–15:30 IST
+
       for (const row of nearStrikes) {
         // CE direction
         const ceInput: MarketDataInput = {
@@ -1808,45 +1827,57 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           });
         }
 
-        // PE direction
-        const peInput: MarketDataInput = {
-          symbol: activeSymbol,
-          strategy: "FO" as StrategyProfile,
-          direction: "BEARISH",
-          spot,
-          optionChain,
-          pcr: pcr || undefined,
-          maxPain: maxPain || undefined,
-          vix: vix || undefined,
-          candles: candles as any[] | undefined,
-          lotSize,
-          entryPrice: row.pe?.ltp || 0,
-          stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
-          target1: row.pe ? row.pe.ltp * 1.5 : 0,
-          target2: row.pe ? row.pe.ltp * 2.0 : 0,
-          historicalWinRate: 0.65,
-          historicalRR: 2.0,
-        };
-        const peDecision = scoreTrade(withCandleContext(peInput, candles));
-        // PE floor raised — historical PE win rate on this book is ~0%.
-        if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
-            (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {
-          results.push({
-            strike: row.strike,
-            type: "PE",
-            entry: peDecision.entry,
-            sl: peDecision.stopLoss,
-            tp1: peDecision.target1,
-            tp2: peDecision.target2,
-            tp3: peDecision.target3,
-            rr: peDecision.riskReward,
-            confidence: peDecision.score,
-            qualityGrade: peDecision.grade,
-            maxLoss: peDecision.maxLoss,
-            reasons: peDecision.reasons,
-            direction: peDecision.direction,
-            hardGates: peDecision.hardGateStatus,
-          });
+        // PE candidates — REGIME-GATED, not banned (Oct 2026 audit):
+        // historical PE = 0/51 across all sessions in a bull run (−₹78K).
+        // Allowed only when (a) OI flow says BEARISH, (b) price is actually
+        // FALLING (technical: VWAP/structure/momentum, ≥2 layers), (c) score ≥65,
+        // (d) market hours (no PRE_OPEN), (e) levels sane (entry ≥ ₹5, SL below
+        // entry), (f) strike inside ATM/ITM + OTM≤3 window.
+        if (
+          flowBias === "BEARISH" &&
+          peSessionOk &&
+          falling.falling &&
+          row.strike >= peMinStrike &&
+          row.strike <= peMaxStrike
+        ) {
+          const peInput: MarketDataInput = {
+            symbol: activeSymbol,
+            strategy: "FO" as StrategyProfile,
+            direction: "BEARISH",
+            spot,
+            optionChain,
+            pcr: pcr || undefined,
+            maxPain: maxPain || undefined,
+            vix: vix || undefined,
+            candles: candles as any[] | undefined,
+            lotSize,
+            entryPrice: row.pe?.ltp || 0,
+            stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
+            target1: row.pe ? row.pe.ltp * 1.5 : 0,
+            target2: row.pe ? row.pe.ltp * 2.0 : 0,
+            historicalWinRate: 0.65,
+            historicalRR: 2.0,
+          };
+          const peDecision = scoreTrade(withCandleContext(peInput, candles));
+          if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
+              (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {
+            results.push({
+              strike: row.strike,
+              type: "PE",
+              entry: peDecision.entry,
+              sl: peDecision.stopLoss,
+              tp1: peDecision.target1,
+              tp2: peDecision.target2,
+              tp3: peDecision.target3,
+              rr: peDecision.riskReward,
+              confidence: peDecision.score,
+              qualityGrade: peDecision.grade,
+              maxLoss: peDecision.maxLoss,
+              reasons: peDecision.reasons,
+              direction: peDecision.direction,
+              hardGates: peDecision.hardGateStatus,
+            });
+          }
         }
       }
 
@@ -1863,7 +1894,8 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
     if (!smcCandidates.length) return null;
     const h = ["Strike", "Type", "Confidence", "Entry", "SL", "TP1", "TP2", "TP3", "R:R", "Grade", "Sizing"];
     return (
-      <table className="w-full border-collapse font-mono text-[12px]">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[700px] border-collapse font-mono text-[12px]">
         <thead>
           <tr>
             {h.map(hh => (
@@ -1906,6 +1938,7 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           ))}
         </tbody>
       </table>
+      </div>
     );
   }
 
@@ -2013,8 +2046,8 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
   return (
     <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
       <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">⭐ Watchlist <span className="text-[#7d8ba0] font-mono text-[11px]">Click a row to switch instrument · LTP auto-updates 30s</span></div>
-      <div className="p-2.5 overflow-y-auto" style={{ maxHeight: "78vh" }}>
-        <table className="w-full border-collapse font-mono text-[12px]">
+      <div className="p-2.5 overflow-auto" style={{ maxHeight: "78vh" }}>
+        <table className="w-full min-w-[480px] border-collapse font-mono text-[12px]">
           <thead>
             <tr>
               {["Pin", "Instrument", "LTP", "Chg%", "Lot", "Exchange"].map((h) => (
@@ -2047,100 +2080,3 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
   );
 }
 
-// ─── Positions Tab ─────────────────────────────────────────────────
-function PositionsTab({ positions, closePosition, totalPnl, brokerPositions }: { positions: any[]; closePosition: (id: number) => void; totalPnl: number; brokerPositions: any[] | null }) {
-  const winners = positions.filter((p) => p.ltp > p.entry).length;
-  const losers = positions.filter((p) => p.ltp < p.entry).length;
-  return (
-    <div className="grid grid-cols-2 gap-3.5">
-      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">💼 Open Positions <span className="text-[#7d8ba0] font-mono text-[11px]">{positions.length} open</span></div>
-        <div className="p-2.5 overflow-x-auto">
-          {positions.length === 0 ? (
-            <div className="p-6 text-[#7d8ba0] text-center text-[12.5px]">No open positions. Buy from the option chain or Zero Hero scanner.</div>
-          ) : (
-            <table className="w-full border-collapse font-mono text-[12px]">
-              <thead>
-                <tr>
-                  {["Instrument", "Qty", "Entry", "LTP", "SL", "Target", "R:R", "P&L", ""].map((h) => (
-                    <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Instrument" ? "text-left" : "text-right"}`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map((p) => {
-                  const pnl = (p.ltp - p.entry) * p.qty * p.lot;
-                  return (
-                    <tr key={p.id} className="border-b border-[#1f2733] text-[11px]">
-                      <td className="text-left py-1.5 px-1">{p.sym} <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${p.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{p.type}</span> {fmtInt(p.strike)}</td>
-                      <td className="text-right py-1.5 px-1">{p.qty * p.lot}</td>
-                      <td className="text-right py-1.5 px-1">₹{fmt(p.entry)}</td>
-                      <td className={`text-right py-1.5 px-1 ${p.ltp >= p.entry ? "text-[#1fbf75]" : "text-[#f2495c]"}`}>₹{fmt(p.ltp)}</td>
-                      <td className="text-right py-1.5 px-1 text-[#f2495c]">₹{fmt(p.sl)}</td>
-                      <td className="text-right py-1.5 px-1 text-[#1fbf75]">₹{fmt(p.tp1)}</td>
-                      <td className="text-right py-1.5 px-1"><span className="px-1.5 py-0.5 rounded font-bold text-[10.5px] bg-[rgba(79,143,247,.18)] text-[#4f8ff7]">1:{p.rr}</span></td>
-                      <td className={`text-right py-1.5 px-1 font-bold ${pnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>₹{fmtInt(pnl)}</td>
-                      <td className="text-right py-1.5 px-1">
-                        <button className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#151b25] text-[#7d8ba0] border border-[#1f2733] cursor-pointer" onClick={() => closePosition(p.id)}>Close</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">Day P&L Summary</div>
-        <div className="p-3">
-          <div className="text-center py-3">
-            <div className="text-[#7d8ba0] text-[11px]">Unrealized P&L</div>
-            <div className={`font-mono text-[26px] font-extrabold ${totalPnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>₹{fmtInt(totalPnl)}</div>
-          </div>
-          <div className="flex justify-around text-center mt-2">
-            <div><div className="text-[#7d8ba0] text-[11px]">Open</div><div className="font-mono font-bold">{positions.length}</div></div>
-            <div><div className="text-[#7d8ba0] text-[11px]">In profit</div><div className="text-[#1fbf75] font-mono font-bold">{winners}</div></div>
-            <div><div className="text-[#7d8ba0] text-[11px]">In loss</div><div className="text-[#f2495c] font-mono font-bold">{losers}</div></div>
-          </div>
-        </div>
-      </div>
-      <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden col-span-2">
-        <div className="px-3 py-2.5 border-b border-[#1f2733] font-bold text-[13px]">🏛 Broker Positions (Breeze) <span className="text-[#7d8ba0] font-mono text-[11px]">{brokerPositions === null ? "connecting…" : `${brokerPositions.length} open`}</span></div>
-        {brokerPositions === null ? (
-          <div className="p-4 text-[#7d8ba0] text-center text-[12.5px]">Breeze unavailable — broker positions will appear when the session is active. Paper positions above keep updating.</div>
-        ) : brokerPositions.length === 0 ? (
-          <div className="p-4 text-[#7d8ba0] text-center text-[12.5px]">No open broker positions.</div>
-        ) : (
-          <div className="p-2.5 overflow-x-auto">
-            <table className="w-full border-collapse font-mono text-[12px]">
-              <thead>
-                <tr>
-                  {["Instrument", "Product", "Qty", "Avg", "LTP", "P&L", "P&L %"].map((h) => (
-                    <th key={h} className={`text-[#7d8ba0] font-semibold py-1.5 px-1 text-[10.5px] uppercase ${h === "Instrument" || h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {brokerPositions.map((p, i) => {
-                  const pnl = Number(p.pnl) || 0;
-                  return (
-                    <tr key={`${p.stockCode}-${p.exchangeCode}-${i}`} className="border-b border-[#1f2733] text-[11px]">
-                      <td className="text-left py-1.5 px-1 text-[#dfe6ee]">{p.stockCode} <span className="text-[10px] text-[#7d8ba0]">{p.exchangeCode}</span></td>
-                      <td className="text-left py-1.5 px-1 text-[#7d8ba0]">{p.product}</td>
-                      <td className="text-right py-1.5 px-1">{p.quantity}</td>
-                      <td className="text-right py-1.5 px-1">₹{p.averagePrice}</td>
-                      <td className="text-right py-1.5 px-1">₹{p.ltp}</td>
-                      <td className={`text-right py-1.5 px-1 font-bold ${pnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>₹{fmtInt(pnl)}</td>
-                      <td className={`text-right py-1.5 px-1 ${pnl < 0 ? "text-[#f2495c]" : "text-[#1fbf75]"}`}>{p.pnlPercentage}%</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

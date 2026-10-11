@@ -4,8 +4,61 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { runDOMAnalysis, getSingleStockDOM, type DOMSummary } from '@/lib/dom-analysis';
+import { isTradingDay } from '@/lib/expiry-liquidity/market-session-config';
 
 const prisma = new PrismaClient();
+
+// The universe scan is expensive (~150 symbols). Remember a successful run
+// briefly so repeated dashboard polls don't re-hammer NSE.
+const UNIVERSE_CACHE_TTL_MS = 5 * 60_000;
+// Hard cap for a full scan. 20s NSE timeout × 5 concurrent = 4s per batch worst
+// case; 30 batches × (4s + 2s sleep) ≈ 180s is the theoretical max, so 45s is a
+// deliberate early stop — and now it actually aborts instead of abandoning.
+const UNIVERSE_SCAN_CAP_MS = 45_000;
+let universeCache: { at: number; data: DOMSummary[] } | null = null;
+
+/** Run the universe scan with a hard cap. The timeout ABORTS the scan — it
+ *  does not merely abandon it — so we never leave ~150 NSE calls running in
+ *  the background after the response has been sent. */
+async function runUniverseScan(capMs: number): Promise<DOMSummary[]> {
+  if (universeCache && Date.now() - universeCache.at < UNIVERSE_CACHE_TTL_MS) {
+    return universeCache.data;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), capMs);
+  try {
+    const data = await runDOMAnalysis(controller.signal);
+    universeCache = { at: Date.now(), data };
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Universe scan gated on the exchange calendar, with an explicit reason when
+ *  we deliberately returned nothing. An empty `data` with no `reason` should
+ *  never reach the client — it is ambiguous between "no OI found" and "did not
+ *  look". */
+async function getUniverse(capMs = UNIVERSE_SCAN_CAP_MS): Promise<{
+  data: DOMSummary[];
+  durationMs: number;
+  reason?: string;
+}> {
+  const t0 = Date.now();
+  if (!isTradingDay()) {
+    return {
+      data: [],
+      durationMs: Date.now() - t0,
+      reason: 'Non-trading day — NSE publishes no new equity OI on weekends or exchange holidays',
+    };
+  }
+  const data = await runUniverseScan(capMs);
+  return {
+    data,
+    durationMs: Date.now() - t0,
+    ...(data.length === 0 ? { reason: 'No F&O equity chains returned data' } : {}),
+  };
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -31,44 +84,39 @@ export async function GET(request: NextRequest) {
     
     if (all) {
       // Full F&O equity universe DOM analysis
-      const startTime = Date.now();
-      const data = await Promise.race([
-        runDOMAnalysis(),
-        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 45_000)),
-      ]);
-      const duration = Date.now() - startTime;
+      const universe = await getUniverse();
+      const duration = universe.durationMs;
       
-      if (save) {
+      if (save && universe.data.length) {
         const targetDate = date ? new Date(date) : new Date();
-        await Promise.all(data.map(d => saveDOMAnalysis(d, targetDate)));
+        await Promise.all(universe.data.map(d => saveDOMAnalysis(d, targetDate)));
       }
       
       return NextResponse.json({
         success: true,
-        count: data.length,
+        count: universe.data.length,
         duration: `${duration}ms`,
         timestamp: new Date().toISOString(),
-        data,
+        ...(universe.reason ? { reason: universe.reason } : {}),
+        data: universe.data,
       });
     }
     
     // Default: top OI buildup across all F&O equities
-    const data = await Promise.race([
-      runDOMAnalysis(),
-      new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 45_000)),
-    ]);
+    const universe = await getUniverse();
     
-    const topBuildup = data
+    const topBuildup = universe.data
       .flatMap(d => d.unusualBuildup.map(u => ({ ...u, symbol: d.symbol, spot: d.spot })))
       .sort((a, b) => Math.abs(b.oiChg) - Math.abs(a.oiChg))
       .slice(0, 30);
     
     return NextResponse.json({
       success: true,
-      count: data.length,
+      count: universe.data.length,
       timestamp: new Date().toISOString(),
+      ...(universe.reason ? { reason: universe.reason } : {}),
       topBuildup,
-      summary: data.map(d => ({
+      summary: universe.data.map(d => ({
         symbol: d.symbol,
         spot: d.spot,
         pcr: d.pcr,

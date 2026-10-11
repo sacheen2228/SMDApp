@@ -33,8 +33,8 @@ An option is a BET on where the price will go. You pay a small amount (premium) 
 - OTM (Out of The Money) = Not profitable yet (cheaper)
 
 ### Expiry = When the bet ends
-- Weekly expiry: Every Thursday (Nifty, Banknifty)
-- Monthly expiry: Last Thursday of month
+- Weekly expiry (SEBI staggered): NIFTY/FINNIFTY = Tuesday, MIDCPNIFTY = Wednesday, BANKNIFTY/SENSEX = Thursday
+- Monthly expiry: Last week of month (per-index weekly day)
 - 0DTE = Same day expiry (very risky, very rewarding)
 
 ### Lot Size = Minimum quantity you must trade
@@ -592,21 +592,19 @@ An option is a BET on where the price will go. You pay a small amount (premium) 
 - Post-market: 3:30 PM - 4:00 PM
 
 ### EXPIRY DAY RULES
-- Nifty expiry: Every Thursday
-- Banknifty expiry: Every Wednesday
+- NIFTY expiry: Every Tuesday (FINNIFTY also Tuesday)
+- BANKNIFTY expiry: Every Thursday (SENSEX also Thursday)
+- MIDCPNIFTY expiry: Every Wednesday
 - 0DTE trades: ONLY with confidence > 92%
 - Close all positions by 3:15 PM on expiry
 - Gamma risk is extreme on expiry day
 
-### LOT SIZES (Current as of 2024)
+### LOT SIZES (see symbol-config.ts — single source of truth)
 - NIFTY: 65
 - BANKNIFTY: 30
 - FINNIFTY: 60
 - MIDCPNIFTY: 120
 - SENSEX: 20
-- RELIANCE: 250
-- TCS: 175
-- INFY: 400
 
 ### KEY EVENTS THAT MOVE MARKETS
 - RBI Policy (every 2 months)

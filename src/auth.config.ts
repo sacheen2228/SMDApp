@@ -158,6 +158,7 @@ export const authConfig = {
         pathname === "/" ||
         pathname === "/login" ||
         pathname === "/futures" ||
+        pathname === "/static/credit-spread-dashboard.html" ||
         pathname.startsWith("/api/");
       if (isPublic) return true;
 

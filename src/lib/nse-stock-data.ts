@@ -283,6 +283,38 @@ async function fetchFromYahooChart(symbol: string): Promise<NSEStockQuote | null
 let cache: { data: NSEStockQuote[]; ts: number } | null = null;
 const CACHE_TTL = 60_000;
 
+// Honest provenance of the last fetch — which tier supplied most rows + when.
+let stockProvenance: {
+  source: "nse" | "moneycontrol" | "yahoo" | "cache" | "none";
+  retrievedAt: number;
+  nseCount: number;
+  mcCount: number;
+  yahooCount: number;
+} = { source: "none", retrievedAt: 0, nseCount: 0, mcCount: 0, yahooCount: 0 };
+
+export function getStockQuoteProvenance() {
+  const ageMs = stockProvenance.retrievedAt ? Date.now() - stockProvenance.retrievedAt : -1;
+  const freshness =
+    ageMs < 0 ? "UNAVAILABLE"
+    : ageMs < 60_000 ? "LIVE"
+    : ageMs < 300_000 ? "FRESH"
+    : ageMs < 900_000 ? "DELAYED"
+    : "STALE";
+  return {
+    source: stockProvenance.source,
+    retrievedAt: new Date(stockProvenance.retrievedAt || Date.now()).toISOString(),
+    ageMs,
+    freshness,
+    isLive: freshness === "LIVE",
+    fallbackUsed: stockProvenance.source !== "nse" && stockProvenance.source !== "cache",
+    counts: {
+      nse: stockProvenance.nseCount,
+      moneycontrol: stockProvenance.mcCount,
+      yahoo: stockProvenance.yahooCount,
+    },
+  };
+}
+
 export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
   if (cache && Date.now() - cache.ts < CACHE_TTL) return cache.data;
 
@@ -296,6 +328,7 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
     }
 
     // ── Tier 1: Moneycontrol (batches of 5) — only for stocks NSE missed ──
+    const mcProvided = new Set<string>();
     const mcEntries = NIFTY50.filter(s => !resultMap.has(s) && MC_ID_MAP[s]);
     for (let i = 0; i < mcEntries.length; i += 5) {
       const batch = mcEntries.slice(i, i + 5);
@@ -303,7 +336,10 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
         batch.map(sym => fetchFromMoneycontrol(MC_ID_MAP[sym])),
       );
       for (const r of results) {
-        if (r.status === "fulfilled" && r.value) resultMap.set(r.value.symbol, r.value);
+        if (r.status === "fulfilled" && r.value) {
+          resultMap.set(r.value.symbol, r.value);
+          mcProvided.add(r.value.symbol);
+        }
       }
       if (i + 5 < mcEntries.length) await new Promise(r => setTimeout(r, 200));
     }
@@ -336,6 +372,13 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
           stock.weeklyChangePct = weeklyData.get(stock.symbol) || 0;
         }
       }
+      const nseCount = nseStocks.length;
+      const mcCount = results.filter(s => mcProvided.has(s.symbol)).length;
+      const yahooCount = results.length - nseCount - mcCount;
+      const source = nseCount >= results.length / 2 ? "nse"
+        : mcCount >= yahooCount ? "moneycontrol"
+        : "yahoo";
+      stockProvenance = { source, retrievedAt: Date.now(), nseCount, mcCount, yahooCount };
       cache = { data: results, ts: Date.now() };
     }
     return results;

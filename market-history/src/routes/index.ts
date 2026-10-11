@@ -14,7 +14,15 @@ import {
   getTotalSnapshots,
   getLastCaptureTime,
   getDbFileSizeBytes,
+  insertWebRecords,
+  getWebRecordsSince,
+  getWebRecordCount,
+  upsertWebSourceHealth,
+  getWebSourceHealth,
+  upsertWebCollectorState,
+  getWebCollectorState,
   type ScannerResultFilter,
+  type WebRecordRow,
 } from "../db";
 
 export const apiRouter = Router();
@@ -183,5 +191,122 @@ apiRouter.get("/status", (_req: Request, res: Response) => {
     lastCaptureTime: getLastCaptureTime(),
     snapshotCount: getTotalSnapshots(),
     databaseSizeBytes: getDbFileSizeBytes(),
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 5 — Web Intelligence (raw central store).
+// POST /web/ingest    collector batch → INSERT OR IGNORE by content hash
+// GET  /web/records   incremental read since a collected_at timestamp
+// POST /web/heartbeat collector liveness + source health
+// GET  /web/status    collector ONLINE/OFFLINE + health + counts
+// ═══════════════════════════════════════════════════════════════════
+
+apiRouter.post("/web/ingest", (req: Request, res: Response) => {
+  try {
+    const list: any[] = Array.isArray(req.body?.records) ? req.body.records : [];
+    if (list.length === 0) return res.status(400).json({ error: "no_records" });
+    const rows: WebRecordRow[] = [];
+    for (const r of list) {
+      if (!r?.id || !r?.source || !r?.url || !r?.title || !r?.published_at || !r?.collected_at) {
+        continue; // skip malformed — never store incomplete provenance
+      }
+      rows.push({
+        id: String(r.id),
+        source: String(r.source),
+        source_feed: r.source_feed ?? null,
+        url: String(r.url),
+        title: String(r.title),
+        description: String(r.description ?? ""),
+        published_at: String(r.published_at),
+        collected_at: String(r.collected_at),
+        backfilled: r.backfilled ? 1 : 0,
+        symbols: typeof r.symbols === "string" ? r.symbols : JSON.stringify(r.symbols ?? []),
+        provenance: typeof r.provenance === "string" ? r.provenance : JSON.stringify(r.provenance ?? {}),
+        created_at: new Date().toISOString(),
+      });
+    }
+    if (rows.length === 0) return res.status(400).json({ error: "all_records_malformed" });
+    const result = insertWebRecords(rows);
+    return res.json({ success: true, ...result, total: getWebRecordCount() });
+  } catch (e: any) {
+    return res.status(500).json({ error: String(e?.message ?? e) });
+  }
+});
+
+apiRouter.get("/web/records", (req: Request, res: Response) => {
+  const q = req.query as Record<string, string | undefined>;
+  const since = q.since && q.since !== "" ? q.since : null;
+  const limit = q.limit ? parseInt(q.limit, 10) : 500;
+  const rows = getWebRecordsSince(since, limit);
+  return res.json({
+    success: true,
+    since,
+    count: rows.length,
+    total: getWebRecordCount(),
+    serverTime: new Date().toISOString(),
+    records: rows,
+  });
+});
+
+apiRouter.post("/web/heartbeat", (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const at = new Date().toISOString();
+    upsertWebCollectorState({
+      status: b.status ?? "ONLINE",
+      lastHeartbeatAt: at,
+      lastCollectionAt: b.lastCollectionAt,
+      lastSyncAt: b.lastSyncAt,
+      recordsTotal: b.recordsTotal,
+      recordsThisRun: b.recordsThisRun,
+      lastError: b.lastError ?? null,
+      collectorVersion: b.collectorVersion,
+      at,
+    });
+    for (const s of b.sources ?? []) {
+      if (!s?.source) continue;
+      upsertWebSourceHealth({
+        source: String(s.source),
+        status: String(s.status ?? "UNKNOWN"),
+        ok: !!s.ok,
+        error: s.error ?? null,
+        at,
+      });
+    }
+    return res.json({ success: true, at });
+  } catch (e: any) {
+    return res.status(500).json({ error: String(e?.message ?? e) });
+  }
+});
+
+apiRouter.get("/web/status", (_req: Request, res: Response) => {
+  const state = getWebCollectorState();
+  const lastHeartbeat = state?.last_heartbeat_at ?? null;
+  // Collector counts as ONLINE only if it beat within the last 5 minutes —
+  // a dead process must never report itself alive.
+  const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+  const hbAgeMs = lastHeartbeat ? Date.now() - Date.parse(lastHeartbeat) : Infinity;
+  const collectorOnline = Number.isFinite(hbAgeMs) && hbAgeMs < ONLINE_WINDOW_MS;
+  return res.json({
+    success: true,
+    collector: {
+      status: collectorOnline ? "ONLINE" : "OFFLINE",
+      statusRaw: state?.status ?? null,
+      lastHeartbeatAt: lastHeartbeat,
+      heartbeatAgeMs: Number.isFinite(hbAgeMs) ? hbAgeMs : null,
+      lastCollectionAt: state?.last_collection_at ?? null,
+      recordsTotal: state?.records_total ?? 0,
+      recordsThisRun: state?.records_this_run ?? 0,
+      lastError: state?.last_error ?? null,
+      version: state?.collector_version ?? null,
+      updatedAt: state?.updated_at ?? null,
+    },
+    store: {
+      totalRecords: getWebRecordCount(),
+      databaseSizeBytes: getDbFileSizeBytes(),
+    },
+    sources: getWebSourceHealth(),
+    serverTime: new Date().toISOString(),
   });
 });

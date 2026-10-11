@@ -36,8 +36,9 @@ export interface BSEData {
 // (403 / 302 redirect loop) — try it briefly, then derive spot from the live
 // option chain (DerivOptionChain_IV UlaValue), which still works.
 export async function getBSEIndexData(symbol: string): Promise<BSEData | null> {
+  // Step 1: try the dead endpoint briefly (may succeed in some regions/timewindows)
   try {
-    const response = await fetch(`${BSE_API_BASE}/GetSensexDatanew/w`, { headers: HEADERS, signal: AbortSignal.timeout(5000) });
+    const response = await fetch(`${BSE_API_BASE}/GetSensexDatanew/w`, { headers: HEADERS, signal: AbortSignal.timeout(3_000) });
     if (response.ok) {
       const data = await response.json();
       if (Array.isArray(data)) {
@@ -58,9 +59,10 @@ export async function getBSEIndexData(symbol: string): Promise<BSEData | null> {
       }
     }
   } catch {
-    // dead endpoint — fall through to chain-derived spot
+    // endpoint dead — fall through to chain-derived spot
   }
 
+  // Step 2: try expiry dates from archive (may also be dead, but try anyway)
   try {
     const expiries = await getBSEExpiryDates(symbol);
     const expiry = expiries[0];
@@ -160,6 +162,12 @@ function parseNum(val: string | undefined | null): number {
   return parseFloat(val.replace(/,/g, '')) || 0;
 }
 
+// BSE ships IV at full float precision (14.215268143110801) while NSE reports
+// clean 2dp (14.22). Round for display parity — never for OI, volume or price.
+function roundIv(iv: number): number {
+  return Math.round(iv * 100) / 100;
+}
+
 export async function getBSEOptionChain(symbol: string, expiry: string): Promise<{
   data: BSEOptionStrike[];
   spotPrice: number;
@@ -211,7 +219,7 @@ export async function getBSEOptionChain(symbol: string, expiry: string): Promise
           oi: peOi,
           oiChg: peOiChg,
           volume: peVol,
-          iv: peIv,
+          iv: roundIv(peIv),
           ltp: parseNum(row.Last_Trd_Price),
           chg: parseNum(row.NetChange),
           bid: parseNum(row.BidPrice),
@@ -224,7 +232,7 @@ export async function getBSEOptionChain(symbol: string, expiry: string): Promise
           oi: ceOi,
           oiChg: ceOiChg,
           volume: ceVol,
-          iv: ceIv,
+          iv: roundIv(ceIv),
           ltp: parseNum(row.C_Last_Trd_Price),
           chg: parseNum(row.C_NetChange),
           bid: parseNum(row.C_BidPrice),

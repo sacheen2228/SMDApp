@@ -3,6 +3,7 @@
 // unusual OI buildup, max pain, support/resistance, DOM depth
 
 import { NSEClient } from 'nse-bse-api/nse';
+import { isTradingDay } from '@/lib/expiry-liquidity/market-session-config';
 
 let nseClient: NSEClient | null = null;
 
@@ -231,14 +232,39 @@ function analyzeDOMDepth(strikes: DOMStrike[], spot: number): DOMSummary['domDep
     .slice(0, 10);
 }
 
-export async function runDOMAnalysis(): Promise<DOMSummary[]> {
+/**
+ * Scan the whole F&O equity universe and build a DOM summary per symbol.
+ *
+ * This is expensive (~150 symbols, 5 per batch, 2s between batches), so it
+ * accepts an AbortSignal and cooperatively stops scheduling further batches
+ * the moment it fires. NSEClient has no abort support, so an in-flight batch
+ * still completes — but nothing after it starts.
+ *
+ * Returns [] immediately on a non-trading day: NSE cannot publish new OI on a
+ * weekend or exchange holiday, so the scan would burn ~150 calls to re-read
+ * Friday's close.
+ */
+export async function runDOMAnalysis(signal?: AbortSignal): Promise<DOMSummary[]> {
+  if (signal?.aborted) return [];
+
+  if (!isTradingDay()) {
+    console.warn('[DOM] Non-trading day — skipping universe scan (no new OI is published)');
+    return [];
+  }
+
   const client = getClient();
   const symbols = await fetchFNOSymbols();
+  if (signal?.aborted) return [];
+
   const results: DOMSummary[] = [];
   
   // Process in batches to avoid rate limits
   const batchSize = 5;
   for (let i = 0; i < symbols.length; i += batchSize) {
+    if (signal?.aborted) {
+      console.warn(`[DOM] Aborted after ${results.length}/${symbols.length} symbols`);
+      break;
+    }
     const batch = symbols.slice(i, i + batchSize);
     await Promise.all(batch.map(async (symbol) => {
       try {
@@ -282,9 +308,13 @@ export async function runDOMAnalysis(): Promise<DOMSummary[]> {
       }
     }));
     
-    // Small delay between batches
-    if (i + batchSize < symbols.length) {
-      await new Promise(r => setTimeout(r, 2000));
+    // Small delay between batches — abortable so a cancelled scan stops at
+    // once instead of sleeping out the full gap.
+    if (i + batchSize < symbols.length && !signal?.aborted) {
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, 2000);
+        signal?.addEventListener('abort', () => { clearTimeout(t); r(); }, { once: true });
+      });
     }
   }
   

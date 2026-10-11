@@ -27,7 +27,7 @@ export const DEFAULT_CONFIG: JarvisConfig = {
   agentId: "jarvis",
   riskPctPerTrade: 0.01,
   capital: 200000,
-  lotSize: { NIFTY: 75, BANKNIFTY: 30, FINNIFTY: 65 },
+  lotSize: { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60 },
   minScoreToTrade: 40,
   minGroupsAgreeing: 4,
   minConfidenceToAlert: "High",

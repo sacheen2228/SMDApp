@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, TrendingDown, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -48,12 +48,12 @@ import SignalStrip from '@/components/dashboard/SignalStrip';
 import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
 import { evaluateStrikeSignal } from '@/lib/signal-engine';
 import { runMLAnalysis } from '@/lib/ml-engine';
-import HedgePanel from '@/components/dashboard/HedgePanel';
+
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
 import { CommodityDashboard } from '@/components/dashboard/CommodityDashboard';
+import CreditTab from '@/components/credit/CreditTab';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
-import { IndexComparison } from '@/components/dashboard/IndexComparison';
 import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
 import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
 import { SectorRotation } from '@/components/dashboard/SectorRotation';
@@ -235,9 +235,9 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
         <NewsSentimentPanel onScoreChange={setNewsScore} />
       </div>
 
-      {/* Chain Table */}
+      {/* Chain Table — min-width keeps 8 columns readable; parent scrolls horizontally on phones */}
       <div className="flex-1 overflow-y-auto p-3">
-        <table className="w-full border-collapse font-mono text-[12px]">
+        <table className="w-full min-w-[560px] border-collapse font-mono text-[12px]">
           <thead>
             <tr>
               {["OI", "OI Chg", "Vol", "IV", "Delta", "M", "Sig", "LTP"].map((h) => (
@@ -332,7 +332,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'admin' | 'terminal' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'hedge' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'indexcomp' | 'intelligence' | 'challenge' | 'commodity' | 'paper'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -799,11 +799,7 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('zerohero'); setDisplayMode('pro'); }}>
               <Crosshair className="h-2.5 w-2.5 mr-0.5" /> Zero Hero
             </Button>
-            <Button variant={viewMode === 'hedge' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'hedge' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
-              onClick={() => { setViewMode('hedge'); setDisplayMode('pro'); }}>
-              <Shield className="h-2.5 w-2.5 mr-0.5" /> Hedge
-            </Button>
+            
             <Button variant={viewMode === 'institutional' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'institutional' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
               onClick={() => { setViewMode('institutional'); setDisplayMode('pro'); }}>
@@ -819,20 +815,22 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('commodity'); setDisplayMode('pro'); }}>
               <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> MCX
             </Button>
+            <Button variant={viewMode === 'credit' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'credit' ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
+              onClick={() => { setViewMode('credit'); setDisplayMode('pro'); }}>
+              <TrendingDown className="h-2.5 w-2.5 mr-0.5" /> Credit
+            </Button>
+
             <Button variant={viewMode === 'paper' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'paper' ? 'bg-gradient-to-r from-amber-500 to-yellow-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('paper'); setDisplayMode('pro'); }}>
               <FileText className="h-2.5 w-2.5 mr-0.5" /> Paper
             </Button>
+
             <Button variant={viewMode === 'india' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'india' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
               onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
               <CandlestickChart className="h-2.5 w-2.5 mr-0.5" /> India Chart
-            </Button>
-            <Button variant={viewMode === 'indexcomp' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'indexcomp' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
-              onClick={() => { setViewMode('indexcomp'); setDisplayMode('pro'); }}>
-              <LineChart className="h-2.5 w-2.5 mr-0.5" /> Index
             </Button>
             <Button variant={viewMode === 'intelligence' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'intelligence' ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
@@ -966,7 +964,8 @@ export default function TradingDashboard() {
       </header>
       
       {/* ─── Main Content ─── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* pb: clear the fixed MobileNav bottom bar on phones (lg: desktop has no bottom bar) */}
+      <div className="flex flex-1 overflow-hidden pb-[60px] lg:pb-0">
         {/* ─── Simple Mode: Clean AI Recommendation ─── */}
         {displayMode === 'simple' ? (
           <div className="flex-1 overflow-auto">
@@ -1060,17 +1059,7 @@ export default function TradingDashboard() {
             selectedExpiry={selectedExpiry}
           />
         </div>
-        ) : viewMode === 'hedge' ? (
-        /* ═══════ HEDGE BUILDER ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <HedgePanel
-            chainData={chainData}
-            spot={data?.spotPrice || summary?.spotPrice || 0}
-            pcr={summary?.pcr ?? 1}
-            atmStrike={summary?.atmStrike ?? 0}
-          />
-        </div>
-        ) : viewMode === 'zerohero' ? (
+ ) : viewMode === 'zerohero' ? (
         /* ═══════ ZERO HERO SCANNER ═══════ */
         <div className="flex-1 overflow-hidden">
           <ZeroHeroLiveTerminal />
@@ -1090,15 +1079,13 @@ export default function TradingDashboard() {
         <div className="flex-1 overflow-auto p-2">
           <CommodityDashboard />
         </div>
+        ) : viewMode === "credit" ? (
+        /* ═══════ CREDIT SPREAD ═══════ */
+        <CreditTab />
         ) : viewMode === 'india' ? (
         /* ═══════ INDIA MARKET CHART ═══════ */
         <div className="flex-1 overflow-hidden p-2">
           <IndiaMarketChart symbol="NIFTY" />
-        </div>
-        ) : viewMode === 'indexcomp' ? (
-        /* ═══════ INDEX COMPARISON ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <IndexComparison />
         </div>
         ) : viewMode === 'intelligence' ? (
         /* ═══════ MARKET DECISION INTELLIGENCE CENTER ═══════ */

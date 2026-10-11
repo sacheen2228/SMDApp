@@ -7,7 +7,7 @@ import type {
   NewsData, RegimeData, ExpiryLiquidityData, BacktestData, DataFreshness, ToolStatus,
   MCXIntelligenceData, DataProvider
 } from "./types";
-import { classifyFreshness } from "./freshness";
+import { classifyFreshness, classifyFreshnessMs } from "./freshness";
 import { getRequiredTools } from "./tool-registry";
 
 const BASE = ""; // Same-origin API calls
@@ -51,7 +51,7 @@ function wrapFresh<T>(
       freshness: "UNAVAILABLE",
       status: "UNAVAILABLE" as ToolStatus,
       delayed: false,
-      fallbackUsed: false,
+      fallbackUsed: true,
       error: "Data unavailable",
     };
   }
@@ -67,7 +67,17 @@ function wrapFresh<T>(
     freshness,
     status: "SUCCESS",
     delayed: source === "yahoo",
-    fallbackUsed: false,
+    fallbackUsed: (value as any)?.fallbackUsed ?? false,
+  };
+}
+
+// Extract freshness/fallback from an API response's provenance block
+function provenanceOf(apiResponse: any): { freshness: string; fallbackUsed: boolean; source: string } {
+  const prov = apiResponse?.provenance;
+  return {
+    freshness: prov?.freshness || apiResponse?.freshness?.freshness || "UNKNOWN",
+    fallbackUsed: prov?.fallbackUsed ?? apiResponse?.freshness?.fallbackUsed ?? false,
+    source: prov?.source || apiResponse?.source || "unknown",
   };
 }
 
@@ -138,6 +148,7 @@ export async function collectHermesContext(
   // Spot data — prefer canonical chain spot, then raw data
   const spotPrice = canonicalChain?.spot || summary?.spotPrice || chainData?.spotPrice || 0;
   const prevClose = summary?.prevClose || 0;
+  const chainProv = provenanceOf(data.optionChain);
   const spot: FreshData<SpotData> = {
     value: {
       price: spotPrice,
@@ -149,13 +160,13 @@ export async function collectHermesContext(
       low: summary?.low || spotPrice,
       volume: summary?.volume || 0,
     },
-    source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: spotPrice > 0 ? "LIVE" : "UNAVAILABLE",
+    source: toProvider(chainProv.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
+    timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+    ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+    freshness: spotPrice > 0 ? (chainProv.freshness as any || "LIVE") : "UNAVAILABLE",
     status: spotPrice > 0 ? "SUCCESS" : "UNAVAILABLE",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: chainProv.fallbackUsed,
   };
 
   // Option chain — prefer canonical chain from normalizer
@@ -221,13 +232,13 @@ export async function collectHermesContext(
         vix: summary?.indiaVIX || 0,
         futuresPrice: summary?.futuresPrice || 0,
       },
-      source: toProvider(canonicalChain.dataSource || data.optionChain?.source || data.optionChain?.data?.dataSource, "nse"),
-      timestamp: now.toISOString(),
-      ageMs: 0,
-      freshness: "LIVE",
+      source: toProvider(canonicalChain.dataSource || chainProv.source, "nse"),
+      timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+      ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+      freshness: (chainProv.freshness as any) || "LIVE",
       status: "SUCCESS",
       delayed: false,
-      fallbackUsed: false,
+      fallbackUsed: chainProv.fallbackUsed,
     };
   } else if (chainData) {
     optionChain = {
@@ -253,13 +264,13 @@ export async function collectHermesContext(
         vix: summary?.indiaVIX || 0,
         futuresPrice: summary?.futuresPrice || 0,
       },
-      source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, "nse"),
-      timestamp: now.toISOString(),
-      ageMs: 0,
-      freshness: "LIVE",
+      source: toProvider(chainProv.source, "nse"),
+      timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+      ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+      freshness: (chainProv.freshness as any) || "LIVE",
       status: "SUCCESS",
       delayed: false,
-      fallbackUsed: false,
+      fallbackUsed: chainProv.fallbackUsed,
     };
   } else {
     optionChain = wrapFresh(null, "unknown", "optionChain");
@@ -269,16 +280,17 @@ export async function collectHermesContext(
   const vixValue = summary?.indiaVIX || data.regime?.vix || 15;
   const vix: FreshData<number> = {
     value: vixValue,
-    source: toProvider(data.optionChain?.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: vixValue > 0 ? "LIVE" : "UNAVAILABLE",
+    source: toProvider(chainProv.source, data.optionChain ? "nse" : "yahoo"),
+    timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+    ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+    freshness: vixValue > 0 ? ((chainProv.freshness as any) || "LIVE") : "UNAVAILABLE",
     status: vixValue > 0 ? "SUCCESS" : "UNAVAILABLE",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: chainProv.fallbackUsed,
   };
 
-  // FII/DII
+  // FII/DII — freshness from publishedAt (real data date)
+  const fiiProv = provenanceOf(data.fiiDii);
   const fiiDII: FreshData<FIIDIIData> = data.fiiDii ? {
     value: {
       fiiNet: data.fiiDii.fiiNet ?? data.fiiDii.latest?.fiiNet ?? 0,
@@ -289,16 +301,17 @@ export async function collectHermesContext(
       participantOI: data.fiiDii.participantOI,
     },
     source: "nse",
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    timestamp: data.fiiDii?.retrievedAt || now.toISOString(),
+    ageMs: data.fiiDii?.retrievedAt ? Date.now() - new Date(data.fiiDii.retrievedAt).getTime() : 0,
+    freshness: (fiiProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: fiiProv.fallbackUsed,
   } : wrapFresh(null, "nse", "fiiDii");
 
   // News
   const newsData = data.news?.data || data.news;
+  const newsProv = provenanceOf(data.news);
   const news: FreshData<NewsData> = newsData?.articles || newsData?.label ? {
     value: {
       sentiment: newsData.market?.sentiment || newsData.label || "NEUTRAL",
@@ -307,15 +320,16 @@ export async function collectHermesContext(
       highImpactEvents: [],
     },
     source: "yahoo",
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    timestamp: newsData?.lastUpdate || now.toISOString(),
+    ageMs: newsData?.lastUpdate ? Date.now() - new Date(newsData.lastUpdate).getTime() : 0,
+    freshness: classifyFreshnessMs(newsData?.lastUpdate ? Date.now() - new Date(newsData.lastUpdate).getTime() : 0, "news"),
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: newsProv.fallbackUsed,
   } : wrapFresh(null, "yahoo", "news");
 
   // Regime
+  const regimeProv = provenanceOf(data.regime);
   const regime: FreshData<RegimeData> = data.regime ? {
     value: {
       type: data.regime.regime || "UNCERTAIN",
@@ -323,17 +337,18 @@ export async function collectHermesContext(
       confidence: data.regime.confidence || 0,
       factors: data.regime.factors || {},
     },
-    source: "nse",
-    timestamp: now.toISOString(),
+    source: toProvider(data.regime?.source || regimeProv.source, "nse"),
+    timestamp: data.regime?.timestamp || data.regime?.lastUpdate || now.toISOString(),
     ageMs: 0,
-    freshness: "FRESH",
+    freshness: (regimeProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: regimeProv.fallbackUsed,
   } : wrapFresh(null, "nse", "regime");
 
   // Market structure (from SDM signal)
   const sdmData = data.structure?.signal || data.structure;
+  const structProv = provenanceOf(data.structure);
   const structure: FreshData<StructureData> = sdmData ? {
     value: {
       trend: sdmData.structure?.trend || sdmData.marketContext?.trend || "SIDEWAYS",
@@ -345,16 +360,16 @@ export async function collectHermesContext(
       pdh: sdmData.pdh || spotPrice,
       pdl: sdmData.pdl || spotPrice,
     },
-    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
-    timestamp: now.toISOString(),
+    source: toProvider(data.structure?.source || structProv.source || data.optionChain?.source, "nse"),
+    timestamp: data.structure?.timestamp || now.toISOString(),
     ageMs: 0,
-    freshness: "FRESH",
+    freshness: (structProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: structProv.fallbackUsed,
   } : wrapFresh(null, "nse", "structure");
 
-  // Greeks (from option chain)
+  // Greeks (from option chain — inherits chain provenance)
   const greeks: FreshData<GreeksData> = {
     value: {
       delta: summary?.atmDelta || 0.5,
@@ -363,16 +378,17 @@ export async function collectHermesContext(
       vega: summary?.atmVega || 0,
       iv: summary?.atmIV || 0,
     },
-    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    source: toProvider(chainProv.source || data.structure?.source, "nse"),
+    timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+    ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+    freshness: (chainProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: chainProv.fallbackUsed,
   };
 
   // Gamma
+  const gammaProv = provenanceOf(data.gamma);
   const gamma: FreshData<GammaData> = data.gamma ? {
     value: {
       detected: data.gamma.detected || false,
@@ -384,16 +400,16 @@ export async function collectHermesContext(
       estimatedGEX: data.gamma.estimatedGEX || 0,
       regime: "UNKNOWN",
     },
-    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
-    timestamp: now.toISOString(),
+    source: toProvider(gammaProv.source || data.structure?.source || data.optionChain?.source, "nse"),
+    timestamp: data.gamma?.timestamp || now.toISOString(),
     ageMs: 0,
-    freshness: "FRESH",
+    freshness: (gammaProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: gammaProv.fallbackUsed,
   } : wrapFresh(null, "nse", "gamma");
 
-  // Volume
+  // Volume (from option chain)
   const volume: FreshData<VolumeData> = {
     value: {
       poc: 0,
@@ -405,16 +421,16 @@ export async function collectHermesContext(
       absorptionLevels: [],
       exhaustionSignals: [],
     },
-    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    source: toProvider(chainProv.source || data.structure?.source, "nse"),
+    timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+    ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+    freshness: (chainProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: chainProv.fallbackUsed,
   };
 
-  // Expiry liquidity
+  // Expiry liquidity (derived from option chain)
   const expiryLiquidity: FreshData<ExpiryLiquidityData> = {
     value: {
       casDirection: "UNKNOWN",
@@ -422,16 +438,17 @@ export async function collectHermesContext(
       gammaPressure: 0,
       oiShift: 0,
     },
-    source: toProvider(data.structure?.source || data.optionChain?.source, "nse"),
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    source: toProvider(chainProv.source || data.structure?.source, "nse"),
+    timestamp: data.optionChain?.lastUpdate || now.toISOString(),
+    ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
+    freshness: (chainProv.freshness as any) || "FRESH",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: chainProv.fallbackUsed,
   };
 
   // Backtest
+  const btProv = provenanceOf(data.backtest);
   const backtestResults: FreshData<BacktestData> = data.backtest ? {
     value: {
       winRate: data.backtest.summary?.winRate || 0,
@@ -442,12 +459,12 @@ export async function collectHermesContext(
       avgLoss: data.backtest.summary?.avgLoss || 0,
     },
     source: "yahoo",
-    timestamp: now.toISOString(),
+    timestamp: data.backtest?.retrievedAt || now.toISOString(),
     ageMs: 0,
-    freshness: "FRESH",
+    freshness: "BACKFILLED",
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: btProv.fallbackUsed,
   } : wrapFresh(null, "yahoo", "backtest");
 
   // MCX Intelligence (only for MCX commodities)
@@ -478,12 +495,12 @@ export async function collectHermesContext(
       },
     },
     source: "yahoo",
-    timestamp: now.toISOString(),
-    ageMs: 0,
-    freshness: "FRESH",
+    timestamp: data.mcxIntel?.timestamp || now.toISOString(),
+    ageMs: data.mcxIntel?.timestamp ? Date.now() - new Date(data.mcxIntel.timestamp).getTime() : 0,
+    freshness: classifyFreshnessMs(data.mcxIntel?.timestamp ? Date.now() - new Date(data.mcxIntel.timestamp).getTime() : 0, "optionChain"),
     status: "SUCCESS",
     delayed: false,
-    fallbackUsed: false,
+    fallbackUsed: data.mcxIntel?.fallbackUsed ?? false,
   } : undefined;
 
   // Determine market status

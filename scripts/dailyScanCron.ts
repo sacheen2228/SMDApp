@@ -1,13 +1,12 @@
 // scripts/dailyScanCron.ts
 //
-// Self-hosted scheduler. Run this as its own long-lived process (e.g. via
-// pm2 alongside your Next.js app) if you're not using an external/HTTP cron.
+// Self-hosted scheduler for the jobs NOT covered by the systemd timers
+// (timers own: morning-signals 9:20, intraday-scan */15, daily-digest 15:25,
+// recorder). This service owns ONLY: premarket readiness, BTST scan,
+// BTST close, EOD square-off, institutional positioning (+19:00 watchdog).
 //
-//   bun add node-cron tsx
 //   bun x tsx scripts/dailyScanCron.ts          (dev / standalone)
-//   pm2 start "bun x tsx scripts/dailyScanCron.ts" --name sdm-daily-cron   (prod)
-//
-// Fires at 9:20am IST every weekday. Adjust the cron expression / days as needed.
+//   systemctl --user start smdapp-cron.service  (prod — this box)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -32,58 +31,48 @@ function loadEnv(): void {
 loadEnv();
 
 import cron from "node-cron";
-import { sendDailyDigest } from "../src/lib/dailyDigest";
-import { sendIntradayAlerts } from "../src/lib/sendIntradayAlerts";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
 import { todayDDMMYYYYIST, positioningFreshness, latestParticipantDate, hasParticipantDataForDate } from "@/lib/institutional-positioning-engine";
 import { sendSystemAlert } from "../src/lib/telegram";
 
 const TIMEZONE = "Asia/Kolkata";
-const DAILY_SCHEDULE = "10 9 * * 1-5";        // 9:10am, Mon-Fri — the morning digest (within 09:10-15:20 window)
-const INTRADAY_SCHEDULE = "*/15 9-15 * * 1-5"; // every 15 min, 9am-3:59pm window
-                                                 // (sendIntradayAlerts() itself checks the
-                                                 //  precise 9:15-15:30 market-hours boundary)
+const READINESS_SCHEDULE = "10 9 * * 1-5";     // 9:10am, Mon-Fri — pre-flight readiness (before the 09:15 open)
 const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan (window 3:10–3:20)
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
 const EOD_SQUAREOFF_SCHEDULE = "31 15 * * 1-5"; // 3:31pm, Mon-Fri — close intraday journal trades at real LTP (BTST excluded)
 const INST_SCHEDULE = "*/20 16-18 * * 1-5";          // every 20 min, 16:00-18:40 Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
 
-console.log(`[dailyScanCron] daily digest scheduled for "${DAILY_SCHEDULE}" (${TIMEZONE})`);
-console.log(`[dailyScanCron] intraday scan scheduled for "${INTRADAY_SCHEDULE}" (${TIMEZONE})`);
+console.log(`[dailyScanCron] premarket readiness scheduled for "${READINESS_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST close scheduled for "${BTST_CLOSE_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] EOD square-off scheduled for "${EOD_SQUAREOFF_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] institutional positioning scheduled for "${INST_SCHEDULE}" (${TIMEZONE})`);
 
 cron.schedule(
-  DAILY_SCHEDULE,
+  READINESS_SCHEDULE,
   async () => {
-    if (!isTelegramSendWindow()) {
-      console.log("[dailyScanCron] skipping digest — outside 09:10-15:20 IST window");
-      return;
-    }
-    console.log("[dailyScanCron] running morning digest...");
+    console.log("[dailyScanCron] running premarket readiness pre-flight...");
     try {
-      const result = await sendDailyDigest();
-      console.log(`[dailyScanCron] digest done — sent=${result.sent} picks=${result.pickCount}`);
-    } catch (err) {
-      console.error("[dailyScanCron] digest failed", err);
-    }
-  },
-  { timezone: TIMEZONE }
-);
+      const { evaluatePremarketReadiness, formatReadinessMessage } = await import(
+        "../src/lib/premarket-readiness"
+      );
+      const report = await evaluatePremarketReadiness();
+      console.log(`[dailyScanCron] readiness ${report.gate} — ${report.summary}`);
+      for (const b of report.blockers) console.log(`[dailyScanCron]   blocker: ${b}`);
+      for (const w of report.warnings) console.log(`[dailyScanCron]   warning: ${w}`);
 
-cron.schedule(
-  INTRADAY_SCHEDULE,
-  async () => {
-    try {
-      const result = await sendIntradayAlerts();
-      if (result.ran) {
-        console.log(`[dailyScanCron] intraday scan done — newAlerts=${result.newAlerts}`);
+      // A healthy stack needs no Telegram noise; anything else must be seen
+      // before the 09:15 open.
+      if (report.gate !== "READY") {
+        if (isTelegramSendWindow()) {
+          await sendSystemAlert(`Pre-market readiness: ${report.gate}\n\n${formatReadinessMessage(report)}`);
+        } else {
+          console.log("[dailyScanCron] readiness alert suppressed — outside telegram send window");
+        }
       }
     } catch (err) {
-      console.error("[dailyScanCron] intraday scan failed", err);
+      console.error("[dailyScanCron] premarket readiness failed", err);
     }
   },
   { timezone: TIMEZONE }

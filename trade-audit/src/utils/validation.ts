@@ -65,6 +65,11 @@ export const tradeFiltersSchema = z.object({
   maxConfidence: z.coerce.number().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
+  // query strings arrive as "true"/"false" — z.coerce.boolean("false") would be true
+  includeArchived: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
+    .transform((v) => v === true || v === "true"),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
