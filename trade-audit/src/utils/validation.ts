@@ -4,7 +4,10 @@ const marketContextSchema = z.record(z.string(), z.unknown()).default({});
 
 export const newSignalSchema = z.object({
   tradeId: z.string().optional(),
-  strategyId: z.string().min(1),
+  strategyId: z.string().min(1).refine(
+    (v) => v.toLowerCase() !== "test",
+    { message: "strategyId 'test' is reserved and cannot be recorded" },
+  ),
   strategyVersion: z.string().min(1),
   symbol: z.string().min(1),
   exchange: z.string().min(1),

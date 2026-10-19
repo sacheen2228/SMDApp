@@ -2,6 +2,8 @@
 // Includes: Equity + NIFTY/SENSEX/BANKNIFTY options
 // Dedup: same trade skipped unless price or accuracy changed
 
+import { buildOptionPlan } from "./option-plan";
+import { getLotSize } from "./symbol-config";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { sendTelegramMessage } from "./telegram";
 
@@ -174,9 +176,14 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
         // CE trade
         if (strike.ce && strike.ce.ltp > 0) {
           const premium = strike.ce.ltp;
-          const sl = premium * 0.75; // 25% SL
-          const tp1 = premium * 1.30; // 30% target
-          const tp2 = premium * 1.60; // 60% target
+          // Plan: rupee risk (20% of the amount deployed) + 1:2 / 1:3 / 1:4 targets.
+          // The old 25%/30%/60% ladder was a 1.2:1 plan — under the gate's 1.5 floor.
+          const plan = buildOptionPlan({
+            symbol: "NIFTY", optionType: "CE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
+          });
+          const sl = plan?.stopLoss ?? premium * 0.75;
+          const tp1 = plan?.targets[0] ?? premium * 1.30;
+          const tp2 = plan?.targets[1] ?? premium * 1.60;
           const rr = (tp1 - premium) / (premium - sl);
 
           if (rr >= 1.2 && premium >= 10) {
@@ -206,9 +213,12 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
         // PE trade
         if (strike.pe && strike.pe.ltp > 0) {
           const premium = strike.pe.ltp;
-          const sl = premium * 0.75;
-          const tp1 = premium * 1.30;
-          const tp2 = premium * 1.60;
+          const plan = buildOptionPlan({
+            symbol: "NIFTY", optionType: "PE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
+          });
+          const sl = plan?.stopLoss ?? premium * 0.75;
+          const tp1 = plan?.targets[0] ?? premium * 1.30;
+          const tp2 = plan?.targets[1] ?? premium * 1.60;
           const rr = (tp1 - premium) / (premium - sl);
 
           if (rr >= 1.2 && premium >= 10) {
@@ -289,9 +299,12 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
 
         if (strike.pe && strike.pe.ltp > 0) {
           const premium = strike.pe.ltp;
-          const sl = premium * 0.75;
-          const tp1 = premium * 1.30;
-          const tp2 = premium * 1.60;
+          const plan = buildOptionPlan({
+            symbol: "NIFTY", optionType: "PE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
+          });
+          const sl = plan?.stopLoss ?? premium * 0.75;
+          const tp1 = plan?.targets[0] ?? premium * 1.30;
+          const tp2 = plan?.targets[1] ?? premium * 1.60;
           const rr = (tp1 - premium) / (premium - sl);
 
           if (rr >= 1.2 && premium >= 10) {

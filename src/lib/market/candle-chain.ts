@@ -60,6 +60,24 @@ const NSE_INDEX_UNSUPPORTED: Record<string, string> = {
 };
 
 // ── Injectable sources (tests replace these; production uses defaults) ──
+/**
+ * Interval vocabulary: the app talks "5m"/"15m" (the query-string convention used
+ * by /api/breeze/candles and tech-read), while Breeze expects "5minute"/"15minute".
+ * Normalise at the boundary so no caller can pass an interval the source rejects.
+ */
+export function normalizeInterval(interval: string): string {
+  const s = String(interval || "").toLowerCase().trim();
+  const map: Record<string, string> = {
+    "1m": "1minute", "1min": "1minute", "1minute": "1minute",
+    "5m": "5minute", "5min": "5minute", "5minute": "5minute",
+    "15m": "15minute", "15min": "15minute", "15minute": "15minute",
+    "30m": "30minute", "30min": "30minute", "30minute": "30minute",
+    "1h": "60minute", "60m": "60minute", "60minute": "60minute",
+    "1d": "1day", "1day": "1day", "day": "1day", "daily": "1day",
+  };
+  return map[s] || s;
+}
+
 export interface CandleSourceFns {
   breeze: (symbol: string, date: string, interval: string) => Promise<{ candles: any[]; warning?: string }>;
   mo: (symbol: string, date: string, interval: string) => Promise<any[]>;
@@ -163,10 +181,11 @@ function pointsToCandles(points: NSEChartPoint[]): { candles: Candle[]; degraded
 export async function fetchCandlesWithFallback(
   symbol: string,
   date: string,
-  interval: string
+  intervalIn: string
 ): Promise<CandleChainResult> {
   const failures: CandleChainFailure[] = [];
   const normSymbol = symbol.toUpperCase();
+  const interval = normalizeInterval(intervalIn);
   const note = (source: CandleSourceName, kind: FailureKind, detail: string) => {
     reportSessionFailure(source, kind, detail);
     failures.push({ source, kind, detail });

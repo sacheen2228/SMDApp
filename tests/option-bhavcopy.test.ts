@@ -271,14 +271,18 @@ describe("BSE bhavcopy URL + SENSEX parsing + symbol merge", () => {
     const bse = parseBhavcopyCsv(
       [HEADER, "2026-09-29,2026-09-29,FO,BSE,IDO,1128539,,SENSEX,,2026-10-01,2026-10-01,68100.00,PE,SENSEX26O0168100PE,9.70,19.95,2.35,3.25,3.25,12.40,72529.07,3.25,14560,7360,244340,6641746664.00,4735,F1,20,,,,,"].join("\n")
     );
-    // NIFTY found in NSE → BSE rows NOT appended (avoids duplicate work)
-    expect(mergeForSymbol(nse, bse, "NIFTY")).toBe(nse);
-    // SENSEX absent from NSE → merged in
+    // The result is SYMBOL-SCOPED: a caller asking for NIFTY must never receive
+    // every other symbol's rows (that poisoned the chain replay).
+    const nifty = mergeForSymbol(nse, bse, "NIFTY");
+    expect(nifty.length).toBeGreaterThan(0);
+    expect(nifty.every((r) => r.symbol === "NIFTY")).toBe(true);
+    // SENSEX absent from NSE → BSE rows for SENSEX only
     const merged = mergeForSymbol(nse, bse, "SENSEX");
-    expect(merged.length).toBe(nse.length + bse.length);
-    expect(merged.some((r) => r.symbol === "SENSEX")).toBe(true);
-    // BSE empty → NSE rows unchanged (never lose data)
-    expect(mergeForSymbol(nse, [], "SENSEX")).toBe(nse);
+    expect(merged.length).toBeGreaterThan(0);
+    expect(merged.every((r) => r.symbol === "SENSEX")).toBe(true);
+    // BSE empty → only the NSE rows for that symbol (never the whole file)
+    const onlyNse = mergeForSymbol(nse, [], "SENSEX");
+    expect(onlyNse.every((r) => r.symbol === "SENSEX")).toBe(true);
   });
 });
 

@@ -103,6 +103,7 @@ model Trade {
   target3          Float?
   tpHitLevel       String?
   strategy         String   @default("intraday-scan")
+  underlyingSpot   Float?   // UNDERLYING price at signal time. NULL when unknown — NEVER the option premium
   tradedAt         DateTime @default(now())
   createdAt        DateTime @default(now())
 }
@@ -704,4 +705,43 @@ model WebRecord {
   @@index([source])
   @@index([syncedAt])
   @@index([eventType])
+}
+
+// Candidate log — every trade candidate produced by ANY brain/scanner path,
+// including blocked and paper ones. Used to measure the veto out-of-sample.
+model CandidateLog {
+  id             String    @id @default(cuid())
+  ts             DateTime  @default(now())
+  source         String    // brain + scanner name, e.g. "SMART_MONEY:terminal"
+  symbol         String
+  direction      String    // call | put | buy | sell
+  strike         Float?
+  expiry         String?   // YYYY-MM-DD
+  underlyingSpot Float?    // underlying level, NULL when unknown (never the premium)
+  entryPremium   Float?
+  stopPremium    Float?
+  targetPremium  Float?
+  underlyingStop Float?
+  underlyingTarget Float?
+  confidence     Float?
+  calibratedConfidence Float? // stated confidence mapped through the realised win-rate of its band
+  rr             Float?
+  delta          Float?
+  regime         String?
+  sessionWindow  String?
+  layerStates    String?   // JSON { flow, structure, levels, greeksVix, trigger }
+  gateVerdict    String?   // PASS | WARN | BLOCK | NONE
+  tier           String?   // A | B | C | NONE
+  warnings       String?   // JSON []
+  fails          String?   // JSON []
+  sent           Boolean   @default(false)
+  wouldBlock     Boolean   @default(false)
+  simOutcomeR    Float?    // resolved outcome in R (nullable until resolved)
+  simResolvedTs  DateTime?
+  configHash     String    // hash of GATE_CONFIG + BRAIN_FLAGS at creation
+
+  @@index([ts])
+  @@index([source])
+  @@index([simResolvedTs])
+  @@index([symbol])
 }

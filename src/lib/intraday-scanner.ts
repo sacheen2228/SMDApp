@@ -3,6 +3,8 @@
 // Based on 8-step methodology: Market, Sector, Fundamentals, Technicals, Options, News, Flow, Score
 
 import type { SDMOptionStrike } from "@/types/sdm";
+import { buildOptionPlan } from "./option-plan";
+import { getLotSize } from "./symbol-config";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import { recordScannerResult, type ScannerResultInput } from "./market/record-scanner";
@@ -226,10 +228,17 @@ function generateMonthlyOptionTrade(
     const premium = leg && leg.ltp > 0 ? leg.ltp : 0;
     if (premium <= 0) return undefined;
 
-    const sl = Math.round(premium * 0.85 * 100) / 100;
-    const target1 = Math.round(premium * 1.15 * 100) / 100;
-    const target2 = Math.round(premium * 1.25 * 100) / 100;
-    const target3 = Math.round(premium * 1.35 * 100) / 100;
+    // Plan: rupee risk (a % of the amount deployed) with an R:R 1:2 / 1:3 / 1:4 ladder.
+    // The old hardcoded ±15% of premium produced a 1:1 plan — below break-even after
+    // costs — and the ledger shows those engines running at 21-24% win-rate.
+    const plan = buildOptionPlan({
+      symbol, optionType, entryPremium: premium, lotSize: getLotSize(symbol) || 1,
+    });
+    if (!plan) return undefined;
+    const sl = plan.stopLoss;
+    const target1 = plan.targets[0] ?? plan.entry;
+    const target2 = plan.targets[1] ?? target1;
+    const target3 = plan.targets[2] ?? target2;
 
     const label = chain.expiry || monthly.label || monthly.date;
     const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;

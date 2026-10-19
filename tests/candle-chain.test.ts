@@ -73,16 +73,14 @@ describe("candle chain — first success wins", () => {
     expect(sent.length).toBe(0);
   });
 
-  test("breeze session expiry (1m, index) → ONE alert, MO capability-skip recorded, NSE keeps continuity", async () => {
+  test("breeze session expiry (1m, index) → NO Telegram alert (breeze push disabled), MO capability-skip recorded, NSE keeps continuity", async () => {
     spies = makeSpies({
       breeze: async () => { throw new Error("Breeze session expired and re-init failed. Update .env BREEZE_SESSION_TOKEN."); },
     });
     const r = await fetchCandlesWithFallback("NIFTY", TODAY, "1minute");
 
-    // alert: single owner, once
-    expect(sent.length).toBe(1);
-    expect(sent[0]).toContain("[SYSTEM][SESSION_EXPIRED]");
-    expect(sent[0]).toContain("source=breeze");
+    // breeze push disabled 2026-10-19 — no Telegram message, episode still recorded
+    expect(sent.length).toBe(0);
 
     // MO: intraday is a capability skip — recorded SOURCE_UNAVAILABLE, spy not called
     expect(spies.calls.mo).toBe(0);
@@ -105,7 +103,7 @@ describe("candle chain — first success wins", () => {
     expect(r.source).toBe("mo");
     expect(r.candles.length).toBe(1);
     expect(r.intervalLabel).toBe("1day");
-    expect(sent.length).toBe(1); // breeze expiry alerted once
+    expect(sent.length).toBe(0); // breeze push disabled — no alert
     expect(r.failures[0].source).toBe("breeze");
   });
 
@@ -229,14 +227,14 @@ describe("candle chain — first success wins", () => {
     expect(r.failures.find((f) => f.source === "nse")?.kind).toBe("SOURCE_UNAVAILABLE");
   });
 
-  test("repeated breeze expiry reports → exactly one alert (episode dedup via session-health)", async () => {
+  test("repeated breeze expiry reports → zero Telegram alerts (breeze push disabled 2026-10-19)", async () => {
     spies = makeSpies({
       breeze: async () => { throw new Error("session expired"); },
       nse: async () => [],
     });
     await fetchCandlesWithFallback("NIFTY", TODAY, "1minute");
     await fetchCandlesWithFallback("NIFTY", TODAY, "1minute");
-    expect(sent.length).toBe(1);
+    expect(sent.length).toBe(0);
   });
 });
 
@@ -267,5 +265,18 @@ describe("backtest isolation (live-capture only)", () => {
     }
     // Only the live recorder glue may import the chain.
     expect(offenders.filter((f) => f !== "src/lib/market/capture.ts")).toEqual([]);
+  });
+});
+
+describe("candle-chain interval normalization", () => {
+  test("app vocabulary maps to the Breeze vocabulary", async () => {
+    const { normalizeInterval } = await import("@/lib/market/candle-chain");
+    expect(normalizeInterval("5m")).toBe("5minute");
+    expect(normalizeInterval("15m")).toBe("15minute");
+    expect(normalizeInterval("1m")).toBe("1minute");
+    expect(normalizeInterval("1day")).toBe("1day");
+    expect(normalizeInterval("1d")).toBe("1day");
+    // already-normalized values pass through unchanged
+    expect(normalizeInterval("5minute")).toBe("5minute");
   });
 });

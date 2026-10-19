@@ -646,7 +646,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Run full SDM analysis
-    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry);
+    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry, String(symbol || "NIFTY").toUpperCase());
 
     // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
     // Throttled: only sends once per trade signature per day

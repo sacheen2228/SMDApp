@@ -33,10 +33,10 @@ bun run dev        # starts on :3000
 - **Database**: SQLite via Prisma (`db/custom.db`), schema has Trade model (active), User/Post (unused)
 - **UI**: shadcn/ui (new-york style), Tailwind CSS v4, lucide icons
 - **State**: React Query for server state, Zustand for global state (`src/stores/useTradingStore.ts`), React useState for local UI state
-- **Data flow**: Exchange-aware — NSE primary (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities), BSE primary (SENSEX/BANKEX), MOAPI fallback → NO_DATA. Breeze = explicit opt-in only; Yahoo never enters the option-chain path. **Canonical document: [`SOP.md`](./SOP.md)** (provider hierarchy, live-verified endpoints/headers, freshness rules, circuit breaker, session clocks, pre-market readiness, cron schedule)
-- **Analysis**: SDM Options Intelligence Engine (`src/lib/sdm-engine.ts`) + ORCA Engine (`src/lib/orca-engine.ts`)
+- **Data flow**: Exchange-aware — NSE primary (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities), BSE primary (SENSEX/BANKEX), MOAPI fallback → Breeze (opt-in) → NO_DATA. **No Yahoo anywhere** — when data is unavailable the answer is `NO_DATA`/503, never a Yahoo quote. **Canonical document: [`SOP.md`](./SOP.md)** (provider hierarchy, live-verified endpoints/headers, freshness rules, circuit breaker, session clocks, pre-market readiness, cron schedule)
+- **Analysis**: SDM Options Intelligence Engine (`src/lib/sdm-engine.ts`)
 - **Market Intelligence**: Technical analysis engines, sector heatmap, breadth, regime, F&O scanner, expiry liquidity engine
-- **Trade Backtest**: Real trade backtest against Yahoo Finance historical candles (99/100 trades backtestable)
+- **Trade Backtest**: Real trade backtest against real historical candles (99/100 trades backtestable)
 
 ### Key source files
 
@@ -45,41 +45,42 @@ bun run dev        # starts on :3000
 | `src/app/page.tsx` | Main UI component — all views/tabs |
 | `src/app/api/option-chain/route.ts` | Core API: orchestrates data sources + SDM analysis |
 | `src/lib/icici-breeze/` | ICICI Breeze API: auth, option chain, orders, positions |
-| `src/lib/nse-api.ts` | NSE India scraper (fallback when Breeze fails) |
+| `src/lib/nse-api.ts` | NSE India scraper (primary live source for NSE indices/equities) |
 | `src/lib/sdm-engine.ts` | SDM 14-factor scoring engine |
 | `src/lib/sdm-recommendation.ts` | V2 recommendation orchestrator |
 | `src/lib/sdm-scores.ts` | 14-factor quality scoring |
-| `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
-| `src/lib/historical-data.ts` | Breeze + Yahoo Finance candle fetcher (real data) |
+| `src/lib/historical-data.ts` | Multi-source candle fetcher (real data) |
 | `src/lib/greeks.ts` | Black-Scholes Greeks calculator (real math, may get fake inputs) |
 | `src/lib/ml-engine.ts` | Technical indicator scoring (NOT machine learning — just RSI/Bollinger/VWAP/EMA/ADX) |
-| `src/lib/master-bot-engine.ts` | Master Bot trade plans using Yahoo Finance data |
-| `src/lib/backtest-engine.ts` | Breakout strategy backtest (uses fake candles) |
-| `src/lib/orca-backtest.ts` | ORCA backtest (uses fake option chains) |
+| `src/lib/master-bot-engine.ts` | Master Bot trade plans using live market data |
+| `src/lib/backtest-engine.ts` | Breakout strategy backtest (real candles — skips days without data) |
 | `src/lib/sdm-trade-tracker.ts` | Trade lifecycle: add/update/expire, DB persistence |
 | `src/stores/useTradingStore.ts` | Zustand store for trading state |
-| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 49 tools, SMDContext, memory, logging |
+| `src/app/api/agent/route.ts` | AI Agent API with LLM (Groq/OpenRouter) + 57 tools, SMDContext, memory, logging |
 | `src/components/dashboard/AgentChat.tsx` | Agent chat UI with voice mode, 15 quick commands — calls `/api/agent` |
 | `src/lib/smd-context.ts` | SMDContext — centralized market context builder for Hermes (aggregates all data sources) |
 | `src/lib/agent-memory.ts` | Agent Memory — persistent trade patterns, setup memory, predictions, preferences |
 | `src/lib/agent-logger.ts` | Agent Logger — tool call, LLM call, error, conversation observability (JSONL) |
 | `src/app/api/agent-memory/route.ts` | Agent Memory REST API — CRUD for trades, setups, predictions, preferences |
 | `src/lib/signalTracker.ts` | Full-day signal deduplication — prevents same trade from being re-sent |
+| `src/lib/signal-veto.ts` | Hybrid veto overlay — old brain generates, new brain blocks/warns (no network, field-based) |
 | `src/lib/morningSignalGenerator.ts` | Morning signal generator — scans NIFTY/SENSEX/Equity/MCX for high-accuracy trades |
 | `src/lib/dailyDigest.ts` | End-of-day digest — sends summary of signals, active trades, market data |
 | `src/app/api/morning-signals/route.ts` | Morning Signals API — call at 9:20 AM IST for daily trade recommendations |
 | `src/app/api/daily-digest/route.ts` | Daily Digest API — call at 3:25 PM IST for end-of-day summary |
 | `src/lib/telegram.ts` | Telegram sender — HTML messages, full-day dedup, trade alerts |
 | `src/lib/session-health.ts` | **Session Health** — single owner of session-expiry classification, dedup'd `[SYSTEM][SESSION_EXPIRED]` alerts, live source probes, Hermes status report |
+| `src/lib/agent-brain.ts` | SDM Agent Brain — system prompt (rules generated from GATE_CONFIG), AGENT_TOOLS (60), selectToolsV2 router, executeTool, agentRespondLLM tool loop (parallel + wall-clock cap + enforceSignalPolicy) |
+| `src/lib/agent-brain-gate.ts` | **Discipline gate** (self-contained, no imports) — GATE_CONFIG single source of truth, evaluateTradeGate (TRADE/WAIT/SKIP), positionSize, ledger stats (Wilson/break-even/buckets), guardToolCall (SSRF + side-effect intent), selectToolsV2 (no padding, max 12), enforceSignalPolicy (🎯 only after gate TRADE) |
+| `src/lib/option-chain-reader.ts` | Deterministic chain reader for the agent — OI walls (strengthening/weakening), BUYING/WRITING classification, PCR trend, gate layers (`layerForDirection`, `wallBeforeTarget`); `read_option_chain` tool + OPTION_CHAIN_KNOWLEDGE prompt block |
+| `src/lib/indicators.ts` | Indicator engine for the agent — SuperTrend, EMA crossover (chop filter), VWAP, market structure (HH/HL/BOS/CHoCH), liquidity pools/sweeps/FVG, gate layer mapping, underlying stop/target suggestions, indicator backtest; `check_indicators` + `backtest_indicator` tools + INDICATOR_KNOWLEDGE prompt block. Also keeps the legacy chart-overlay exports (`Bar`, `sma`, `ema`, `bollinger`, `rsi`, `vwap`) used by `ChartToolbar.tsx` |
 | `src/lib/market/candle-chain.ts` | Candle multi-source chain (live capture only): indices Breeze→MO→NSE index-only, stocks Breeze→MO; no timeframe/instrument substitution |
 | `src/lib/motilal/candles.ts` | MO EOD candle wrapper (only daily OHLC endpoint MO exposes; no intraday on the platform) |
 | `src/lib/telegramSend.ts` | Telegram sender — Markdown messages, used by cron/digest modules |
 | `src/lib/option-acceleration-engine.ts` | Option Acceleration Engine (10 sub-engines: delta accel, gamma explosion, OI absorption, volume momentum, institutional flow, premium elasticity, historical memory, time decay, regime + premium velocity + TP1/TP2/TP3) |
-| `src/lib/greek-flow-engine.ts` | **@deprecated** — old Greek Flow scoring engine, replaced by option-acceleration-engine.ts |
 | `src/app/api/greek-flow/route.ts` | Greek Flow API endpoint → runs acceleration engine |
 | `src/components/terminal/GreekFlowHeatmap.tsx` | Option Acceleration UI (12 dashboard cards, premium race table, top 5 calls/puts, full heatmap) |
 | `src/components/terminal/EnhancedOptionChain.tsx` | Enhanced Option Chain (Greeks, IV skew, OI bars, click-to-trade, sorting) |
-| `ict_bot_v5.py` | Standalone Python ICT/SMC bot (not integrated into web app) |
 | `trade-audit/` | Trade Audit / Backtest Verification engine (standalone sidecar, port 4001, Node + better-sqlite3) |
 | `live-data-service/` | Standalone NSE Live Option Data Service (pure Python, port 8765) — spot/VIX/chain/PCR/FII feeds with read-time LIVE/STALE/CLOSED status; `live_data.json` + `/snapshot` + `/selector`; used by the option-buying-playbook skill (chain calls NSE `option-chain-v3`, not the retired `option-chain-indices`) |
 | `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
@@ -88,12 +89,12 @@ bun run dev        # starts on :3000
 | `src/lib/fii-dii.ts` | FII/DII data scraper — NSE India primary + MrChartist 60-day history |
 | `src/app/api/fii-dii/route.ts` | FII/DII API endpoint — latest + 30-day history |
 | `src/lib/technical-analysis.ts` | Detection engines (breakout, pullback, momentum, breakdown, reversal), OI classification, trade scoring |
-| `src/lib/nse-stock-data.ts` | Shared stock data fetcher with 3-tier fallback (Moneycontrol → Yahoo batch → Yahoo per-stock) |
+| `src/lib/nse-stock-data.ts` | Shared stock data fetcher with 3-tier fallback (Moneycontrol → live batch quotes) |
 | `src/lib/fetch-with-fallback.ts` | Reusable fallback utility (`fetchWithFallback`, `fetchWithRetry`) |
 | `src/lib/sentiment-analyzer.ts` | Deterministic keyword-based sentiment scoring (80+ keywords) |
 | `src/lib/market-session.ts` | Centralized session config (CAS timeline, phases, confidence multipliers) |
 | `src/lib/expiry-liquidity/` | Expiry Liquidity Shift Engine — 14 sub-engines (CAS, futures, OI, premium, IV, volume, gamma, auction, breadth, heatmap) |
-| `src/lib/trade-backtest-engine.ts` | Real trade backtest — replays every trade against Yahoo Finance historical candles |
+| `src/lib/trade-backtest-engine.ts` | Real trade backtest — replays every trade against real historical candles |
 | `src/stores/useWatchlistStore.ts` | Zustand store for watchlist state |
 | `src/app/api/market/heatmap/route.ts` | Multi-market heatmap API (NIFTY50, BANKNIFTY, SENSEX, etc.) |
 | `src/app/api/market/breadth/route.ts` | Enhanced breadth API (EMA, VWAP, RelVol) |
@@ -109,28 +110,27 @@ bun run dev        # starts on :3000
 
 | Component | Data Source | Real or Fake? |
 |---|---|---|
-| Option chain (live) | ICICI Breeze API → NSE API | **REAL** when tokens valid, NSE as fallback |
-| Candle data (live) | Breeze historical API | **REAL** when Breeze session active |
-| SDM signals | `api/sdm-signal/route.ts` | **REAL** — Breeze → NSE fallback chain |
-| Scanner data | `api/scanner/route.ts` + Yahoo Finance | **REAL** — Yahoo Finance for stock prices, Breeze for option chain context |
+| Option chain (live) | NSE / BSE primary → MOAPI → Breeze (opt-in) | **REAL** — exchange-aware; `NO_DATA`/503 when unavailable |
+| Candle data (live) | Breeze / MO API | **REAL** when session active |
+| SDM signals | `api/sdm-signal/route.ts` | **REAL** — NSE/BSE → MOAPI → Breeze chain |
+| Scanner data | `api/scanner/route.ts` | **REAL** — live stock quotes, Breeze for option chain context |
 | Breakout data | `api/breakout/route.ts` + Breeze | **REAL** — Breeze for spot price, real candles when available |
 | Backtest candles | `backtest-engine.ts` + Breeze historical | **REAL** — skips days with no Breeze data, no fake candle generation |
-| Master Bot prices | Yahoo Finance API | **REAL** |
+| Master Bot prices | Live market data | **REAL** |
 | SDM scoring | `sdm-engine.ts` | Real math on whatever data is fed |
 | SDM recommendation | `sdm-recommendation.ts` | Real math, but hardcoded VIX=15 fallback, capital=₹100K |
 | ML/TA Engine | `ml-engine.ts` | Real TA indicators (RSI/Bollinger/VWAP/EMA/ADX). Classical TA, NOT ML — mislabeled |
 | Greeks | `greeks.ts` | Real Black-Scholes math, risk-free rate hardcoded 7% |
 | Trade journal | Prisma DB | **REAL** — stores actual trades generated by SDM engine |
 | Breeze auth | `icici-breeze/auth.ts` | Auto-retry on auth errors, re-inits session |
-| Live data engine | `live-data-engine.ts` | Breeze → NSE fallback chain (no simulation) |
 | FII/DII flows | `fii-dii.ts` + `/api/fii-dii` | **REAL** — NSE India primary + MrChartist history |
-| Gift Nifty | Yahoo Finance `^NSEI` | **REAL** — NIFTY 50 spot as proxy (SGX ticker dead) |
+| Gift Nifty | NIFTY 50 spot (`^NSEI`) | **REAL** — NIFTY 50 spot as proxy (SGX ticker dead) |
 
 ### What was changed/removed
 - `historical-data.ts` — deleted (was 100% fake candle generator, no longer used)
 - `option-chain-data.ts` — deleted (was 100% fake option chain generator, no longer used)
-- `generateHistoricalChain()` — deleted from orca-backtest.ts and sdm-backtest.ts (was Math.random() fake option chains)
-- All Math.random() for stock technicals — replaced with deterministic defaults when Yahoo Finance data unavailable
+- `generateHistoricalChain()` — deleted from sdm-backtest.ts (was Math.random() fake option chains)
+- All Math.random() for stock technicals — replaced with deterministic defaults when live data unavailable
 - **No simulation fallback exists anywhere** — APIs return 503 errors when real data unavailable
 - `auto-bot/` — removed (was a Breakout/Desk Python equity screener sidecar on port 8000; not aligned with the Indian F&O focus and unused by the data flow)
 
@@ -175,7 +175,7 @@ Research Research Tasks
     ▼      ▼      ▼
 NSE/Breeze OI/Greeks Backtest
 MOAPI      Structure  Journal
-Yahoo      CAS       Health
+MCX        CAS       Health
 News       Gamma     Telegram
 FII/DII    Vol Profile
 VIX        S/R, Expiry
@@ -183,7 +183,7 @@ VIX        S/R, Expiry
     ▼      ▼
 ┌─────────────────────┐
 │  HERMES DECISION    │  ← Groq openai/gpt-oss-120b (128K context)
-│  ENGINE             │     49 tools total
+│  ENGINE             │     57 tools total
 └──────────┬──────────┘
            │
     ┌──────┴──────┐
@@ -195,17 +195,27 @@ CANDIDATE    / WAIT
 Risk Validation → Entry/SL/TP → Telegram Alert
 ```
 
-### 49 Hermes Tools
+### 57 Hermes Tools
 
-**NEW TOOLS (added this session):**
+**DISCIPLINE LAYER (added 2026-10-19):**
 | Tool | Purpose |
 |---|---|
-| `send_telegram_signal` | Push trade signal to Telegram phone |
+| `strike_selector` | Playbook strike calculator — runs `skills/option-buying-playbook/scripts/strike_selector.py` (BS re-pricing at target/stop, option R:R + theta + break-even + risk-budget gates, lot sizing); output stashed into run state so the LLM cannot invent the numbers |
+| `evaluate_trade_gate` | Deterministic TRADE/WAIT/SKIP gate (feed freshness, confidence floor, 5-layer agreement, delta/OTM/RR/lot checks, expiry/event, loss streak, ledger bucket veto). 🎯 TRADE SIGNAL is stripped from responses unless the gate passed |
+| `read_option_chain` | Deterministic chain read: OI walls + trend, fresh call/put writing, CE/PE buying zones, PCR trend, ATM Greek checks |
+| `check_live_feed` | Probes live-data-service /health before any levels are quoted |
+| `ledger_edge_report` | Win-rate vs true break-even from the journal, bucketed by regime/window/strike distance |
+| `check_indicators` | Computes SuperTrend, EMA crossover (chop-filtered), VWAP, structure (HH/HL, BOS, CHoCH) and liquidity (pools, equal highs/lows, sweeps, FVG) from real candles on a trend + entry TF; with direction also returns structure/trigger gate layers + structural stop/target on the underlying. Stashes `lastTech` into run state (evaluate_trade_gate reuses it) |
+| `backtest_indicator` | Edge check for ema_cross / supertrend_flip / sweep_reclaim on real candles — trades, win-rate vs true break-even, expectancy in R, plain verdict |
+
+**NEW TOOLS (added earlier):**
+| Tool | Purpose |
+|---|---|
+| `send_telegram_signal` | Push trade signal to Telegram phone (intent-guarded) |
 | `scan_all_instruments` | Scan NIFTY/SENSEX/Equity/MCX all at once |
 | `get_mcx_data` | MCX commodity data (CRUDEOIL/GOLD/SILVER/GAS) |
 | `morning_scan` | Run morning signal generator → Telegram |
 | `get_trade_recommendation` | Full structured trade card with entry/SL/TP |
-| `strike_selector` | Playbook strike calculator — runs `skills/option-buying-playbook/scripts/strike_selector.py` (BS re-pricing at target/stop, option R:R + theta + break-even + risk-budget gates, lot sizing) |
 
 **ORIGINAL 36 TOOLS:**
 Market Data: `get_option_chain`, `get_sdm_signal`, `get_market_structure`, `get_vix`, `get_atm_straddle`, `get_gift_nifty`, `get_historical_data`
@@ -219,7 +229,7 @@ System: `get_agent_analytics`, `answer_trading_question`
 Session Health: `check_session_tokens` (live probes of breeze/mo/nse + recorded episodes), `set_breeze_session` (apply user-supplied Breeze token, re-arms episode)
 
 ### Session Health & Candle Fallback Chain
-1. **session-health.ts** — SOLE sender of `[SYSTEM][SESSION_EXPIRED]` Telegram alerts (once per source per episode; retries when Telegram's 09:10-15:30 IST window suppresses a send). `classifySourceError()` → `SESSION_EXPIRED | NO_DATA | SOURCE_UNAVAILABLE`; NSE can NEVER classify as SESSION_EXPIRED (no token auth). Source modules report-then-return-null (contracts unchanged).
+1. **session-health.ts** — SOLE sender of `[SYSTEM][SESSION_EXPIRED]` Telegram alerts (once per source per episode; retries when Telegram's 09:10-15:30 IST window suppresses a send). **Breeze push disabled 2026-10-19** (user directive — flapping SDK errors spammed duplicates; episode state/status/Hermes unchanged, MO still alerts once per episode). `classifySourceError()` → `SESSION_EXPIRED | NO_DATA | SOURCE_UNAVAILABLE`; NSE can NEVER classify as SESSION_EXPIRED (no token auth). Source modules report-then-return-null (contracts unchanged).
 2. **Breeze expiry** — hooks in `icici-breeze/auth.ts` (`doInitSession` catch, `generateSession` 401, `withAuthRetry` retry) + `option-chain.ts` catch. Manual remedy: browser OTP at `api.icicidirect.com/apiuser/login?api_key=…` → Hermes `set breeze session <token>`.
 3. **MO expiry** — `autoLogin()` is TOTP-first (`MOTILAL_TOTP_KEY`), OTP fallback leaves session UNVERIFIED. Candle chain attempts auto-recovery BEFORE alerting (self-healed blips never page). TOTP key re-registered 2026-09-27 — TOTP auto-login verified live. **Report endpoints work only on `/rest/report/v3/*`** — every `/rest/report/v1/*` path returns MO8001 "Invalid Token" even on a valid session (v1 auth broken; never call it — its auth-shaped error would fake an expiry alert). Candle capability (live-verified): NSE EOD v3 = equity **spot** daily bars (~9s); NSEFO dump = **derivatives only** (80–128s, zero spot rows); **no index spot OHLC anywhere** (IndexDataAPI is a code list only) → index symbols are an MO capability skip; CSV endpoints hang (>45s) — unused.
 4. **Candle chain** (live capture only, enforced by import-scan test): first-success-wins, failures recorded to session-health + `recorderState.lastCandle`. MO = daily-only capability skip for intraday (no substitution). NSE chart `chart-databyindex?index=…` is index-only (allowlist: NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY; SENSEX/BANKEX excluded — BSE), current session only, close-only points labeled degraded + interval derived from real point spacing.
@@ -230,6 +240,107 @@ Session Health: `check_session_tokens` (live probes of breeze/mo/nse + recorded 
 1. **signalTracker.ts** — Full-day signature dedup (same signal never sent twice per day)
 2. **telegram.ts** — 5-minute short-term throttle
 3. **intradayState.ts** — Per-day signature tracking for intraday alerts
+
+### Trading brain v2 — measured, not guessed (2026-10-20)
+
+**Data flow**
+```
+OLD BRAIN (generates)          VETO (fast, local only)              CANDIDATE LOG (Prisma)
+SMART_MONEY / scanners  ──▶  signal-veto.ts  ──▶ Telegram alert   candidate_log: every candidate
+Zero Hero / BTST / SDM        (O(1): cached tech + cached            sent / blocked / paper,
+                              calibration — no network)              tier, warnings, config_hash
+AGENT CHAT ──▶ agent-brain ──▶ evaluate_trade_gate (strict) ──▶ same funnel
+```
+**New files**
+| File | Role |
+|---|---|
+| `src/lib/brain-flags.ts` | **ONE** config file for every behavioural flag (`BRAIN_FLAGS`) |
+| `src/lib/signal-veto.ts` | Hybrid veto: PASS / WARN / BLOCK + tier A/B/C/NONE; hard safety never shadowed |
+| `src/lib/candidate-log.ts` | Prisma writer/reader for `candidate_log` + `configHash()` + calibration cache |
+| `src/lib/candidate-resolver.ts` | Simulates each candidate's outcome from subsequent candles → `simOutcomeR` |
+| `src/lib/tech-read.ts` | **Canonical** technical engine (SuperTrend, EMA+chop, VWAP, structure, pools/sweeps/FVG, layers, backtest). `indicators.ts` re-exports it |
+| `src/lib/tech-cache.ts` | Background-computed TfRead snapshots (15m trend + 5m trigger), TTL = bar interval |
+| `src/lib/layer-builder.ts` | Builds the 5 gate layers from REAL sources (FII/DII, chain OI, VIX/delta/expiry, closed candles) |
+| `src/lib/confidence-calibration.ts` | Stated band → realised WR/n/expectancy R, calibrated confidence, drift |
+| `scripts/replay-veto.ts` | Source-stratified replay + separation check + 70/30 time split + reliability table |
+| `scripts/brain-report.ts` | Daily report: per tier, per source, would-block precision/recall, calibration drift |
+| `/api/tech-cache`, `/api/brain-report` | Cache refresh/status + report endpoints |
+
+**Flags** (`src/lib/brain-flags.ts`, default = current behaviour): `shadowVeto` **ON** (quality blocks are logged as `would_block`, hard gates still suppress) · `candidateLog` **ON** · `strictGate` **off** (agent path uses strict gate; `hybrid:true` is the explicit fallback) · `tiering` **off** (A/B/C tiers computed always; tier C becomes paper-only when ON) · `resolverCosts` **off** · `promotion {minResolvedTrades:175, minExpectancyCiLowerR:0}`.
+
+**Migrations** (additive, no data loss, no reset): `prisma/manual-migrations/20261019_add_candidate_log.sql` (candidate_log + `Trade.underlyingSpot`) · `prisma/manual-migrations/20261020_calibrated_confidence.sql` · `trade-audit/migrations/20261019_underlying_spot.sql` (`underlying_spot` column; the premium in `spot_price` is NEVER copied). Apply with `bunx prisma db execute --file …` + `prisma generate` (the app DB was created with `db push`, so `migrate dev` would demand a destructive reset).
+
+### Option plan — rupee risk + R:R 1:2/1:3/1:4 (2026-10-20)
+
+**The bug this fixed**: `sdm-engine.ts` (the option-chain-api path), `intraday-scanner.ts`
+(stock-scanner) and `morning-scan.ts` each hardcoded their own % of premium for the
+stop and the targets — `stop = entry×0.85`, `tp1 = entry×1.15` → **TP1 sat exactly 1R
+away (R:R 1:1)**, which needs >50% win-rate before costs. The ledger shows those
+engines at 21–24% WR (PF 0.81–1.05), while the one engine with a 1:3.2 plan
+(SMART_MONEY) ran 64% WR / PF 4.70 / +₹351k.
+
+**The rule (user-defined)**: "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
+→ risk is a RUPEE amount (a % of the amount deployed) and the targets are clean R
+multiples of it.
+
+`src/lib/option-plan.ts` → `buildOptionPlan()` — the single plan builder:
+- `riskAmount = deployedAmount × 0.20` (₹10k deployed ⇒ ₹2,000 at risk)
+- `riskPoints = riskAmount / units` → the stop distance in premium points
+- `stopLoss = entry ∓ riskPoints`; `targets = entry ± {2R, 3R, 4R}` (R:R 1:2 / 1:3 / 1:4)
+- guardrails: stop capped at 35% of the premium (the rupee risk shrinks, never grows),
+  floored at 8 ticks (noise floor for cheap options), unreachable targets dropped and
+  reported, and a plan below the gate's 1.5 R:R is flagged
+- sizing (`lotsForBudget`) uses the live ₹20k-per-trade deployment rule — the user
+  replaces lots/amount there; every engine then inherits the same ladder.
+
+**Measured counterfactual** on the 156 recorded option trades (using the recorded
+highest/lowest, stop wins ties):
+
+| Plan | TP hit | stopped | flat | avg R | break-even WR | expectancy |
+|---|---|---|---|---|---|---|
+| old (15% stop, TP1 = 1R) | 23.7% | 26.3% | 50.0% | −0.026R | 50% | negative |
+| **new (20% stop, TP1 = 2R)** | 12.8% | 7.1% | 80.1% | **+0.186R** | 33% | **positive** |
+
+Per source under the new plan: option-chain-api +0.419R (was +0.003R), SMART_MONEY
++0.267R, stock-scanner −0.214R (cheap-premium noise problem remains).
+
+**Session rule**: no NEW option premium buys after 13:00 IST
+(`BRAIN_FLAGS.noOptionBuysAfter13`, default ON) — the ledger shows option entries
+13:00–14:59 went **0 wins / 34 trades** (option-chain-api 13h 0/12, 14h 0/22) while the
+same engine at 10:00 was 63%. The veto judges this at the SIGNAL time (`nowMs`), so
+replays and tests can pin the clock.
+
+**Also fixed while measuring**: `loadBhavcopyForTrade()` returned the whole F&O file
+(37k rows, every symbol) when one row matched — it now returns symbol-scoped rows;
+and `agent-brain.ts` hardcoded lot sizes (NIFTY 75) that contradicted the NSE
+bhavcopy and `symbol-config.ts` (NIFTY 65) — it now imports `SYMBOL_CONFIGS`.
+
+### Hybrid Brain — old brain generates, new brain vetoes (2026-10-19)
+The old brain (SMART_MONEY / scanners / Zero Hero / BTST) remains the **signal generator**; the new deterministic brain is a **veto overlay only** — it never creates signals, so it cannot reproduce the "zero TRADE verdicts" failure mode (gate needed 3-of-5 layers with flow + greeksVix always unknown).
+
+`src/lib/signal-veto.ts` → `evaluateSignalVeto()` — wired into `sendTradeAlert` (telegram.ts), the central alert funnel (agent-brain, scanners, jarvis-adapters, api/telegram all flow through it).
+
+| Verdict | Trigger | Effect |
+|---|---|---|
+| **BLOCK** | Stop not on the correct side of entry, or R:R < 1.5 (option + equity), or expiry-day index option | Alert not sent, console-logged `[Telegram] VETO BLOCK` |
+| **WARN** | Confidence < 65, > 3 steps OTM, \|delta\| < 0.35 (lottery ticket, only when spot+expiry known) | Alert sent with `⚠ … — halve size` |
+| **PASS** | Everything else | Alert sent as normal |
+
+**Merge point 2 — the gate itself** (`evaluate_trade_gate` with `hybrid: true`, set in agent-brain.ts): the gate stops being a generator and becomes a veto. Soft checks (confidence below floor, layer agreement short of 3-of-5, unknown underlying R:R) are converted to **warnings**; only hard safety fails (option R:R, expiry day, delta, strike distance, risk budget, loss streak, daily-loss cap, ledger bucket) still produce SKIP. Without this, the agent path produced **zero** TRADE verdicts (flow + greeksVix layers are always `unknown`, so 3-of-5 agreement was unreachable). Strict mode (`hybrid` unset) is unchanged and still used by the Grade-1 replay.
+
+**Measured on the real ledger (530 closed trades, replayed through the veto):**
+
+| Veto verdict | n | Win rate | Net P&L | PF |
+|---|---|---|---|---|
+| PASS | 131 | 42.7% | +₹90,176 | 3.14 |
+| WARN (half size) | 289 | **55.4%** | +₹249,814 | **3.37** |
+| BLOCK | 110 | **23.6%** | **−₹11,674** | **0.94** |
+
+The blocks land on the losing tail (`stock-scanner` / `option-chain-api` rows with R:R 1.00 and confidence 0). BTST (370 trades, median R:R 2.57) is unaffected.
+
+Config comes from `GATE_CONFIG` in `agent-brain-gate.ts` (single source of truth). No network calls — the veto is field-based and fast, safe in the hot path.
+
+**Audit hygiene**: `strategyId: "test"` is rejected by the trade-audit API (`newSignalSchema`) — external scripts were polluting the closed ledger with fake `monerr-*` rows (8 deleted 2026-10-19). Note: the ledger's `spotPrice` column stores the **option premium**, not the underlying — never use it as spot.
 
 ## Known Issues
 
@@ -327,8 +438,8 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 ### Core
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/option-chain` | GET | Option chain data (Breeze → NSE fallback) |
-| `/api/agent` | POST | AI Agent with LLM + 49 tools |
+| `/api/option-chain` | GET | Option chain data (NSE/BSE → MOAPI → Breeze) |
+| `/api/agent` | POST | AI Agent with LLM + 57 tools |
 | `/api/agent-memory` | GET/POST/PATCH | Agent Memory — CRUD for trades, setups, predictions, preferences |
 | `/api/breeze-connect` | GET/POST | Breeze session management |
 | `/api/sdm-signal` | GET | SDM scoring signals |
@@ -338,7 +449,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 ### Market Intelligence
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/market/heatmap` | GET | Multi-market heatmap (NIFTY50, BANKNIFTY, SENSEX, etc.) — Moneycontrol → Yahoo batch → Yahoo per-stock |
+| `/api/market/heatmap` | GET | Multi-market heatmap (NIFTY50, BANKNIFTY, SENSEX, etc.) — live quote providers |
 | `/api/market/breadth` | GET | Enhanced breadth (EMA20/50/200, VWAP participation, RelVol) |
 | `/api/market/regime` | GET | Multi-factor regime engine with stock-based index fallback |
 | `/api/market/opportunities` | GET | Trade opportunities — technical analysis engines + intraday scanner merge |
@@ -348,7 +459,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 ### Scanners
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/scanner` | GET | Main intraday scanner (Breeze → Yahoo candles, Auction Theory engine) |
+| `/api/scanner` | GET | Main intraday scanner (live candle chain, Auction Theory engine) |
 | `/api/scanner/fno` | GET | Dedicated F&O option scanner (OI change, IV percentile, premium velocity, volume) |
 | `/api/weekly-scanner` | GET | Weekly equity swing scanner |
 | `/api/btst` | GET | BTST (Buy Today Sell Tomorrow) scanner |
@@ -358,7 +469,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/backtest` | GET | Multi-day breakout backtest (Breeze historical candles) |
-| `/api/backtest/trades` | GET | **Real trade backtest** — replays every closed trade against Yahoo Finance candles. Filters: strategyId, symbol, maxTrades, dateFrom, dateTo |
+| `/api/backtest/trades` | GET | **Real trade backtest** — replays every closed trade against real historical candles. Filters: strategyId, symbol, maxTrades, dateFrom, dateTo |
 | `/api/backtest/expiry` | GET | Deterministic expiry liquidity backtest |
 | `/api/backtest-analyzer` | GET | Trade validation and analysis |
 
@@ -408,7 +519,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 
 ### Real Trade Backtest Engine
 - Fetches closed trades from audit sidecar (port 4001)
-- Groups by symbol, fetches daily/intraday candles from Yahoo Finance
+- Groups by symbol, fetches daily/intraday candles from real candle providers
 - Smart interval: 5m for recent intraday, 15m/1h for swing, 1d for older
 - Replays each trade: detects TP1/TP2/TP3 and SL hits
 - Computes actual MFE/MAE/P&L/R-multiple
@@ -418,7 +529,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 
 ### Data Source Upgrades
 - Moneycontrol priceapi integration for NIFTY 50 stocks (48/50 mapped)
-- Yahoo Finance batch quotes with crumb auth (v7/finance/quote)
+- Batch stock quotes with crumb auth
 - Stock-based index fallback for regime when index APIs fail
 - Deterministic keyword-based sentiment analyzer (80+ keywords)
 - Technical analysis detection engines (breakout, pullback, momentum, breakdown, reversal)

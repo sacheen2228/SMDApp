@@ -279,9 +279,10 @@ export function mergeForSymbol(
   symbol: string
 ): PremiumCandle[] {
   const sym = symbol.toUpperCase();
-  if (nseRows.some((r) => r.symbol === sym)) return nseRows;
-  if (!bseRows.length) return nseRows;
-  return [...nseRows, ...bseRows];
+  // Symbol-scoped: a caller asking for one symbol never receives the whole file.
+  const nse = nseRows.filter((r) => r.symbol === sym);
+  if (nse.length) return nse;
+  return [...nseRows, ...bseRows].filter((r) => r.symbol === sym);
 }
 
 /** NSE rows, falling back to BSE for BSE-only symbols (SENSEX/BANKEX). */
@@ -292,7 +293,7 @@ export async function loadBhavcopyForTrade(
   const sym = symbol.toUpperCase();
   if (BSE_ONLY_SYMBOLS.has(sym)) return loadBseBhavcopy(dateStr);
   const nse = await loadBhavcopy(dateStr);
-  if (nse.some((r) => r.symbol === sym)) return nse;
+  if (nse.some((r) => r.symbol === sym)) return nse.filter((r) => r.symbol === sym);
   const bse = await loadBseBhavcopy(dateStr);
   return mergeForSymbol(nse, bse, sym);
 }

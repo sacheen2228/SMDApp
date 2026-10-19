@@ -1,7 +1,12 @@
 // API Route — MTF (Multi-Timeframe) Signal Confirmation
-// Fetches 15M + 5M candles from Yahoo Finance, computes indicators,
-// and returns composite BUY_CE/BUY_PE/WAIT signal.
-// Called by Hermes agent via get_mtf_signal tool.
+// Fetches 15M + 5M candles from the REAL candle chain (Breeze → MO → NSE),
+// computes indicators, and returns a composite BUY_CE/BUY_PE/WAIT signal.
+// Called by the Hermes agent via the get_mtf_signal tool.
+//
+// 2026-10-20: this route used the legacy historical-data path (Yahoo-era wrapper +
+// its own Breeze session), which returned 0 bars whenever the Breeze session was
+// down — the card rendered empty. It now uses the canonical chain, which degrades
+// to NSE index candles and reports the degradation instead of showing nothing.
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,22 +15,28 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
 
-    // Fetch candles from Yahoo Finance (free, no auth needed)
-    const { getHistoricalCandles } = await import("@/lib/historical-data");
+    // Real candle chain: Breeze → MO → NSE (index-only, current session).
+    // The candle chain may only be imported by market/capture.ts (architecture
+    // rule: evaluation modules stay isolated from live capture) — read through it.
+    const { getLiveCandles } = await import("@/lib/market/capture");
 
-    const [candles5mResult, candles15mResult] = await Promise.allSettled([
-      getHistoricalCandles(symbol, "5m", 50),
-      getHistoricalCandles(symbol, "15m", 50),
+    const [res5m, res15m] = await Promise.all([
+      getLiveCandles(symbol, "5m"),
+      getLiveCandles(symbol, "15m"),
     ]);
 
-    const candles5m = candles5mResult.status === "fulfilled" ? candles5mResult.value.candles || [] : [];
-    const candles15m = candles15mResult.status === "fulfilled" ? candles15mResult.value.candles || [] : [];
+    const candles5m = res5m.candles || [];
+    const candles15m = res15m.candles || [];
+    const dataSource = { "5m": res5m.source, "15m": res15m.source };
+    const degraded = [res5m.degraded, res15m.degraded].filter(Boolean) as string[];
 
     if (candles5m.length < 10) {
       return NextResponse.json({
         success: false,
         error: `Insufficient candle data for ${symbol} — need at least 10 5M candles, got ${candles5m.length}`,
         dataAvailability: { "5m": candles5m.length, "15m": candles15m.length },
+        dataSource,
+        failures: [...res5m.failures, ...res15m.failures],
       }, { status: 503 });
     }
 
@@ -57,6 +68,8 @@ export async function GET(request: NextRequest) {
       },
       indicators: indicators.timeframes,
       dataAvailability: indicators.dataAvailability,
+      dataSource,
+      degraded: degraded.length ? degraded : null,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

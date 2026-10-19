@@ -7,6 +7,19 @@ import {
   markSignalSent,
   isSignalDuplicateOrLowerQuality,
 } from "./signalTracker";
+import { evaluateSignalVeto } from "./signal-veto";
+import { logCandidate, calibrationBandFor } from "./candidate-log";
+import { cachedLayers } from "./tech-cache";
+import { structureLayer, triggerLayer } from "./tech-read";
+import { BRAIN_FLAGS } from "./brain-flags";
+
+/** Option R:R from the alert's own levels (never from a ledger field). */
+function rrOf(entry?: number, sl?: number, tp?: number, action?: string): number | null {
+  if (entry == null || sl == null || tp == null) return null;
+  const buy = String(action || "").toUpperCase().includes("BUY");
+  const rr = buy ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
+  return Number.isFinite(rr) ? rr : null;
+}
 
 // Short-term throttle: prevent sending same signal within 5 minutes
 const recentAlerts = new Map<string, number>();
@@ -103,6 +116,13 @@ export async function sendTradeAlert(params: {
   target2?: number;
   source?: string;
   instrument?: string;  // 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY' — for SELL safety
+  spot?: number;        // UNDERLYING level (never the option premium) — enables delta/OTM checks
+  expiry?: string;      // YYYY-MM-DD — enables the expiry-day check
+  requireExpiry?: boolean; // caller can supply expiry → absence fails closed
+  requireSpot?: boolean;   // caller can supply spot → absence fails closed
+  underlyingStop?: number;
+  underlyingTarget?: number;
+  nowMs?: number;            // clock seam for session rules (replay/tests pin it)
   mtf?: {
     direction: string;
     compositeScore: number;
@@ -117,6 +137,70 @@ export async function sendTradeAlert(params: {
   if (isOption && params.action && (params.action.includes('SELL') || params.action.includes('SHORT'))) {
     console.log(`[Telegram] BLOCKED: ${params.symbol} — option selling not allowed (${params.action} on ${params.instrument})`);
     return false;
+  }
+
+  // Calibration band for the stated confidence (cached, DB-free on the hot path).
+  const calibrationBand = await calibrationBandFor(params.confidence);
+  // Cached technical read — O(1), no network. Cold cache → warning, never a block.
+  const optType = params.type === "CE" || params.type === "PE" ? params.type : undefined;
+  const dir = optType === "CE" ? "call" : optType === "PE" ? "put" : undefined;
+  const tech = dir
+    ? cachedLayers(params.symbol, "15m", dir, structureLayer, triggerLayer)
+    : undefined;
+  // HYBRID veto: old brain (scanners / SDM / Zero Hero) generates candidates;
+  // this layer only blocks or warns — it never creates signals.
+  const veto = evaluateSignalVeto({
+    symbol: params.symbol,
+    action: params.action,
+    optionType: optType,
+    strike: params.strike,
+    entry: params.entry,
+    stopLoss: params.stopLoss,
+    tp1: params.target1,
+    confidence: params.confidence,
+    spot: params.spot,
+    expiry: params.expiry,
+    source: params.source,
+    requireExpiry: params.requireExpiry,
+    requireSpot: params.requireSpot,
+    nowMs: params.nowMs,
+    calibrationBand,
+    tech: tech
+      ? { structure: tech.structure?.state, trigger: tech.trigger?.state, stale: tech.stale }
+      : undefined,
+  });
+  let vetoWarn = "";
+  if (veto.suppress) {
+    console.log(`[Telegram] VETO BLOCK ${params.symbol}: ${veto.reasons.join("; ")}`);
+    // log the blocked candidate too (every candidate is logged, sent or not)
+    void logCandidate({
+      source: params.source || "unknown",
+      symbol: params.symbol,
+      direction: params.action,
+      strike: params.strike,
+      expiry: params.expiry ?? null,
+      underlyingSpot: params.spot ?? null,
+      entryPremium: params.entry ?? null,
+      stopPremium: params.stopLoss ?? null,
+      targetPremium: params.target1 ?? null,
+      underlyingStop: params.underlyingStop ?? null,
+      underlyingTarget: params.underlyingTarget ?? null,
+      confidence: params.confidence,
+      calibratedConfidence: veto.calibratedConfidence,
+      rr: rrOf(params.entry, params.stopLoss, params.target1, params.action),
+      gateVerdict: veto.verdict,
+      tier: veto.tier,
+      warnings: veto.warnings,
+      fails: veto.fails,
+      sent: false,
+      wouldBlock: true,
+    });
+    return false;
+  }
+  if (veto.verdict === "WARN") {
+    vetoWarn = BRAIN_FLAGS.tiering
+      ? `\n🏷 Tier ${veto.tier}: ${veto.reasons.join("; ")}`
+      : `\n⚠ ${veto.reasons.join("; ")} — halve size`;
   }
 
   const sig = buildSignalSignature({
@@ -140,9 +224,9 @@ export async function sendTradeAlert(params: {
 
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
   const sourceLabel = params.source || "SDM Engine";
-  const mtfLine = params.mtf
+  const mtfLine = (params.mtf
     ? `\n📐 MTF: ${params.mtf.direction} (${params.mtf.trendDirection} trend, score ${params.mtf.compositeScore})`
-    : '';
+    : '') + vetoWarn;
   const msg = `
 ${emoji} <b>${sourceLabel}</b>
 
@@ -159,6 +243,34 @@ ${params.target2 ? `🎯 Target 2: ₹${params.target2}` : ""}
   `.trim();
 
   const sent = await sendTelegramMessage(msg);
+  // every candidate that reached the send stage is logged (sent or not) — this is the
+  // out-of-sample population the replay measures. Dedup-skipped duplicates are NOT
+  // logged: they are the same signal, and would double-count the sample.
+  void logCandidate({
+    source: params.source || "unknown",
+    symbol: params.symbol,
+    direction: params.action,
+    strike: params.strike,
+    expiry: params.expiry ?? null,
+    underlyingSpot: params.spot ?? null,
+    entryPremium: params.entry ?? null,
+    stopPremium: params.stopLoss ?? null,
+    targetPremium: params.target1 ?? null,
+    underlyingStop: params.underlyingStop ?? null,
+    underlyingTarget: params.underlyingTarget ?? null,
+    confidence: params.confidence,
+    calibratedConfidence: veto.calibratedConfidence,
+    rr: rrOf(params.entry, params.stopLoss, params.target1, params.action),
+    gateVerdict: veto.verdict,
+    tier: veto.tier,
+    layerStates: tech
+      ? { structure: tech.structure?.state ?? "unknown", trigger: tech.trigger?.state ?? "unknown", techStale: tech.stale }
+      : null,
+    warnings: veto.warnings,
+    fails: veto.fails,
+    sent,
+    wouldBlock: veto.wouldBlock,
+  });
   if (sent) {
     markSignalSent(sig, params.confidence, params.source || "sdm-engine");
     // Voice output layer (fire-and-forget — never blocks the text alert or trading).

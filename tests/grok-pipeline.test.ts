@@ -568,6 +568,7 @@ describe('16 — sendTradeAlert full-day dedup', () => {
       stopLoss: 90,
       target1: 130,
       source: 'Grok Supervisor',
+      nowMs: Date.parse('2026-07-15T10:05:00+05:30'), // before the 13:00 option-buy cutoff
     };
     const first = await sendTradeAlert(p);
     const second = await sendTradeAlert(p);

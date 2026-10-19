@@ -296,6 +296,23 @@ export async function captureAndStore(symbol: string, raw: RawMarketData, bucket
   return { snapshot: snap, inserted };
 }
 
+/**
+ * Sanctioned accessor for LIVE candles (Breeze → MO → NSE). The candle chain may
+ * only be imported by this module (architecture test: backtest/evaluation modules
+ * must stay isolated from live capture), so live signal cards read candles here.
+ */
+export async function getLiveCandles(symbol: string, interval: string) {
+  const { fetchCandlesWithFallback } = await import("./candle-chain");
+  const res = await fetchCandlesWithFallback(symbol, new Date().toISOString().slice(0, 10), interval);
+  return {
+    candles: res.candles || [],
+    source: res.source,
+    degraded: res.degraded,
+    intervalLabel: res.intervalLabel,
+    failures: res.failures.map((f) => `${f.source}: ${f.detail}`),
+  };
+}
+
 export async function recordSymbol(symbol: string, opts?: { mode?: RecorderMode; interval?: number }): Promise<{ symbol: string; status: "ok" | "error"; inserted?: boolean; reason?: string; kind?: FailureKind }> {
   try {
     const raw = await fetchRawMarketData(symbol);

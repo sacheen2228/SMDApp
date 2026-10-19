@@ -1,5 +1,18 @@
-// Technical indicator calculations for chart overlays (SMA/EMA/Bollinger/RSI/VWAP).
+// indicators.ts
+// LEGACY chart-overlay contract (lightweight-charts overlays used by
+// src/components/futures/ChartToolbar.tsx) + backwards-compatible re-export of the
+// canonical technical engine, which now lives in src/lib/tech-read.ts.
+//
+// The engine (SuperTrend, EMA cross + chop filter, VWAP, structure HH/HL/BOS/CHoCH,
+// liquidity pools/sweeps/FVG, structureLayer/triggerLayer/suggestLevels) is imported
+// from tech-read.ts — do NOT re-implement it here.
 
+export * from "./tech-read";
+
+// ─────────────────────────────────────────────────────────────
+// Chart-overlay indicators (legacy contract — lightweight-charts overlays used by
+// src/components/futures/ChartToolbar.tsx; kept so the UI keeps working)
+// ─────────────────────────────────────────────────────────────
 export interface Bar {
   time: number;
   open: number;
@@ -25,11 +38,8 @@ export function ema(bars: Bar[], period: number): Array<{ time: number; value: n
   const k = 2 / (period + 1);
   let prev = 0;
   for (let i = 0; i < bars.length; i++) {
-    if (i === 0) {
-      prev = bars[i].close;
-    } else {
-      prev = bars[i].close * k + prev * (1 - k);
-    }
+    if (i === 0) prev = bars[i].close;
+    else prev = bars[i].close * k + prev * (1 - k);
     if (i >= period - 1) out.push({ time: bars[i].time, value: prev });
   }
   return out;

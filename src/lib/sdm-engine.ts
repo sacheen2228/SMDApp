@@ -2,6 +2,8 @@
 // 10 scoring functions that analyze option chain data and return directional signals
 
 import type { SDMOptionStrike, ScoreObject } from "@/types/sdm";
+import { buildOptionPlan } from "./option-plan";
+import { getLotSize } from "./symbol-config";
 
 // ─── 1. PCR Score ────────────────────────────────────────────────
 // Put-Call Ratio: total PE OI / total CE OI
@@ -1065,7 +1067,8 @@ export interface FullAnalysis {
 export function runFullAnalysis(
   strikes: SDMOptionStrike[],
   spotPrice: number,
-  expiryDate: string
+  expiryDate: string,
+  symbol?: string          // the instrument — used for lot-size aware plan sizing
 ): FullAnalysis {
   let totalCEOI = 0;
   let totalPEOI = 0;
@@ -1143,10 +1146,25 @@ export function runFullAnalysis(
     direction = "NEUTRAL";
   }
 
-  const stopLoss = entryPrice > 0 ? Math.round(entryPrice * 0.85) : 0;
-  const tp1 = entryPrice > 0 ? Math.round(entryPrice * 1.15) : 0;
-  const tp2 = entryPrice > 0 ? Math.round(entryPrice * 1.5) : 0;
-  const tp3 = entryPrice > 0 ? Math.round(entryPrice * 2.0) : 0;
+  // Plan (2026-10-20): the stop is a RUPEE risk (a % of the amount deployed) and the
+  // targets are clean R multiples of it — 1:2 / 1:3 / 1:4.
+  // The old hardcoded ±15% of premium made TP1 exactly 1R away (R:R 1:1 → needs >50%
+  // win-rate before costs). The ledger shows this path running 21% WR / PF 1.05.
+  // The instrument symbol is not a parameter of runFullAnalysis — take it from the
+  // option chain rows (the ticker symbol) and fall back to NIFTY for lot sizing.
+  const chainSymbol = String(symbol || "NIFTY").toUpperCase();
+  const plan = entryPrice > 0
+    ? buildOptionPlan({
+        symbol: chainSymbol,
+        optionType: isCall ? "CE" : "PE",
+        entryPremium: entryPrice,
+        lotSize: getLotSize(chainSymbol) || 1,
+      })
+    : null;
+  const stopLoss = plan?.stopLoss ?? (entryPrice > 0 ? Math.round(entryPrice * 0.85) : 0);
+  const tp1 = plan?.targets[0] ?? (entryPrice > 0 ? Math.round(entryPrice * 1.15) : 0);
+  const tp2 = plan?.targets[1] ?? (entryPrice > 0 ? Math.round(entryPrice * 1.5) : 0);
+  const tp3 = plan?.targets[2] ?? (entryPrice > 0 ? Math.round(entryPrice * 2.0) : 0);
 
   // Find highest CE/PE OI for gamma walls
   let maxCEOI = 0;
