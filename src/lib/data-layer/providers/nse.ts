@@ -10,8 +10,16 @@
 //   • quoted values remain null when feed has no data (never fabricated)
 
 import { TtlCache } from '@/lib/data-layer/cache';
-import { classifyFreshness, collectedFreshness } from '@/lib/api-freshness';
+import { classifyFreshness, collectedFreshness, providerTimestamp } from '@/lib/api-freshness';
 import type { FreshnessLevel, OptionStrike, OptionLeg, OptionChainData, QuoteData, DataProvenance, ProviderResult, ProviderModule, HistoricalCandle, GainersLosers, MostActiveEquity, OISpurt } from '@/lib/data-layer/types';
+import {
+  EXPIRY_UNAVAILABLE,
+  isSameExpiry,
+  selectNearestLiveExpiry,
+  toIsoDate,
+  expiryUnavailableReason,
+  type CanonicalOptionChain,
+} from '@/lib/data-layer/chains/option-chain';
 
 // ── NSE endpoint helpers ─────────────────────────────────────────────
 
@@ -72,7 +80,6 @@ async function fetchNseExpiries(symbol: string, type: string): Promise<string[]>
     return [];
   }
 }
-
 function parseNseDate(s: string): Date | null {
   const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(s).trim());
   if (!m) {
@@ -88,24 +95,55 @@ function parseNseDate(s: string): Date | null {
   return new Date(Number(m[3]), mon, Number(m[1]));
 }
 
-async function fetchNseOptionChainV3(symbol: string, expiry?: string): Promise<any> {
+type NseChainFetch =
+  | { ok: true; raw: any; expiry: string }
+  | { ok: false; reason: string };
+
+async function fetchNseOptionChainV3(symbol: string, expiry?: string): Promise<NseChainFetch> {
   // NIFTY/BANKNIFTY/… are indices; SENSEX/BANKEX are BSE-only (NSE has no
   // contract for them — contract-info returns {} rather than an error).
   const isBseIndex = symbol.toUpperCase() === 'SENSEX' || symbol.toUpperCase() === 'BANKEX';
   const type = isBseIndex ? 'BSE' : 'Indices';
 
-  let exp = expiry;
-  if (!exp) {
-    const expiries = await fetchNseExpiries(symbol, type);
-    if (expiries.length === 0) return null; // no NSE contract for this symbol
-    exp = expiries[0];
+  // The contract list is needed in BOTH cases: to pick the nearest contract
+  // that is still trading, and to prove that a requested one exists.
+  const expiries = await fetchNseExpiries(symbol, type);
+  if (expiries.length === 0) {
+    return { ok: false, reason: 'no-nse-contract' };
+  }
+
+  let exp: string | null = null;
+  if (expiry) {
+    const requestedIso = toIsoDate(expiry);
+    if (!requestedIso) {
+      return { ok: false, reason: `${EXPIRY_UNAVAILABLE}: "${expiry}" is not a valid expiry date` };
+    }
+    const match = expiries.find((e) => isSameExpiry(e, requestedIso));
+    if (!match) {
+      // The exchange does not carry that contract — an explicit failure, never
+      // a silent swap for another expiry.
+      return { ok: false, reason: expiryUnavailableReason(symbol, expiry, expiries) };
+    }
+    // Keep the exchange's own spelling ("27-Oct-2026") for the query.
+    exp = match;
+  } else {
+    // The exchange lists the just-expired contract FIRST (live-verified
+    // 2026-10-20: "19-Oct-2026" ahead of "27-Oct-2026"). Take the nearest
+    // contract that is still trading instead of expiryDates[0].
+    exp = selectNearestLiveExpiry(expiries);
+    if (!exp) {
+      return {
+        ok: false,
+        reason: `${EXPIRY_UNAVAILABLE}: no live expiry for ${symbol} (all ${expiries.length} contracts have expired)`,
+      };
+    }
   }
 
   const raw = await nseGet(
     `/option-chain-v3?type=${type}&symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(exp)}`,
   );
-  if (!raw?.records?.data?.length) return null;
-  return { raw, expiry: exp };
+  if (!raw?.records?.data?.length) return { ok: false, reason: 'empty-chain' };
+  return { ok: true, raw, expiry: exp };
 }
 
 async function fetchNseQuote(symbol: string): Promise<any> {
@@ -185,9 +223,9 @@ export const nseProvider: ProviderModule<never> = {
 
   // ── Option Chain ────────────────────────────────────────────────────
 
-  async getOptionChain(symbol: string, expiry?: string): Promise<ProviderResult<OptionChainData>> {
+  async getOptionChain(symbol: string, expiry?: string): Promise<ProviderResult<CanonicalOptionChain>> {
     const cached = chainCache.get(symbol);
-    if (cached && (!expiry || cached.expiry === expiry)) {
+    if (cached && (!expiry || isSameExpiry(cached.expiry, expiry))) {
       // Re-classify on read: a cache hit must age honestly, not stay LIVE.
       const age = Math.max(0, Date.now() - new Date(cached.timestamp).getTime());
       return { data: { ...cached, freshness: classifyFreshness(age, 'optionChain') }, fallbackUsed: false, source: 'NSE' };
@@ -195,9 +233,10 @@ export const nseProvider: ProviderModule<never> = {
 
     try {
       const fetched = await fetchNseOptionChainV3(symbol, expiry);
-      if (!fetched) {
-        // No NSE contract (e.g. SENSEX/BANKEX) — honest NO_DATA, not an error.
-        return { data: null, fallbackUsed: true, source: 'NSE', fallbackReason: 'no-nse-contract' };
+      if (!fetched.ok) {
+        // No NSE contract (e.g. SENSEX/BANKEX), no live contract, or a
+        // requested expiry the exchange does not carry — honest NO_DATA.
+        return { data: null, fallbackUsed: true, source: 'NSE', fallbackReason: fetched.reason };
       }
       const { raw, expiry: resolvedExpiry } = fetched;
       const strikes: OptionChainData['strikes'] = [];
@@ -239,7 +278,8 @@ export const nseProvider: ProviderModule<never> = {
       }
 
       const collectedAt = new Date().toISOString();
-      const data: OptionChainData = {
+      const providerTs = providerTimestamp(raw);
+      const data: CanonicalOptionChain = {
         underlying: raw?.records?.underlyingValue ?? (symbol ?? 'UNKNOWN'),
         spot: raw?.records?.underlyingValue ?? null,
         expiry: resolvedExpiry ?? null,
@@ -249,6 +289,11 @@ export const nseProvider: ProviderModule<never> = {
         fallbackUsed: false,
         // From the provider's OWN timestamp — a 200 response is not proof of LIVE.
         freshness: collectedFreshness(raw, 'optionChain'),
+        // Provenance: WHEN the exchange priced this chain + WHICH contract.
+        asOf: providerTs ? providerTs.toISOString() : collectedAt,
+        expiryRequested: expiry ?? null,
+        expirySelection: expiry ? 'requested' : 'nearest-live',
+        isEod: false,
       };
 
       chainCache.set(symbol, data);

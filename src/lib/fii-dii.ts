@@ -40,6 +40,12 @@ export interface FiiDiiResult {
   fiiNet5dAvg?: number;  // 5-day rolling FII net average
   diiNet5dAvg?: number;  // 5-day rolling DII net average
   fiiFutLongRatio?: number;  // FII futures long/short ratio (0-1)
+  /**
+   * False when NEITHER NSE nor MrChartist answered. The `latest` snapshot is
+   * then a zero-filled placeholder — the card must show it as unavailable,
+   * never as "FII net 0".
+   */
+  available: boolean;
 }
 
 export interface ParticipantOI {
@@ -286,27 +292,31 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
     fiiNet: 0, diiNet: 0,
     fiiBuy: 0, fiiSell: 0,
     diiBuy: 0, diiSell: 0,
-    date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    date: '',
     source: 'mrchartist' as const,
   };
+  const available = !!(nseLatest || mcLatest);
 
   const historySliced = history.slice(0, 30);
-  // Compute 5-day rolling averages
+  // Compute 5-day rolling averages — only when the history actually exists.
+  // (A 0 average over an EMPTY history reads as "FII net 0 for 5 days".)
   const last5 = historySliced.slice(-5);
-  const fiiNet5dAvg = last5.length > 0 ? last5.reduce((s, d) => s + (d.fiiNet || 0), 0) / last5.length : 0;
-  const diiNet5dAvg = last5.length > 0 ? last5.reduce((s, d) => s + (d.diiNet || 0), 0) / last5.length : 0;
-  // FII futures long/short ratio (from latest participant OI)
+  const fiiNet5dAvg = last5.length >= 5 ? last5.reduce((s, d) => s + (d.fiiNet || 0), 0) / last5.length : undefined;
+  const diiNet5dAvg = last5.length >= 5 ? last5.reduce((s, d) => s + (d.diiNet || 0), 0) / last5.length : undefined;
+  // FII futures long/short ratio (from the latest participant OI). undefined
+  // when there is no participant data — 0.5 was a fabricated "neutral".
   const fiiFutLongRatio = participantOI ? (() => {
     const fiiLong = (participantOI as any).fii?.indexLong || 0;
     const fiiShort = (participantOI as any).fii?.indexShort || 0;
-    return fiiLong + fiiShort > 0 ? fiiLong / (fiiLong + fiiShort) : 0.5;
-  })() : 0.5;
+    return fiiLong + fiiShort > 0 ? fiiLong / (fiiLong + fiiShort) : undefined;
+  })() : undefined;
 
   const result: FiiDiiResult = {
-    latest, history: historySliced, ...(participantOI ? { participantOI } : {}),
-    fiiNet5dAvg: Math.round(fiiNet5dAvg),
-    diiNet5dAvg: Math.round(diiNet5dAvg),
-    fiiFutLongRatio: Math.round(fiiFutLongRatio * 100) / 100,
+    latest, history: historySliced, available,
+    ...(participantOI ? { participantOI } : {}),
+    ...(fiiNet5dAvg != null ? { fiiNet5dAvg: Math.round(fiiNet5dAvg) } : {}),
+    ...(diiNet5dAvg != null ? { diiNet5dAvg: Math.round(diiNet5dAvg) } : {}),
+    ...(fiiFutLongRatio != null ? { fiiFutLongRatio: Math.round(fiiFutLongRatio * 100) / 100 } : {}),
   };
   cache = { data: result, timestamp: Date.now() };
   return result;

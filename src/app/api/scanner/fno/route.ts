@@ -1,29 +1,68 @@
+// /api/scanner/fno — F&O scanner over the NIFTY F&O universe.
+//
+// Honesty notes (2026-10-20 audit) — this route used to fabricate almost
+// every metric it showed:
+//   • `avgVolume = stock.volume * 0.8` (or 500 000 when the quote was missing)
+//   • `currentIv  = chain.indiaVIX || 25`  ← the INDEX VIX was used as each
+//     STOCK's IV, and 25 was the fallback
+//   • `estimatePremiumVelocity(oiChg * 10 || 50_000, volume || 1_000_000,
+//     ltp || 1000)` — invented OI, volume and price
+//   • `priceMomentum = 50 + changePct * 10` and `sectorStrength = 50 + …`
+//     were produced even for symbols that had NO quote at all (ltp 0)
+//   • `oiChg` came from the TARGET index's chain and was applied to every
+//     stock, so "Long Buildup" was really the NIFTY's OI change
+//   • the IV "percentile" was a fixed 10…60 band, not a percentile
+//
+// Every metric below now comes from the symbol's OWN real chain + the real
+// quote. A symbol without both is reported as unavailable, never scored.
+
 import { NextRequest, NextResponse } from "next/server";
-import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
+import type { OptionChainSnapshot } from "@/lib/auction-types";
+import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
 
 interface ScanCandidate {
   symbol: string;
   name: string;
   sector: string;
-  ltp: number;
-  changePct: number;
-  volume: number;
-  score: number;
+  ltp: number | null;
+  changePct: number | null;
+  volume: number | null;
+  score: number | null;
   signals: string[];
   metrics: {
     oiSignal: string;
-    ivPercentile: number;
-    premiumVelocity: number;
-    unusualVolume: boolean;
-    priceMomentum: number;
-    sectorStrength: number;
+    /** Real OI change of this symbol's own chain (contracts). */
+    oiChange: number | null;
+    /** Real PCR of this symbol's own chain. */
+    pcr: number | null;
+    /** Real ATM IV (%) of this symbol's own chain. */
+    atmIV: number | null;
+    /** ATM IV's percentile inside this expiry's own IV distribution. */
+    ivPercentile: number | null;
+    /** Traded contracts / open interest on the chain (real). */
+    premiumVelocity: number | null;
+    unusualVolume: boolean | null;
+    /** Real session move (%) — the raw number, not a synthetic score. */
+    priceMomentumPct: number | null;
+    /** Real sector average move (%). */
+    sectorStrengthPct: number | null;
+    relVolume: number | null;
+    maxPain: number | null;
+    atmStrike: number | null;
+    expiry: string | null;
+    chainSource: string | null;
+    chainAsOf: string | null;
   };
 }
 
-// seededRandom removed — no fake data allowed
-
-function calculateOISignal(oiChg: number, priceChange: number): { signal: string; score: number } {
+/** OI classification from the symbol's OWN chain + its real price move. */
+function calculateOISignal(oiChg: number | null, priceChange: number | null): {
+  signal: string;
+  score: number | null;
+} {
+  if (oiChg == null || priceChange == null) return { signal: "N/A", score: null };
   if (oiChg > 0 && priceChange > 0) return { signal: "Long Buildup", score: 80 };
   if (oiChg > 0 && priceChange < 0) return { signal: "Short Buildup", score: 30 };
   if (oiChg < 0 && priceChange > 0) return { signal: "Short Covering", score: 70 };
@@ -31,21 +70,25 @@ function calculateOISignal(oiChg: number, priceChange: number): { signal: string
   return { signal: "Neutral", score: 50 };
 }
 
-function calculateIvPercentile(currentIv: number): number {
-  if (currentIv <= 0) return 50;
-  const ivMin = 10;
-  const ivMax = 60;
-  return Math.min(100, Math.max(0, ((currentIv - ivMin) / (ivMax - ivMin)) * 100));
+/** Total OI change (calls + puts) of the symbol's own chain. */
+function chainOiChange(chain: OptionChainSnapshot): number | null {
+  let total = 0;
+  let any = false;
+  for (const v of chain.callOiChangeMap.values()) { total += v || 0; any = true; }
+  for (const v of chain.putOiChangeMap.values()) { total += v || 0; any = true; }
+  return any ? total : null;
 }
 
-function estimatePremiumVelocity(oi: number, volume: number, price: number): number {
-  if (price <= 0 || volume <= 0) return 0;
-  const velocity = (volume * 0.3) / Math.max(oi, 1);
-  return Math.round(velocity * 100) / 100;
-}
-
-function detectUnusualVolume(volume: number, avgVolume: number): boolean {
-  return avgVolume > 0 ? volume > avgVolume * 2 : volume > 1_000_000;
+/** Traded contracts vs open interest on the chain (real). */
+function chainVolumeOiRatio(chain: OptionChainSnapshot): number | null {
+  let volume = 0;
+  let oi = 0;
+  for (const v of chain.callVolumeMap.values()) volume += v || 0;
+  for (const v of chain.putVolumeMap.values()) volume += v || 0;
+  for (const v of chain.callOiMap.values()) oi += v || 0;
+  for (const v of chain.putOiMap.values()) oi += v || 0;
+  if (!volume || !oi) return null;
+  return round(volume / oi, 2);
 }
 
 export async function GET(req: NextRequest) {
@@ -55,27 +98,29 @@ export async function GET(req: NextRequest) {
     const minScore = parseInt(searchParams.get("minScore") || "60", 10);
 
     const { FNO_SCAN_UNIVERSE } = await import("@/lib/sdm-chain-scanner");
-    const topFnoSymbols = FNO_SCAN_UNIVERSE;
+    const topFnoSymbols: string[] = FNO_SCAN_UNIVERSE;
 
-    const [stockData, chainResult] = await Promise.allSettled([
-      fetchNIFTY50Stocks(),
-      fetchLiveOptionChain(targetSymbol),
-    ]);
-
-    const stocks = stockData.status === "fulfilled" ? stockData.value : [];
+    const stocks = await fetchNIFTY50Stocks();
     const stockMap = new Map(stocks.map((s) => [s.symbol, s]));
 
-    const chainData = chainResult.status === "fulfilled" && chainResult.value.success
-      ? chainResult.value.data
-      : null;
+    // Real per-symbol chains (Breeze → NSE). Empty map when both are down.
+    const spotBySymbol = new Map<string, number>();
+    for (const sym of topFnoSymbols) {
+      const q = stockMap.get(sym);
+      if (q?.ltp) spotBySymbol.set(sym, q.ltp);
+    }
+    const chains = await fetchAllOptionChains(topFnoSymbols, spotBySymbol);
 
+    // Real sector averages (from the quotes we actually have)
     const sectorAverages: Record<string, number> = {};
+    const sectorCounts: Record<string, number> = {};
     for (const stock of stocks) {
-      if (!sectorAverages[stock.sector]) sectorAverages[stock.sector] = 0;
+      if (sectorAverages[stock.sector] == null) sectorAverages[stock.sector] = 0;
       sectorAverages[stock.sector] += stock.changePct;
+      sectorCounts[stock.sector] = (sectorCounts[stock.sector] || 0) + 1;
     }
     for (const sec of Object.keys(sectorAverages)) {
-      const count = stocks.filter((s) => s.sector === sec).length;
+      const count = sectorCounts[sec];
       sectorAverages[sec] = count > 0 ? sectorAverages[sec] / count : 0;
     }
 
@@ -83,71 +128,105 @@ export async function GET(req: NextRequest) {
 
     for (const symbol of topFnoSymbols) {
       const stock = stockMap.get(symbol);
+      const chain = chains.get(symbol) || null;
 
-      const avgVolume = stock ? stock.volume * 0.8 : 500_000;
-      // Use real OI change from chain data, or 0 if unavailable — NO random fallback
-      const oiChg = chainData?.summary?.callOiChange
-        ? chainData.summary.callOiChange * (stock ? 1 : 0)
-        : 0;
+      // No quote → no price, no score. The row is still listed, but with
+      // nulls (the card shows "no quote"), never a synthetic 0.
+      const hasQuote = !!stock && stock.ltp > 0;
+      const ltp = hasQuote ? stock!.ltp : null;
+      const changePct = hasQuote ? stock!.changePct : null;
+      const volume = hasQuote ? stock!.volume : null;
 
-      const currentIv = chainData?.summary?.indiaVIX || 25;
-      const ivPct = calculateIvPercentile(currentIv);
+      // Real relative volume: exchange-published 20-session average.
+      const avgVolume = hasQuote ? stock!.avgVolume || null : null;
+      const relVolume =
+        volume != null && avgVolume != null && avgVolume > 0 ? round(volume / avgVolume) : null;
+      const unusualVol =
+        volume == null || avgVolume == null || avgVolume === 0 ? null : volume > avgVolume * 2;
 
-      const priceChg = stock?.changePct || 0;
+      const oiChange = chain ? chainOiChange(chain) : null;
+      const oiAnalysis = calculateOISignal(oiChange, changePct);
+      const pcr = chain && chain.pcr > 0 ? round(chain.pcr) : null;
+      const atmIV = chain && chain.atmIV > 0 ? chain.atmIV : null;
+      const ivPercentile = chain && chain.ivPercentile > 0 ? chain.ivPercentile : null;
+      const premiumVel = chain ? chainVolumeOiRatio(chain) : null;
+      const sectorAvg = hasQuote ? sectorAverages[stock!.sector] : null;
 
-      const oiAnalysis = calculateOISignal(oiChg, priceChg);
-      const premiumVel = estimatePremiumVelocity(
-        Math.abs(oiChg) * 10 || 50_000,
-        stock?.volume || 1_000_000,
-        stock?.ltp || 1000
-      );
-      const unusualVol = detectUnusualVolume(stock?.volume || 0, avgVolume);
-
-      const priceMomentum = Math.min(100, Math.max(0, 50 + priceChg * 10));
-      const sectorStr = Math.min(100, Math.max(0, 50 + (sectorAverages[stock?.sector || "Other"] || 0) * 5));
-
-      const oiScore = oiAnalysis.score;
-      const ivScore = ivPct;
-      const volumeScore = unusualVol ? 90 : Math.min(100, (stock?.volume || 0) / avgVolume * 50);
-
-      const score = Math.round(
-        oiScore * 0.30 +
-        ivScore * 0.20 +
-        volumeScore * 0.20 +
-        priceMomentum * 0.15 +
-        sectorStr * 0.15
-      );
+      // Score: only from inputs that exist. Missing inputs are dropped and
+      // the remaining weights are re-normalised.
+      const priceScore = changePct == null ? null : Math.min(100, Math.max(0, 50 + changePct * 10));
+      const sectorScore = sectorAvg == null ? null : Math.min(100, Math.max(0, 50 + sectorAvg * 5));
+      const volumeScore =
+        relVolume == null ? null : Math.min(100, Math.max(0, relVolume * 50));
+      const ivScore = ivPercentile;
+      const parts: Array<{ w: number; v: number | null }> = [
+        { w: 0.3, v: oiAnalysis.score },
+        { w: 0.2, v: ivScore },
+        { w: 0.2, v: volumeScore },
+        { w: 0.15, v: priceScore },
+        { w: 0.15, v: sectorScore },
+      ];
+      const usable = parts.filter((p) => p.v != null) as Array<{ w: number; v: number }>;
+      const weightSum = usable.reduce((s, p) => s + p.w, 0);
+      const score =
+        usable.length && weightSum > 0
+          ? Math.round(usable.reduce((s, p) => s + p.v! * p.w, 0) / weightSum)
+          : null;
 
       const signals: string[] = [];
-      if (oiAnalysis.signal !== "Neutral") signals.push(oiAnalysis.signal);
-      if (unusualVol) signals.push("Unusual Volume");
-      if (priceChg > 2) signals.push("Strong Momentum");
-      if (priceChg < -2) signals.push("Weakness");
-      if (ivPct > 70) signals.push("High IV");
+      if (oiAnalysis.signal !== "Neutral" && oiAnalysis.signal !== "N/A") signals.push(oiAnalysis.signal);
+      if (unusualVol === true) signals.push("Unusual Volume");
+      if (changePct != null && changePct > 2) signals.push("Strong Momentum");
+      if (changePct != null && changePct < -2) signals.push("Weakness");
+      if (ivPercentile != null && ivPercentile > 70) signals.push("High IV");
 
       candidates.push({
         symbol,
         name: stock?.name || symbol,
         sector: stock?.sector || "Other",
-        ltp: stock?.ltp || 0,
-        changePct: stock?.changePct || 0,
-        volume: stock?.volume || 0,
+        ltp,
+        changePct,
+        volume,
         score,
         signals,
         metrics: {
           oiSignal: oiAnalysis.signal,
-          ivPercentile: ivPct,
+          oiChange,
+          pcr,
+          atmIV,
+          ivPercentile,
           premiumVelocity: premiumVel,
           unusualVolume: unusualVol,
-          priceMomentum: Math.round(priceMomentum),
-          sectorStrength: Math.round(sectorStr),
+          priceMomentumPct: changePct,
+          sectorStrengthPct: sectorAvg == null ? null : round(sectorAvg),
+          relVolume,
+          maxPain: chain?.maxPain ?? null,
+          atmStrike: chain?.atmStrike ?? null,
+          expiry: chain?.expiry || null,
+          chainSource: chain?.source ?? null,
+          chainAsOf: chain?.asOf ?? null,
         },
       });
     }
 
-    candidates.sort((a, b) => b.score - a.score);
+    // Only rows with a real quote AND a real score can be "candidates".
+    const scored = candidates.filter((c) => c.score != null && c.ltp != null);
+    scored.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const filtered = scored.filter((c) => (c.score ?? 0) >= minScore);
 
-    const filtered = candidates.filter((c) => c.score >= minScore);
+    const clock = await getMarketClock();
+    const chainsResolved = topFnoSymbols.filter((s) => chains.get(s)).length;
+    const meta = buildCardMeta({
+      source: chainsResolved ? "nse" : "none",
+      providerTimestamp: clock.tradeDate,
+      ttlMs: 5 * 60_000,
+      live: clock.isOpen,
+      reason: clock.isOpen
+        ? chainsResolved === 0
+          ? "No option chain resolved for the F&O universe"
+          : undefined
+        : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+    });
 
     return NextResponse.json({
       symbol: targetSymbol,
@@ -155,9 +234,29 @@ export async function GET(req: NextRequest) {
       candidates: filtered,
       total: filtered.length,
       scanned: topFnoSymbols.length,
-      chainSource: chainResult.status === "fulfilled" ? chainResult.value.source : "none",
+      // Real coverage — how many names had a quote / a chain.
+      coverage: {
+        quoted: candidates.filter((c) => c.ltp != null).length,
+        chained: chainsResolved,
+        requested: topFnoSymbols.length,
+        complete: chainsResolved === topFnoSymbols.length,
+      },
+      // Every symbol, so the card can show "unavailable" rows honestly.
+      all: candidates,
+      status: meta.status,
+      meta,
+      chainSource: chainsResolved ? "nse/breeze" : "none",
+      marketClock: {
+        state: clock.marketState,
+        isOpen: clock.isOpen,
+        tradeDateLabel: clock.tradeDateLabel,
+      },
+      timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || "F&O scan failed" }, { status: 500 });
+    return NextResponse.json(
+      { status: "UNAVAILABLE", error: err.message || "F&O scan failed" },
+      { status: 500 },
+    );
   }
 }

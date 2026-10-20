@@ -1,5 +1,14 @@
 import { NSEClient } from 'nse-bse-api/nse';
 import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
+import {
+  EXPIRY_UNAVAILABLE,
+  expiryUnavailableReason,
+  isExpiryExpired,
+  isSameExpiry,
+  selectNearestLiveExpiry,
+  toIsoDate,
+  toNseExpiry,
+} from '@/lib/data-layer/chains/option-chain';
 
 let nseClient: NSEClient | null = null;
 
@@ -10,21 +19,73 @@ function getNSEClient(): NSEClient {
   return nseClient;
 }
 
-export async function getNSEOptionChain(symbol: string) {
+/**
+ * Option chain for one CONTRACT.
+ *
+ * The contract is always resolved explicitly. The SDK defaults to
+ * `expiryDates[0]`, and the exchange keeps the contract that just expired as
+ * the first entry (live-verified 2026-10-20: NSE listed "19-Oct-2026" — a
+ * DEAD contract — ahead of "27-Oct-2026"). Taking it blindly priced a dead
+ * contract and every downstream consumer inherited it.
+ *
+ *   • `expiry` given  → that contract (must exist in the exchange's list).
+ *   • `expiry` absent → the NEAREST contract that is still trading.
+ *
+ * Throws `EXPIRY_UNAVAILABLE: …` when a requested contract does not exist.
+ */
+export async function getNSEOptionChain(symbol: string, expiry?: string) {
   const client = getNSEClient();
+  // SENSEX is on BSE, try BSE type first
+  const isBSE = symbol.toUpperCase() === 'SENSEX' || symbol.toUpperCase() === 'BANKEX';
+  const type = isBSE ? 'BSE' : 'Indices';
+
+  const requestedIso = expiry ? toIsoDate(expiry) : null;
+  if (expiry && !requestedIso) {
+    throw new Error(`${EXPIRY_UNAVAILABLE}: "${expiry}" is not a valid expiry date`);
+  }
+
+  // The exchange's contract list (needed to pick and to validate).
+  let expiries: string[] = [];
   try {
-    // SENSEX is on BSE, try BSE type first
-    const isBSE = symbol.toUpperCase() === 'SENSEX' || symbol.toUpperCase() === 'BANKEX';
-    const data = await client.optionChainV3({
-      symbol,
-      type: isBSE ? 'BSE' : 'Indices',
-    });
-    return data;
+    expiries = (await client.getExpiryDatesV3(symbol)) || [];
+  } catch {
+    expiries = [];
+  }
+
+  let exp: string | undefined;
+  if (requestedIso) {
+    const match = expiries.find((e) => isSameExpiry(e, requestedIso));
+    if (expiries.length) {
+      if (!match) {
+        // The exchange does not carry that contract — an explicit failure.
+        throw new Error(expiryUnavailableReason(symbol, expiry!, expiries));
+      }
+      exp = match;
+    } else {
+      // The contract list is unavailable (cookie/network) — pass the caller's
+      // contract through and let the exchange answer.
+      exp = toNseExpiry(requestedIso) ?? undefined;
+    }
+  } else {
+    // Nearest contract that is still trading — never expiryDates[0].
+    exp = selectNearestLiveExpiry(expiries) ?? undefined;
+  }
+
+  const fetchChain = async (expiryArg?: string) =>
+    client.optionChainV3({ symbol, type, ...(expiryArg ? { expiry: expiryArg } : {}) } as any);
+
+  let data: any;
+  try {
+    data = await fetchChain(exp);
   } catch (err: any) {
-    // Fallback: try as Indices for all
+    // Fallback: try as Indices for all — keeping the resolved contract when we
+    // have one. The SDK's default (expiryDates[0]) can be a DEAD contract, so
+    // it is only used when no contract could be resolved at all (the payload's
+    // own contract list then drives the live-contract correction below).
     try {
-      const data = await client.optionChainV3({ symbol, type: 'Indices' });
-      return data;
+      data = exp
+        ? await client.optionChainV3({ symbol, type: 'Indices', expiry: exp } as any)
+        : await client.optionChainV3({ symbol, type: 'Indices' } as any);
     } catch (err2: any) {
       console.error('[NSE API] Option chain error:', err2.message);
       // NSE has no token auth — a failure here is availability/cookie/block, never
@@ -33,6 +94,51 @@ export async function getNSEOptionChain(symbol: string) {
       return null;
     }
   }
+
+  if (!data?.records?.data?.length) return data;
+
+  // Which contract is this payload for?
+  const payloadExpiries: string[] = Array.isArray(data?.records?.expiryDates) ? data.records.expiryDates : [];
+  const rowExpiry: string | null =
+    (data?.records?.data ?? []).find((r: any) => r?.expiryDates)?.expiryDates ?? null;
+  let effective = rowExpiry ?? payloadExpiries[0] ?? null;
+
+  // The contract list was unreachable and the SDK fell back to expiryDates[0],
+  // which can be a DEAD contract. Re-fetch the nearest live one.
+  if (!requestedIso && effective && isExpiryExpired(effective) && payloadExpiries.length) {
+    const live = selectNearestLiveExpiry(payloadExpiries);
+    if (live && !isSameExpiry(live, effective)) {
+      try {
+        const retry = await fetchChain(live);
+        if (retry?.records?.data?.length) {
+          data = retry;
+          effective = live;
+        }
+      } catch { /* keep the payload we have */ }
+    }
+  }
+
+  return stampContract(data, effective);
+}
+
+/**
+ * Put the contract this payload is for FIRST in `records.expiryDates` and
+ * record it as `records.selectedExpiry`.
+ *
+ * Every consumer of the raw payload reads `records.expiryDates[0]` (the
+ * option-chain route, the SDM-signal route, the F&O snapshot mapper). With
+ * the live contract now fetched, the list must lead with that contract —
+ * otherwise the rows and the label disagree and the mapper filters every
+ * strike away. The full list is preserved.
+ */
+function stampContract(payload: any, effective: string | null) {
+  if (!payload?.records) return payload;
+  const list: string[] = Array.isArray(payload.records.expiryDates) ? payload.records.expiryDates : [];
+  if (effective && !isSameExpiry(list[0], effective)) {
+    payload.records.expiryDates = [effective, ...list.filter((e) => !isSameExpiry(e, effective))];
+  }
+  payload.records.selectedExpiry = effective;
+  return payload;
 }
 
 // Equity (stock) option chain, normalized for strike pickers. Optional
@@ -46,7 +152,16 @@ export async function getNSEEquityOptionChain(symbol: string): Promise<{
 } | null> {
   const client = getNSEClient();
   try {
-    const data: any = await client.optionChainV3({ symbol, type: "Equity" });
+    // Resolve the contract explicitly — the SDK's default (expiryDates[0])
+    // can be the contract that just expired.
+    let expiries: string[] = [];
+    try {
+      expiries = (await client.getExpiryDatesV3(symbol)) || [];
+    } catch {
+      expiries = [];
+    }
+    const exp = selectNearestLiveExpiry(expiries) ?? undefined;
+    const data: any = await client.optionChainV3({ symbol, type: "Equity", ...(exp ? { expiry: exp } : {}) } as any);
     const rec = data?.records || data;
     const src = Array.isArray(rec?.data) ? rec.data : null;
     if (!src?.length) return null;
@@ -59,7 +174,9 @@ export async function getNSEEquityOptionChain(symbol: string): Promise<{
       .filter((r: any) => Number.isFinite(r.strike) && r.strike > 0);
     if (!rows.length) return null;
     const spot = parseFloat(rec?.underlyingValue);
-    const expiry = rec?.expiryDates?.[0];
+    // The contract the rows are dated to (never expiryDates[0]).
+    const rowExpiry = (rec?.data ?? []).find((r: any) => r?.expiryDates)?.expiryDates ?? null;
+    const expiry = rowExpiry ?? exp ?? rec?.expiryDates?.[0];
     return { rows, expiry: expiry || undefined, spot: Number.isFinite(spot) ? spot : undefined };
   } catch {
     return null;
@@ -191,9 +308,15 @@ export async function getNSEIndiaVIX(): Promise<{ value: number; change: number 
     const json = await res.json();
     const vix = (json?.data || []).find((i: any) => i.index === "INDIA VIX");
     if (!vix) return null;
+    // No fabricated fallback: without a real last price there is no VIX.
+    // (The old `|| 15` turned a missing INDIA VIX row into a real-looking
+    // "calm market" reading on every card that consumes it.)
+    const last = parseFloat(vix.last);
+    if (!Number.isFinite(last) || last <= 0) return null;
+    const change = parseFloat(vix.percentChange);
     return {
-      value: parseFloat((vix.last || vix.percentChange || 15).toFixed(2)),
-      change: parseFloat((vix.percentChange || 0).toFixed(2)),
+      value: parseFloat(last.toFixed(2)),
+      change: Number.isFinite(change) ? parseFloat(change.toFixed(2)) : 0,
     };
   } catch { return null; }
 }

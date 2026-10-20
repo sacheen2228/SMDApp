@@ -19,8 +19,7 @@ Option chain (indices + equities)
   SENSEX / BANKEX                            →  BSE primary  (NSE has no contract)
   NSE equities (RELIANCE, …)                 →  NSE primary
   Fallback: MOAPI  →  Breeze (opt-in, last resort)  →  NO_DATA
-  Yahoo             →  NEVER enters the option-chain path
-                       (VIX-via-Yahoo in /api/option-chain is a separate datum)
+  Yahoo             →  NOT a data source anywhere — unavailable data ⇒ NO_DATA
 
   Canonical evaluation order in every chain path:
     1. NSE (if not a BSE index)   2. BSE (if a BSE index)
@@ -30,9 +29,9 @@ Option chain (indices + equities)
 | Data | Primary | Fallback | Terminal state |
 |---|---|---|---|
 | Option chain | NSE / BSE (exchange-aware) | MOAPI → Breeze (last resort) | `NO_DATA` |
-| Candles (live) | Breeze (broker feed — NSE has no candle API) | MO → Yahoo | `NO_DATA` |
-| Spot quotes | NSE | MOAPI → Breeze → Yahoo | `null` |
-| VIX | NSE `indiaVIX` | Yahoo `^INDIAVIX` | `null` |
+| Candles (live) | Breeze (broker feed — NSE has no candle API) | MO | `NO_DATA` |
+| Spot quotes | NSE | MOAPI → Breeze | `null` |
+| VIX | NSE `indiaVIX` | — | `null` |
 | FII/DII | NSE India | MrChartist history | `null` |
 | Gain/losers | NSE `live-analysis-variations` | — | `null` |
 
@@ -169,7 +168,7 @@ were a primary provider. Both are corrected:
 | `breeze-fno-data.fetchOptionChainSnapshot` | raced Breeze ∥ NSE — a doomed Breeze call on **every** fetch | NSE first; Breeze only if NSE fails **and** it is not in cooldown |
 | `sdm-signal` | MOAPI → Breeze → NSE → BSE | BSE (if BSE index) → NSE → MOAPI → Breeze (opt-in, last) |
 | `data-layer/chains/option-chain` | already correct | BSE → NSE → MO (unchanged) |
-| `market-data-manager.PROVIDER_PRIORITY` | already correct | `nse → moapi → breeze → website → yahoo` |
+| `market-data-manager.PROVIDER_PRIORITY` | already correct | `nse → moapi → breeze → website` (code still appends `yahoo` — residual, not part of the §1 contract) |
 
 Verified live across all seven instruments — every one routes to its
 designated primary, with `fallbackUsed: false`:
@@ -184,7 +183,8 @@ With all primaries healthy, the log shows **zero MOAPI and zero Breeze
 option-chain calls**. The silent `catch {}` around the BSE block was also a
 defect — a transient BSE failure was indistinguishable from "no contract". It
 now logs, and the `NO_DATA` error message names the providers that were tried
-in order instead of the obsolete "Breeze, Motilal, NSE, and Yahoo Finance".
+in order instead of the obsolete provider list (pre-Oct-2026 order that named
+Breeze and Motilal as primaries).
 
 Breeze SDK calls per full scanner run dropped **78 → 24**, and the survivors
 are the legitimate last-resort path for symbols NSE has no F&O contract for.
@@ -220,7 +220,8 @@ Secondary classifiers that **delegate to** (or must agree with) the canonical on
 **`src/lib/provider-health.ts` is the single source of truth** for failure
 counting, cooldown, and `CLOSED/OPEN/HALF_OPEN` state across every external
 provider (`nse`, `bse`, `moapi`, `breeze`, `yahoo`, `website`, plus the LLM
-SDKs).
+SDKs). The `yahoo` entry is residual code state only — not part of the §1
+data contract.
 
 - Thresholds: default 5 consecutive failures; per-provider base/max cooldowns
   (`nse`/`bse` 5s→60s, `moapi` 15s→5min, `yahoo`/`website` 30s→10min,

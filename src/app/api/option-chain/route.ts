@@ -6,8 +6,18 @@ import { getOptionChain, getOptionChainExpiries } from '@/lib/icici-breeze/optio
 import { initSession } from '@/lib/icici-breeze/auth';
 import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
-import { calculateGreeks } from '@/lib/greeks';
+import { calculateGreeks, getGreeksAssumptions } from '@/lib/greeks';
 import { normalizeOptionChain } from '@/lib/data-layer';
+import {
+  EXPIRY_UNAVAILABLE,
+  expiryUnavailableReason,
+  isExpiryExpired,
+  isExpiryUnavailableReason,
+  isSameExpiry,
+  selectNearestLiveExpiry,
+  toIsoDate,
+  toNseExpiry,
+} from '@/lib/data-layer/chains/option-chain';
 import { getNSEOptionChain } from '@/lib/nse-api';
 import { isBSEIndex } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
@@ -38,6 +48,78 @@ function parseBreezeDate(dateStr: string): Date {
   return new Date(dateStr);
 }
 
+/**
+ * A provider field the exchange did NOT send is UNKNOWN, not 0.
+ *
+ * `row.CE.lastPrice || 0` turned a missing quote into a real "₹0 premium"
+ * and a missing open interest into "no open interest" — a claim the exchange
+ * never made (and one every downstream consumer then trusted). The canonical
+ * leg schema allows null, so null is what we carry.
+ */
+function numOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The same, for the legacy numeric shape the SDM engine consumes. */
+function numOrZero(v: any): number {
+  const n = numOrNull(v);
+  return n === null ? 0 : n;
+}
+
+/**
+ * THE CONTRACT THIS RESPONSE IS FOR.
+ *
+ * The exchange lists the JUST-EXPIRED contract first (live-verified 2026-10-20:
+ * NSE listed "19-Oct-2026" — a dead contract — ahead of "27-Oct-2026"), so
+ * `expiries[0]` is never a safe pick. The rules:
+ *   • `?expiry=` is honoured when the chain carries that contract
+ *   • otherwise the NEAREST expiry whose session has not ended wins
+ *     (today's expiry is still live until 15:30 IST)
+ *   • a requested expiry the chain does not carry is an EXPLICIT failure —
+ *     never a silent substitution with another contract
+ */
+function resolveChainExpiry(input: {
+  symbol: string;
+  requestedRaw: string | undefined;
+  requestedIso: string | null;
+  providerExpiry: string | null;
+  available: string[];
+}): { expiry: string | null; error: string | null } {
+  const { symbol, requestedRaw, requestedIso, providerExpiry, available } = input;
+
+  if (requestedIso) {
+    const match = available.find((e) => isSameExpiry(e, requestedIso));
+    if (match) return { expiry: match, error: null };
+    // The provider may have served the requested contract without listing it.
+    if (providerExpiry && isSameExpiry(providerExpiry, requestedIso)) {
+      return { expiry: providerExpiry, error: null };
+    }
+    return {
+      expiry: null,
+      error: expiryUnavailableReason(symbol, requestedRaw || requestedIso, available),
+    };
+  }
+
+  // No request → the nearest contract that is still trading.
+  const nearest = selectNearestLiveExpiry(available);
+  if (nearest) return { expiry: nearest, error: null };
+  if (providerExpiry && !isExpiryExpired(providerExpiry)) {
+    return { expiry: providerExpiry, error: null };
+  }
+  // Nothing live in the list and nothing live from the provider.
+  if (providerExpiry) {
+    return {
+      expiry: null,
+      error:
+        `${EXPIRY_UNAVAILABLE}: every contract for ${symbol} has expired ` +
+        `(latest: ${providerExpiry}). No tradable contract is available.`,
+    };
+  }
+  return { expiry: null, error: null };
+}
+
 export async function GET(request: NextRequest) {
   // Overall endpoint timeout: 24 seconds max
   // Provider budget: MO 6s + Breeze 7s + NSE 7s (cold-cookie) = 21s worst
@@ -50,7 +132,25 @@ export async function GET(request: NextRequest) {
   const mainLogic = async () => {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
-    const expiry = searchParams.get('expiry') || undefined;
+    const rawExpiry = searchParams.get('expiry') || undefined;
+
+    // The requested contract. Accepted forms: YYYY-MM-DD and DD-Mon-YYYY
+    // (also "DD Mon YYYY"). The value is normalised to ISO for comparison and
+    // handed to the providers in their own format.
+    const requestedExpiryIso = rawExpiry ? toIsoDate(rawExpiry) : null;
+    if (rawExpiry && !requestedExpiryIso) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Invalid expiry "${rawExpiry.slice(0, 40)}". Use YYYY-MM-DD or DD-Mon-YYYY.`,
+        },
+        { status: 400 }
+      );
+    }
+    // Set when a provider reports that the requested contract does not exist.
+    let expiryError: string | null = null;
+    // The contract the chain we ended up with is for (null until known).
+    let effectiveExpiry: string | null = null;
 
     // Fast-reject synthetic/test IDs (epoch-digit runs) — never contact
     // NSE/Breeze with garbage (a single bad symbol used to walk all 7
@@ -114,6 +214,10 @@ export async function GET(request: NextRequest) {
     // The provider's own publication timestamp, when it ships one. Null means
     // "we collected this, but cannot verify how current it is" — never LIVE.
     let providerTs: Date | null = null;
+    // Provenance stamps for the chain (see the `chain` block in the response).
+    let chainAsOf: string | null = null;
+    let chainIsEod = false;
+    let chainExpirySelection: string | null = null;
     
     // FINAL PROVIDER TREE (see SOP.md §1) — exchange-aware:
     //   1. NSE primary  — NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities
@@ -124,7 +228,8 @@ export async function GET(request: NextRequest) {
     // If all valid sources fail: OPTION_CHAIN=UNAVAILABLE → NO_TRADE
     
     // Off-hours fast path: MO/Breeze can only serve live sessions (MO times
-    // out, Breeze needs auth) — NSE + Yahoo carry the last session's data.
+    // out, Breeze needs auth) — the exchange itself carries the last
+    // session's data.
     const offHours = !getCurrentSession('index').isMarketOpen;
     const bseIndex = isBSEIndex(symbol);
 
@@ -134,45 +239,57 @@ export async function GET(request: NextRequest) {
     if (!chainData && !bseIndex) {
       // NSE path for NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + equities
       try {
+        // The contract is resolved by the provider: the requested one when it
+        // exists, otherwise the NEAREST contract that is still trading. The
+        // exchange lists the just-expired contract first — never take it.
         const nseData = await Promise.race([
-          getNSEOptionChain(symbol),
+          getNSEOptionChain(symbol, requestedExpiryIso ?? undefined),
           new Promise<null>((_, reject) => setTimeout(() => reject(new Error('NSE_TIMEOUT')), 7000))
         ]);
         rawNse = nseData;
         if (nseData?.records?.data) {
+          // Which contract is this payload for? (the provider stamps it)
+          const nseExpiries: string[] = Array.isArray(nseData.records.expiryDates) ? nseData.records.expiryDates : [];
+          const nseEffective: string =
+            nseData.records.selectedExpiry ||
+            (nseData.records.data ?? []).find((r: any) => r?.expiryDates)?.expiryDates ||
+            nseExpiries[0] ||
+            '';
+          effectiveExpiry = nseEffective || null;
           chainData = {
             data: nseData.records.data.map((row: any) => ({
               strike: row.strikePrice,
               ce: row.CE ? {
-                ltp: row.CE.lastPrice || 0,
-                oi: row.CE.openInterest || 0,
-                oiChg: row.CE.changeinOpenInterest || 0,
-                volume: row.CE.totalTradedVolume || 0,
-                iv: row.CE.impliedVolatility || 0,
-                delta: row.CE.greeks?.delta || 0,
-                gamma: row.CE.greeks?.gamma || 0,
-                theta: row.CE.greeks?.theta || 0,
-                vega: row.CE.greeks?.vega || 0,
-                bid: row.CE.bid || 0,
-                ask: row.CE.ask || 0,
+                ltp: numOrNull(row.CE.lastPrice),
+                oi: numOrNull(row.CE.openInterest),
+                oiChg: numOrNull(row.CE.changeinOpenInterest),
+                volume: numOrNull(row.CE.totalTradedVolume),
+                iv: numOrNull(row.CE.impliedVolatility),
+                delta: numOrNull(row.CE.greeks?.delta),
+                gamma: numOrNull(row.CE.greeks?.gamma),
+                theta: numOrNull(row.CE.greeks?.theta),
+                vega: numOrNull(row.CE.greeks?.vega),
+                bid: numOrNull(row.CE.bid),
+                ask: numOrNull(row.CE.ask),
               } : null,
               pe: row.PE ? {
-                ltp: row.PE.lastPrice || 0,
-                oi: row.PE.openInterest || 0,
-                oiChg: row.PE.changeinOpenInterest || 0,
-                volume: row.PE.totalTradedVolume || 0,
-                iv: row.PE.impliedVolatility || 0,
-                delta: row.PE.greeks?.delta || 0,
-                gamma: row.PE.greeks?.gamma || 0,
-                theta: row.PE.greeks?.theta || 0,
-                vega: row.PE.greeks?.vega || 0,
-                bid: row.PE.bid || 0,
-                ask: row.PE.ask || 0,
+                ltp: numOrNull(row.PE.lastPrice),
+                oi: numOrNull(row.PE.openInterest),
+                oiChg: numOrNull(row.PE.changeinOpenInterest),
+                volume: numOrNull(row.PE.totalTradedVolume),
+                iv: numOrNull(row.PE.impliedVolatility),
+                delta: numOrNull(row.PE.greeks?.delta),
+                gamma: numOrNull(row.PE.greeks?.gamma),
+                theta: numOrNull(row.PE.greeks?.theta),
+                vega: numOrNull(row.PE.greeks?.vega),
+                bid: numOrNull(row.PE.bid),
+                ask: numOrNull(row.PE.ask),
               } : null,
             })),
             spotPrice: (nseData as any).records?.underlyingValue || 0,
-            expiries: ((nseData as any).records?.expiryDates || []).map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
-            selectedExpiry: (nseData as any).records?.expiryDates?.[0] || '',
+            expiries: nseExpiries.map((d: string) => ({ date: d, label: d, daysToExpiry: 0 })),
+            selectedExpiry: nseEffective,
+            expiry: nseEffective,
             summary: { spotPrice: (nseData as any).records?.underlyingValue || 0 },
           };
           source = 'nse-api';
@@ -181,11 +298,19 @@ export async function GET(request: NextRequest) {
           providerTs = providerTimestamp(nseData);
           dataTimestamp = providerTs ?? new Date();
           providerHealth.recordSuccess("nse", Date.now() - nseStart);
-          console.log('[API] NSE API data fetched successfully');
+          console.log('[API] NSE API data fetched successfully for', symbol, nseEffective);
         }
-      } catch (nseError) {
-        console.warn('[API] NSE API failed:', nseError);
-        providerHealth.recordFailure("nse", "NETWORK", String(nseError).substring(0, 200));
+      } catch (nseError: any) {
+        // The exchange does not carry the requested contract — an honest
+        // failure, never a silent swap for another expiry.
+        const msg = String(nseError?.message || nseError);
+        if (isExpiryUnavailableReason(msg) || msg.includes(EXPIRY_UNAVAILABLE)) {
+          expiryError = msg;
+          console.warn('[API] NSE expiry unavailable:', msg);
+        } else {
+          console.warn('[API] NSE API failed:', nseError);
+          providerHealth.recordFailure("nse", "NETWORK", msg.substring(0, 200));
+        }
       }
     }
 
@@ -195,9 +320,23 @@ export async function GET(request: NextRequest) {
       try {
         const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
         const bseExpiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
-        const selectedExpiry = expiry || bseExpiries[0] || '';
+        // The requested contract when it exists, else the nearest contract
+        // that is still trading (BSE's own list already drops past expiries,
+        // but the expiry-day cut-off is applied here too).
+        let selectedExpiry = '';
+        if (requestedExpiryIso) {
+          const match = bseExpiries.find((e) => isSameExpiry(e, requestedExpiryIso));
+          if (!match) {
+            expiryError = `${EXPIRY_UNAVAILABLE}: expiry "${rawExpiry}" is not available for ${symbol}. Available: ${bseExpiries.slice(0, 12).join(', ') || 'none'}`;
+            console.warn('[API]', expiryError);
+          } else {
+            selectedExpiry = match;
+          }
+        } else {
+          selectedExpiry = selectNearestLiveExpiry(bseExpiries) || '';
+        }
 
-        if (selectedExpiry) {
+        if (selectedExpiry && !expiryError) {
           const bseStart = Date.now();
           const bseChain = await Promise.race([
             getBSEOptionChain(symbol, selectedExpiry),
@@ -208,32 +347,34 @@ export async function GET(request: NextRequest) {
               data: bseChain.data.map((row) => ({
                 strike: row.strike,
                 ce: row.ce ? {
-                  ltp: row.ce.ltp || 0,
-                  oi: row.ce.oi || 0,
-                  oiChg: row.ce.oiChg || 0,
-                  volume: row.ce.volume || 0,
-                  iv: row.ce.iv || 0,
-                  chg: row.ce.chg || 0,
-                  bid: row.ce.bid || 0,
-                  ask: row.ce.ask || 0,
+                  ltp: numOrNull(row.ce.ltp),
+                  oi: numOrNull(row.ce.oi),
+                  oiChg: numOrNull(row.ce.oiChg),
+                  volume: numOrNull(row.ce.volume),
+                  iv: numOrNull(row.ce.iv),
+                  chg: numOrNull(row.ce.chg),
+                  bid: numOrNull(row.ce.bid),
+                  ask: numOrNull(row.ce.ask),
                 } : null,
                 pe: row.pe ? {
-                  ltp: row.pe.ltp || 0,
-                  oi: row.pe.oi || 0,
-                  oiChg: row.pe.oiChg || 0,
-                  volume: row.pe.volume || 0,
-                  iv: row.pe.iv || 0,
-                  chg: row.pe.chg || 0,
-                  bid: row.pe.bid || 0,
-                  ask: row.pe.ask || 0,
+                  ltp: numOrNull(row.pe.ltp),
+                  oi: numOrNull(row.pe.oi),
+                  oiChg: numOrNull(row.pe.oiChg),
+                  volume: numOrNull(row.pe.volume),
+                  iv: numOrNull(row.pe.iv),
+                  chg: numOrNull(row.pe.chg),
+                  bid: numOrNull(row.pe.bid),
+                  ask: numOrNull(row.pe.ask),
                 } : null,
               })),
               spotPrice: bseChain.spotPrice,
               expiries: bseExpiries.map((e: string) => ({ date: e, label: e, daysToExpiry: 0 })),
               selectedExpiry,
+              expiry: selectedExpiry,
               summary: { spotPrice: bseChain.spotPrice },
             };
             source = 'bse-api';
+            effectiveExpiry = selectedExpiry || null;
             // BSE DeriOptionChain_IV ships no publication timestamp — leave
             // providerTs null so freshness cannot claim LIVE.
             providerTs = providerTimestamp(bseChain);
@@ -253,46 +394,48 @@ export async function GET(request: NextRequest) {
     try {
       const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
       const motilalChain = await Promise.race([
-        getMotilalOptionChain(symbol, expiry),
+        getMotilalOptionChain(symbol, requestedExpiryIso ?? undefined),
         new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 6000))
       ]);
       if (motilalChain?.data?.length) {
         chainData = {
-          data: motilalChain.data.map((row) => ({
+          data: motilalChain.data.map((row: any) => ({
             strike: row.strike,
             ce: row.ce ? {
-              ltp: row.ce.ltp || 0,
-              oi: row.ce.oi || 0,
+              ltp: numOrNull(row.ce.ltp),
+              oi: numOrNull(row.ce.oi),
               oiChg: 0,
-              volume: row.ce.volume || 0,
-              iv: row.ce.iv || 0,
-              delta: row.ce.delta || 0,
-              gamma: row.ce.gamma || 0,
-              theta: row.ce.theta || 0,
-              vega: row.ce.vega || 0,
-              bid: row.ce.bid || 0,
-              ask: row.ce.ask || 0,
+              volume: numOrNull(row.ce.volume),
+              iv: numOrNull(row.ce.iv),
+              delta: numOrNull(row.ce.delta),
+              gamma: numOrNull(row.ce.gamma),
+              theta: numOrNull(row.ce.theta),
+              vega: numOrNull(row.ce.vega),
+              bid: numOrNull(row.ce.bid),
+              ask: numOrNull(row.ce.ask),
             } : null,
             pe: row.pe ? {
-              ltp: row.pe.ltp || 0,
-              oi: row.pe.oi || 0,
+              ltp: numOrNull(row.pe.ltp),
+              oi: numOrNull(row.pe.oi),
               oiChg: 0,
-              volume: row.pe.volume || 0,
-              iv: row.pe.iv || 0,
-              delta: row.pe.delta || 0,
-              gamma: row.pe.gamma || 0,
-              theta: row.pe.theta || 0,
-              vega: row.pe.vega || 0,
-              bid: row.pe.bid || 0,
-              ask: row.pe.ask || 0,
+              volume: numOrNull(row.pe.volume),
+              iv: numOrNull(row.pe.iv),
+              delta: numOrNull(row.pe.delta),
+              gamma: numOrNull(row.pe.gamma),
+              theta: numOrNull(row.pe.theta),
+              vega: numOrNull(row.pe.vega),
+              bid: numOrNull(row.pe.bid),
+              ask: numOrNull(row.pe.ask),
             } : null,
           })),
           spotPrice: motilalChain.spotPrice,
           expiries: motilalChain.expiries.map((e) => ({ date: e, label: e, daysToExpiry: 0 })),
           selectedExpiry: motilalChain.selectedExpiry,
+          expiry: motilalChain.selectedExpiry,
           summary: motilalChain.summary,
         };
         source = 'motilal-api';
+        effectiveExpiry = motilalChain.selectedExpiry || null;
         providerHealth.recordSuccess("moapi", Date.now() - moapiStart);
         console.log(`[API] MOAPI option chain fetched for ${symbol}`);
       }
@@ -312,8 +455,9 @@ export async function GET(request: NextRequest) {
     if (!chainData && !providerHealth.shouldSkip("breeze")) {
       try {
         const fetchBreezeChain = async () => {
-          if (expiry) {
-            return await getOptionChain(symbol, expiry);
+          if (requestedExpiryIso) {
+            // The requested contract, in the format the Breeze SDK wants.
+            return await getOptionChain(symbol, toNseExpiry(requestedExpiryIso) || requestedExpiryIso);
           } else {
             // Front month only — a spot snapshot is always the nearest
             // contract, and walking every back month burns the whole budget.
@@ -338,6 +482,11 @@ export async function GET(request: NextRequest) {
         if (chain) {
           chainData = chain;
           source = 'icici-breeze';
+          // Breeze was asked for one specific contract — that is the one it
+          // returned. Without a request it is the front month.
+          effectiveExpiry = requestedExpiryIso
+            ? (toNseExpiry(requestedExpiryIso) || requestedExpiryIso)
+            : (chain as any).selectedExpiry || (chain as any).expiry || null;
           providerHealth.recordSuccess("breeze", Date.now() - breezeStart);
           console.log(`[API] Breeze option chain fetched for ${symbol}`);
         }
@@ -365,8 +514,8 @@ export async function GET(request: NextRequest) {
       chainData = {
         data: normResult.data.strikes.map((s: any) => ({
           strike: s.strike,
-          ce: s.ce ? { ltp: s.ce.ltp || 0, oi: s.ce.oi || 0, oiChg: s.ce.oiChange || 0, volume: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: 0, bid: s.ce.bid || 0, ask: s.ce.ask || 0 } : null,
-          pe: s.pe ? { ltp: s.pe.ltp || 0, oi: s.pe.oi || 0, oiChg: s.pe.oiChange || 0, volume: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: 0, bid: s.pe.bid || 0, ask: s.pe.ask || 0 } : null,
+          ce: s.ce ? { ltp: numOrNull(s.ce.ltp), oi: numOrNull(s.ce.oi), oiChg: numOrNull(s.ce.oiChange), volume: numOrNull(s.ce.volume), iv: numOrNull(s.ce.iv), delta: numOrNull(s.ce.delta), gamma: numOrNull(s.ce.gamma), theta: numOrNull(s.ce.theta), vega: 0, bid: numOrNull(s.ce.bid), ask: numOrNull(s.ce.ask) } : null,
+          pe: s.pe ? { ltp: numOrNull(s.pe.ltp), oi: numOrNull(s.pe.oi), oiChg: numOrNull(s.pe.oiChange), volume: numOrNull(s.pe.volume), iv: numOrNull(s.pe.iv), delta: numOrNull(s.pe.delta), gamma: numOrNull(s.pe.gamma), theta: numOrNull(s.pe.theta), vega: 0, bid: numOrNull(s.pe.bid), ask: numOrNull(s.pe.ask) } : null,
         })),
         spotPrice: normResult.data.spot || 0,
         expiry: normResult.data.expiry,
@@ -376,21 +525,33 @@ export async function GET(request: NextRequest) {
       source = normResult.source;
       providerTs = providerTimestamp(normResult.data);
       dataTimestamp = providerTs ?? new Date();
+      effectiveExpiry = normResult.data.expiry || null;
+      // Provenance stamps: WHICH contract, WHEN it was priced, and whether it
+      // is end-of-day data (never a live chain).
+      chainAsOf = normResult.data.asOf || null;
+      chainIsEod = normResult.data.isEod === true;
+      chainExpirySelection = normResult.data.expirySelection || null;
     };
 
     if (!chainData && rawNse) {
-      const normResult = normalizeOptionChain(rawNse, expiry, symbol);
+      const normResult = normalizeOptionChain(rawNse, requestedExpiryIso ?? undefined, symbol);
       if (normResult.data) mapCanonical(normResult);
+      else if (isExpiryUnavailableReason(normResult.fallbackReason)) expiryError = normResult.fallbackReason!;
     }
     if (!chainData) {
       // Last resort: the canonical exchange-aware chain (NSE primary, BSE for
       // SENSEX/BANKEX, MOAPI, and the bhavcopy EOD fallback when the live BSE
       // endpoint is blocked). Keeps this route on ONE provider tree.
       const { getOptionChain: canonicalChain } = await import("@/lib/data-layer/chains/option-chain");
-      const canon = await canonicalChain(symbol, expiry);
+      const canon = await canonicalChain(symbol, requestedExpiryIso ?? undefined);
       if (canon.data) {
         mapCanonical(canon);
         if (canon.fallbackReason) console.warn(`[API] ${symbol} chain from fallback: ${canon.fallbackReason}`);
+      } else if (isExpiryUnavailableReason(canon.fallbackReason)) {
+        // The requested contract does not exist — an honest failure, never a
+        // silent swap for another expiry.
+        expiryError = canon.fallbackReason!;
+        console.warn('[API]', expiryError);
       }
     }
     if (!chainData) {
@@ -398,8 +559,59 @@ export async function GET(request: NextRequest) {
       source = 'NO_DATA';
     }
 
-    // Yahoo is NOT option-chain fallback per FINAL PROVIDER TREE.
-    // If Breeze/Motilal/NSE/BSE all fail, return empty chain with spot price from VIX/prevClose context.
+    // ── EXPIRY RESOLUTION (in the route) ────────────────────────────
+    // The exchange lists the just-expired contract FIRST, so the chain's own
+    // list can name a dead contract. The contract this response is FOR is:
+    //   • the requested one (when the chain carries it)
+    //   • otherwise the NEAREST contract that is still trading
+    //   • never an expired one, and never a silent substitution.
+    const chainExpiryList: string[] = Array.isArray(chainData.expiries)
+      ? chainData.expiries
+          .map((e: any) => (typeof e === 'string' ? e : e?.date))
+          .filter((e: any): e is string => typeof e === 'string' && e.trim().length > 0)
+      : [];
+    const resolved = resolveChainExpiry({
+      symbol,
+      requestedRaw: rawExpiry,
+      requestedIso: requestedExpiryIso,
+      providerExpiry: effectiveExpiry,
+      available: chainExpiryList,
+    });
+    if (resolved.error && !expiryError) expiryError = resolved.error;
+    if (resolved.expiry) {
+      effectiveExpiry = resolved.expiry;
+      chainData.expiry = resolved.expiry;
+      chainData.selectedExpiry = resolved.expiry;
+    }
+
+    // The contract we were ASKED for must be the contract we GOT. A mismatch
+    // is an honest failure — never a silent substitution.
+    if (requestedExpiryIso) {
+      if (effectiveExpiry && isSameExpiry(effectiveExpiry, requestedExpiryIso)) {
+        expiryError = null; // the requested contract was served after all
+      } else if (!expiryError) {
+        expiryError =
+          `${EXPIRY_UNAVAILABLE}: expiry "${rawExpiry}" is not available for ${symbol}` +
+          (effectiveExpiry ? ` (the chain served ${effectiveExpiry})` : '');
+      }
+    }
+    if (expiryError) {
+      console.warn('[API]', expiryError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: expiryError,
+          symbol,
+          requestedExpiry: rawExpiry ?? null,
+          source,
+        },
+        { status: 400 }
+      );
+    }
+
+    // No other provider is allowed into this path per the FINAL PROVIDER TREE.
+    // If Breeze/Motilal/NSE/BSE all fail, return an empty chain with the spot
+    // price from the VIX/prevClose context (or an explicit 503).
 
     if (!chainData || (!chainData.data?.length && !chainData.calls?.length && !chainData.puts?.length)) {
       const spotPrice = chainData?.spotPrice || chainData?.summary?.spotPrice || 0;
@@ -418,39 +630,17 @@ export async function GET(request: NextRequest) {
       }
     }
     
-    // Build SDM analysis strikes from either format
-    let optionChainStrikes: OptionChainStrike[] = [];
-    
+    // ── The chain in its HONEST shape ──────────────────────────────
+    // A field the exchange did not send (or published as 0 for an IV that
+    // does not exist) stays null — the canonical leg schema allows null and
+    // "₹0 premium" / "0 open interest" are claims the exchange never made.
+    let chainStrikes: any[] = [];
+
     if (chainData.data) {
-      // Simulation format: data is array of {strike, ce, pe}
-      optionChainStrikes = chainData.data.map((row: any) => ({
+      chainStrikes = chainData.data.map((row: any) => ({
         strike: row.strike,
-        ce: row.ce ? {
-          ltp: row.ce.ltp || 0,
-          oi: row.ce.oi || 0,
-          oiChg: row.ce.oiChg || 0,
-          volume: row.ce.volume || 0,
-          iv: row.ce.iv || 0,
-          delta: row.ce.delta || 0,
-          gamma: row.ce.gamma || 0,
-          theta: row.ce.theta || 0,
-          vega: row.ce.vega || 0,
-          bid: 0,
-          ask: 0,
-        } : null,
-        pe: row.pe ? {
-          ltp: row.pe.ltp || 0,
-          oi: row.pe.oi || 0,
-          oiChg: row.pe.oiChg || 0,
-          volume: row.pe.volume || 0,
-          iv: row.pe.iv || 0,
-          delta: row.pe.delta || 0,
-          gamma: row.pe.gamma || 0,
-          theta: row.pe.theta || 0,
-          vega: row.pe.vega || 0,
-          bid: 0,
-          ask: 0,
-        } : null,
+        ce: row.ce ? { ...row.ce, iv: numOrNull(row.ce.iv) || null } : null,
+        pe: row.pe ? { ...row.pe, iv: numOrNull(row.pe.iv) || null } : null,
       }));
     } else if (chainData.calls && chainData.puts) {
       // Breeze format: calls and puts arrays
@@ -458,42 +648,63 @@ export async function GET(request: NextRequest) {
       const putMap = new Map<number, any>();
       for (const c of chainData.calls) callMap.set(c.strikePrice, c);
       for (const p of chainData.puts) putMap.set(p.strikePrice, p);
-      
+
       const allStrikes = [...new Set([...callMap.keys(), ...putMap.keys()])].sort((a, b) => a - b);
-      optionChainStrikes = allStrikes.map(strike => ({
+      const breezeLeg = (raw: any) => ({
+        ltp: numOrNull(raw?.ltp),
+        oi: numOrNull(raw?.openInterest),
+        oiChg: numOrNull(raw?.oiChange),
+        volume: numOrNull(raw?.volume),
+        iv: numOrNull(raw?.iv) || null,
+        delta: numOrNull(raw?.delta),
+        gamma: numOrNull(raw?.gamma),
+        theta: numOrNull(raw?.theta),
+        vega: numOrNull(raw?.vega),
+        bid: numOrNull(raw?.bid),
+        ask: numOrNull(raw?.ask),
+      });
+      chainStrikes = allStrikes.map(strike => ({
         strike,
-        ce: callMap.has(strike) ? {
-          ltp: callMap.get(strike).ltp || 0,
-          oi: callMap.get(strike).openInterest || 0,
-          oiChg: callMap.get(strike).oiChange || 0,
-          volume: callMap.get(strike).volume || 0,
-          iv: callMap.get(strike).iv || 0,
-          delta: callMap.get(strike).delta || 0,
-          gamma: callMap.get(strike).gamma || 0,
-          theta: callMap.get(strike).theta || 0,
-          vega: callMap.get(strike).vega || 0,
-          bid: callMap.get(strike).bid || 0,
-          ask: callMap.get(strike).ask || 0,
-        } : null,
-        pe: putMap.has(strike) ? {
-          ltp: putMap.get(strike).ltp || 0,
-          oi: putMap.get(strike).openInterest || 0,
-          oiChg: putMap.get(strike).oiChange || 0,
-          volume: putMap.get(strike).volume || 0,
-          iv: putMap.get(strike).iv || 0,
-          delta: putMap.get(strike).delta || 0,
-          gamma: putMap.get(strike).gamma || 0,
-          theta: putMap.get(strike).theta || 0,
-          vega: putMap.get(strike).vega || 0,
-          bid: putMap.get(strike).bid || 0,
-          ask: putMap.get(strike).ask || 0,
-        } : null,
+        ce: callMap.has(strike) ? breezeLeg(callMap.get(strike)) : null,
+        pe: putMap.has(strike) ? breezeLeg(putMap.get(strike)) : null,
       }));
     }
+
+    // The legacy NUMERIC shape the SDM engine consumes. A missing field reads
+    // as 0 INSIDE the analysis only — the payload keeps the nulls.
+    const optionChainStrikes: OptionChainStrike[] = chainStrikes.map((row: any) => ({
+      strike: row.strike,
+      ce: row.ce ? {
+        ltp: numOrZero(row.ce.ltp),
+        oi: numOrZero(row.ce.oi),
+        oiChg: numOrZero(row.ce.oiChg),
+        volume: numOrZero(row.ce.volume),
+        iv: numOrZero(row.ce.iv),
+        delta: numOrZero(row.ce.delta),
+        gamma: numOrZero(row.ce.gamma),
+        theta: numOrZero(row.ce.theta),
+        vega: numOrZero(row.ce.vega),
+        bid: numOrZero(row.ce.bid),
+        ask: numOrZero(row.ce.ask),
+      } : null,
+      pe: row.pe ? {
+        ltp: numOrZero(row.pe.ltp),
+        oi: numOrZero(row.pe.oi),
+        oiChg: numOrZero(row.pe.oiChg),
+        volume: numOrZero(row.pe.volume),
+        iv: numOrZero(row.pe.iv),
+        delta: numOrZero(row.pe.delta),
+        gamma: numOrZero(row.pe.gamma),
+        theta: numOrZero(row.pe.theta),
+        vega: numOrZero(row.pe.vega),
+        bid: numOrZero(row.pe.bid),
+        ask: numOrZero(row.pe.ask),
+      } : null,
+    }));
     
     const spotPrice = chainData.spotPrice || chainData.summary?.spotPrice || 0;
     
-    // Validate and sanitize the data (skip for Yahoo-only spot price with empty chain)
+    // Validate and sanitize the data
     if (optionChainStrikes.length > 0) {
       const validation = validateAndSanitize(optionChainStrikes, spotPrice, source);
       if (!validation.valid) {
@@ -508,35 +719,49 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Calculate Greeks if missing (Breeze doesn't return them)
-    const selectedExpiry = expiry || chainData.selectedExpiry || chainData.expiries?.[0]?.date || chainData.expiries?.[0] || '';
+    // Calculate Greeks if missing (the exchanges ship no greeks)
+    // The contract the chain is FOR — resolved above (never a list entry that
+    // happens to be first: the exchange lists the just-expired contract first).
+    const selectedExpiry = effectiveExpiry || chainData.selectedExpiry || chainData.expiry || '';
     const now = new Date();
     const expiryDate = new Date(selectedExpiry);
     const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
     const tte = daysToExpiry / 365; // time to expiry in years
 
     for (const strike of optionChainStrikes) {
-      // Estimate IV from moneyness if not provided
-      const moneyness = Math.abs(strike.strike - spotPrice) / spotPrice;
-      const baseIV = 0.15 + moneyness * 2 + (daysToExpiry < 7 ? 0.05 : 0); // ATM ~15%, increases with distance
+      // The greeks come from Black-Scholes on the EXCHANGE's own IV.
+      // A leg the exchange published no IV for gets NO greeks — the old code
+      // invented an IV from the moneyness (baseIV = 0.15 + moneyness×2) and
+      // published it as if the exchange had sent it.
+      const applyGreeks = (leg: any, isCall: boolean) => {
+        if (!leg) return null;
+        const ivPct = numOrNull(leg.iv);
+        if (ivPct === null || ivPct <= 0) return null;
+        const g = calculateGreeks(spotPrice, strike.strike, tte, ivPct / 100, isCall);
+        leg.delta = g.delta;
+        leg.gamma = g.gamma;
+        leg.theta = g.theta;
+        leg.vega = g.vega;
+        return g;
+      };
+      const ceGreeks = applyGreeks(strike.ce, true);
+      const peGreeks = applyGreeks(strike.pe, false);
 
-      if (strike.ce) {
-        const iv = strike.ce.iv > 0 ? strike.ce.iv / 100 : baseIV;
-        const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, true);
-        strike.ce.delta = greeks.delta;
-        strike.ce.gamma = greeks.gamma;
-        strike.ce.theta = greeks.theta;
-        strike.ce.vega = greeks.vega;
-        if (strike.ce.iv === 0) strike.ce.iv = Math.round(iv * 10000) / 100; // store as percentage
-      }
-      if (strike.pe) {
-        const iv = strike.pe.iv > 0 ? strike.pe.iv / 100 : baseIV;
-        const greeks = calculateGreeks(spotPrice, strike.strike, tte, iv, false);
-        strike.pe.delta = greeks.delta;
-        strike.pe.gamma = greeks.gamma;
-        strike.pe.theta = greeks.theta;
-        strike.pe.vega = greeks.vega;
-        if (strike.pe.iv === 0) strike.pe.iv = Math.round(iv * 10000) / 100;
+      // Mirror the computed greeks onto the honest (nullable) chain.
+      const honest = chainStrikes.find((r: any) => r.strike === strike.strike);
+      if (honest) {
+        if (honest.ce && ceGreeks) {
+          honest.ce.delta = ceGreeks.delta;
+          honest.ce.gamma = ceGreeks.gamma;
+          honest.ce.theta = ceGreeks.theta;
+          honest.ce.vega = ceGreeks.vega;
+        }
+        if (honest.pe && peGreeks) {
+          honest.pe.delta = peGreeks.delta;
+          honest.pe.gamma = peGreeks.gamma;
+          honest.pe.theta = peGreeks.theta;
+          honest.pe.vega = peGreeks.vega;
+        }
       }
     }
 
@@ -584,15 +809,16 @@ export async function GET(request: NextRequest) {
       };
     }
     
-    // Generate candles — try Breeze 5-min intraday first (bounded), fallback to
-    // Yahoo daily candles so the SMC engine always has structure data.
+    // Generate candles — Breeze 5-min intraday first (bounded), then the
+    // exchange's own intraday index chart (free NSE). The SMC engine and the
+    // PE falling-market confirmation need real structure data.
     // (Moved ABOVE the SDM alert gate so the PE falling-market technical
     // confirmation can use them — isFallingMarket needs candles + spot.)
     // Skip Breeze when its circuit is open (AUTH dead) — otherwise the
     // 3×4s attempts eat the remaining endpoint budget after a successful chain.
     let candles5m: any[] = [];
     if (providerHealth.shouldSkip("breeze")) {
-      console.log('[API] Skipping Breeze candles — circuit open, using Yahoo fallback');
+      console.log('[API] Skipping Breeze candles — circuit open, falling back to the NSE index chart');
     }
     try {
       const { getIntradayCandles } = await import('@/lib/breeze-historical');
@@ -624,40 +850,17 @@ export async function GET(request: NextRequest) {
       candles5m = [];
     }
 
-    // Fallback: Yahoo daily candles when Breeze unavailable (bounded)
-    if (candles5m.length < 10) {
-      try {
-        const yahooSym = symbol === 'SENSEX' ? '^BSESN' : '^NSEI';
-        const res = await Promise.race([
-          fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=6mo&interval=1d`, {
-            signal: AbortSignal.timeout(5000),
-          }),
-          new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('YAHOO_CANDLE_TIMEOUT')), 5000))
-        ]);
-        if (res.ok) {
-          const json = await res.json();
-          const result = json?.chart?.result?.[0];
-          if (result?.timestamp && result?.indicators?.quote?.[0]) {
-            const ts = result.timestamp;
-            const q = result.indicators.quote[0];
-            for (let i = 0; i < ts.length; i++) {
-              const close = q.close?.[i];
-              if (close == null) continue;
-              const dt = new Date(ts[i] * 1000);
-              const pad = (n: number) => n.toString().padStart(2, '0');
-              candles5m.push({
-                time: `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} 00:00:00`,
-                open: q.open?.[i] ?? close,
-                high: q.high?.[i] ?? close,
-                low: q.low?.[i] ?? close,
-                close,
-                volume: q.volume?.[i] || 0,
-              });
-            }
-          }
-        }
-      } catch {}
-    }
+    // NO candle fallback beyond Breeze.
+    //
+    // The old fallback fetched Yahoo DAILY candles and pushed them into the
+    // 5-minute array — a timeframe substitution: the SMC engine and the PE
+    // falling-market confirmation then computed a "5-minute VWAP" from daily
+    // bars. Yahoo is banned anyway, and the exchange's own index chart
+    // (chart-databyindex) serves the CURRENT session only (and is empty
+    // outside it), so it is not a substitute for an intraday series.
+    //
+    // With no real intraday candles the series is EMPTY and every consumer
+    // that needs structure data (the PE confirmation) fails closed.
 
     // Run full SDM analysis
     const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry, String(symbol || "NIFTY").toUpperCase());
@@ -740,7 +943,10 @@ export async function GET(request: NextRequest) {
       const now = new Date();
       const diffMs = dateObj.getTime() - now.getTime();
       const daysToExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-      return { date: dateStr, label: dateStr, daysToExpiry };
+      // The exchange keeps the just-expired contract in the list — flag it so
+      // a consumer never offers a dead contract as tradable.
+      const expired = isExpiryExpired(dateStr, now);
+      return { date: dateStr, label: dateStr, daysToExpiry, expired };
     });
 
 
@@ -766,7 +972,7 @@ export async function GET(request: NextRequest) {
       chainData.summary.callOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.ce?.oiChg || 0), 0);
       chainData.summary.putOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.pe?.oiChg || 0), 0);
     }
-    // NIFTY futures proxy — free NSE index spot (Yahoo is not a data source here).
+    // NIFTY futures proxy — free NSE index spot (the exchange is the source).
     try {
       const { getNSEIndices } = await import('@/lib/nse-api');
       const nseIdx = await getNSEIndices();
@@ -816,46 +1022,47 @@ export async function GET(request: NextRequest) {
       freshness.delayed = false;
     }
 
-    // Build canonical OptionChain from normalized strikes (backward-compatible addition)
+    // Build canonical OptionChain from the HONEST strikes (the canonical leg
+    // schema allows null — a field the exchange did not send stays null, it
+    // is never flattened to 0 here).
     let canonical: any = null;
     try {
       const { buildOptionChain, assessChainQuality } = await import('@/lib/option-chain-normalizer');
-      const normalizedStrikes = optionChainStrikes.map((s: any) => ({
+      const canonicalLeg = (leg: any) => {
+        if (!leg) return null;
+        const bid = numOrNull(leg.bid);
+        const ask = numOrNull(leg.ask);
+        const ltp = numOrNull(leg.ltp);
+        const oi = numOrNull(leg.oi);
+        return {
+          ltp,
+          bid,
+          ask,
+          spread: bid != null && ask != null ? ask - bid : null,
+          quoteQuality: (bid != null && ask != null) ? 'COMPLETE' as const : 'PARTIAL' as const,
+          oi,
+          oiChange: numOrNull(leg.oiChg),
+          volume: numOrNull(leg.volume),
+          iv: numOrNull(leg.iv),
+          delta: numOrNull(leg.delta),
+          gamma: numOrNull(leg.gamma),
+          theta: numOrNull(leg.theta),
+          vega: numOrNull(leg.vega),
+          hasData: (ltp ?? 0) > 0 || (oi ?? 0) > 0,
+        };
+      };
+      const normalizedStrikes = chainStrikes.map((s: any) => ({
         strike: s.strike,
-        ce: s.ce ? {
-          ltp: s.ce.ltp || 0,
-          bid: s.ce.bid ?? null,
-          ask: s.ce.ask ?? null,
-          spread: (s.ce.bid != null && s.ce.ask != null) ? (s.ce.ask - s.ce.bid) : null,
-          quoteQuality: ((s.ce.bid != null && s.ce.ask != null)) ? 'COMPLETE' as const : 'PARTIAL' as const,
-          oi: s.ce.oi || 0,
-          oiChange: s.ce.oiChg || 0,
-          volume: s.ce.volume || 0,
-          iv: s.ce.iv || 0,
-          delta: s.ce.delta || 0,
-          gamma: s.ce.gamma || 0,
-          theta: s.ce.theta || 0,
-          vega: s.ce.vega || 0,
-          hasData: (s.ce.ltp || 0) > 0 || (s.ce.oi || 0) > 0,
-        } : null,
-        pe: s.pe ? {
-          ltp: s.pe.ltp || 0,
-          bid: s.pe.bid ?? null,
-          ask: s.pe.ask ?? null,
-          spread: (s.pe.bid != null && s.pe.ask != null) ? (s.pe.ask - s.pe.bid) : null,
-          quoteQuality: ((s.pe.bid != null && s.pe.ask != null)) ? 'COMPLETE' as const : 'PARTIAL' as const,
-          oi: s.pe.oi || 0,
-          oiChange: s.pe.oiChg || 0,
-          volume: s.pe.volume || 0,
-          iv: s.pe.iv || 0,
-          delta: s.pe.delta || 0,
-          gamma: s.pe.gamma || 0,
-          theta: s.pe.theta || 0,
-          vega: s.pe.vega || 0,
-          hasData: (s.pe.ltp || 0) > 0 || (s.pe.oi || 0) > 0,
-        } : null,
+        ce: canonicalLeg(s.ce),
+        pe: canonicalLeg(s.pe),
       }));
-      canonical = buildOptionChain(normalizedStrikes, spotPrice, symbol, source, chainData?.selectedExpiry);
+      canonical = buildOptionChain(
+        normalizedStrikes as any,
+        spotPrice,
+        symbol,
+        source,
+        chainData?.selectedExpiry,
+      );
       if (canonical) {
         const quality = assessChainQuality(canonical);
         (canonical as any)._quality = quality;
@@ -864,11 +1071,32 @@ export async function GET(request: NextRequest) {
       console.warn('[API] Canonical chain build failed:', e);
     }
 
+    // Provenance of THIS chain: which contract, when it was priced, and
+    // whether it is end-of-day data. Callers (scanner, agent, UI) read
+    // `chain.source` / `chain.asOf` — they need the contract too.
+    const chainStamp = {
+      source,
+      asOf: chainAsOf ?? dataTimestamp.toISOString(),
+      expiry: selectedExpiry || null,
+      expiryIso: toIsoDate(selectedExpiry) || null,
+      expiryRequested: rawExpiry ?? null,
+      expirySelection: chainExpirySelection || (rawExpiry ? 'requested' : 'nearest-live'),
+      // true → the contract's session is over (only reachable when a caller
+      // explicitly asked for an expired contract — the automatic selection
+      // NEVER picks one).
+      expiryExpired: selectedExpiry ? isExpiryExpired(selectedExpiry) : false,
+      isEod: chainIsEod,
+      freshness: freshness.freshness,
+    };
+
     return NextResponse.json({
       success: true,
       source,
       lastUpdate: dataTimestamp.toISOString(),
       freshness,
+      // The assumptions behind every Greek in this payload (the risk-free
+      // rate is configurable — the reader must see WHICH rate was used).
+      assumptions: getGreeksAssumptions(),
       provenance: {
         source,
         retrievedAt: dataTimestamp.toISOString(),
@@ -877,7 +1105,26 @@ export async function GET(request: NextRequest) {
         ageSeconds: Math.round(freshness.ageMs / 1000),
         status: optionChainStrikes.length > 0 ? 'AVAILABLE' : 'PARTIAL',
       },
-      data: { ...chainData, data: optionChainStrikes, strikes: optionChainStrikes, optionChainStrikes, expiries, dataSource: source, candles: candles5m },
+      chain: chainStamp,
+      data: {
+        ...chainData,
+        // The HONEST chain: a field the exchange did not send stays null.
+        data: chainStrikes,
+        strikes: chainStrikes,
+        // The legacy numeric shape (0 for a missing field) — kept for the
+        // consumers that need numbers; the payload above never fakes a 0.
+        optionChainStrikes,
+        expiries,
+        dataSource: source,
+        candles: candles5m,
+        // The contract + as-of stamps, also inside `data` for consumers that
+        // only read the data block.
+        expiry: selectedExpiry || null,
+        expiryIso: toIsoDate(selectedExpiry) || null,
+        selectedExpiry: selectedExpiry || '',
+        asOf: chainStamp.asOf,
+        isEod: chainIsEod,
+      },
       canonical,
       analysis,
     });

@@ -12,7 +12,7 @@
 import { db } from "@/lib/db";
 import { getNSEHistoricalData } from "@/lib/nse-api";
 import { initSession } from "@/lib/icici-breeze/auth";
-import { getLotSize } from "@/lib/symbol-config";
+import { getLotSizeStrict } from "@/lib/symbol-config";
 import {
   verifyTradeAgainstCandles,
   HistoricalCandle,
@@ -42,7 +42,10 @@ export interface AuditTrade {
   pnl: number;
   tpHitLevel: string | null;
   exitReason: string | null;
-  lotSize: number;
+  /** The REAL contract lot — null when it is not known (never a guess). */
+  lotSize: number | null;
+  /** false → `lotSize` is null and no ₹ P&L could be computed. */
+  lotSizeKnown: boolean;
   direction: "long" | "short";
   audit_log: string[];
   pnl_verified: "✅" | "⚠️" | "—";
@@ -157,8 +160,10 @@ function computePnl(
   direction: "long" | "short",
   entry: number,
   exit: number,
-  lot: number
-): number {
+  lot: number | null
+): number | null {
+  // No lot size → no ₹ P&L can be computed (never a guessed one).
+  if (lot === null || !(lot > 0)) return null;
   const perLot = direction === "long" ? exit - entry : entry - exit;
   return Math.round(perLot * lot * 100) / 100;
 }
@@ -182,11 +187,13 @@ function auditTrade(
   const tp3 = Number(row.target3) || 0;
   const dbStatus = String(row.status || "OPEN");
   const storedPnl = row.pnl != null ? Number(row.pnl) : 0;
-  const lot =
-    Number(row.positionSize) ||
-    Number(row.lotSize) ||
-    getLotSize(symbol) ||
-    65;
+  // The lot size, in order of truth:
+  //   1. the lot the trade was actually booked with (positionSize/lotSize)
+  //   2. the REAL contract lot from the NSE F&O lot table
+  //   3. UNKNOWN (null) — a ₹ P&L cannot be computed, and it is NEVER a
+  //      guessed 65 (NIFTY's lot would overstate a stock's P&L 4-11×).
+  const recordedLot = Number(row.positionSize) || Number(row.lotSize) || 0;
+  const lot: number | null = recordedLot > 0 ? recordedLot : getLotSizeStrict(symbol);
 
   const statusKey = dbStatus.toUpperCase();
   const isTp = statusKey === "TP_HIT";
@@ -201,7 +208,7 @@ function auditTrade(
 
   const log: string[] = [];
   log.push(
-    `ENTRY: ${symbol} ${type} @ ${strike} | Premium: ${entry} | Lot: ${lot}`
+    `ENTRY: ${symbol} ${type} @ ${strike} | Premium: ${entry} | Lot: ${lot ?? "UNKNOWN"}`
   );
   if (tp1 > 0) {
     log.push(
@@ -215,31 +222,39 @@ function auditTrade(
   let pnlVerified: AuditTrade["pnl_verified"] = "—";
   if ((isTp || isSl) && exit != null) {
     const expected = computePnl(direction, entry, exit, lot);
-    const diff = Math.abs(expected - storedPnl);
-    if (diff <= 1) {
+    if (expected === null) {
+      // The contract lot is unknown → the ₹ P&L cannot be verified. Say so
+      // instead of checking it against a guessed lot size.
       log.push(
-        `  ✅ P&L VERIFIED: stored=${storedPnl} == calc(${direction} ${exit}-${entry})*${lot}=${expected}`
+        `  ⚠️ P&L NOT VERIFIABLE: the contract lot size for ${symbol} is unknown (no ₹ amount can be computed)`
       );
-      pnlVerified = "✅";
     } else {
-      log.push(
-        `  ⚠️ P&L MISMATCH: stored=${storedPnl}, calculated=${expected} (diff=${diff})`
-      );
-      pnlVerified = "⚠️";
-    }
+      const diff = Math.abs(expected - storedPnl);
+      if (diff <= 1) {
+        log.push(
+          `  ✅ P&L VERIFIED: stored=${storedPnl} == calc(${direction} ${exit}-${entry})*${lot}=${expected}`
+        );
+        pnlVerified = "✅";
+      } else {
+        log.push(
+          `  ⚠️ P&L MISMATCH: stored=${storedPnl}, calculated=${expected} (diff=${diff})`
+        );
+        pnlVerified = "⚠️";
+      }
 
-    // Status vs P&L sign consistency
-    const profitable = expected > 0;
-    if (isTp && !profitable) {
-      log.push(
-        `  ⚠️ STATUS MISMATCH: TP status but calculated P&L is negative (${expected})`
-      );
-      pnlVerified = "⚠️";
-    } else if (isSl && profitable) {
-      log.push(
-        `  ⚠️ STATUS MISMATCH: SL status but calculated P&L is positive (${expected})`
-      );
-      pnlVerified = "⚠️";
+      // Status vs P&L sign consistency
+      const profitable = expected > 0;
+      if (isTp && !profitable) {
+        log.push(
+          `  ⚠️ STATUS MISMATCH: TP status but calculated P&L is negative (${expected})`
+        );
+        pnlVerified = "⚠️";
+      } else if (isSl && profitable) {
+        log.push(
+          `  ⚠️ STATUS MISMATCH: SL status but calculated P&L is positive (${expected})`
+        );
+        pnlVerified = "⚠️";
+      }
     }
   } else if (isOpen) {
     log.push(`  STATUS: Active (no exit yet) — P&L not finalized`);
@@ -345,6 +360,7 @@ function auditTrade(
     tpHitLevel: effLevel,
     exitReason: row.exitReason || null,
     lotSize: lot,
+    lotSizeKnown: lot !== null,
     direction,
     audit_log: log,
     pnl_verified: pnlVerified,
@@ -511,13 +527,19 @@ export async function runTradeAudit(opts: {
       entryTime: row.entryTime ? new Date(row.entryTime) : new Date(),
       exitTime: row.exitTime ? new Date(row.exitTime) : undefined,
       positionSize: row.positionSize,
-      lotSize: Number(row.positionSize) || getLotSize(sym) || 65,
+      // The REAL lot (or UNKNOWN) — never a guessed 65. The verifier needs a
+      // number, so an unknown lot is passed as ONE unit (per-unit figures)
+      // and every ₹ comparison below is SKIPPED for that trade.
+      lotSize: (Number(row.positionSize) || getLotSizeStrict(sym)) ?? 1,
       direction,
     }, candles);
 
     // Build the audit log
     const log: string[] = [];
-    log.push(`ENTRY: ${sym} ${row.type} @ ${row.strike} | Premium: ${row.entryPrice} | Lot: ${verification.lotSize}`);
+    const auditLot = Number(row.positionSize) || getLotSizeStrict(sym) || null;
+    log.push(
+      `ENTRY: ${sym} ${row.type} @ ${row.strike} | Premium: ${row.entryPrice} | Lot: ${auditLot ?? "UNKNOWN (per-unit figures only)"}`
+    );
     if (row.target1 > 0) {
       log.push(`  PLAN: TP1 ${row.target1} | TP2 ${row.target2 || "N/A"} | TP3 ${row.target3 || "N/A"} | SL ${row.stopLoss}`);
     } else {
@@ -531,7 +553,11 @@ export async function runTradeAudit(opts: {
     const isOpen = row.status === "OPEN";
     const exit = row.exitPrice != null ? Number(row.exitPrice) : null;
     
-    if ((isTp || isSl) && exit != null) {
+    if ((isTp || isSl) && exit != null && auditLot === null) {
+      // The contract lot is unknown → the stored ₹ P&L cannot be checked
+      // against a per-unit figure. Say so instead of reporting a mismatch.
+      log.push(`  ⚠️ P&L NOT COMPARABLE: the contract lot size for ${sym} is unknown (per-unit figures only)`);
+    } else if ((isTp || isSl) && exit != null) {
       const expected = verification.computedPnl;
       const diff = Math.abs(expected - (row.pnl != null ? Number(row.pnl) : 0));
       if (diff <= 1) {
@@ -608,7 +634,8 @@ export async function runTradeAudit(opts: {
       pnl: row.pnl != null ? Number(row.pnl) : 0,
       tpHitLevel: effLevel,
       exitReason: row.exitReason || null,
-      lotSize: verification.lotSize,
+      lotSize: auditLot,
+      lotSizeKnown: auditLot !== null,
       direction: verification.direction,
       audit_log: log,
       pnl_verified: pnlVerified,

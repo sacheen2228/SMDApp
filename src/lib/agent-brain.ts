@@ -120,7 +120,7 @@ export function buildSystemPrompt(ctx: {
 ${scanner.candidates.slice(0, 5).map((p: any, i: number) => `${i + 1}. ${p.symbol} Score:${p.totalScore} ${p.direction}`).join("\n")}` : "";
 
   const extraCtx = ctx.extraContext ? `
-## PRE-FETCHED MARKET CONTEXT (free NSE/BSE/Yahoo)
+## PRE-FETCHED MARKET CONTEXT (free NSE/BSE)
 ${ctx.extraContext}` : "";
   const dashCtx = ctx.dashboardContext ? `
 ## DASHBOARD SNAPSHOT
@@ -927,11 +927,11 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "diagnose_data_source",
-      description: "Diagnose which data sources are alive/dead. Checks Breeze, NSE, Yahoo, Motilal, MCX APIs. Returns status, response times, error rates. Use when data is missing or stale.",
+      description: "Diagnose which data sources are alive/dead. Checks Breeze, NSE, BSE, Motilal, MCX APIs. Returns status, response times, error rates. Use when data is missing or stale.",
       parameters: {
         type: "object",
         properties: {
-          source: { type: "string", description: "Specific source to test: breeze, nse, yahoo, motilal, mcx, or 'all'" },
+          source: { type: "string", description: "Specific source to test: breeze, nse, bse, motilal, mcx, or 'all'" },
         },
         required: [],
       },
@@ -1397,7 +1397,7 @@ Price: ${g.price} | ${g.change >= 0 ? "+" : ""}${g.change} (${g.changePct >= 0 ?
 Previous Close: ${g.previousClose}
 Gap: ${g.gap >= 0 ? "+" : ""}${g.gap}
 Signal: ${g.gap > 50 ? "🟢 GAP UP — Bullish open expected" : g.gap < -50 ? "🔴 GAP DOWN — Bearish open expected" : "🟡 FLAT OPEN — No significant gap"}
-Source: ${g.source}${g.source === "estimated" ? " (⚠️ Yahoo blocked, using spot as estimate)" : ""}
+Source: ${g.source}${g.source === "estimated" ? " (⚠️ pre-open estimate — the SGX feed was unavailable)" : ""}
 Time: ${g.timestamp || "N/A"}`;
       } catch { return "Error fetching Gift Nifty data"; }
     }
@@ -1853,8 +1853,8 @@ ${changes.join("\n")}`;
       if (src === "all" || src === "breeze") {
         tests.push({ name: "ICICI Breeze Option Chain", url: `${BASE}/api/option-chain?symbol=NIFTY`, timeout: 10000 });
       }
-      if (src === "all" || src === "yahoo") {
-        tests.push({ name: "Yahoo Finance (NIFTY spot)", url: "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSI?range=1d&interval=1d", timeout: 8000 });
+      if (src === "all" || src === "bse") {
+        tests.push({ name: "BSE Option Chain (SENSEX)", url: `${BASE}/api/option-chain?symbol=SENSEX`, timeout: 10000 });
       }
       if (src === "all" || src === "motilal") {
         tests.push({ name: "Motilal Oswal API", url: `${BASE}/api/mcx`, timeout: 10000 });

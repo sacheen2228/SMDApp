@@ -177,7 +177,11 @@ async function fetchUpcomingEvents(): Promise<Map<string, CorporateEvent[]>> {
   return map;
 }
 
-// ─── Yahoo Finance data fetcher ───────────────────────────────────
+// ─── Exchange data fetcher (NSE daily history) ─────────────────────────
+// Yahoo is banned (SOP §1). The scan now reads the exchange's own daily
+// history through `getDailyBars()` (cached 15 min), so the candles behind
+// every EMA / RSI / ADX / RVOL figure are the exchange's, and the card can
+// name the source and the age of the newest bar.
 interface StockData {
   symbol: string;
   name: string;
@@ -195,49 +199,38 @@ async function fetchStockData(): Promise<StockData[]> {
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
 
   const result: StockData[] = [];
-  const CONCURRENCY = 12;
-  const DEADLINE = Date.now() + 45_000;
+  const CONCURRENCY = 20;
+  const DEADLINE = Date.now() + 40_000;
 
-  const fetchOne = async (stock: { symbol: string; name: string; sector: string }) => {
-    const yahooSym = `${stock.symbol}.NS`;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1y&interval=1d`;
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-      if (!res.ok) return;
-      const data = await res.json();
-      const chart = data?.chart?.result?.[0];
-      if (!chart) return;
-      const ts: number[] = chart.timestamp || [];
-      const q = chart.indicators?.quote?.[0];
-      if (!q?.close || ts.length < 30) return;
-
-      const daily: Candle[] = [];
-      for (let i = 0; i < ts.length; i++) {
-        const close = q.close[i];
-        if (close == null) continue;
-        daily.push({
-          time: ts[i],
-          open: q.open?.[i] ?? close,
-          high: q.high?.[i] ?? close,
-          low: q.low?.[i] ?? close,
-          close,
-          volume: q.volume?.[i] || 0,
-        });
-      }
-      if (daily.length < 30) return;
-      result.push({ symbol: stock.symbol, name: stock.name, sector: stock.sector, daily, weekly: aggregateWeekly(daily) });
-    } catch {
-      // skip unavailable symbol rather than fabricate data
-    }
-  };
-
-  // Probe one stock first — bail fast if Yahoo is unreachable.
-  await fetchOne(UNIVERSE[0]);
-  if (result.length === 0) return [];
+  const { getDailyBars } = await import("@/lib/daily-bars");
 
   for (let i = 0; i < UNIVERSE.length && Date.now() < DEADLINE; i += CONCURRENCY) {
     const batch = UNIVERSE.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(fetchOne));
+    await Promise.all(
+      batch.map(async (stock) => {
+        try {
+          const bars = await getDailyBars(stock.symbol);
+          if (bars.length < 30) return; // skip unavailable symbol rather than fabricate data
+          const daily: Candle[] = bars.map((b) => ({
+            time: Math.floor(b.t / 1000),
+            open: b.o,
+            high: b.h,
+            low: b.l,
+            close: b.c,
+            volume: b.v || 0,
+          }));
+          result.push({
+            symbol: stock.symbol,
+            name: stock.name,
+            sector: stock.sector,
+            daily,
+            weekly: aggregateWeekly(daily),
+          });
+        } catch {
+          // skip unavailable symbol rather than fabricate data
+        }
+      }),
+    );
   }
 
   dataCache.set(cacheKey, { data: result, ts: Date.now() });
@@ -324,19 +317,19 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
   let vixLevel = "N/A";
   let niftyBreadth: string[] = [];
   try {
-    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?range=1y&interval=1d`, { signal: AbortSignal.timeout(6000) });
-    if (res.ok) {
-      const data = await res.json();
-      const chart = data?.chart?.result?.[0];
-      const closes: number[] = chart?.indicators?.quote?.[0]?.close || [];
-      if (closes.length >= 30) {
-        const last = closes[closes.length - 1];
-        const five = closes[closes.length - 6];
-        const ema20 = lastEMA(closes, 20);
-        const ema50 = lastEMA(closes, 50);
-        niftyWeekChg = five > 0 ? ((last - five) / five) * 100 : 0;
-        niftyTrend = last > ema20 && last > ema50 ? "UP" : last < ema20 && last < ema50 ? "DOWN" : "SIDEWAYS";
-      }
+    // NIFTY context from the exchange's own daily history. NSE publishes no
+    // index OHLC, so the NIFTYBEES ETF (same index, exchange-listed) is used
+    // as the proxy — real candles, and labelled as a proxy below.
+    const { getDailyBars } = await import("@/lib/daily-bars");
+    const bars = await getDailyBars("NIFTYBEES");
+    const closes = bars.map((b) => b.c);
+    if (closes.length >= 30) {
+      const last = closes[closes.length - 1];
+      const five = closes[closes.length - 6];
+      const ema20 = lastEMA(closes, 20);
+      const ema50 = lastEMA(closes, 50);
+      niftyWeekChg = five > 0 ? ((last - five) / five) * 100 : 0;
+      niftyTrend = last > ema20 && last > ema50 ? "UP" : last < ema20 && last < ema50 ? "DOWN" : "SIDEWAYS";
     }
   } catch {}
   try {
@@ -351,7 +344,7 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     return {
       timestamp,
       dataQuality: "PARTIAL",
-      marketContext: "No live quotes returned from Yahoo Finance.",
+      marketContext: "No daily history returned by the exchange (NSE).",
       niftyTrend,
       vixLevel,
       breadth: "N/A",
@@ -582,7 +575,7 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     marketContext,
     niftyTrend: trendLabel,
     vixLevel,
-    breadth: `${stockData.length}/${UNIVERSE.length} symbols returned live quotes`,
+    breadth: `${stockData.length}/${UNIVERSE.length} symbols returned exchange daily bars`,
     totalScanned,
     passedFilters: finalList.length,
     candidates: finalList,

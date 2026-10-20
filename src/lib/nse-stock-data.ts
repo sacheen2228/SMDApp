@@ -21,13 +21,21 @@ export interface NSEStockQuote {
   changePct: number;
   weeklyChangePct: number; // 5-day change %
   volume: number;
-  avgVolume: number; // 20-day average volume
+  avgVolume: number; // 20-day average volume (exchange-published where available)
   prevClose: number;
   dayHigh: number;
   dayLow: number;
   weekHigh52: number;
   weekLow52: number;
   sector: string;
+  /** Market capitalisation (₹ Cr) when the feed publishes it. */
+  marketCap?: number;
+  /**
+   * The provider's OWN publication timestamp (ISO). null when the feed
+   * carries none — an undated quote is undated and must never be presented
+   * as LIVE.
+   */
+  providerTimestamp?: string | null;
 }
 
 const SECTOR_MAP: Record<string, string> = {
@@ -67,7 +75,7 @@ const NAME_MAP: Record<string, string> = {
 };
 
 // Moneycontrol priceapi display IDs for NIFTY 50 stocks
-const MC_ID_MAP: Record<string, string> = {
+export const MC_ID_MAP: Record<string, string> = {
   RELIANCE: "RI", TCS: "TCS", HDFCBANK: "HDF01", INFY: "IT",
   ICICIBANK: "ICI02", HINDUNILVR: "HL", ITC: "ITC", SBIN: "SBI",
   BHARTIARTL: "BTV", KOTAKBANK: "KMF", LT: "LT",
@@ -145,6 +153,9 @@ async function fetchFromNSEIndexList(indexName = "NIFTY 50"): Promise<NSEStockQu
         weekHigh52: d.high52 || 0,
         weekLow52: d.low52 || 0,
         sector: SECTOR_MAP[d.symbol] || "Other",
+        // The NSE index-list rows carry no publication timestamp — an undated
+        // quote stays undated (the market clock supplies the trade date).
+        providerTimestamp: null,
       }));
   } catch {
     return [];
@@ -170,10 +181,35 @@ async function fetchFromMoneycontrol(mcId: string): Promise<NSEStockQuote | null
     symbol: sym, name: NAME_MAP[sym] || d.SC_FULLNM || sym,
     ltp, change: Math.round(change * 100) / 100, changePct: Math.round(changePct * 100) / 100,
     volume: parseInt(d.VOL) || 0, prevClose: Math.round(prevClose * 100) / 100,
+    // Filled in by the weekly-history sweep below (0 = "not published yet",
+    // never a fabricated "flat week").
+    weeklyChangePct: 0,
     dayHigh: parseFloat(d.HP) || ltp, dayLow: parseFloat(d.LP) || ltp,
     weekHigh52: parseFloat(d["52H"]) || 0, weekLow52: parseFloat(d["52L"]) || 0,
     sector: SECTOR_MAP[sym] || "Other",
+    // Real 20-session average volume (exchange published) — the honest
+    // relative-volume base. Zero means "not published", not "no volume".
+    avgVolume: parseInt(d.DVolAvg20) || 0,
+    // Real market capitalisation (₹ Cr).
+    marketCap: parseFloat(d.MKTCAP) || undefined,
+    // The provider's own "last updated" stamp (IST) — used for the age.
+    providerTimestamp: parseMoneycontrolStamp(d.lastupd),
   };
+}
+
+/** Moneycontrol publishes "2026-10-19 15:59:56" in IST → ISO. */
+function parseMoneycontrolStamp(raw: any): string | null {
+  if (!raw) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    // lastupd_epoch (seconds)
+    return new Date(raw * 1000).toISOString();
+  }
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0))
+    - 5.5 * 3600 * 1000;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 let cache: { data: NSEStockQuote[]; ts: number } | null = null;
@@ -183,13 +219,18 @@ const CACHE_TTL = 60_000;
 let stockProvenance: {
   source: "nse" | "moneycontrol" | "cache" | "none";
   retrievedAt: number;
+  /** OLDEST provider publication timestamp seen (ISO) — the honest data age. */
+  providerTimestamp: string | null;
   nseCount: number;
   mcCount: number;
   yahooCount: number;
-} = { source: "none", retrievedAt: 0, nseCount: 0, mcCount: 0, yahooCount: 0 };
+} = { source: "none", retrievedAt: 0, providerTimestamp: null, nseCount: 0, mcCount: 0, yahooCount: 0 };
 
 export function getStockQuoteProvenance() {
   const ageMs = stockProvenance.retrievedAt ? Date.now() - stockProvenance.retrievedAt : -1;
+  const providerAgeMs = stockProvenance.providerTimestamp
+    ? Math.max(0, Date.now() - Date.parse(stockProvenance.providerTimestamp))
+    : null;
   const freshness =
     ageMs < 0 ? "UNAVAILABLE"
     : ageMs < 60_000 ? "LIVE"
@@ -199,6 +240,10 @@ export function getStockQuoteProvenance() {
   return {
     source: stockProvenance.source,
     retrievedAt: new Date(stockProvenance.retrievedAt || Date.now()).toISOString(),
+    /** The provider's own publication timestamp (ISO) or null when undated. */
+    providerTimestamp: stockProvenance.providerTimestamp,
+    /** Age of the provider data (ms) or null when the feed is undated. */
+    providerAgeMs,
     ageMs,
     freshness,
     isLive: freshness === "LIVE",
@@ -249,19 +294,33 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
 
     const results = NIFTY50.map(s => resultMap.get(s)).filter(Boolean) as NSEStockQuote[];
     if (results.length > 0) {
-      // Fetch weekly data from Yahoo (slow — skip if NSE was primary source for speed)
-      const nseSourced = resultMap.has("RELIANCE") && resultMap.has("TCS") && resultMap.has("HDFCBANK");
-      if (!nseSourced) {
-        const weeklyData = await fetchWeeklyData(results.map(s => s.symbol));
-        for (const stock of results) {
-          stock.weeklyChangePct = weeklyData.get(stock.symbol) || 0;
-        }
+      // 5-day change from the exchange's own daily history (free NSE).
+      // The NSE rows publish `chClosingPrice` — reading `close` returned
+      // nothing, so every `weeklyChangePct` stayed 0 (a fake "flat week").
+      const weeklyData = await fetchWeeklyData(results.map((s) => s.symbol));
+      for (const stock of results) {
+        const weekly = weeklyData.get(stock.symbol);
+        stock.weeklyChangePct = weekly ?? 0;
       }
       const nseCount = nseStocks.length;
       const mcCount = results.filter(s => mcProvided.has(s.symbol)).length;
       const yahooCount = results.length - nseCount - mcCount;
       const source = nseCount >= results.length / 2 ? "nse" : "moneycontrol";
-      stockProvenance = { source, retrievedAt: Date.now(), nseCount, mcCount, yahooCount: 0 };
+      // The OLDEST provider timestamp across the rows — that is the age the
+      // card must report (a feed can mix a fresh row with an old one).
+      const stamps = results
+        .map((s) => s.providerTimestamp)
+        .filter((t): t is string => !!t)
+        .map((t) => Date.parse(t))
+        .filter((t) => Number.isFinite(t));
+      stockProvenance = {
+        source,
+        retrievedAt: Date.now(),
+        providerTimestamp: stamps.length ? new Date(Math.min(...stamps)).toISOString() : null,
+        nseCount,
+        mcCount,
+        yahooCount: 0,
+      };
       cache = { data: results, ts: Date.now() };
     }
     return results;
@@ -271,6 +330,8 @@ export async function fetchNIFTY50Stocks(): Promise<NSEStockQuote[]> {
     return [];
   }
 }
+
+/** Rows that came from the NSE index-list tier (not Moneycontrol). */
 
 // Fetch 5-day change % from the exchange's own daily history (free NSE).
 async function fetchWeeklyData(symbols: string[]): Promise<Map<string, number>> {
@@ -284,10 +345,18 @@ async function fetchWeeklyData(symbols: string[]): Promise<Map<string, number>> 
       symbols.map(async (sym) => {
         try {
           const bars = (await getNSEHistoricalData(sym, from, to)) || [];
-          const closes = bars.map((b: any) => Number(b.close)).filter((c: number) => Number.isFinite(c) && c > 0);
+          // NSE publishes `chClosingPrice` (there is no `close` field) — the
+          // old mapping read `b.close`, got NaN and returned nothing, so
+          // every weeklyChangePct stayed 0.
+          const closes = bars
+            .map((b: any) => Number(b?.chClosingPrice ?? b?.close))
+            .filter((c: number) => Number.isFinite(c) && c > 0);
           if (closes.length < 2) return null;
-          const first = closes[0];
-          const last = closes[closes.length - 1];
+          // 5 sessions back (not "12 calendar days ago" — that could be 7
+          // sessions and understates the week).
+          const window = closes.slice(-6);
+          const first = window[0];
+          const last = window[window.length - 1];
           if (first > 0) return { symbol: sym, change: parseFloat(((last - first) / first * 100).toFixed(2)) };
         } catch { /* no free history for this symbol */ }
         return null;

@@ -106,6 +106,7 @@ export function BTSTDashboard() {
   const [data, setData] = useState<BTSTScan | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [meta, setMeta] = useState<any>(null);
   const [scanning, setScanning] = useState(false);
   const [selected, setSelected] = useState<BTSTCandidate | null>(null);
   const [view, setView] = useState<"scanner" | "performance">("scanner");
@@ -117,6 +118,7 @@ export function BTSTDashboard() {
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "No data");
       setData(json.data);
+      setMeta(json.meta || null);
       setError(false);
       if (json.data.candidates.length > 0) setSelected(json.data.candidates[0]);
     } catch {
@@ -157,6 +159,15 @@ export function BTSTDashboard() {
           <Badge variant="outline" className="text-[9px] text-cyan-400 border-cyan-500/30">
             Buy Today Sell Tomorrow
           </Badge>
+          {meta ? (
+            <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+              meta.status === "AVAILABLE"
+                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+            }`} title={meta.reason || ""}>
+              {meta.status} · {meta.sourceLabel || meta.source} · {meta.ageLabel}
+            </span>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center bg-muted/50 rounded-lg p-0.5">

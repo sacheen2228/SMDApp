@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { calculateGreeks } from "./greeks";
-import { getSymbolConfig, type SymbolConfig } from "./symbol-config";
+import { getLotSizeStrict } from "./symbol-config";
 import type { SDMOptionStrike } from "@/types/sdm";
 import {
   getBacktestDataProvider,
@@ -125,6 +125,8 @@ export interface SdmBacktestPerformance {
   buyPutSignals: number;
   waitSignals: number;
   totalTrades: number;
+  /** Trades with NO ₹ P&L (the contract lot size was unknown). */
+  pnlUnknownTrades: number;
   wins: number;
   losses: number;
   expired: number;
@@ -154,7 +156,12 @@ export interface SdmBacktestResult {
   symbol: string;
   startDate: string;
   endDate: string;
-  lotSize: number;
+  /** The REAL contract lot — null when it is not known (never a guess). */
+  lotSize: number | null;
+  /** false → no ₹ P&L can be computed for this symbol. */
+  lotSizeKnown: boolean;
+  /** "LOT_SIZE_UNKNOWN" → the run has no ₹ P&L (the lot size is unknown). */
+  dataStatus: "OK" | "LOT_SIZE_UNKNOWN" | "NO_DATA";
   capital: number;
   riskPerTrade: number;
   performance: SdmBacktestPerformance;
@@ -164,12 +171,30 @@ export interface SdmBacktestResult {
   timestamp: string;
 }
 
+// ─── The ₹ P&L ──────────────────────────────────────────────────────
+/**
+ * The trade P&L in ₹.
+ *
+ * `lot` is the REAL contract lot. It is null when the lot size is NOT known
+ * (the symbol is not in the NSE F&O lot table) — and then there is NO ₹
+ * amount at all: a per-unit or NIFTY-sized P&L would be a fiction. The
+ * caller reports the trade as P&L-unknown instead.
+ */
+export function computeTradePnl(
+  exitPrice: number,
+  entry: number,
+  lot: number | null
+): number | null {
+  if (lot === null || !(lot > 0)) return null;
+  return (exitPrice - entry) * lot;
+}
+
 // ─── Determine Trade Outcome ────────────────────────────────────
 function determineOutcome(
   trade: SdmBacktestTrade,
   nextDayCandles: HistoricalCandle[],
-  config: SymbolConfig
-): { exitPrice: number; exitDate: string; status: "WIN" | "LOSS" | "EXPIRED"; pnl: number; pnlPct: number; maxFavorable: number; maxAdverse: number } {
+  lot: number | null
+): { exitPrice: number; exitDate: string; status: "WIN" | "LOSS" | "EXPIRED"; pnl: number | null; pnlPct: number; maxFavorable: number; maxAdverse: number } {
   if (!nextDayCandles || nextDayCandles.length === 0) {
     return {
       exitPrice: trade.entry,
@@ -253,7 +278,7 @@ function determineOutcome(
     status = exitPrice > trade.entry ? "WIN" : "LOSS";
   }
 
-  const pnl = (exitPrice - trade.entry) * config.lotSize;
+  const pnl = computeTradePnl(exitPrice, trade.entry, lot);
   const pnlPct = ((exitPrice - trade.entry) / trade.entry) * 100;
 
   return { exitPrice, exitDate, status, pnl, pnlPct, maxFavorable, maxAdverse };
@@ -272,16 +297,20 @@ function calculatePerformance(
   const waitSignals = dailyResults.filter(d => d.signal === "WAIT" || d.signal === "NO_TRADE").length;
 
   const completedTrades = trades.filter(t => t.status !== "OPEN");
+  // A trade with an unknown lot size has NO ₹ P&L — it must not be counted
+  // as a flat (₹0) trade in the money metrics.
+  const pnlTrades = completedTrades.filter(t => t.pnl !== null);
+  const pnlUnknownTrades = completedTrades.length - pnlTrades.length;
   const wins = completedTrades.filter(t => t.status === "WIN").length;
   const losses = completedTrades.filter(t => t.status === "LOSS").length;
   const expired = completedTrades.filter(t => t.status === "EXPIRED").length;
-  const winRate = completedTrades.length > 0 ? (wins / completedTrades.length) * 100 : 0;
+  const winRate = pnlTrades.length > 0 ? (wins / pnlTrades.length) * 100 : 0;
 
-  const totalPnL = completedTrades.reduce((s, t) => s + (t.pnl || 0), 0);
-  const avgPnLPerTrade = completedTrades.length > 0 ? totalPnL / completedTrades.length : 0;
+  const totalPnL = pnlTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const avgPnLPerTrade = pnlTrades.length > 0 ? totalPnL / pnlTrades.length : 0;
   const avgPnLPerDay = tradingDays > 0 ? totalPnL / tradingDays : 0;
 
-  const pnls = completedTrades.map(t => t.pnl || 0);
+  const pnls = pnlTrades.map(t => t.pnl || 0);
   const maxWin = pnls.length > 0 ? Math.max(...pnls) : 0;
   const maxLoss = pnls.length > 0 ? Math.min(...pnls) : 0;
 
@@ -301,8 +330,8 @@ function calculatePerformance(
   }
 
   // Profit factor
-  const grossProfit = completedTrades.filter(t => (t.pnl || 0) > 0).reduce((s, t) => s + (t.pnl || 0), 0);
-  const grossLoss = Math.abs(completedTrades.filter(t => (t.pnl || 0) < 0).reduce((s, t) => s + (t.pnl || 0), 0));
+  const grossProfit = pnlTrades.filter(t => (t.pnl || 0) > 0).reduce((s, t) => s + (t.pnl || 0), 0);
+  const grossLoss = Math.abs(pnlTrades.filter(t => (t.pnl || 0) < 0).reduce((s, t) => s + (t.pnl || 0), 0));
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
 
   // Sharpe ratio (simplified)
@@ -394,6 +423,7 @@ function calculatePerformance(
     buyPutSignals,
     waitSignals,
     totalTrades: completedTrades.length,
+    pnlUnknownTrades,
     wins,
     losses,
     expired,
@@ -431,7 +461,9 @@ export async function runSdmBacktest(input: {
   confidenceThreshold?: number;
 }): Promise<SdmBacktestResult> {
   const { symbol, days, capital = 1000000, riskPerTrade = 1, confidenceThreshold = 70 } = input;
-  const config = getSymbolConfig(symbol);
+  // The REAL contract lot — null when the symbol is not in the NSE F&O lot
+  // table. A ₹ P&L cannot be computed without it (and never with a guess).
+  const lot = getLotSizeStrict(symbol);
 
   const requested = (process.env.BACKTEST_DATA_SOURCE as BacktestDataSource) || "auto";
   const providerMeta = createBacktestRunMeta(requested);
@@ -573,7 +605,7 @@ export async function runSdmBacktest(input: {
           holdingDays: 1,
         },
         nextDayCandles,
-        config
+        lot
       );
 
       trade = {
@@ -603,7 +635,9 @@ export async function runSdmBacktest(input: {
       };
 
       trades.push(trade);
-      cumulativePnL += outcome.pnl;
+      // A trade with an unknown lot size has NO ₹ P&L — it does not move the
+      // equity curve (the performance report counts it separately).
+      cumulativePnL += outcome.pnl ?? 0;
     }
 
     // Equity curve
@@ -639,7 +673,9 @@ export async function runSdmBacktest(input: {
     symbol,
     startDate: dates[0] || "",
     endDate: dates[dates.length - 1] || "",
-    lotSize: config.lotSize,
+    lotSize: lot,
+    lotSizeKnown: lot !== null,
+    dataStatus: lot === null ? "LOT_SIZE_UNKNOWN" : trades.length > 0 ? "OK" : "NO_DATA",
     capital,
     riskPerTrade,
     performance,

@@ -4,7 +4,7 @@
 
 import type { SDMOptionStrike } from "@/types/sdm";
 import { buildOptionPlan } from "./option-plan";
-import { getLotSize } from "./symbol-config";
+import { getLotSizeStrict } from "./symbol-config";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import { recordScannerResult, type ScannerResultInput } from "./market/record-scanner";
@@ -236,8 +236,11 @@ function generateMonthlyOptionTrade(
     // Plan: rupee risk (a % of the amount deployed) with an R:R 1:2 / 1:3 / 1:4 ladder.
     // The old hardcoded ±15% of premium produced a 1:1 plan — below break-even after
     // costs — and the ledger shows those engines running at 21-24% win-rate.
+    // The REAL contract lot — 1 (per unit) when it is NOT known (never a
+    // guessed NIFTY-sized lot). The summary says so.
+    const knownLot = getLotSizeStrict(symbol);
     const plan = buildOptionPlan({
-      symbol, optionType, entryPremium: premium, lotSize: getLotSize(symbol) || 1,
+      symbol, optionType, entryPremium: premium, lotSize: knownLot ?? 1,
     });
     if (!plan) return undefined;
     const sl = plan.stopLoss;
@@ -246,7 +249,7 @@ function generateMonthlyOptionTrade(
     const target3 = plan.targets[2] ?? target2;
 
     const label = chain.expiry || monthly.label || monthly.date;
-    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹{target3}+`;
+    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹{target3}+${knownLot === null ? " | LOT SIZE UNKNOWN — per-unit plan" : ""}`;
 
     return {
       strike: chain.atmStrike,

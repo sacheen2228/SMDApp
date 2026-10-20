@@ -13,7 +13,7 @@ for module ownership, data flow, and services. It supersedes any earlier ad-hoc 
    | Database | Responsibility | Access layer | Owner |
    |---|---|---|---|
    | `db/custom.db` | Application data (User, Post, Trade, DomAnalysis) | Prisma | Next.js app |
-   | `db/trade_audit.db` | Trade audit ledger (MFE/MAE, outcomes) | better-sqlite3 (Node sidecar `:4001`) | Trade Audit engine |
+   | `trade-audit/data/trade_audit.db` | Trade audit ledger (MFE/MAE, outcomes) | better-sqlite3 (Node sidecar `:4001`) | Trade Audit engine |
    | `db/market_history.db` | Historical market data (snapshots, chain, candles, SMC, scanner results, replay, eval) | better-sqlite3 | Next.js app (Market Recorder) |
    Historical option-chain + scanner data is high-volume and therefore isolated from the
    application database on purpose.
@@ -32,10 +32,9 @@ for module ownership, data flow, and services. It supersedes any earlier ad-hoc 
 
 | Module | Path | Responsibility | Depends on |
 |---|---|---|---|
-| Canonical contract + builder | `src/lib/market/canonical.ts` | Build `CanonicalMarketSnapshot` from raw data using existing libs | sdm-oianalysis, greeks, market-structure, signal-engine, volume-analysis, yahoo-finance-api, nse-api, icici-breeze |
+| Canonical contract + builder | `src/lib/market/canonical.ts` | Build `CanonicalMarketSnapshot` from raw data using existing libs | sdm-oianalysis, greeks, market-structure, signal-engine, volume-analysis, nse-api, icici-breeze |
 | Market History store | `src/lib/market-history/db.ts` | Open `market_history.db`, schema, insert/read helpers | better-sqlite3 |
 | Recorder route | `src/app/api/market-recorder/record/route.ts` | Capture cycle for all symbols, persist canonical snapshot | canonical, market-history/db, Breeze/NSE fetchers |
-| Recorder client | `src/lib/market-recorder-client.ts` | Frontend/Next access to stored history | market-history/db |
 | Scanner-cycle recorder | `src/lib/market/record-scanner.ts` | Build/persist `ScannerResult` (ML training row) each scanner run | canonical, market-history/db |
 | Scanner recording API | `src/app/api/market-recorder/scanner/route.ts` | POST cycle rows (resolves `snapshotId`); GET ML dataset | record-scanner, market-history/db |
 | Replay Engine | `src/lib/market/replay-engine.ts` | Reconstruct exact session/snapshot from `market_history.db`; recorder integrity validation | canonical, market-history/db, recorder-config |
@@ -45,10 +44,23 @@ for module ownership, data flow, and services. It supersedes any earlier ad-hoc 
 | Evaluation Framework (M7) | `src/lib/market/evaluation-framework.ts`, `src/app/api/evaluate/route.ts` | Single `evaluate()` over reused data: trade metrics from **Trade Audit** (`trade-audit-client` → :4001), classification from **Scanner Results** (`scanner_results` in `market_history.db`, engine/feature version natively stored). No trading logic changed. | trade-audit-client, market-history/db, canonical |
 | Trade feature snapshot | `src/app/api/trade/register/route.ts` | Attach canonical features to `market_context_json` | canonical, market-history/db |
 
+## Data-source tree (canonical — full detail in [SOP.md](./SOP.md))
+
+```
+Option chain / live quotes
+  NIFTY · BANKNIFTY · FINNIFTY · MIDCPNIFTY + NSE equities ─▶ NSE (primary)
+  SENSEX · BANKEX                                        ─▶ BSE (primary)
+  fallback ─▶ MOAPI ─▶ ICICI Breeze (opt-in, last resort) ─▶ NO_DATA (503)
+Candles       ─▶ Breeze ─▶ MO API ─▶ NO_DATA
+India VIX     ─▶ NSE indiaVIX ─▶ NO_DATA
+```
+**Yahoo is not a data source anywhere** — unavailable data means `NO_DATA`/503, never a fabricated
+or Yahoo quote.
+
 ## Data Flow
 
 ```
-Breeze / NSE / Yahoo(VIX)
+NSE / BSE / MOAPI / Breeze
         │  (raw quotes, option chain, candles, breadth)
         ▼
 /api/market-recorder/record   ◄──── systemd timer (every market minute)

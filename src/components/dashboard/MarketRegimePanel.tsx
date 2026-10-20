@@ -3,7 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TrendingUp, TrendingDown, Minus, Activity, BarChart3 } from "lucide-react";
+import { Activity } from "lucide-react";
+import { DataFreshnessBadge, UnavailableCard } from "./DataFreshnessBadge";
 
 function RegimeBadge({ regime }: { regime: string }) {
   const colors: Record<string, string> = {
@@ -42,12 +43,35 @@ export function MarketRegimePanel() {
     );
   }
 
+  // No regime at all (the feed failed) → an explicit unavailable card, not
+  // a "NEUTRAL" badge that looks like a real reading.
+  if (!data.regime || data.regime === "UNKNOWN") {
+    return (
+      <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
+            <Activity className="h-3 w-3" />
+            MARKET REGIME
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          <UnavailableCard
+            title="Market regime"
+            reason={data.tradeEnv || data.error}
+            meta={data.data}
+          />
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <Activity className="h-3 w-3" />
           MARKET REGIME
+          <DataFreshnessBadge meta={data.data} className="ml-1" showReason />
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
@@ -69,18 +93,28 @@ export function MarketRegimePanel() {
             <div key={idx.key} className="text-center">
               <div className="text-[10px] text-zinc-500">{idx.name}</div>
               <div className={`text-sm font-bold ${idx.changePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                {idx.changePct >= 0 ? "+" : ""}{idx.changePct}%
+                {idx.changePct == null ? "—" : `${idx.changePct >= 0 ? "+" : ""}${idx.changePct}%`}
               </div>
             </div>
           ))}
+          {data.coverage && data.coverage.indices < data.coverage.indicesExpected ? (
+            <div className="col-span-3 text-[9px] text-amber-400/80">
+              {data.coverage.indices}/{data.coverage.indicesExpected} indices published by the exchange — the rest are unavailable (not estimated).
+            </div>
+          ) : null}
         </div>
 
-        {data.vix && (
+        {data.vix ? (
           <div className="mt-3 flex items-center justify-between text-xs">
             <span className="text-zinc-500">VIX</span>
             <span className={`font-bold ${data.vix.value > 20 ? "text-red-400" : data.vix.value > 15 ? "text-yellow-400" : "text-emerald-400"}`}>
-              {data.vix.value} ({data.vix.change >= 0 ? "+" : ""}{data.vix.change}%)
+              {data.vix.value} ({data.vix.change == null ? "" : `${data.vix.change >= 0 ? "+" : ""}${data.vix.change}%`})
             </span>
+          </div>
+        ) : (
+          <div className="mt-3 flex items-center justify-between text-xs">
+            <span className="text-zinc-500">VIX</span>
+            <span className="font-bold text-zinc-500">unavailable</span>
           </div>
         )}
       </CardContent>

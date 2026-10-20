@@ -1,142 +1,105 @@
 // Market Regime API — Multi-factor regime detection
-// Factors: Index trend, Breadth, Sector breadth, Volume, VWAP, EMA structure, Momentum, Volatility, F&O
+// Factors: Index trend, Breadth, Sector breadth, Volume, VWAP, EMA structure, Momentum, Volatility
+//
+// Provenance rules (2026-10-20 audit):
+//   • Index levels come from the EXCHANGE (NSE allIndices; BSE for SENSEX).
+//     Yahoo is banned (SOP §1) and Moneycontrol's index feed answers
+//     "invalid combination" — both fallbacks are gone. An index that the
+//     exchange does not publish is reported as UNAVAILABLE, never estimated
+//     from an average of its constituents (an average of share prices is not
+//     an index level).
+//   • VIX comes from NSE. When NSE does not publish it, `vix` is null and the
+//     volatility factor is DROPPED from the composite — it used to default to
+//     15, which is a real number that changes the regime verdict.
+//   • EMA structure and VWAP participation come from the exchange's own daily
+//     history. They used to be fakes: ema20 = prevClose + change*0.3,
+//     ema50 = ema200 = prevClose, vwap = (high+low+ltp)/3.
 
 import { NextResponse } from "next/server";
-import { fetchWithFallback, FallbackSource } from "@/lib/fetch-with-fallback";
-import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
+import { fetchNIFTY50Stocks, getStockQuoteProvenance } from "@/lib/nse-stock-data";
+import { sweepDailyTechnicals } from "@/lib/daily-bars";
 import { buildFreshnessMeta, withSessionAwareFreshness } from "@/lib/api-freshness";
 import { getNSEIndiaVIX, getNSEIndices } from "@/lib/nse-api";
 import { getTradingSession } from "@/lib/expiry-liquidity/market-session-config";
+import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
 
 const INDICES = [
-  { key: "NIFTY", yahoo: "^NSEI", mcId: "NIFTY 50", name: "NIFTY 50" },
-  { key: "BANKNIFTY", yahoo: "^NSEBANK", mcId: "NIFTY Bank", name: "BANK NIFTY" },
-  { key: "SENSEX", yahoo: "^BSESN", mcId: "SENSEX", name: "SENSEX" },
-  { key: "FINNIFTY", yahoo: "^NSEMIDCAP", mcId: "", name: "FIN NIFTY" },
+  { key: "NIFTY", name: "NIFTY 50" },
+  { key: "BANKNIFTY", name: "BANK NIFTY" },
+  { key: "SENSEX", name: "SENSEX" },
+  { key: "FINNIFTY", name: "FIN NIFTY" },
 ];
-
-async function fetchIndexMC(mcId: string): Promise<{ ltp: number; prev: number } | null> {
-  const res = await fetch(`https://priceapi.moneycontrol.com/pricefeed/nse/index/${mcId}`, {
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) return null;
-  const json = await res.json();
-  if (json.code !== "200" || !json.data) return null;
-  const ltp = parseFloat(json.data.pricecurrent) || 0;
-  const prev = parseFloat(json.data.priceprevclose) || ltp;
-  if (!ltp) return null;
-  return { ltp, prev };
-}
-
-async function fetchIndexYahoo(yahooSymbol: string): Promise<{ ltp: number; prev: number } | null> {
-  const res = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1d`,
-    { signal: AbortSignal.timeout(8000) },
-  );
-  if (!res.ok) return null;
-  const data = await res.json();
-  const meta = data?.chart?.result?.[0]?.meta;
-  if (!meta?.regularMarketPrice) return null;
-  return { ltp: meta.regularMarketPrice, prev: meta.chartPreviousClose || meta.regularMarketPrice };
-}
-
-// Estimate index from constituent stocks (fallback when index APIs fail)
-function estimateIndexFromStocks(indexName: string, stocks: any[]): { ltp: number; prev: number; changePct: number } | null {
-  const indexConstituents: Record<string, string[]> = {
-    NIFTY: [
-      "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN",
-      "BHARTIARTL","KOTAKBANK","LT","AXISBANK","BAJFINANCE","ASIANPAINT","MARUTI",
-      "SUNPHARMA","TITAN","ULTRACEMCO","NESTLEIND","TATAMOTORS","WIPRO","M&M",
-      "HCLTECH","POWERGRID","NTPC","ONGC","TATASTEEL","JSWSTEEL","ADANIENT",
-      "ADANIPORTS","TECHM","HDFCLIFE","SBILIFE","BRITANNIA","CIPLA","DRREDDY",
-      "DIVISLAB","EICHERMOT","GRASIM","HEROMOTOCO","HINDALCO","INDUSINDBK",
-      "BAJAJFINSV","COALINDIA","BPCL","TRENT","APOLLOHOSP","LTIM","HDFCAMC","PIDILITIND",
-    ],
-    BANKNIFTY: [
-      "HDFCBANK","ICICIBANK","SBIN","KOTAKBANK","AXISBANK","INDUSINDBK","BANKBARODA",
-      "PNB","CANBK","IDFCFIRSTB","FEDERALBNK","AUBANK",
-    ],
-    SENSEX: [
-      "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN",
-      "BHARTIARTL","KOTAKBANK","LT","AXISBANK","BAJFINANCE","ASIANPAINT","MARUTI",
-      "SUNPHARMA","TITAN","ULTRACEMCO","NESTLEIND","TATAMOTORS","WIPRO","M&M",
-      "HCLTECH","POWERGRID","NTPC","ONGC","TATASTEEL","JSWSTEEL","ADANIENT",
-      "ADANIPORTS","TECHM",
-    ],
-  };
-
-  const constituents = indexConstituents[indexName];
-  if (!constituents) return null;
-
-  const indexStocks = stocks.filter(s => constituents.includes(s.symbol));
-  if (indexStocks.length === 0) return null;
-
-  const avgChangePct = indexStocks.reduce((sum, s) => sum + s.changePct, 0) / indexStocks.length;
-  const avgLtp = indexStocks.reduce((sum, s) => sum + s.ltp, 0) / indexStocks.length;
-  const avgPrev = indexStocks.reduce((sum, s) => sum + s.prevClose, 0) / indexStocks.length;
-
-  return { ltp: avgLtp, prev: avgPrev, changePct: avgChangePct };
-}
 
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 60_000;
 
 interface RegimeFactors {
-  indexTrend: number;       // -100 to +100
-  breadth: number;          // -100 to +100
-  sectorBreadth: number;    // -100 to +100
-  volume: number;           // -100 to +100
-  vwapParticipation: number; // -100 to +100
-  emaStructure: number;     // -100 to +100
-  momentum: number;         // -100 to +100
-  volatility: number;       // 0 to 100 (VIX-based)
-  foPositioning: number;    // -100 to +100
+  indexTrend: number | null;       // -100 to +100
+  breadth: number | null;          // -100 to +100
+  sectorBreadth: number | null;    // -100 to +100
+  volume: number | null;           // -100 to +100
+  vwapParticipation: number | null; // -100 to +100
+  emaStructure: number | null;     // -100 to +100
+  momentum: number | null;         // -100 to +100
+  volatility: number | null; // 0 to 100 (VIX-based) — null when VIX unknown
+  foPositioning: number | null; // null: no real participant-OI input
 }
 
-function calculateRegime(factors: RegimeFactors, vix: number): { regime: string; bias: string; tradeEnv: string; score: number } {
-  // Weighted composite score
-  const weights = {
-    indexTrend: 0.20,
-    breadth: 0.15,
-    sectorBreadth: 0.15,
-    volume: 0.10,
-    vwapParticipation: 0.10,
-    emaStructure: 0.10,
-    momentum: 0.10,
-    volatility: 0.05,
-    foPositioning: 0.05,
-  };
+const FACTOR_WEIGHTS = {
+  indexTrend: 0.20,
+  breadth: 0.15,
+  sectorBreadth: 0.15,
+  volume: 0.10,
+  vwapParticipation: 0.10,
+  emaStructure: 0.10,
+  momentum: 0.10,
+  volatility: 0.05,
+  foPositioning: 0.05,
+};
 
-  const compositeScore = 
-    factors.indexTrend * weights.indexTrend +
-    factors.breadth * weights.breadth +
-    factors.sectorBreadth * weights.sectorBreadth +
-    factors.volume * weights.volume +
-    factors.vwapParticipation * weights.vwapParticipation +
-    factors.emaStructure * weights.emaStructure +
-    factors.momentum * weights.momentum +
-    factors.volatility * weights.volatility +
-    factors.foPositioning * weights.foPositioning;
+function calculateRegime(factors: RegimeFactors, vix: number | null): {
+  regime: string;
+  bias: string;
+  tradeEnv: string;
+  score: number | null;
+  usedFactors: string[];
+} {
+  // Weighted composite score over the factors that actually have data.
+  const used: string[] = [];
+  let weightSum = 0;
+  let scoreSum = 0;
+  for (const [key, weight] of Object.entries(FACTOR_WEIGHTS) as Array<[keyof RegimeFactors, number]>) {
+    const value = factors[key];
+    if (value == null || !Number.isFinite(value)) continue;
+    used.push(key);
+    weightSum += weight;
+    scoreSum += value * weight;
+  }
+  if (weightSum === 0) {
+    return { regime: "UNKNOWN", bias: "UNKNOWN", tradeEnv: "NO DATA — cannot classify the regime", score: null, usedFactors: [] };
+  }
+  const compositeScore = scoreSum / weightSum;
 
-  // VIX override for high volatility
-  if (vix > 30) {
+  // VIX override for high volatility (only when VIX is real)
+  if (vix != null && vix > 30) {
     return {
       regime: "HIGH VOLATILITY",
       bias: "NEUTRAL",
       tradeEnv: "EXTREME CAUTION — REDUCE SIZE / STAY OUT",
       score: Math.round(compositeScore),
+      usedFactors: used,
     };
   }
-  if (vix > 25) {
+  if (vix != null && vix > 25) {
     return {
       regime: "HIGH VOLATILITY",
       bias: compositeScore > 0 ? "BULLISH" : "BEARISH",
       tradeEnv: "CAUTION — REDUCE SIZE",
       score: Math.round(compositeScore),
+      usedFactors: used,
     };
   }
 
-  // Determine regime from composite score
   let regime: string;
   let bias: string;
   let tradeEnv: string;
@@ -163,7 +126,7 @@ function calculateRegime(factors: RegimeFactors, vix: number): { regime: string;
     tradeEnv = "FAVOR SHORTS — DEFENSIVE";
   }
 
-  return { regime, bias, tradeEnv, score: Math.round(compositeScore) };
+  return { regime, bias, tradeEnv, score: Math.round(compositeScore), usedFactors: used };
 }
 
 export async function GET() {
@@ -172,204 +135,236 @@ export async function GET() {
       return NextResponse.json(cache.data);
     }
 
-    // Step 1: Fetch stocks first (needed for index fallback)
-    const stocks = await fetchNIFTY50Stocks();
+    // Step 1: Fetch stocks (needed for breadth) + the exchange market clock.
+    const [stocks, clock] = await Promise.all([fetchNIFTY50Stocks(), getMarketClock()]);
 
-    // Step 2: Fetch indices + VIX in parallel (NSE primary, Moneycontrol/Yahoo fallback)
+    // Step 2: Indices (exchange only) + VIX (NSE only) in parallel.
     const [indexData, vixData] = await Promise.all([
-      // Fetch indices — NSE primary
       (async () => {
         const nseIndices = await getNSEIndices();
-        if (nseIndices.length > 0) {
-          // NSE returned data — use it directly
-          const result = [];
-          for (const idx of INDICES) {
-            const nseIdx = nseIndices.find(n => n.key === idx.key);
-            if (nseIdx) {
-              result.push(nseIdx);
-            } else if (idx.key === "FINNIFTY") {
-              // FINNIFTY not on NSE allIndices — estimate from stocks
-              const estimated = estimateIndexFromStocks(idx.key, stocks);
-              if (estimated) result.push({ key: idx.key, name: idx.name, ltp: estimated.ltp, change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)), changePct: parseFloat(estimated.changePct.toFixed(2)), prevClose: estimated.prev, estimated: true });
-            }
-          }
-          return result;
-        }
-        // NSE failed — fallback to Moneycontrol/Yahoo
-        const indexData: any[] = [];
+        const result: any[] = [];
         for (const idx of INDICES) {
-          const sources: FallbackSource<{ ltp: number; prev: number }>[] = [];
-          if (idx.mcId) sources.push({ name: `MC:${idx.key}`, fetch: () => fetchIndexMC(idx.mcId) });
-          sources.push({ name: `YF:${idx.key}`, fetch: () => fetchIndexYahoo(idx.yahoo) });
-          const { data } = await fetchWithFallback(sources);
-          if (data) {
-            indexData.push({ key: idx.key, name: idx.name, ltp: data.ltp, change: parseFloat((data.ltp - data.prev).toFixed(2)), changePct: parseFloat((((data.ltp - data.prev) / data.prev) * 100).toFixed(2)), prevClose: data.prev });
-          } else {
-            const estimated = estimateIndexFromStocks(idx.key, stocks);
-            if (estimated) indexData.push({ key: idx.key, name: idx.name, ltp: estimated.ltp, change: parseFloat((estimated.ltp - estimated.prev).toFixed(2)), changePct: parseFloat(estimated.changePct.toFixed(2)), prevClose: estimated.prev, estimated: true });
+          const nseIdx = nseIndices.find((n) => n.key === idx.key);
+          if (nseIdx) {
+            result.push({ ...nseIdx, source: "nse" });
+            continue;
+          }
+          // SENSEX lives on BSE.
+          if (idx.key === "SENSEX") {
+            try {
+              const { getBSEIndexData } = await import("@/lib/bse-api");
+              const bse = await getBSEIndexData("SENSEX");
+              if (bse && bse.spotPrice && bse.previousClose) {
+                const ltp = Number(bse.spotPrice);
+                const prev = Number(bse.previousClose);
+                result.push({
+                  key: "SENSEX",
+                  name: "SENSEX",
+                  ltp,
+                  change: round(ltp - prev),
+                  changePct: round(((ltp - prev) / prev) * 100),
+                  prevClose: prev,
+                  source: "bse",
+                });
+              }
+            } catch { /* BSE unavailable → SENSEX stays absent (honest) */ }
           }
         }
-        return indexData;
+        return result;
       })(),
 
-      // Fetch VIX — NSE primary, Yahoo fallback
       (async () => {
         const nseVix = await getNSEIndiaVIX();
-        if (nseVix && nseVix.value > 0) return nseVix;
-        const vixSources: FallbackSource<{ value: number; change: number }>[] = [{
-          name: "YF:VIX",
-          fetch: async () => {
-            const res = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d", { signal: AbortSignal.timeout(8000) });
-            if (!res.ok) return null;
-            const data = await res.json();
-            const meta = data?.chart?.result?.[0]?.meta;
-            if (!meta?.regularMarketPrice) return null;
-            const prev = meta.chartPreviousClose || meta.regularMarketPrice;
-            // Same unit as getNSEIndiaVIX: PERCENT change (this used to
-            // return points — dashboards mixed +7.04% NSE with +0.85 Yahoo)
-            const changePct = prev > 0 ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0;
-            return { value: parseFloat(meta.regularMarketPrice.toFixed(2)), change: parseFloat(changePct.toFixed(2)) };
-          },
-        }];
-        const { data } = await fetchWithFallback(vixSources);
-        return data || { value: 15, change: 0 };
+        if (nseVix && nseVix.value > 0) return { ...nseVix, source: "nse" };
+        return null;
       })(),
     ]);
 
-    const vix = vixData.value;
+    const vix = vixData?.value ?? null;
 
-    // Calculate multi-factor regime factors
-    const nifty = indexData.find(i => i.key === "NIFTY");
-    const bankNifty = indexData.find(i => i.key === "BANKNIFTY");
+    // Real technicals from the exchange's daily history (EMA + session VWAP).
+    const tech = await sweepDailyTechnicals(stocks.map((s) => s.symbol), { deadlineMs: 12_000 });
 
-    // 1. Index Trend (NIFTY change + trend consistency)
-    const indexChanges = indexData.map(i => i.changePct);
-    const avgIndexChange = indexData.length > 0
-      ? indexData.reduce((sum, i) => sum + i.changePct, 0) / indexData.length
-      : 0;
-    const trendConsistency = indexChanges.filter(c => c > 0).length / indexChanges.length;
-    const indexTrend = avgIndexChange * 10 + (trendConsistency - 0.5) * 40; // -100 to +100
+    // ── 1. Index Trend ───────────────────────────────────────────────
+    const indexChanges = indexData.map((i) => i.changePct);
+    const avgIndexChange = indexChanges.length
+      ? indexChanges.reduce((sum, c) => sum + c, 0) / indexChanges.length
+      : null;
+    const trendConsistency = indexChanges.length
+      ? indexChanges.filter((c) => c > 0).length / indexChanges.length
+      : null;
+    const indexTrend =
+      avgIndexChange != null && trendConsistency != null
+        ? avgIndexChange * 10 + (trendConsistency - 0.5) * 40
+        : null;
 
-    // 2. Market Breadth (from stocks)
-    // Re-fetch stocks for breadth calculation (or use cached)
-    const breadthStocks = await fetchNIFTY50Stocks();
-    const advances = breadthStocks.filter(s => s.changePct > 0).length;
-    const declines = breadthStocks.filter(s => s.changePct < 0).length;
-    const total = breadthStocks.length;
-    const breadthRatio = declines > 0 ? advances / declines : advances > 0 ? 100 : 1;
-    const breadth = Math.max(-100, Math.min(100, (breadthRatio - 1) * 50)); // -100 to +100
+    // ── 2. Market Breadth (real quotes) ───────────────────────────────
+    const advances = stocks.filter((s) => s.changePct > 0).length;
+    const declines = stocks.filter((s) => s.changePct < 0).length;
+    const total = stocks.length;
+    const breadthRatio = declines > 0 ? advances / declines : advances > 0 ? null : null;
+    const breadth = breadthRatio == null ? null : Math.max(-100, Math.min(100, (breadthRatio - 1) * 50));
 
-    // 3. Sector Breadth
+    // ── 3. Sector Breadth ─────────────────────────────────────────────
     const sectorMap = new Map<string, number[]>();
-    for (const s of breadthStocks) {
+    for (const s of stocks) {
       if (!sectorMap.has(s.sector)) sectorMap.set(s.sector, []);
       sectorMap.get(s.sector)!.push(s.changePct);
     }
-    const sectorBiases = Array.from(sectorMap.values()).map(changes => {
-      const pos = changes.filter(c => c > 0).length;
-      const neg = changes.filter(c => c < 0).length;
-      return (pos - neg) / (pos + neg); // -1 to +1
+    const sectorBiases = Array.from(sectorMap.values()).map((changes) => {
+      const pos = changes.filter((c) => c > 0).length;
+      const neg = changes.filter((c) => c < 0).length;
+      return (pos - neg) / (pos + neg);
     });
-    const sectorBreadth = sectorBiases.length > 0
+    const sectorBreadth = sectorBiases.length
       ? (sectorBiases.reduce((sum, b) => sum + b, 0) / sectorBiases.length) * 100
-      : 0; // -100 to +100
+      : null;
 
-    // 4. Volume
-    const volAdvancing = breadthStocks.filter(s => s.changePct > 0).reduce((sum, s) => sum + s.volume, 0);
-    const volDeclining = breadthStocks.filter(s => s.changePct < 0).reduce((sum, s) => sum + s.volume, 0);
-    const volRatio = volDeclining > 0 ? volAdvancing / volDeclining : volAdvancing > 0 ? 100 : 1;
-    const volume = Math.max(-100, Math.min(100, (volRatio - 1) * 50));
+    // ── 4. Volume ─────────────────────────────────────────────────────
+    const volAdvancing = stocks.filter((s) => s.changePct > 0).reduce((sum, s) => sum + s.volume, 0);
+    const volDeclining = stocks.filter((s) => s.changePct < 0).reduce((sum, s) => sum + s.volume, 0);
+    const volume = volDeclining > 0 ? Math.max(-100, Math.min(100, ((volAdvancing / volDeclining) - 1) * 50)) : null;
 
-    // 5. VWAP Participation
-    const aboveVWAP = breadthStocks.filter(s => {
-      const vwap = (s.dayHigh + s.dayLow + s.ltp) / 3;
-      return s.ltp > vwap;
-    }).length;
-    const vwapParticipation = total > 0 ? ((aboveVWAP / total) * 200 - 100) : 0; // -100 to +100
+    // ── 5. VWAP Participation (the exchange's own session VWAP) ────────
+    const vwapRows = stocks.filter((s) => tech.bySymbol.get(s.symbol)?.vwap != null);
+    const aboveVWAP = vwapRows.filter((s) => s.ltp > (tech.bySymbol.get(s.symbol)!.vwap as number)).length;
+    const vwapParticipation = vwapRows.length ? (aboveVWAP / vwapRows.length) * 200 - 100 : null;
 
-    // 6. EMA Structure
-    const aboveEMA20 = breadthStocks.filter(s => s.ltp > (s.prevClose + (s.change || 0) * 0.3)).length;
-    const aboveEMA50 = breadthStocks.filter(s => s.ltp > s.prevClose).length;
-    const aboveEMA200 = breadthStocks.filter(s => s.ltp > s.prevClose * 0.95).length;
-    const emaScore = ((aboveEMA20 + aboveEMA50 + aboveEMA200) / (3 * total)) * 200 - 100; // -100 to +100
+    // ── 6. EMA Structure (real EMAs of real closes) ───────────────────
+    const emaRows = stocks.filter((s) => {
+      const t = tech.bySymbol.get(s.symbol);
+      return t?.ema20 != null && t?.ema50 != null && t?.ema200 != null;
+    });
+    const emaScore = emaRows.length
+      ? (emaRows.reduce((sum, s) => {
+          const t = tech.bySymbol.get(s.symbol)!;
+          const above = (s.ltp > (t.ema20 as number) ? 1 : 0) + (s.ltp > (t.ema50 as number) ? 1 : 0) + (s.ltp > (t.ema200 as number) ? 1 : 0);
+          return sum + above / 3;
+        }, 0) / emaRows.length) * 200 - 100
+      : null;
 
-    // 7. Momentum
-    const strongMomentum = breadthStocks.filter(s => s.changePct > 2).length;
-    const weakMomentum = breadthStocks.filter(s => s.changePct < -2).length;
-    const momentum = total > 0 ? ((strongMomentum - weakMomentum) / total) * 100 : 0; // -100 to +100
+    // ── 7. Momentum ───────────────────────────────────────────────────
+    const strongMomentum = stocks.filter((s) => s.changePct > 2).length;
+    const weakMomentum = stocks.filter((s) => s.changePct < -2).length;
+    const momentum = total > 0 ? ((strongMomentum - weakMomentum) / total) * 100 : null;
 
-    // 8. Volatility (VIX-based, inverted for scoring)
-    const volatility = Math.max(0, 100 - vix * 3); // Lower VIX = higher score
+    // ── 8. Volatility (VIX-based; null when VIX is unavailable) ──────
+    const volatility = vix == null ? null : Math.max(0, 100 - vix * 3);
 
-    // 9. F&O Positioning (placeholder - would need real OI data)
-    const foPositioning = 0; // placeholder
+    // ── 9. F&O Positioning — no real participant-OI input on this path ─
+    const foPositioning: number | null = null;
 
-    // 10. ADX estimation from stock momentum spread (proxy for trend strength)
-    const absChanges = breadthStocks.map(s => Math.abs(s.changePct));
-    const avgAbsChange = absChanges.length > 0 ? absChanges.reduce((a, b) => a + b, 0) / absChanges.length : 0;
-    const avgAdx = Math.min(50, Math.max(10, avgAbsChange * 8 + 10)); // rough proxy: big moves = high ADX
+    // ── 10. ADX proxy from the real breadth spread ────────────────────
+    const absChanges = stocks.map((s) => Math.abs(s.changePct));
+    const avgAbsChange = absChanges.length ? absChanges.reduce((a, b) => a + b, 0) / absChanges.length : null;
+    const avgAdx = avgAbsChange == null ? null : Math.min(50, Math.max(10, avgAbsChange * 8 + 10));
 
     const factors: RegimeFactors = {
-      indexTrend,
-      breadth,
-      sectorBreadth,
-      volume,
-      vwapParticipation,
-      emaStructure: emaScore,
-      momentum,
+      indexTrend: indexTrend ?? null,
+      breadth: breadth ?? null,
+      sectorBreadth: sectorBreadth ?? null,
+      volume: volume ?? null,
+      vwapParticipation: vwapParticipation ?? null,
+      emaStructure: emaScore ?? null,
+      momentum: momentum ?? null,
       volatility,
       foPositioning,
     };
 
     const regimeResult = calculateRegime(factors, vix);
 
-    // Market session — canonical calendar + clock (IST), shared with
-    // isTradingDay()/isHoliday(). This route used to inline its own weekend
-    // check, holiday list and time-of-day ladder.
     const session = getTradingSession();
 
     // Collected just now — but "now" is outside market hours on a weekend /
     // holiday / after-hours. LIVE is only truthful while the exchange is open.
     const freshness = withSessionAwareFreshness(
       buildFreshnessMeta({
-        provider: indexData.some((i: any) => !i.estimated) ? "nse-india" : "moneycontrol+yahoo",
-        dataTimestamp: new Date(),
+        provider: indexData.some((i: any) => i.source === "bse") ? "nse+bse" : "nse-india",
+        dataTimestamp: clock.tradeDate ? new Date(clock.tradeDate) : new Date(),
         dataType: "regime",
       }),
       session,
     );
+
+    const nifty = indexData.find((i) => i.key === "NIFTY");
+    const bankNifty = indexData.find((i) => i.key === "BANKNIFTY");
+
+    const prov = getStockQuoteProvenance();
+    const cardMeta = buildCardMeta({
+      source: prov.source === "moneycontrol" ? "moneycontrol" : "nse",
+      providerTimestamp: prov.providerTimestamp ?? clock.tradeDate ?? null,
+      ttlMs: 90_000,
+      live: clock.isOpen,
+      reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+    });
 
     const result = {
       regime: regimeResult.regime,
       bias: regimeResult.bias,
       tradeEnv: regimeResult.tradeEnv,
       regimeScore: regimeResult.score,
+      // Which factors actually carried the verdict (null factors are dropped).
+      factorsUsed: regimeResult.usedFactors,
+      factorsUnavailable: (Object.keys(FACTOR_WEIGHTS) as Array<keyof RegimeFactors>).filter(
+        (k) => !regimeResult.usedFactors.includes(k),
+      ),
       freshness,
+      data: cardMeta,
+      marketClock: {
+        state: clock.marketState,
+        isOpen: clock.isOpen,
+        tradeDate: clock.tradeDate,
+        tradeDateLabel: clock.tradeDateLabel,
+        ageMs: clock.tradeAgeMs,
+      },
       // VIX Regime for Option Buyers (Section 5C)
-      vixBuyerRegime: vix < 12 ? 'COMPLACENT' : vix < 15 ? 'CALM' : vix < 20 ? 'NORMAL' : vix < 25 ? 'ELEVATED' : 'FEAR',
-      vixBuyerAction: vix < 12 ? 'BEST buying zone — premiums cheap' : vix < 15 ? 'Good directional buys with confluence' : vix < 20 ? 'Only score >= 75 setups' : vix < 25 ? 'Half size, ATM/ITM only' : 'NO TRADE — expensive premiums + whipsaw',
+      vixBuyerRegime: vix == null
+        ? "UNKNOWN"
+        : vix < 12 ? "COMPLACENT"
+        : vix < 15 ? "CALM"
+        : vix < 20 ? "NORMAL"
+        : vix < 25 ? "ELEVATED" : "FEAR",
+      vixBuyerAction: vix == null
+        ? "NO DATA — VIX unavailable, do not size option trades off this"
+        : vix < 12 ? "BEST buying zone — premiums cheap"
+        : vix < 15 ? "Good directional buys with confluence"
+        : vix < 20 ? "Only score >= 75 setups"
+        : vix < 25 ? "Half size, ATM/ITM only"
+        : "NO TRADE — expensive premiums + whipsaw",
       // ADX Regime (Section 5F)
-      adxRegime: avgAdx > 25 ? 'TRENDING' : avgAdx < 20 ? 'CHOPPY' : 'MODERATE',
-      adxAction: avgAdx > 25 ? 'Directional CE/PE buying allowed' : avgAdx < 20 ? 'NO TRADE unless extreme + rejection' : 'Selective buying with higher confluence',
+      adxRegime: avgAdx == null ? "UNKNOWN" : avgAdx > 25 ? "TRENDING" : avgAdx < 20 ? "CHOPPY" : "MODERATE",
+      adxAction: avgAdx == null
+        ? "NO DATA — breadth unavailable"
+        : avgAdx > 25 ? "Directional CE/PE buying allowed"
+        : avgAdx < 20 ? "NO TRADE unless extreme + rejection"
+        : "Selective buying with higher confluence",
       factors: {
-        indexTrend: Math.round(indexTrend),
-        breadth: Math.round(breadth),
-        sectorBreadth: Math.round(sectorBreadth),
-        volume: Math.round(volume),
-        vwapParticipation: Math.round(vwapParticipation),
-        emaStructure: Math.round(emaScore),
-        momentum: Math.round(momentum),
-        volatility: Math.round(volatility),
-        foPositioning: Math.round(foPositioning),
+        indexTrend: round(indexTrend, 0),
+        breadth: round(breadth, 0),
+        sectorBreadth: round(sectorBreadth, 0),
+        volume: round(volume, 0),
+        vwapParticipation: round(vwapParticipation, 0),
+        emaStructure: round(emaScore, 0),
+        momentum: round(momentum, 0),
+        volatility: volatility == null ? null : round(volatility, 0),
+        foPositioning: null,
+      },
+      coverage: {
+        quotes: stocks.length,
+        technicals: tech.covered,
+        requested: stocks.length,
+        complete: tech.complete,
+        indices: indexData.length,
+        indicesExpected: INDICES.length,
       },
       session,
-      vix: { value: vix, change: vixData.change },
+      vix: vix == null ? null : { value: vix, change: vixData?.change ?? null, source: "nse" },
       indices: indexData,
-      nifty: nifty?.ltp || 0,
-      niftyChange: nifty?.changePct || 0,
-      bankNifty: bankNifty?.ltp || 0,
-      bankNiftyChange: bankNifty?.changePct || 0,
-      avgIndexChange: parseFloat(avgIndexChange.toFixed(2)),
+      nifty: nifty?.ltp ?? null,
+      niftyChange: nifty?.changePct ?? null,
+      bankNifty: bankNifty?.ltp ?? null,
+      bankNiftyChange: bankNifty?.changePct ?? null,
+      avgIndexChange: round(avgIndexChange),
       timestamp: new Date().toISOString(),
     };
 

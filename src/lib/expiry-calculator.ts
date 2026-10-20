@@ -12,7 +12,7 @@
 //   BSE Equity: Monthly = last Thursday
 // Holiday shift → previous trading day
 
-import { getLotSize } from '@/lib/symbol-config';
+import { getLotSizeStrict } from '@/lib/symbol-config';
 
 export type ExpiryType = 'weekly' | 'monthly';
 
@@ -33,7 +33,10 @@ export interface StandardizedExpiry {
   option_liquidity: 'HIGH' | 'MEDIUM' | 'LOW';
   strategy_profile: 'EXPIRY' | 'NORMAL';
   session_type: 'EXPIRY' | 'REGULAR';
-  lot_size: number;
+  /** The REAL contract lot — null when it is not known (never a guess). */
+  lot_size: number | null;
+  /** false → `lot_size` is null (the contract lot is unknown). */
+  lot_size_known: boolean;
   tick_size: number;
 }
 
@@ -51,7 +54,8 @@ export function getStandardizedExpiry(symbol: string, referenceDate: Date = new 
   if (!nearest) return null;
 
   const exchange: 'NSE' | 'BSE' = BSE_INSTRUMENTS.has(symbol) ? 'BSE' : 'NSE';
-  const lotSize = getLotSize(symbol);
+  // The REAL contract lot — null when it is not known (never a guess).
+  const lotSize = getLotSizeStrict(symbol);
   const type = nearest.type; // 'weekly' | 'monthly'
   const daysToExpiry = nearest.daysToExpiry;
   const isExpiryToday = daysToExpiry === 0;
@@ -80,6 +84,7 @@ export function getStandardizedExpiry(symbol: string, referenceDate: Date = new 
     strategy_profile: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'NORMAL',
     session_type: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'REGULAR',
     lot_size: lotSize,
+    lot_size_known: lotSize !== null,
     tick_size: 0.05,
   };
 }

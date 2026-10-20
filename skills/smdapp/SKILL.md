@@ -16,10 +16,8 @@ RESEARCH → CANDIDATE → VALIDATING → VALIDATED → FINAL → ACTIVE → TP1
 
 ## Key Files
 - `src/lib/agents/types.ts` — All agent types
-- `src/lib/agents/registry.ts` — Registration, lookup, health, tasks, signals, events
-- `src/lib/agents/heartbeat.ts` — Heartbeat monitoring
+- `src/lib/agents/registry.ts` — Registration, lookup, health, tasks, signals, events (heartbeat + task execution live here)
 - `src/lib/agents/signal-lifecycle.ts` — Signal state machine
-- `src/lib/agents/tasks.ts` — Task creation and execution
 - `src/lib/agents/reputation.ts` — Performance tracking
 - `src/lib/external/ai-trader/` — External AI-Trader integration
 

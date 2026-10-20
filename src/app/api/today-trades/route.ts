@@ -8,6 +8,7 @@ import { buildMarketIntelligenceContext } from "@/lib/trade-intelligence/market-
 import { analyzeIndexFO } from "@/lib/trade-intelligence/index-fo-mode";
 import { analyzeStockFO } from "@/lib/trade-intelligence/stock-fo-mode";
 import { analyzeEquitySwing } from "@/lib/trade-intelligence/equity-swing-mode";
+import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 
 export async function GET(req: NextRequest) {
   try {
@@ -36,7 +37,9 @@ export async function GET(req: NextRequest) {
           stopLoss: s.stopLoss,
           tp1: s.target1,
           tp2: s.target2,
-          tp3: s.target2 * 1.1,
+          // No third target from the engine — a made-up "TP3" (target2*1.1)
+          // used to be shown as a real level.
+          tp3: null,
           rr: s.riskReward,
           probability: s.confidence,
           stars: Math.round(s.confidence / 20),
@@ -69,7 +72,7 @@ export async function GET(req: NextRequest) {
           stopLoss: s.stopLoss,
           tp1: s.target1,
           tp2: s.target2,
-          tp3: s.target2 * 1.1,
+          tp3: null,
           rr: s.riskReward,
           probability: s.confidence,
           stars: Math.round(s.confidence / 20),
@@ -102,7 +105,7 @@ export async function GET(req: NextRequest) {
           stopLoss: s.stopLoss,
           tp1: s.target1,
           tp2: s.target2,
-          tp3: s.target2 * 1.05,
+          tp3: null,
           rr: s.riskReward,
           probability: s.confidence,
           stars: Math.round(s.confidence / 20),
@@ -112,9 +115,12 @@ export async function GET(req: NextRequest) {
           reasoning: [...s.reasoning, `Setup: ${s.setup.type}`],
           score: s.confidence,
           setupType: s.setup.type,
-          premium: 0,
-          strike: 0,
+          premium: null,
+          strike: null,
           expiry: "",
+          // Real ATR-based expected move from the engine (a string), when it
+          // produced one.
+          expectedMoveText: s.expectedMove ?? null,
         })),
     ];
 
@@ -127,10 +133,22 @@ export async function GET(req: NextRequest) {
     // Take top 5
     const top = allCandidates.slice(0, 5);
 
+    const clock = await getMarketClock();
+    const meta = buildCardMeta({
+      source: "nse",
+      providerTimestamp: clock.tradeDate,
+      ttlMs: 15 * 60_000,
+      live: clock.isOpen,
+      reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+    });
+
     return NextResponse.json({
       success: true,
+      status: meta.status,
+      meta,
       symbol: "ALL",
-      expectedMove: 0,
+      // null (not 0) — there is no single expected move for "ALL".
+      expectedMove: null,
       top,
       summary: {
         totalScanned: allCandidates.length,

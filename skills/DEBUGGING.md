@@ -32,7 +32,7 @@ console.log("[DEBUG] Result:", JSON.stringify(result).slice(0, 200));
 # For data pipeline issues:
 console.log("[DEBUG] Breeze auth:", session ? "OK" : "FAILED");
 console.log("[DEBUG] NSE fallback:", nseData ? "OK" : "FAILED");
-console.log("[DEBUG] Yahoo fallback:", yahooData ? "OK" : "FAILED");
+console.log("[DEBUG] MOAPI fallback:", moData ? "OK" : "FAILED");
 ```
 
 5. **Trace the data flow** — follow the value backward through the call stack.
@@ -65,8 +65,8 @@ console.log("[DEBUG] Yahoo fallback:", yahooData ? "OK" : "FAILED");
 ```
 Check in order:
 1. Is Breeze session valid? → check /tmp/smdapp.log for "initSession error"
-2. Did NSE fallback fire? → check log for "[API] NSE API data fetched"
-3. Did Yahoo fallback fire? → check log for "[Yahoo] Fetching"
+2. Did the NSE/BSE primary fire? → check log for "[API] NSE API data fetched"
+3. Did a fallback fire? → check log for provider order (NSE → BSE → MOAPI → Breeze → NO_DATA)
 4. Is the endpoint responding? → curl -s http://localhost:3000/api/<endpoint>
 5. Is the data shape correct? → check API response JSON
 ```
@@ -75,7 +75,7 @@ Check in order:
 
 ```
 Check in order:
-1. Are candles real or fake? → check log for "Breeze Historical" vs "Yahoo"
+1. Are candles real or fake? → check log for "Breeze Historical" vs "MO" (candle chain; `NO_DATA` when both fail)
 2. Is the entry timestamp correct? → check entryTime vs market hours
 3. Are exit conditions firing? → add console.log to exit checks
 4. Is P&L calculation right? → verify with known trade manually
@@ -104,7 +104,7 @@ Check in order:
 ### Breeze Auth Failures
 
 ```
-Expected behavior — falls back to NSE/Yahoo.
+Expected behavior — falls back to NSE / MOAPI → `NO_DATA` (never a Yahoo quote).
 Check:
 1. Are API keys valid? → .env BREEZE_API_KEY, BREEZE_SECRET_KEY
 2. Is session expired? → log shows "Could not authenticate credentials"

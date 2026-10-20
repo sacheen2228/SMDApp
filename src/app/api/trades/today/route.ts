@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getLotSize } from "@/lib/symbol-config";
+import { getLotSizeStrict } from "@/lib/symbol-config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -34,7 +34,14 @@ export async function GET(req: NextRequest) {
     });
 
     const rows = trades.map((t) => {
-      const lotSize = getLotSize(t.symbol?.toUpperCase() || "") || Number(t.positionSize) || 65;
+      // The lot size, in order of truth:
+      //   1. the lot the trade was booked with (positionSize)
+      //   2. the REAL contract lot from the NSE F&O lot table
+      //   3. UNKNOWN (null) — never a guessed 65 (NIFTY's lot overstated
+      //      every stock option's ₹ amount by 4-11×).
+      const recordedLot = Number(t.positionSize) || 0;
+      const realLot = getLotSizeStrict(t.symbol?.toUpperCase() || "");
+      const lotSize = recordedLot > 0 ? recordedLot : realLot;
       const exitPrice = t.exitPrice ? t.exitPrice :
         t.status === "TP_HIT" ? (Number(t.target1) || 0) :
         t.status === "SL_HIT" ? (Number(t.stopLoss) || 0) : null;
@@ -58,6 +65,7 @@ export async function GET(req: NextRequest) {
         tpHitLevel: t.tpHitLevel || null,
         exitReason: t.exitReason || null,
         lotSize,
+        lotSizeKnown: lotSize !== null,
         positionSize: t.positionSize,
         holdingTimeMin: t.holdingTimeMin || null,
         confidence: t.confidence,

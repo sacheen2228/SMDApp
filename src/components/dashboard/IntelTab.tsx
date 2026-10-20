@@ -9,6 +9,7 @@ import {
   RefreshCw, Shield, Target, Zap, ChevronDown, ChevronUp, Minus
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataFreshnessBadge } from "./DataFreshnessBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -83,7 +84,14 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
   const regimeLabel = regime?.regime || "—";
   const breadthLabel = breadth ? (breadth.label || (breadth.score > 60 ? "BULLISH" : breadth.score < 40 ? "BEARISH" : "NEUTRAL")) : "—";
   const derivLabel = derivative?.bias || "—";
-  const casLabel = cas?.casScore > 60 ? "ACCUMULATION" : cas?.casScore < 40 ? "DISTRIBUTION" : "NEUTRAL";
+  const casLabel =
+    cas?.casScore == null
+      ? "NO DATA"
+      : cas.casScore > 60
+      ? "ACCUMULATION"
+      : cas.casScore < 40
+      ? "DISTRIBUTION"
+      : "NEUTRAL";
 
   // Overall conviction
   let overall = "NEUTRAL";
@@ -438,35 +446,48 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
     oiSpurtScore: oi?.spurtScore || 0,
     longBuildupPct: oi?.totalSpurts > 0 ? (oi.longBuildupCount / oi.totalSpurts) * 100 : 50,
     shortBuildupPct: oi?.totalSpurts > 0 ? (oi.shortBuildupCount / oi.totalSpurts) * 100 : 50,
-    fiiNet: fiiDii?.fiiNet || 0,
-    diiNet: fiiDii?.diiNet || 0,
-    fiiBias: (fiiDii?.fiiNet > 0 ? "BULLISH" : fiiDii?.fiiNet < 0 ? "BEARISH" : "NEUTRAL") as any,
+    // Missing inputs stay missing: the old `|| 0` / `|| 50` / `|| 15`
+    // defaults turned a dead feed into "flat flow, neutral breadth, calm
+    // VIX" — a confident-looking reading built on nothing.
+    fiiNet: fiiDii?.fiiNet ?? null,
+    diiNet: fiiDii?.diiNet ?? null,
+    fiiBias: (fiiDii?.fiiNet == null
+      ? "UNKNOWN"
+      : fiiDii.fiiNet > 0
+      ? "BULLISH"
+      : fiiDii.fiiNet < 0
+      ? "BEARISH"
+      : "NEUTRAL") as any,
     fiiOi: 0,
     clientOi: 0,
     participantBias: "NEUTRAL" as any,
-    pcr: niftyFo?.pcr,
+    pcr: niftyFo?.pcr ?? null,
     callWall: 0,
     putWall: 0,
-    maxPain: niftyFo?.maxPain || 0,
+    maxPain: niftyFo?.maxPain ?? null,
     gammaRegime: "NEUTRAL" as any,
     dealerGammaExposure: 0,
-    vix: vixValue || 15,
-    vixRegime: (vixValue > 25 ? "HIGH" : vixValue > 18 ? "NORMAL" : "LOW") as any,
-    breadthScore: breadth?.score || 50,
-    advances: breadth?.advances || 0,
-    declines: breadth?.declines || 0,
+    vix: vixValue ?? null,
+    vixRegime: (vixValue == null ? "UNKNOWN" : vixValue > 25 ? "HIGH" : vixValue > 18 ? "NORMAL" : "LOW") as any,
+    breadthScore: breadth?.score ?? null,
+    advances: breadth?.advances ?? null,
+    declines: breadth?.declines ?? null,
   };
 
   // Compute derivative flow (client-side deterministic)
   const derivativeFlow = computeDerivativeFlow(derivativeInput);
 
   // CAS score (from existing breadth/sector data)
-  const casScore = breadth ? Math.round(
-    (breadth.score || 50) * 0.5 +
-    ((breadth.volRatio || 1) > 1.2 ? 70 : 50) * 0.15 +
-    (sectors.length > 0 ? sectors.filter((s: any) => (s.avgChangePct || 0) > 0).length / sectors.length * 100 : 50) * 0.15 +
-    (regime?.regime?.includes("BULL") ? 70 : regime?.regime?.includes("BEAR") ? 30 : 50) * 0.2
-  ) : 50;
+  // The CAS score needs real breadth + sector data — without them it is
+  // unknown (null), not a confident 50.
+  const casScore = breadth
+    ? Math.round(
+        (breadth.score ?? 50) * 0.5 +
+        ((breadth.volRatio ?? 1) > 1.2 ? 70 : 50) * 0.15 +
+        (sectors.length > 0 ? sectors.filter((s: any) => (s.avgChangePct || 0) > 0).length / sectors.length * 100 : 50) * 0.15 +
+        (regime?.regime?.includes("BULL") ? 70 : regime?.regime?.includes("BEAR") ? 30 : 50) * 0.2
+      )
+    : null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

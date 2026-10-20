@@ -214,17 +214,15 @@ describe('MCX Commodity Module', () => {
     expect(true).toBe(true);
   });
 
-  // TEST 16: MCX backtest uses same production decision logic
-  test('TEST 16: Yahoo symbol mapping includes MCX commodities', async () => {
-    const { getYahooSymbol } = await import('@/lib/trade-backtest-engine');
-    // Note: getYahooSymbol is not exported, so we test the mapping directly
-    const map: Record<string, string> = {
-      CRUDEOIL: 'CL=F', NATURALGAS: 'NG=F', GOLD: 'GC=F', SILVER: 'SI=F',
-    };
-    expect(map.CRUDEOIL).toBe('CL=F');
-    expect(map.NATURALGAS).toBe('NG=F');
-    expect(map.GOLD).toBe('GC=F');
-    expect(map.SILVER).toBe('SI=F');
+  // TEST 16: MCX commodities are NEVER replayed from a banned source
+  // Yahoo (the old US-futures ticker mapping) is banned by the data policy
+  // (AGENTS.md) — the trade backtest now replays MCX symbols only against
+  // real exchange data, or reports NO_DATA.
+  test('TEST 16: no Yahoo ticker mapping exists for MCX commodities', async () => {
+    const mod: Record<string, unknown> = await import('@/lib/trade-backtest-engine');
+    expect(Object.keys(mod)).not.toContain('getYahooSymbol');
+    const src = await Bun.file('src/lib/trade-backtest-engine.ts').text();
+    expect(src).not.toMatch(/query1\.finance\.yahoo\.com/);
   });
 
   // TEST 17: MCX trades appear in existing Trade Feed (Prisma schema has exchange field)

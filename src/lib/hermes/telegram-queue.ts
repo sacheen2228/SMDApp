@@ -5,6 +5,9 @@
 
 import { getEventBus, type HermesEvent, type HermesEventType } from './event-bus';
 import { isTelegramSendWindow, msUntilTelegramSendWindow } from '../marketHours';
+// The plan geometry (which way the trade pays out) comes from the SAME source
+// the two live monitors use — the option letter lies, the levels do not.
+import { planSide } from '../activeTradeTracker';
 
 // ─── Queue Item ───────────────────────────────────────────────────
 export interface QueueItem {
@@ -219,19 +222,85 @@ export class TelegramQueue {
 }
 
 // ─── Get Singleton ────────────────────────────────────────────────
-/** Prices are tick-rounded for display (5.100000000000001 → 5.1). */
+/** Prices are tick-rounded for display (5.100000000000001 → 5.10).
+ *  A MISSING value is an em dash — never a bare "-" that would read as "₹-". */
 function fmtPx(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
   const n = Number(v);
-  if (!Number.isFinite(n)) return '-';
-  return String(Math.round(n * 100) / 100);
+  if (!Number.isFinite(n)) return "—";
+  return (Math.round(n * 100) / 100).toFixed(2);
 }
 
-/** Money with the sign in front of the symbol: -₹12.50 / ₹12.50 / "-" when missing. */
+/** Money with the sign ALWAYS in front of the symbol: -₹12.50 / +₹12.50.
+ *  "-" (no value) when the number is missing — never a bare "₹-". */
 function fmtMoney(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "-";
   const n = Number(v);
-  if (!Number.isFinite(n)) return '-';
+  if (!Number.isFinite(n)) return "-";
   const r = Math.round(n * 100) / 100;
-  return `${r < 0 ? "-₹" : "₹"}${Math.abs(r)}`;
+  return `${r < 0 ? "-₹" : "+₹"}${Math.abs(r).toFixed(2)}`;
+}
+
+/** The number, or null when it is not a usable number. */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Is the plan MIRRORED (a bearish plan: the stop sits ABOVE the entry and the
+ * targets BELOW it)?  The option letter lies (a bought PE has its stop BELOW
+ * the entry) — the GEOMETRY does not, and it is the same rule the two live
+ * monitors use (planSide in activeTradeTracker).  A mirrored plan stops when
+ * the price RISES to the stop, so its exit is the HIGHER of trigger and stop.
+ */
+function isMirroredPlan(p: any, entry: number | null, sl: number | null): boolean {
+  if (entry != null && sl != null && entry > 0 && sl > 0) return sl > entry;
+  // No usable levels → ask the shared helper (it reads the target side first,
+  // then the stop, then what the event declares).
+  const side = planSide({ entry: entry ?? undefined, sl: sl ?? undefined, tp1: numOrNull(p?.tp1) ?? undefined, side: p?.direction });
+  if (side === "SHORT") return true;
+  const dir = String(p?.direction || "").toUpperCase();
+  return dir.includes("PE") || dir.includes("PUT");
+}
+/**
+ * The exit price of a stop: the STOP LEVEL, or worse when the price gapped
+ * through it.  Never the entry — "SL HIT … Exit: ₹41.05" (the entry) was the
+ * bug this replaces.
+ */
+function slExitPrice(p: any): number | null {
+  const entry = numOrNull(p?.entry);
+  const sl = numOrNull(p?.sl);
+  let exit = numOrNull(p?.exit);
+  if (exit == null) exit = sl;
+  if (exit != null && sl != null && sl > 0) {
+    exit = isMirroredPlan(p, entry, sl) ? Math.max(exit, sl) : Math.min(exit, sl);
+  }
+  return exit;
+}
+
+/**
+ * The % move on the premium (per unit) for an event payload — signed by the
+ * plan geometry.  Returns null when it cannot be computed honestly.
+ */
+function pnlPctFor(p: any, price: number | null): number | null {
+  const entry = numOrNull(p?.entry);
+  if (entry == null || entry <= 0 || price == null) return null;
+  const move = price - entry;
+  return (isMirroredPlan(p, entry, numOrNull(p?.sl)) ? -move : move) / entry * 100;
+}
+
+/** "P&L: -₹110.5 (20.0%)" — signed money + the per-unit % of the premium. */
+function pnlLine(p: any, price: number | null): string {
+  const money = fmtMoney(p?.pnl);
+  const pct = pnlPctFor(p, price);
+  return `P&L: ${money}${pct != null ? ` (${Math.abs(pct).toFixed(1)}%)` : ""}`;
+}
+
+/** "Net: -₹12.50" — always present, explicitly absent when there is no net. */
+function netLine(p: any): string {
+  return `Net: ${p?.netPnL !== null && p?.netPnL !== undefined ? fmtMoney(p.netPnL) : "-"}`;
 }
 
 export function getTelegramQueue(): TelegramQueue {
@@ -254,10 +323,10 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Strike: ${p.strike || '-'} | Expiry: ${p.expiry || '-'}`,
         ``,
-        `Entry: ₹${p.entry ?? '-'}`,
-        `SL: ₹${p.sl ?? '-'}`,
-        `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}`,
-        `Extended: ₹${p.extendedTarget ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)}`,
+        `SL: ₹${fmtPx(p.sl)}`,
+        `TP1: ₹${fmtPx(p.tp1)} | TP2: ₹${fmtPx(p.tp2)}`,
+        `Extended: ₹${fmtPx(p.extendedTarget)}`,
         ``,
         `Actual RR: ${p.actualRR ?? '-'} | Net RR: ${p.netRR ?? '-'}`,
         `Quality: ${p.tradeQuality || '-'}`,
@@ -271,11 +340,11 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `🎯 <b>TP1 HIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → TP1: ₹${p.tp1 ?? '-'}`,
-        `SL: ₹${p.sl ?? '-'}`,
-        `Current: ₹${p.current ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → TP1: ₹${fmtPx(p.tp1)}`,
+        `SL: ₹${fmtPx(p.sl)}`,
+        `Current: ₹${fmtPx(p.current)}`,
         ``,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `${pnlLine(p, numOrNull(p.current))} | ${netLine(p)}`,
         `Holding: ${p.holdingTime || '-'}`,
         ``,
         `⏰ ${ts}`,
@@ -286,12 +355,12 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `🎯 <b>TP2 HIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → TP2: ₹${p.tp2 ?? '-'}`,
-        `SL: ₹${p.sl ?? '-'}`,
-        `TP1: ₹${p.tp1 ?? '-'}`,
-        `Current: ₹${p.current ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → TP2: ₹${fmtPx(p.tp2)}`,
+        `SL: ₹${fmtPx(p.sl)}`,
+        `TP1: ₹${fmtPx(p.tp1)}`,
+        `Current: ₹${fmtPx(p.current)}`,
         ``,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `${pnlLine(p, numOrNull(p.current))} | ${netLine(p)}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -301,38 +370,40 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `🎯 <b>TP3 HIT — FULL EXIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → TP3: ₹${p.tp3 ?? '-'}`,
-        `SL: ₹${p.sl ?? '-'}`,
-        `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}`,
-        `Current: ₹${p.current ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → TP3: ₹${fmtPx(p.tp3)}`,
+        `SL: ₹${fmtPx(p.sl)}`,
+        `TP1: ₹${fmtPx(p.tp1)} | TP2: ₹${fmtPx(p.tp2)}`,
+        `Current: ₹${fmtPx(p.current)}`,
         ``,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `${pnlLine(p, numOrNull(p.current))} | ${netLine(p)}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
 
-    case 'SL_HIT':
+    case 'SL_HIT': {
+      const exit = slExitPrice(p);
       return [
         `🚨 <b>SL HIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${fmtPx(p.entry)} → SL: ₹${fmtPx(p.sl)}`,
-        `Exit: ₹${fmtPx(p.exit)}`,
-        p.tp1 || p.tp2 || p.tp3 ? `TP1: ₹${fmtPx(p.tp1)} | TP2: ₹${fmtPx(p.tp2)}${p.tp3 ? ` | TP3: ₹${fmtPx(p.tp3)}` : ''}` : '',
+        `Exit: ₹${fmtPx(exit)}`,
+        p.tp1 || p.tp2 || p.tp3 ? `TP1: ₹${fmtPx(p.tp1)}${p.tp2 ? ` | TP2: ₹${fmtPx(p.tp2)}` : ''}${p.tp3 ? ` | TP3: ₹${fmtPx(p.tp3)}` : ''}` : '',
         ``,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `${pnlLine(p, exit)} | ${netLine(p)}`,
         `Reason: ${p.exitReason || 'INITIAL_SL'}`,
         ``,
         `⏰ ${ts}`,
       ].filter(Boolean).join('\n');
+    }
 
     case 'TRAILING_SL_UPDATED':
       return [
         `🔄 <b>TRAILING SL UPDATED</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Old SL: ₹${p.oldSL ?? '-'} → New SL: ₹${p.newSL ?? '-'}`,
-        `Current: ₹${p.current ?? '-'}`,
+        `Old SL: ₹${fmtPx(p.oldSL)} → New SL: ₹${fmtPx(p.newSL)}`,
+        `Current: ₹${fmtPx(p.current)}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -353,9 +424,9 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `⏰ <b>TIME EXIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → Exit: ₹${fmtPx(p.exit)}`,
         `Holding: ${p.holdingTime || '-'}`,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `${pnlLine(p, numOrNull(p.exit))} | ${netLine(p)}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -366,8 +437,8 @@ export function formatEventForTelegram(event: HermesEvent): string {
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Expiry: ${p.expiry || '-'}`,
-        `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → Exit: ₹${fmtPx(p.exit)}`,
+        `${pnlLine(p, numOrNull(p.exit))} | ${netLine(p)}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -377,9 +448,9 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `✅ <b>TRADE CLOSED</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
-        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
-        `MFE: ₹${p.mfe ?? '-'} | MAE: ₹${p.mae ?? '-'}`,
+        `Entry: ₹${fmtPx(p.entry)} → Exit: ₹${fmtPx(p.exit)}`,
+        `${pnlLine(p, numOrNull(p.exit))} | ${netLine(p)}`,
+        `MFE: ₹${fmtPx(p.mfe)} | MAE: ₹${fmtPx(p.mae)}`,
         `Exit Reason: ${p.exitReason || '-'}`,
         ``,
         `⏰ ${ts}`,

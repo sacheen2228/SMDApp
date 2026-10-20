@@ -16,12 +16,13 @@ export interface FreshnessMeta {
 }
 
 // Provider reliability scores (0-1)
+// There is no Yahoo entry: Yahoo is banned by the data policy (AGENTS.md) —
+// a banned source must not carry a reliability score either.
 const PROVIDER_RELIABILITY: Record<string, number> = {
   "icici-breeze": 0.95,
   "motilal-api": 0.90,
   "nse-api": 0.85,
   "bse-api": 0.80,
-  "yahoo-finance": 0.60,
   "mrchartist": 0.65,
   "simulation": 0.0,
 };

@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { DataFreshnessBadge, UnavailableCard } from "./DataFreshnessBadge";
 import { Star, TrendingUp, Target, Shield, AlertTriangle } from "lucide-react";
 
 function ScoreBadge({ score }: { score: number }) {
@@ -62,12 +63,29 @@ export function BestTradesNow() {
     );
   }
 
+  if (data.status === "UNAVAILABLE" || !data.opportunities) {
+    return (
+      <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
+            <Star className="h-3 w-3 text-yellow-500" />
+            BEST TRADES NOW
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          <UnavailableCard title="Trade opportunities" reason={data.reason || data.error} meta={data.meta} />
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <Star className="h-3 w-3 text-yellow-500" />
           BEST TRADES NOW
+          <DataFreshnessBadge meta={data.meta} className="ml-1" showReason />
           <Badge variant="outline" className="text-[9px] ml-auto">{data.opportunities?.length || 0} setups</Badge>
         </CardTitle>
       </CardHeader>
@@ -101,24 +119,24 @@ export function BestTradesNow() {
             <div className="grid grid-cols-5 gap-2 text-[10px] mb-2">
               <div>
                 <span className="text-zinc-500">Entry</span>
-                <div className="font-bold text-white">₹{opp.entry}</div>
+                <div className="font-bold text-white">{opp.entry == null ? "—" : `₹${opp.entry}`}</div>
               </div>
               <div>
                 <span className="text-zinc-500">Stop</span>
-                <div className="font-bold text-red-400">₹{opp.sl}</div>
+                <div className="font-bold text-red-400">{opp.sl == null ? "—" : `₹${opp.sl}`}</div>
               </div>
               <div>
                 <span className="text-zinc-500">Target 1</span>
-                <div className="font-bold text-emerald-400">₹{opp.tp1}</div>
+                <div className="font-bold text-emerald-400">{opp.tp1 == null ? "—" : `₹${opp.tp1}`}</div>
               </div>
               <div>
                 <span className="text-zinc-500">Target 2</span>
-                <div className="font-bold text-emerald-400">₹{opp.tp2}</div>
+                <div className="font-bold text-emerald-400">{opp.tp2 == null ? "—" : `₹${opp.tp2}`}</div>
               </div>
               <div>
                 <span className="text-zinc-500">R:R</span>
-                <div className={`font-bold text-lg ${opp.rr >= 2.5 ? "text-emerald-400" : opp.rr >= 2 ? "text-emerald-300" : opp.rr >= 1.5 ? "text-yellow-400" : "text-red-400"}`}>
-                  1:{opp.rr}
+                <div className={`font-bold text-lg ${opp.rr == null ? "text-zinc-500" : opp.rr >= 2.5 ? "text-emerald-400" : opp.rr >= 2 ? "text-emerald-300" : opp.rr >= 1.5 ? "text-yellow-400" : "text-red-400"}`}>
+                  {opp.rr == null ? "—" : `1:${opp.rr}`}
                 </div>
               </div>
             </div>

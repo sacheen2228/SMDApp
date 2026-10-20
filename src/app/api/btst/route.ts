@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runBTSTScan, type BTSTScanResult } from "@/lib/btst-scanner";
 import { shouldAlertBTST } from "@/lib/btst-engine";
 import { sendTelegramMessage } from "@/lib/telegramSend";
+import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 
 // In-memory cache (independent of intraday engine)
 let cached: BTSTScanResult | null = null;
@@ -24,19 +25,43 @@ function formatAlert(a: any): string {
   ].join("\n");
 }
 
+async function scanMeta() {
+  const clock = await getMarketClock();
+  return buildCardMeta({
+    source: "nse",
+    providerTimestamp: clock.tradeDate,
+    ttlMs: 24 * 3600_000,
+    live: clock.isOpen,
+    reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+  });
+}
+
 export async function GET(req: NextRequest) {
   const now = Date.now();
   if (cached && now - lastScanAt < CACHE_TTL) {
-    return NextResponse.json({ success: true, cached: true, data: cached });
+    const meta = await scanMeta();
+    return NextResponse.json({ success: true, status: meta.status, meta, cached: true, data: cached });
   }
   try {
     const result = await runBTSTScan();
     cached = result;
     lastScanAt = now;
-    return NextResponse.json({ success: true, cached: false, data: result });
+    const meta = await scanMeta();
+    return NextResponse.json({
+      success: true,
+      // An empty scan on a working feed is "no candidates", not "no data".
+      status: meta.status,
+      meta,
+      cached: false,
+      data: result,
+      reason: result.candidates.length ? undefined : "No candidate passed the BTST screen on real data",
+    });
   } catch (err: any) {
     console.error("[btst] scan failed:", err);
-    return NextResponse.json({ success: false, error: err?.message || "scan failed" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, status: "UNAVAILABLE", error: err?.message || "scan failed" },
+      { status: 500 },
+    );
   }
 }
 
@@ -64,9 +89,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ success: true, data: result });
+    const meta = await scanMeta();
+    return NextResponse.json({ success: true, status: meta.status, meta, data: result });
   } catch (err: any) {
     console.error("[btst] scan failed:", err);
-    return NextResponse.json({ success: false, error: err?.message || "scan failed" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, status: "UNAVAILABLE", error: err?.message || "scan failed" },
+      { status: 500 },
+    );
   }
 }

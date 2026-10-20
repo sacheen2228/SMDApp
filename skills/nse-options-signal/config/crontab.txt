@@ -1,0 +1,50 @@
+# The nse-options-signal skill's scheduled jobs - MAPPING (not an installable crontab)
+#
+# WHY THIS FILE IS NOT A CRONTAB
+# The vendored package shipped a crontab of its own.  This repo already owns a
+# scheduler - scripts/dailyScanCron.ts (node-cron, run by the smdapp-cron.service
+# user unit) plus the systemd timers (smdapp-morning-signals, smdapp-intraday-scan,
+# smdapp-daily-digest, smdapp-recorder).  Installing a second crontab would
+# duplicate the scheduler, so the mapping below is executed by the EXISTING one:
+# src/lib/orchestrator/skill-jobs.ts registers every job and runs it through
+# skills/nse-options-signal/scripts/cron_job.sh (flock + timeout + bounded
+# retries + a structured JSON log + a trading-day gate).
+#
+#   systemctl --user restart smdapp-cron.service      # after changing the registry
+#
+# The original package's crontab (kept for reference):
+#
+#   CRON_TZ=Asia/Kolkata
+#   GEX_DATA_DIR=/home/you/gex_engine/data
+#   APP=/home/you/gex_engine/scripts
+#   35 15 * * 1-5  cd $APP && python3 eod_fetch.py --from-snapshot .../snapshot.json
+#   5 19 * * 1-5   cd $APP && python3 eod_fetch.py --eod --retry-until 22:00
+#   30 8 * * 1-5   cd $APP && python3 daily_bias.py
+#   */5 9-14 * * 1-5  cd $APP && python3 eod_fetch.py --live
+#   0 10 * * 0     cd $APP && python3 eod_fetch.py --holidays
+#
+# THE MAPPING (job -> schedule -> command -> source)
+#
+#   job            schedule (IST)   command (scripts/...)                    from the zip
+#   ------------------------------------------------------------------------------------
+#   eod-pcr        35 15 * * 1-5    eod_fetch.py --from-snapshot            the 15:35 line
+#   eod-fetch      5 19 * * 1-5     eod_fetch.py --eod --retry-until 22:00  the 19:05 line
+#   daily-bias     30 8 * * 1-5     daily_bias.py                           the 08:30 line
+#   live-breadth   */5 9-14 * * 1-5 live_fetch.sh (nse_fetch + eod_fetch    the */5 line
+#                                           --live)
+#   gex-engine     */5 9-14 * * 1-5 run_gex.py                             NEW (the spec's
+#                                                    GEX job; the engine's own session
+#                                                    gates hold 09:30-15:00 exactly)
+#   holidays       0 10 * * 0       eod_fetch.py --holidays                 the Sunday line
+#
+# OPERATIONAL RULES (all of them live in cron_job.sh / the job registry)
+#   * locking      - one instance per job (flock, non-blocking; a second run skips)
+#   * timeouts     - a hard budget per attempt (the registry's timeoutMs)
+#   * retries      - bounded, with a delay; never an infinite retry loop
+#   * logs         - one structured JSON line per attempt in <data>/logs/cron.log
+#   * idempotency  - the jobs rewrite their own outputs; the GEX engine appends to
+#                    data/gex_trades.jsonl and the cooldown is read from that file
+#   * holidays     - every trading-day job is skipped on weekends and on the NSE
+#                    holiday list (data/holidays.json, refreshed by the Sunday job)
+#   * exit codes   - a job is NEVER successful just because the process exited:
+#                    a non-zero exit (or a timeout) is a failure and is logged

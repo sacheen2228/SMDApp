@@ -9,8 +9,8 @@
 ## 1. What this project is
 
 SMDApp is a browser-based trading terminal that pulls **live** option-chain and market data for the
-five major Indian indices, runs a 14-factor options-quality scoring engine (SDM), an institutional
-AI layer (ORCA), and a classical technical-analysis engine (ML/TA), and presents everything through
+five major Indian indices, runs a 14-factor options-quality scoring engine (SDM) and a classical
+technical-analysis engine (ML/TA), and presents everything through
 two views:
 
 - **Simple Mode** — a beginner-friendly card with the live PCR, India VIX, ATM strike, max pain,
@@ -37,25 +37,37 @@ of the top scan picks, and **intraday alerts** fired every 15 minutes during mar
 | State | **Zustand** (global trading store) + **React Query** (server state) + local `useState` |
 | Package manager | **bun** (lockfile = `bun.lock`) |
 | Database | **SQLite** via **Prisma** (`db/custom.db`) — `Trade` model = live trade journal |
-| Live market data | **ICICI Breeze API** (primary) → **NSE India** scraper (fallback) → **Yahoo Finance** (stock/candle prices) |
+| Live market data | **NSE India** (indices/equities, primary) → **BSE** (SENSEX/BANKEX) → **MOAPI** → **ICICI Breeze** (opt-in) → `NO_DATA` (503). **No Yahoo** — unavailable data is `NO_DATA`, never a Yahoo quote |
 | AI / LLM | **Groq** (`llama-3.3-70b`, `llama-3.1-8b-instant`) + **OpenRouter** + optional **Ollama**, routed through a single `callLLM` helper |
-| Scheduling | **pm2** running `scripts/dailyScanCron.ts` (via `node-cron` + `tsx`) |
-| Analysis engines | `sdm-engine.ts` (14-factor SDM), `orca-engine.ts` (15-module ORCA), `ml-engine.ts` (RSI/Bollinger/VWAP/EMA/ADX), `intraday-scanner.ts` (stock scanner), `signal-engine.ts` (market structure / smart money / 0DTE) |
+| Scheduling | **systemd timers** (morning-signals 9:20, intraday-scan */15, daily-digest 15:25, market-recorder) + `scripts/dailyScanCron.ts` (`node-cron` + `tsx`) |
+| Analysis engines | `sdm-engine.ts` (14-factor SDM), `ml-engine.ts` (RSI/Bollinger/VWAP/EMA/ADX), `intraday-scanner.ts` (stock scanner), `signal-engine.ts` (market structure / smart money / 0DTE) |
 
 ### Data reality (important)
 All market data is **real** when API tokens / network are available. There is **no simulation
 fallback**: if a data source is unavailable the APIs return `503` instead of fabricating numbers.
-The scanner still uses *neutral technical defaults* (RSI 50, ADX 20, etc.) only for the rare stock
-whose candle history Yahoo does not return — that is a data gap, never a fabricated quote.
+
+### Data-source tree (canonical — also in [SOP.md](./SOP.md))
+```
+Option chain / live quotes
+  NIFTY · BANKNIFTY · FINNIFTY · MIDCPNIFTY + NSE equities ─▶ NSE (primary)
+  SENSEX · BANKEX                                        ─▶ BSE (primary)
+  fallback ─▶ MOAPI ─▶ ICICI Breeze (opt-in, last resort) ─▶ NO_DATA (503)
+Candles       ─▶ Breeze ─▶ MO API ─▶ NO_DATA
+India VIX     ─▶ NSE indiaVIX ─▶ NO_DATA
+FII/DII       ─▶ NSE India ─▶ MrChartist history
+```
+**Yahoo is not a data source anywhere.** The scanner uses *neutral technical defaults* (RSI 50,
+ADX 20) only for the rare stock whose candle history is unavailable — that is a data gap, never a
+fabricated quote.
 
 ---
 
 ## 3. Architecture at a glance
 
 ```
-Browser (React)  ──React Query──▶  /api/option-chain   ──▶ Breeze API → NSE API → 503
-                                      /api/scanner        ──▶ Yahoo Finance (quote + 3mo candles)
-                                      /api/sdm-signal     ──▶ signal-engine (ORCA/SDM/0DTE)
+Browser (React)  ──React Query──▶  /api/option-chain   ──▶ NSE / BSE → MOAPI → Breeze → 503 (NO_DATA)
+                                      /api/scanner        ──▶ live stock quotes + candle chain (Breeze/MO)
+                                      /api/sdm-signal     ──▶ signal-engine (SDM/0DTE)
                                       /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
                                       /api/intraday-scan  ──▶ Telegram (secret-gated cron)
                                        /api/daily-digest   ──▶ Telegram morning digest
@@ -66,7 +78,8 @@ SQLite (Prisma) ◀── trade journal written by SDM engine
 Telegram Bot  ──poll──▶  /api/telegram/poll  ──▶ processMessage() → commands
    @Sacheen_SD_Bot                                   ├── /signal, /price, /status → SMDApp APIs
 
-pm2 cron       ──▶ dailyScanCron.ts ──▶ fetchSnapshot() ──▶ formatDailyDigest() ──▶ sendTelegramMessage()
+systemd timers  ──▶ morning-signals 9:20 · intraday-scan */15 · daily-digest 15:25 ──▶ Telegram
+node-cron       ──▶ dailyScanCron.ts ──▶ scan/premarket jobs ──▶ sendTelegramMessage()
 ```
 
 **Key source files**
@@ -76,15 +89,14 @@ pm2 cron       ──▶ dailyScanCron.ts ──▶ fetchSnapshot() ──▶ fo
 | `src/app/page.tsx` | Main UI — both views, wires live `summary` + `recommendation` |
 | `src/app/api/option-chain/route.ts` | Core API: orchestrates data sources + SDM analysis. Envelope `{success, source, lastUpdate, data, analysis}` |
 | `src/lib/icici-breeze/` | ICICI Breeze auth, option chain, orders, positions |
-| `src/lib/nse-api.ts` | NSE India scraper (fallback) |
+| `src/lib/nse-api.ts` | NSE India scraper (primary NSE live source) |
 | `src/lib/sdm-engine.ts` | SDM 14-factor scoring engine |
 | `src/lib/sdm-recommendation.ts` | V2 recommendation orchestrator |
-| `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
 | `src/lib/signal-engine.ts` | Market structure / smart money / flow / 0DTE analytics |
-| `src/lib/intraday-scanner.ts` | Stock scanner — **live Yahoo quote + 3mo daily candles → real RSI/EMA/MACD/ADX/ATR** |
+| `src/lib/intraday-scanner.ts` | Stock scanner — **live quotes + 3mo daily candles → real RSI/EMA/MACD/ADX/ATR** |
 | `src/lib/ml-engine.ts` | Classical TA indicators (`Candle`, `calculateRSI`/`calculateEMA`/`calculateADX`) |
 | `src/lib/sdmChat.ts` / `llmResolve.ts` / `historyStore.ts` | Hybrid chat intent resolution |
-| `src/lib/sendDailyDigest.ts` / `sendIntradayAlerts.ts` / `dailyScan.ts` / `dailyDigest.ts` / `telegramSend.ts` / `stockUniverse.ts` | Daily digest + intraday alert pipeline |
+| `src/lib/sendIntradayAlerts.ts` / `dailyScan.ts` / `dailyDigest.ts` / `telegramSend.ts` / `stockUniverse.ts` | Daily digest + intraday alert pipeline |
 | `src/components/dashboard/SimpleMode.tsx` / `ScannerPanel.tsx` / `AgentChat.tsx` | Main UI panels |
 
 ---
@@ -150,14 +162,16 @@ This section records the actual work done so the design decisions are easy to re
   - `dailyDigest.ts` — `formatDailyDigest()` (markdown for Telegram).
   - `telegramSend.ts` — `sendTelegramMessage()` (multipart, chunked).
   - `intradayState.ts` (fixed `buildSignature` to read `alert.side`) + `marketHours.ts`.
-  - `sendDailyDigest.ts` — `fetchSnapshot()` pulls live data from `/api/option-chain` + `/api/news`
-    (reads `pcr` from top level, `vix` from `greeks.vix`), builds the digest.
-  - `sendIntradayAlerts.ts` — imports `fetchSnapshot`, fires alerts every 15 min during market hours.
+  - `sendIntradayAlerts.ts` — fires alerts every 15 min during market hours (snapshot is injected
+    into `dailyScan.ts` as a `fetchSnapshot` option; the old standalone `sendDailyDigest.ts` module
+    was removed in the 2026-08-14 cleanup).
 - Added `src/app/api/intraday-scan/route.ts`, **secret-gated** by `DAILY_SCAN_SECRET`.
-- Added `scripts/dailyScanCron.ts` (with a `.env` loader) and run it under **pm2** (`smd-daily-cron`):
+- Added `scripts/dailyScanCron.ts` (with a `.env` loader) — schedule now owned by **systemd timers**
+  (`smdapp-morning-signals` 09:20 IST Mon–Fri, `smdapp-intraday-scan` every 15 min 09:00–15:30 IST,
+  `smdapp-daily-digest` 15:25 IST) plus in-process `node-cron` jobs:
   digest at 09:20 IST Mon–Fri, intraday every 15 min 09:00–15:30 IST (market-hours gated).
 - Verified: 4 live picks (e.g. NIFTY 24250 CE 74%), route returns 401 without secret / 200 with it,
-  pm2 process online.
+  schedule verified live (systemd timers + `smdapp-cron.service` running).
 
 ### Step 3 — Fix the Simple tab (live data was showing zeros)
 - Symptom: Simple Mode showed `PCR 0`, `VIX 0`, `CE OI 0`, `PE OI 0`, `ATM 0`, "Awaiting SDM analysis".
@@ -181,11 +195,11 @@ This section records the actual work done so the design decisions are easy to re
 - Server fixes (`intraday-scanner.ts` + `route.ts`):
   - `runIntradayScan` was calling the `async` `generateCandidates` **without `await`** →
     `candidates.filter is not a function`. Made it `async` and awaited it; awaited it in the route.
-  - Removed a dead `yahooQuotes` reference that threw once the await was fixed.
-  - **No fabricated prices**: `generateCandidates` now skips any stock with no real Yahoo quote
+  - Removed a dead quote-provider reference that threw once the await was fixed.
+  - **No fabricated prices**: `generateCandidates` now skips any stock with no real live quote
     (removed the `: 500` fallback) and reports `liveCount`/`total`.
 - Real OHLC candles:
-  - Added `fetchYahooData()` — a **single** Yahoo chart call per symbol
+  - Added a **single** per-symbol chart call
     (`range=3mo&interval=1d`) that returns BOTH the live quote (`meta`) **and** 3 months of daily
     OHLC candles (`indicators.quote`). Fetched in bounded-concurrency batches (6 at a time) → ~10 s
     for all 50 NIFTY50 stocks (down from 29 s sequential).
@@ -224,7 +238,7 @@ This section records the actual work done so the design decisions are easy to re
 - The `ml-engine.ts` is classical TA (RSI/Bollinger/VWAP/EMA/ADX), **not** machine learning — the
   name is historical.
 - Per-stock **options flow** (PCR/OI per stock) and per-stock **candle history** beyond 3 months
-  would need Breeze per-symbol option data; currently stock TA uses Yahoo daily candles.
+  would need Breeze per-symbol option data; currently stock TA uses daily candles from the candle chain.
 - All indices expire on **Thursday** (SEBI rule), fixed in `master-bot-engine.ts` / `icici-breeze/option-chain.ts`.
 
 ---
@@ -237,7 +251,7 @@ This section records the actual work done so the design decisions are easy to re
 | `bun run build` | Standalone build (`.next/standalone/`) |
 | `bun run db:push` | Sync Prisma schema to SQLite |
 | `bun run lint` | ESLint (lenient) |
-| `pm2 start "bun x tsx scripts/dailyScanCron.ts" --name smd-daily-cron` | Run the alert scheduler |
+| `systemctl --user start smdapp-cron` | Run the alert scheduler (`scripts/dailyScanCron.ts`) |
 | `curl "http://localhost:3000/api/intraday-scan?secret=$DAILY_SCAN_SECRET"` | Trigger an intraday scan manually |
 
 ---
@@ -364,9 +378,8 @@ and CSV/JSON export. If the engine isn't running it shows a "start the engine" h
 | `src/lib/telegram-bot.ts` | Telegram command processor (SDM Trading commands) |
 | `src/lib/icici-breeze/` | ICICI Breeze API: auth, option chain, orders, positions |
 | `src/lib/sdm-engine.ts` | SDM 14-factor scoring engine |
-| `src/lib/orca-engine.ts` | ORCA institutional AI engine (15 modules) |
 | `src/lib/sdmChat.ts` / `llmResolve.ts` | Hybrid chat intent resolution |
-| `src/lib/intraday-scanner.ts` | Stock scanner — live Yahoo quote + real TA |
+| `src/lib/intraday-scanner.ts` | Stock scanner — live quotes + real TA |
 | `src/lib/btst-engine.ts` | BTST 6-factor scoring engine + risk engine |
 | `src/lib/btst-scanner.ts` | BTST scanner (reuses intraday scanner real data) |
 | `src/app/api/btst/route.ts` | BTST scan API + Telegram alerts |

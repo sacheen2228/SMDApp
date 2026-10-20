@@ -3,11 +3,11 @@
 // Provider hierarchy (canonical, see AGENTS.md "Provider hierarchy"):
 //   NSE/BSE primary → MOAPI fallback → NO_DATA
 //   Breeze = explicit opt-in fallback only (session-gated)
-//   Yahoo = RESEARCH ONLY — never labelled LIVE for trading
+//   There is NO Yahoo provider: it is banned by the data policy (AGENTS.md)
 //
 // Circuit breaking / cooldowns are NOT implemented here. They live in
 // `provider-health.ts`, which is the single source of truth for every
-// external provider (LLM SDKs, Breeze, NSE, BSE, MOAPI, Yahoo, website).
+// external provider (LLM SDKs, Breeze, NSE, BSE, MOAPI, website).
 // This module only mirrors that state into a legacy-shaped `ProviderState`
 // so existing consumers (/api/health, Hermes paper worker) keep working.
 
@@ -32,13 +32,16 @@ export interface ProviderState {
 
 // ── Provider Fallback Chain ────────────────────────────────────────────
 
-// NSE first: it is the primary exchange for every symbol this chain serves.
-// MOAPI is the fallback; Breeze only when a session is explicitly applied;
-// Yahoo last and research-only.
-const PROVIDER_PRIORITY: DataProvider[] = ["nse", "moapi", "breeze", "website", "yahoo"];
+// NSE/BSE first: they are the primary exchanges for every symbol this chain
+// serves. MOAPI is the fallback; Breeze only when a session is explicitly
+// applied; the website scraper is the last resort.
+//
+// There is NO Yahoo entry: Yahoo is banned by the data policy (AGENTS.md) —
+// a banned source must not even sit in the tree as a "last resort".
+const PROVIDER_PRIORITY: DataProvider[] = ["nse", "bse-api", "moapi", "breeze", "website"];
 
-// MCX has no NSE/Breeze coverage — MOAPI → scrape → Yahoo.
-const MCX_PROVIDER_PRIORITY: DataProvider[] = ["moapi", "breeze", "website", "yahoo"];
+// MCX has no NSE/BSE coverage — MOAPI → Breeze → website scrape.
+const MCX_PROVIDER_PRIORITY: DataProvider[] = ["moapi", "breeze", "website"];
 
 // ── Market Data Manager ────────────────────────────────────────────────
 
@@ -172,12 +175,8 @@ class MarketDataManagerImpl {
         const timestamp = this.extractTimestamp(data);
         const freshness = this.resolveFreshness(data, timestamp, dataType);
 
-        // Yahoo is always DELAYED for trading purposes
-        const effectiveFreshness = provider === "yahoo" && freshness === "LIVE"
-          ? "DELAYED"
-          : freshness;
-
-        const isDelayed = provider === "yahoo" || effectiveFreshness === "DELAYED";
+        const effectiveFreshness = freshness;
+        const isDelayed = effectiveFreshness === "DELAYED";
 
         return {
           data,
@@ -378,7 +377,6 @@ class MarketDataManagerImpl {
       nse: 0.85,
       bse: 0.85,
       website: 0.70,
-      yahoo: 0.60,
     };
     return reliabilityMap[provider] || 0.5;
   }
@@ -428,29 +426,23 @@ export async function fetchSpotWithFallback(
           const chain = await getNSEOptionChain(symbol);
           return chain?.priceInfo ? { ltp: chain.priceInfo.lastPrice, ...chain.priceInfo } : null;
         }
-        case "website": {
-          // No dedicated non-Yahoo web quote source — keep as an explicit
-          // no-op so the chain moves on to Yahoo rather than faking data.
-          return null;
+        case "bse-api": {
+          // BSE is a DESIGNATED PRIMARY for its own indices (SENSEX/BANKEX).
+          const { getBSEIndexData, isBSEIndex } = await import("@/lib/bse-api");
+          if (!isBSEIndex(symbol)) return null;
+          const d = await getBSEIndexData(symbol);
+          if (!d?.spotPrice) return null;
+          return {
+            ltp: d.spotPrice,
+            change: d.previousClose ? d.spotPrice - d.previousClose : 0,
+            changePct: d.previousClose ? ((d.spotPrice - d.previousClose) / d.previousClose) * 100 : 0,
+            prevClose: d.previousClose,
+            name: symbol,
+          };
         }
-        case "yahoo": {
-          // Free NSE/BSE data — the provider tree is NSE/BSE primary and Yahoo is
-          // banned by the data policy. The case key is kept for the provider
-          // registry, but the source is now the exchange.
-          const { getNSEIndices } = await import("@/lib/nse-api");
-          const idx = await getNSEIndices();
-          const row = idx?.find(
-            (i: any) => String(i.key).toUpperCase() === symbol.toUpperCase() || String(i.name).toUpperCase() === symbol.toUpperCase(),
-          );
-          if (row?.ltp) {
-            return { ltp: row.ltp, change: row.change, changePct: row.changePct, prevClose: row.prevClose, name: row.name };
-          }
-          const { fetchStockQuotes } = await import("@/lib/nse-stock-data");
-          const quotes = await fetchStockQuotes([symbol]);
-          const eq: any = quotes?.[symbol] || quotes?.[symbol.toUpperCase()];
-          if (eq?.ltp != null) {
-            return { ltp: eq.ltp, change: eq.change ?? 0, changePct: eq.changePct ?? 0, name: eq.name ?? symbol };
-          }
+        case "website": {
+          // No dedicated web quote source — an explicit no-op so the chain
+          // reports "no provider" instead of faking data.
           return null;
         }
         default:

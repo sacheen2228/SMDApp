@@ -8,6 +8,7 @@ import { buildUnifiedRanking } from "@/lib/trade-intelligence/unified-ranking";
 import { analyzeIndexFO } from "@/lib/trade-intelligence/index-fo-mode";
 import { analyzeStockFO } from "@/lib/trade-intelligence/stock-fo-mode";
 import { analyzeEquitySwing } from "@/lib/trade-intelligence/equity-swing-mode";
+import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 import {
   registerTrade,
   updateTrade,
@@ -16,6 +17,21 @@ import {
   getTrackingStats,
   cleanupTrades,
 } from "@/lib/trade-intelligence/trade-tracker";
+
+/**
+ * Provenance for the card: the exchange's own market state (the context is
+ * built from exchange chains + quotes) and the age of that data.
+ */
+async function cardMeta() {
+  const clock = await getMarketClock();
+  return buildCardMeta({
+    source: "nse",
+    providerTimestamp: clock.tradeDate,
+    ttlMs: 15 * 60_000,
+    live: clock.isOpen,
+    reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+  });
+}
 
 // ── GET /api/trade-intelligence ──
 export async function GET(request: NextRequest) {
@@ -32,6 +48,8 @@ export async function GET(request: NextRequest) {
         const ranking = await buildUnifiedRanking(ctx);
         return NextResponse.json({
           success: true,
+          status: (await cardMeta()).status,
+          meta: await cardMeta(),
           data: ranking,
         });
       }
@@ -39,8 +57,11 @@ export async function GET(request: NextRequest) {
       case "context": {
         // Just the market context
         const ctx = await buildMarketIntelligenceContext(forceRefresh);
+        const meta = await cardMeta();
         return NextResponse.json({
           success: true,
+          status: meta.status,
+          meta,
           data: ctx,
         });
       }
@@ -48,8 +69,11 @@ export async function GET(request: NextRequest) {
       case "index-fo": {
         const ctx = await buildMarketIntelligenceContext(forceRefresh);
         const signals = await analyzeIndexFO(ctx);
+        const meta = await cardMeta();
         return NextResponse.json({
           success: true,
+          status: meta.status,
+          meta,
           data: { signals, context: ctx },
         });
       }
@@ -57,8 +81,11 @@ export async function GET(request: NextRequest) {
       case "stock-fo": {
         const ctx = await buildMarketIntelligenceContext(forceRefresh);
         const signals = await analyzeStockFO(ctx);
+        const meta = await cardMeta();
         return NextResponse.json({
           success: true,
+          status: meta.status,
+          meta,
           data: { signals, context: ctx },
         });
       }
@@ -66,8 +93,11 @@ export async function GET(request: NextRequest) {
       case "equity-swing": {
         const ctx = await buildMarketIntelligenceContext(forceRefresh);
         const signals = await analyzeEquitySwing(ctx);
+        const meta = await cardMeta();
         return NextResponse.json({
           success: true,
+          status: meta.status,
+          meta,
           data: { signals, context: ctx },
         });
       }

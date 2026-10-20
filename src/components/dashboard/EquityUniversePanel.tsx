@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCw } from "lucide-react";
+import { Search, RefreshCw, AlertTriangle } from "lucide-react";
 
 const PRICE_FILTERS = [
   { label: "₹100", value: 100 },
@@ -70,22 +70,31 @@ export default function EquityUniversePanel() {
 
   const effectiveFilter = priceFilter === -1 ? customPrice : priceFilter;
 
-  const { data, isLoading, isFetching, refetch } = useQuery<any>({
+  const { data, isLoading, isFetching, refetch, error } = useQuery<any>({
     queryKey: ["equity-universe", effectiveFilter, minSignal],
     queryFn: async () => {
       const res = await fetch(
         `/api/equity-universe?priceFilter=${effectiveFilter}&interval=5m&limit=200&minSignal=${minSignal}`,
         { signal: AbortSignal.timeout(60_000) }
       );
-      if (!res.ok) throw new Error("Equity scan failed");
-      const json = await res.json();
-      return json.data;
+      const json = await res.json().catch(() => null);
+      if (!json) throw new Error("Equity scan failed");
+      return json;
     },
     refetchInterval: 5 * 60 * 1000,
     staleTime: 60_000,
   });
 
-  const results: EquityResult[] = data?.results || [];
+  const results: EquityResult[] = data?.data?.results || [];
+  // "No setups" and "no data" are different statements — the panel must say
+  // which one it is.
+  const scanMeta = data?.meta || null;
+  const scanError: string | null =
+    data?.status === "UNAVAILABLE"
+      ? data?.error || "The equity universe feed is unavailable"
+      : error
+      ? String((error as any)?.message || "Equity scan failed")
+      : null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -149,9 +158,10 @@ export default function EquityUniversePanel() {
           <RefreshCw className={`h-3 w-3 mr-1 ${isFetching ? "animate-spin" : ""}`} />
           Refresh
         </Button>
-        {data && (
+        {data?.data && (
           <span className="text-[10px] text-muted-foreground ml-auto">
-            {data.scanned} scanned · {data.filtered} passed (CMP ≤ ₹{data.priceFilter.toLocaleString()})
+            {data.data.analysed ?? data.data.scanned} of {data.data.scanned} scanned with real candles ·{" "}
+            {data.data.filtered} passed (CMP ≤ ₹{Number(data.data.priceFilter).toLocaleString()})
           </span>
         )}
       </div>
@@ -164,10 +174,21 @@ export default function EquityUniversePanel() {
             <p className="text-lg font-medium">Scanning cash equities...</p>
             <p className="text-sm mt-1">Applying CMP filter ₹{effectiveFilter.toLocaleString()}</p>
           </div>
+        ) : scanError ? (
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+            <AlertTriangle className="h-10 w-10 mb-3 text-red-500" />
+            <p className="text-lg font-medium text-red-400">Equity universe unavailable</p>
+            <p className="text-sm mt-1 max-w-md text-center">{scanError}</p>
+            {scanMeta?.reason ? <p className="text-xs mt-1 text-zinc-500">{scanMeta.reason}</p> : null}
+          </div>
         ) : results.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <p className="text-lg font-medium">No setups found</p>
-            <p className="text-sm mt-1">Try raising the price filter or lowering the score threshold</p>
+            <p className="text-sm mt-1">
+              {data?.data?.analysed
+                ? `${data.data.analysed} symbols were scanned with real candles — none passed the ${minSignal} score threshold.`
+                : "No symbol had real candles to scan."}
+            </p>
           </div>
         ) : (
           <table className="w-full text-[11px]">
@@ -193,7 +214,7 @@ export default function EquityUniversePanel() {
                   <td className="px-3 py-1.5 font-bold">{r.symbol}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">₹{r.price.toFixed(1)}</td>
                   <td className={`px-2 py-1.5 text-right tabular-nums ${r.changePct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                    {r.changePct >= 0 ? "+" : ""}{r.changePct.toFixed(2)}%
+                    {r.changePct == null ? "—" : `${r.changePct >= 0 ? "+" : ""}${r.changePct.toFixed(2)}%`}
                   </td>
                   <td className="px-2 py-1.5">
                     <Badge className={`${signalColor(r.signalLabel)} text-[9px] px-1.5 py-0 border`}>

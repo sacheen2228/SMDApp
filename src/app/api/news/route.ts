@@ -1,10 +1,20 @@
 // News API Endpoint
 // Returns market-wide sentiment + per-stock news
-// Enhanced with multiple free news sources for better reliability
+//
+// Honesty notes (2026-10-20 audit):
+//   • The route advertised "Yahoo Finance" as its default source and
+//     reported `source: "Yahoo Finance"` even though every article came
+//     from the RSS feeds. Yahoo is banned (SOP §1) — the label now names
+//     the feed that actually answered.
+//   • Articles without a publication date were stamped with "now", which
+//     made undated headlines look brand new. The date is now null.
+//   • A feed that returned nothing is reported as UNAVAILABLE with the
+//     reason — the card never renders a sentiment score over zero articles.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getCachedMarketNews, fetchStockNews } from "@/lib/news-engine";
+import { getCachedMarketNews } from "@/lib/news-engine";
 import { analyzeSentiment } from "@/lib/sentiment-analyzer";
+import { buildCardMeta, unavailableMeta } from "@/lib/data-freshness";
 
 // ── Phase 5 Web Intelligence ────────────────────────────────────────────
 // Stored web records are merged into the SAME articles array hermes already
@@ -50,15 +60,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol");
-    const source = searchParams.get("source"); // "yahoo", "finnhub", "iex", "polygon", "alpha", "rss"
-    
-    const sources = [
-      { id: "yahoo", name: "Yahoo Finance", base: "https://query1.finance.yahoo.com/v8/finance", free: true, priority: 1 },
-      { id: "finnhub", name: "Finnhub", base: "https://finnhub.io/api/v1", free: true, priority: 2 },
-      { id: "alpha", name: "Alpha Vantage", base: "https://www.alphavantage.co/query", free: true, priority: 3 },
-      { id: "iex", name: "IEX Cloud", base: "https://cloud.iexapis.com", free: false, priority: 4 },
-      { id: "polygon", name: "Polygon.io", base: "https://api.polygon.io/v2", free: false, priority: 5 },
-    ];
+    const source = searchParams.get("source"); // "x" | "rss"
 
     if (symbol) {
       // X (Twitter) buzz for a symbol — free Google News index source
@@ -74,15 +76,26 @@ export async function GET(request: NextRequest) {
           timestamp: new Date().toISOString(),
         });
       }
-      // Get news for specific stock from selected source
-      const selectedSource = sources.find(s => s.id === source) || sources[0];
-      const news = await getStockNews(selectedSource, symbol);
+
+      // Per-symbol news from the real RSS feeds.
+      const news = await getStockNews(symbol);
+      const articles = news.articles || [];
+      const meta = articles.length
+        ? buildCardMeta({
+            source: "rss",
+            providerTimestamp: newestPublishedAt(articles),
+            ttlMs: 30 * 60_000,
+          })
+        : unavailableMeta("No RSS feed published a headline for this symbol.", "rss");
       return NextResponse.json({
-        success: true,
+        success: articles.length > 0,
+        status: articles.length ? meta.status : "UNAVAILABLE",
         symbol,
-        source: selectedSource.name,
-        articles: news.articles || [],
-        count: news.articles?.length || 0,
+        // The REAL source (the feeds that answered) — not "Yahoo Finance".
+        source: articles.length ? sourceLabel(articles) : "none",
+        meta,
+        articles,
+        count: articles.length,
         timestamp: new Date().toISOString(),
         fallback: news.fallback || false,
       });
@@ -96,58 +109,54 @@ export async function GET(request: NextRequest) {
     maybeSyncWebIntel().catch(() => {});
     const merged = await mergeWebIntel(sentiment.articles || []);
 
+    const articles = merged.articles;
+    const meta = articles.length
+      ? buildCardMeta({
+          source: "rss",
+          providerTimestamp: newestPublishedAt(articles),
+          ttlMs: 30 * 60_000,
+        })
+      : unavailableMeta("No RSS feed answered — market sentiment unavailable.", "rss");
+
     return NextResponse.json({
-      success: true,
-      data: { ...sentiment, articles: merged.articles, webIntel: merged.meta },
+      success: articles.length > 0,
+      status: articles.length ? meta.status : "UNAVAILABLE",
+      meta,
+      source: articles.length ? sourceLabel(articles) : "none",
+      // `data` holds the sentiment payload the UI reads (overall/label/…).
+      data: { ...sentiment, articles, webIntel: merged.meta },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
     console.error("[News API] Error:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "News fetch failed" },
+      { success: false, status: "UNAVAILABLE", error: error.message || "News fetch failed" },
       { status: 500 }
     );
   }
 }
 
-// Get stock news from external API with fallback to RSS
-async function getStockNews(source: any, symbol: string): Promise<any> {
-  const attempts = [];
-  
-  // Primary: External free APIs
-  if (source.free || source.id === "yahoo") {
-    attempts.push(fetchYahooNews(symbol));
+/** Newest publication date across the articles (null when undated). */
+function newestPublishedAt(articles: any[]): Date | null {
+  let newest: number | null = null;
+  for (const a of articles) {
+    const t = a?.publishedAt ? Date.parse(a.publishedAt) : NaN;
+    if (Number.isFinite(t) && (newest == null || t > newest)) newest = t;
   }
-  if (source.id === "finnhub") {
-    attempts.push(fetchFinnhubNews(symbol));
-  }
-  if (source.id === "alpha") {
-    attempts.push(fetchAlphaVantageNews(symbol));
-  }
-  
-  // Always try RSS feeds as fallback (they work even when external APIs fail)
-  attempts.push(fetchRSSFeeds(symbol));
-  
-  // Execute attempts in parallel, return the first successful result
-  const results = await Promise.allSettled(attempts.map(promise => promise.catch(error => {
-    console.warn(`[Stock News] Source ${source.name} failed:`, error.message);
-    return null; // Return null on error to continue to next attempt
-  })));
-  
-  // Find first successful result
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value && result.value.articles?.length > 0) {
-      return { 
-        articles: result.value.articles, 
-        fallback: false,
-        source: source.name,
-        method: "external-api" 
-      };
-    }
-  }
-  
-  // If all external APIs fail, return empty (RSS feeds will be used for market news)
-  return { articles: [], fallback: true, source: source.name, method: "none" };
+  return newest ? new Date(newest) : null;
+}
+
+/** The feeds that actually answered. */
+function sourceLabel(articles: any[]): string {
+  const names = Array.from(new Set(articles.map((a) => a?.source).filter(Boolean))) as string[];
+  if (!names.length) return "rss";
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+}
+
+// Get stock news from the RSS feeds
+async function getStockNews(symbol: string): Promise<any> {
+  return fetchRSSFeeds(symbol);
 }
 
 // Fetch news from multiple RSS feeds (reliable fallback)
@@ -162,8 +171,8 @@ async function fetchRSSFeeds(symbol: string): Promise<any> {
     { name: "Business Standard", url: `https://www.business-standard.com/rss/companies/${symbol.toLowerCase()}`, pattern: `(?:\\b${symbol}\\b|\\bNIFTY\\b|\\bBANKNIFTY\\b|\\bFINNIFTY\\b|\\bMIDCPNIFTY\\b|\\bSENSEX\\b)` },
   ];
 
-  const articles = [];
-  
+  const articles: any[] = [];
+
   for (const feed of rssUrls) {
     try {
       const response = await fetch(feed.url, {
@@ -175,44 +184,34 @@ async function fetchRSSFeeds(symbol: string): Promise<any> {
       });
 
       if (!response.ok) continue;
-      
+
       const xml = await response.text();
       const parsed = parseRSSFeed(xml);
-      
+
       for (const item of parsed) {
         // Filter by symbol if pattern provided
         if (feed.pattern && !new RegExp(feed.pattern, "i").test(item.title + " " + item.description)) {
           continue;
         }
-        
+
+        const s = analyzeSentiment(item.title + " " + (item.description || ""));
         articles.push({
-          id: `rss-${feed.name}-${symbol}-${Date.now()}-${Math.random()}`, // source removed from id
+          id: `rss-${feed.name}-${symbol}-${Date.now()}-${Math.random()}`,
           title: item.title,
           description: item.description || "",
           source: feed.name,
           url: item.link,
-          publishedAt: item.pubDate || new Date().toISOString(),
-          sentiment: (() => {
-            const s = analyzeSentiment(item.title + " " + (item.description || ""));
-            return s.score;
-          })(),
-          sentimentLabel: (() => {
-            const s = analyzeSentiment(item.title + " " + (item.description || ""));
-            return s.label;
-          })(),
-          confidence: (() => {
-            const s = analyzeSentiment(item.title + " " + (item.description || ""));
-            return s.confidence;
-          })(),
-          event: (() => {
-            const s = analyzeSentiment(item.title + " " + (item.description || ""));
-            return { type: s.eventType, sentimentBias: s.score, confidence: s.confidence };
-          })(),
+          // null when the feed carried no date — never "now".
+          publishedAt: item.pubDate || null,
+          sentiment: s.score,
+          sentimentLabel: s.label,
+          confidence: s.confidence,
+          event: { type: s.eventType, sentimentBias: s.score, confidence: s.confidence },
           stockEntities: [symbol],
           sectorEntities: [],
         });
       }
-      
+
       if (articles.length > 0) break; // Found articles, stop checking other feeds
     } catch (error) {
       console.warn(`[RSS Feed] ${feed.name} failed for ${symbol}:`, error);
@@ -233,8 +232,8 @@ async function fetchRSSFeedsForMarket(): Promise<any> {
     "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZxYUdjU0FtVnpHZ0pOV0NBTXAB?hl=en-IN&gl=IN&ceid=IN:en",
   ];
 
-  const allArticles = [];
-  
+  const allArticles: any[] = [];
+
   for (const url of feedUrls) {
     try {
       const response = await fetch(url, {
@@ -246,7 +245,7 @@ async function fetchRSSFeedsForMarket(): Promise<any> {
       });
 
       if (!response.ok) continue;
-      
+
       const xml = await response.text();
       const items = parseRSSFeed(xml);
       allArticles.push(...items);
@@ -280,7 +279,8 @@ function parseRSSFeed(xml: string): any[] {
       title: decodeHTMLEntities(stripHTML(title)),
       description: decodeHTMLEntities(stripHTML(description)),
       link: link,
-      pubDate: pubDate || new Date().toISOString(),
+      // Keep the RAW date; "" means the feed carried none.
+      pubDate: pubDate || "",
     });
   }
 
@@ -307,80 +307,4 @@ function decodeHTMLEntities(text: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#x27;/g, "'")
     .replace(/&amp;#(\d+);/g, "");
-}
-
-// Legacy function - kept for backward compatibility
-async function fetchYahooNews(symbol: string): Promise<any> {
-  return { articles: [], method: "legacy", symbol }; // API temporarily disabled
-}
-
-async function fetchFinnhubNews(symbol: string): Promise<any> {
-  return { articles: [], method: "legacy", symbol }; // API temporarily disabled
-}
-
-async function fetchAlphaVantageNews(symbol: string): Promise<any> {
-  return { articles: [], method: "legacy", symbol }; // API temporarily disabled
-}
-
-// Get market-wide news from RSS feeds (primary for market sentiment)
-async function getMarketNews(sources: any[]): Promise<any> {
-  try {
-    // Use RSS feeds as they are most reliable for market sentiment
-    const allArticles = await fetchRSSFeedsForMarket();
-    
-    if (allArticles.length === 0) {
-      // Fall back to news-engine for RSS-based sentiment
-      return await getCachedMarketNews();
-    }
-
-    // Transform RSS articles to news format
-    const articles = allArticles.slice(0, 50).map((item, idx) => {
-      const title = item.title || "";
-      const content = item.description || "";
-      
-      // Keyword-based sentiment analysis (deterministic, no Math.random)
-      const s = analyzeSentiment(title + " " + content);
-      const sentiment = s.score;
-      
-      return {
-        id: `market-rss-${idx}-${Date.now()}`, // source removed from id
-        title: title,
-        description: content.substring(0, 200) + (content.length > 200 ? "..." : ""),
-        source: "RSS Feed",
-        url: item.link || "",
-        publishedAt: item.pubDate || new Date().toISOString(),
-        sentiment: parseFloat(sentiment.toFixed(2)),
-        sentimentLabel: sentiment > 0.2 ? "BULLISH" : sentiment < -0.2 ? "BEARISH" : "NEUTRAL",
-        confidence: s.confidence,
-        event: { 
-          type: s.eventType, 
-          sentimentBias: sentiment, 
-          confidence: s.confidence 
-        },
-        stockEntities: [],
-        sectorEntities: [],
-      };
-    });
-
-    // Calculate overall sentiment
-    const overallScore = articles.reduce((sum, a) => sum + a.sentiment, 0) / articles.length;
-    const overall = Math.round((overallScore + 1) * 50);
-    
-    let label: "EXTREME_FEAR" | "FEAR" | "NEUTRAL" | "GREED" | "EXTREME_GREED" = "NEUTRAL";
-    if (overall >= 75) label = "EXTREME_GREED";
-    else if (overall >= 60) label = "GREED";
-    else if (overall <= 25) label = "EXTREME_FEAR";
-    else if (overall <= 40) label = "FEAR";
-
-    return {
-      overall,
-      label,
-      articles,
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error) {
-    console.error("[Market News] Error:", error);
-    // Final fallback to news-engine RSS
-    return await getCachedMarketNews();
-  }
 }

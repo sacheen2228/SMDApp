@@ -34,7 +34,8 @@ import cron from "node-cron";
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
 import { todayDDMMYYYYIST, positioningFreshness, latestParticipantDate, hasParticipantDataForDate } from "@/lib/institutional-positioning-engine";
-import { sendSystemAlert } from "../src/lib/telegram";
+import { sendSystemAlert } from "@/lib/telegram";
+import { SKILL_JOBS, runSkillJob } from "@/lib/orchestrator/skill-jobs";
 
 const TIMEZONE = "Asia/Kolkata";
 const READINESS_SCHEDULE = "10 9 * * 1-5";     // 9:10am, Mon-Fri — pre-flight readiness (before the 09:15 open)
@@ -42,6 +43,31 @@ const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan 
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
 const EOD_SQUAREOFF_SCHEDULE = "31 15 * * 1-5"; // 3:31pm, Mon-Fri — close intraday journal trades at real LTP (BTST excluded)
 const INST_SCHEDULE = "*/20 16-18 * * 1-5";          // every 20 min, 16:00-18:40 Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
+
+// The nse-options-signal skill's jobs (EOD PCR/max-pain, EOD feeds, pre-market
+// bias, live breadth/movers, the GEX engine, the holiday list).  They live in
+// the SAME registry so the cron mapping is documented in one place - see
+// src/lib/orchestrator/skill-jobs.ts and
+// skills/nse-options-signal/config/crontab.txt.  Each job runs through the
+// skill's locked wrapper (flock + timeout + bounded retries + structured log).
+for (const job of SKILL_JOBS) {
+  cron.schedule(
+    job.schedule,
+    async () => {
+      console.log(`[dailyScanCron] skill job ${job.name} starting (${job.description})...`);
+      const result = await runSkillJob(job);
+      if (result.ok) {
+        console.log(`[dailyScanCron] skill job ${job.name} ok in ${result.durationMs}ms`);
+      } else {
+        console.error(
+          `[dailyScanCron] skill job ${job.name} FAILED code=${result.code} ` +
+          `timedOut=${result.timedOut}: ${result.stderr.slice(-500)}`
+        );
+      }
+    },
+    { timezone: TIMEZONE }
+  );
+}
 
 console.log(`[dailyScanCron] premarket readiness scheduled for "${READINESS_SCHEDULE}" (${TIMEZONE})`);
 console.log(`[dailyScanCron] BTST scan scheduled for "${BTST_SCHEDULE}" (${TIMEZONE})`);

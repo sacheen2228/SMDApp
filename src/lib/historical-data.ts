@@ -1,4 +1,17 @@
-// Historical Data Provider - Fetches candles from Breeze (real) or Yahoo (fallback)
+// Historical Data Provider — REAL candles only.
+//
+//   1. Breeze  — the broker's own history (any interval, needs a session)
+//   2. The exchange's own DAILY history (free NSE) — a DAILY request only
+//   3. Nothing → an EMPTY series (never a fabricated one)
+//
+// Yahoo used to be the fallback. It is banned by the data policy (AGENTS.md):
+// it was a third-party, delayed, adjusted series pushed into the app as if it
+// were the exchange's own — and for an INTRADAY request it was a DAILY series
+// dressed up as 5-minute candles.
+//
+// A daily source is never served for an intraday request (no timeframe
+// substitution): an intraday request with no intraday source returns [] and
+// the caller reports "no data" instead of a plausible-looking series.
 
 import { initSession, getBreezeClient } from '@/lib/icici-breeze/auth';
 
@@ -24,14 +37,13 @@ const INTERVAL_MAP: Record<string, string> = {
   '1M': '1month',
 };
 
+/** The intervals the exchange's free daily history can answer. */
+const DAILY_INTERVALS = new Set(['1d', '1day', 'day', 'daily', '1w', '1week', 'week', '1M', '1month', 'month']);
+
 function fmtDate(d: Date): string {
   const ist = new Date(d.getTime() + 5.5 * 60 * 60 * 1000);
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth() + 1)}-${pad(ist.getUTCDate())} ${pad(ist.getUTCHours())}:${pad(ist.getUTCMinutes())}:${pad(ist.getUTCSeconds())}`;
-}
-
-function roundToTick(price: number, tick: number = 0.05): number {
-  return Math.round(price / tick) * tick;
 }
 
 function isIndexSymbol(symbol: string): boolean {
@@ -56,10 +68,14 @@ function getBreezeExchange(symbol: string): string {
   return bse.includes(symbol.toUpperCase()) ? 'BSE' : 'NSE';
 }
 
-export async function getHistoricalCandles(
+/**
+ * The broker's own history. Returns [] when the session is dead, the request
+ * fails, or the range holds no rows — never a synthetic candle.
+ */
+async function fetchBreezeCandles(
   symbol: string,
-  interval: string = '5m',
-  limit: number = 300
+  interval: string,
+  limit: number
 ): Promise<Candle[]> {
   try {
     await initSession();
@@ -119,95 +135,74 @@ export async function getHistoricalCandles(
       }
     }
   } catch (e) {
-    console.warn('[Historical Data] Breeze failed, falling back to Yahoo:', e);
+    console.warn('[Historical Data] Breeze failed:', e);
   }
-
-  // Fallback: Yahoo Finance
-  return getYahooCandles(symbol, interval, limit);
+  return [];
 }
 
-async function getYahooCandles(
-  symbol: string,
-  interval: string,
-  limit: number
-): Promise<Candle[]> {
-  const yahooSymbol = getYahooSymbol(symbol);
-  const yahooInterval = mapIntervalToYahoo(interval);
-  const range = mapIntervalToRange(interval);
-
+/**
+ * The exchange's own DAILY history (free NSE) — the NSE F&O/equity history
+ * endpoint. Real daily OHLCV straight from the exchange.
+ *
+ * This is a DAILY series: it is only ever served for a daily request. An
+ * intraday request is never answered with daily bars.
+ */
+async function fetchNSEDailyCandles(symbol: string, limit: number): Promise<Candle[]> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${range}&interval=${yahooInterval}`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const { getNSEHistoricalData } = await import('@/lib/nse-api');
+    const to = new Date();
+    const from = new Date(to.getTime() - 400 * 24 * 60 * 60 * 1000);
+    const bars = await getNSEHistoricalData(symbol, from, to);
+    if (!Array.isArray(bars) || bars.length === 0) return [];
 
-    if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-
-    const json = await res.json();
-    const result = json?.chart?.result?.[0];
-    if (!result?.timestamp || !result?.indicators?.quote?.[0]) return [];
-
-    const ts = result.timestamp;
-    const q = result.indicators.quote[0];
-    const candles: Candle[] = [];
-
-    for (let i = 0; i < ts.length; i++) {
-      const close = q.close?.[i];
-      if (close == null) continue;
-      candles.push({
-        time: ts[i] * 1000,
-        open: q.open?.[i] ?? close,
-        high: q.high?.[i] ?? close,
-        low: q.low?.[i] ?? close,
+    const out: Candle[] = [];
+    for (const b of bars as any[]) {
+      const open = Number(b?.chOpeningPrice);
+      const high = Number(b?.chTradeHighPrice);
+      const low = Number(b?.chTradeLowPrice);
+      const close = Number(b?.chClosingPrice);
+      if (!open || !high || !low || !close) continue;
+      const ts = new Date(b?.mtimestamp).getTime();
+      if (!Number.isFinite(ts)) continue;
+      out.push({
+        time: ts,
+        open,
+        high,
+        low,
         close,
-        volume: q.volume?.[i] || 0,
+        volume: Number(b?.chTotTradedQty || 0),
       });
     }
-
-    return candles.slice(-limit);
+    if (out.length === 0) return [];
+    return out.sort((a, b) => a.time - b.time).slice(-limit);
   } catch (e) {
-    console.error('[Historical Data] Yahoo failed:', e);
+    console.warn('[Historical Data] NSE daily history failed:', e);
     return [];
   }
 }
 
-function getYahooSymbol(symbol: string): string {
-  const map: Record<string, string> = {
-    NIFTY: '^NSEI',
-    BANKNIFTY: '^NSEBANK',
-    FINNIFTY: '^CNXFIN',
-    MIDCPNIFTY: '^NSEMDCP50',
-    SENSEX: '^BSESN',
-    BANKEX: '^BSESN',
-  };
-  return map[symbol.toUpperCase()] || `${symbol.toUpperCase()}.NS`;
-}
+/**
+ * The candle series for `symbol`.
+ *
+ * Returns [] when no real source has the data — the caller then reports
+ * "no data" (an honest empty result), never a plausible-looking series.
+ */
+export async function getHistoricalCandles(
+  symbol: string,
+  interval: string = '5m',
+  limit: number = 300
+): Promise<Candle[]> {
+  const breeze = await fetchBreezeCandles(symbol, interval, limit);
+  if (breeze.length > 0) return breeze;
 
-function mapIntervalToYahoo(interval: string): string {
-  const map: Record<string, string> = {
-    '1m': '1m',
-    '5m': '5m',
-    '15m': '15m',
-    '30m': '30m',
-    '1h': '60m',
-    '1d': '1d',
-    '1w': '1wk',
-    '1M': '1mo',
-  };
-  return map[interval] || '5m';
-}
+  // The exchange's free daily history — a DAILY request only.
+  if (DAILY_INTERVALS.has(String(interval || '').toLowerCase())) {
+    const nse = await fetchNSEDailyCandles(symbol, limit);
+    if (nse.length > 0) return nse;
+  }
 
-function mapIntervalToRange(interval: string): string {
-  const map: Record<string, string> = {
-    '1m': '1d',
-    '5m': '5d',
-    '15m': '5d',
-    '30m': '1mo',
-    '1h': '3mo',
-    '1d': '2y',
-    '1w': '5y',
-    '1M': '10y',
-  };
-  return map[interval] || '1mo';
+  console.warn(
+    `[Historical Data] No real source for ${symbol} @ ${interval} — returning an empty series`
+  );
+  return [];
 }

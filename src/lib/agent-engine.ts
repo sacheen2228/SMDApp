@@ -1,7 +1,7 @@
 // SDM Agent Engine
 // Pattern-matching brain that answers questions using live market data + trade history
 
-import { getLotSize } from './symbol-config';
+import { getLotSizeStrict } from './symbol-config';
 
 export interface AgentContext {
   symbol: string;
@@ -386,9 +386,14 @@ const intents: Intent[] = [
   {
     patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i],
     handler: (ctx) => {
-      const lot = getLotSize(ctx.symbol) || 65;
+      // The REAL contract lot — null when it is not known. A guessed NIFTY
+      // lot (65) overstated every stock's ₹ risk by 4-11×.
+      const lot = getLotSizeStrict(ctx.symbol);
       const price = ctx.analysis?.recommendation?.entryPrice || 0;
       const sl = ctx.analysis?.recommendation?.stopLoss || 0;
+      if (lot === null) {
+        return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** UNKNOWN — ${ctx.symbol} has no contract in the NSE F&O lot table, so NO ₹ risk or position size can be computed (a guessed lot would be wrong by 4-11×).\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n\n💡 Look the contract lot up (NSE F&O bhavcopy) before sizing this position.`;
+      }
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
 
       return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule:**\n• Max 2% risk per trade\n• If capital = ₹1,00,000 → Max risk = ₹2,000\n• Max lots = ₹2,000 / ₹${fmt(riskPerLot)} = ${riskPerLot > 0 ? Math.floor(2000 / riskPerLot) : "—"} lots\n\n💡 Never risk more than 2% of capital on a single trade. This ensures you survive 50 consecutive losses.`;
@@ -448,9 +453,13 @@ const intents: Intent[] = [
   {
     patterns: [/risk/i, /position\s*size/i, /lot\s*size/i, /how\s*much/i, /capital/i, /stop\s*loss/i, /sl\b/i],
     handler: (ctx) => {
-      const lot = getLotSize(ctx.symbol) || 65;
+      // The REAL contract lot — null when it is not known (never a guess).
+      const lot = getLotSizeStrict(ctx.symbol);
       const price = ctx.analysis?.recommendation?.entryPrice || 70;
       const sl = ctx.analysis?.recommendation?.stopLoss || 45;
+      if (lot === null) {
+        return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** UNKNOWN — ${ctx.symbol} has no contract in the NSE F&O lot table, so NO ₹ risk or position size can be computed (a guessed lot would be wrong by 4-11×).\n**Entry:** ₹${fmt(price)} | **SL:** ₹${fmt(sl)}\n\n💡 Look the contract lot up (NSE F&O bhavcopy) before sizing this position.`;
+      }
       const riskPerLot = Math.abs(price - sl) * lot;
       const capital = 100000;
       const maxRisk = capital * 0.02;

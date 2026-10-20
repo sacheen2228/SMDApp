@@ -16,6 +16,58 @@ import { randomBytes } from "crypto";
 import { releaseTradeLock } from "../active-trade-lock";
 import { recordSignalOutcome } from "@/lib/agents/reputation";
 import { getCurrentSession } from "../market-session";
+import { planSide, planPnlPoints } from "../activeTradeTracker";
+
+// ── Paper hit detection (side-aware) ─────────────────────────────────────
+//
+// A bearish (PE) plan is MIRRORED: the stop sits ABOVE the entry and the
+// targets BELOW it, so the premium must FALL for the trade to win. The old
+// long-only test (price <= stop) fired a false SL the moment a PE was opened
+// (entry 41.05, stop 49.25) and the long-only TP2/TP3 ladder could never be
+// reached by a mirrored plan. The side comes from the plan GEOMETRY (the same
+// rule the live monitors use) — never from the option letter.
+
+export type PaperHit = "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT";
+
+/** The paper worker's hit ladder — one rule, shared with the live monitors. */
+export function detectPaperHit(trade: any, currentPrice: number): PaperHit | null {
+  if (!(currentPrice > 0)) return null;
+  const short = planSide(trade) === "SHORT";
+  const sl = Number(trade?.stopLoss);
+  const tp1 = Number(trade?.target1);
+  const tp2 = Number(trade?.target2);
+  const tp3 = Number(trade?.target3);
+  const status = String(trade?.status || "OPEN");
+
+  // 1) SL — always first (also covers the stop trailed to breakeven after TP1)
+  if (sl > 0 && (short ? currentPrice >= sl : currentPrice <= sl)) return "SL_HIT";
+  // 2) the TP ladder, by status
+  if (status === "OPEN" && tp1 > 0 && (short ? currentPrice <= tp1 : currentPrice >= tp1)) return "TP1_HIT";
+  if (status === "TP1_HIT" && tp2 > 0 && (short ? currentPrice <= tp2 : currentPrice >= tp2)) return "TP2_HIT";
+  if (status === "TP2_HIT" && tp3 > 0 && (short ? currentPrice <= tp3 : currentPrice >= tp3)) return "TP3_HIT";
+  return null;
+}
+
+/** The fill price of a hit: the stop level (or worse on a gap), or the target. */
+export function paperExitPrice(trade: any, hit: PaperHit, currentPrice: number): number {
+  const short = planSide(trade) === "SHORT";
+  if (hit === "SL_HIT") {
+    const sl = Number(trade?.stopLoss);
+    if (!(sl > 0)) return currentPrice;
+    return short ? Math.max(currentPrice, sl) : Math.min(currentPrice, sl);
+  }
+  const level = hit === "TP3_HIT" ? Number(trade?.target3)
+    : hit === "TP2_HIT" ? Number(trade?.target2)
+    : Number(trade?.target1);
+  if (!(level > 0)) return currentPrice;
+  // A target fills at the target; a gap through it fills better.
+  return short ? Math.min(currentPrice, level) : Math.max(currentPrice, level);
+}
+
+/** Signed P&L in premium points (per unit) for a paper trade. */
+export function paperPnlPoints(trade: any, price: number): number {
+  return planPnlPoints(trade, price);
+}
 
 // ── Singleton State ─────────────────────────────────────────────────────
 
@@ -469,13 +521,14 @@ class PaperWorkerSingleton {
 
     // 1. Check time exit
     if (holdingMs > this.config.maxHoldingMinutes * 60_000) {
+      const exitPx = this.lastKnownPremium(trade);
       await emitTimeExit(trade.signalId, trade.underlying, {
         direction: trade.decision,
         entry: trade.entryPrice,
-        exit: trade.highestPremium || trade.entryPrice,
+        exit: exitPx,
         holdingTime: `${(holdingMs / 3600_000).toFixed(1)}h`,
       });
-      await this.closeTrade(trade, "TIME_EXIT");
+      await this.closeTrade(trade, "TIME_EXIT", exitPx);
       return;
     }
 
@@ -486,13 +539,14 @@ class PaperWorkerSingleton {
       const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
       // Close at 15:30 (930 minutes) if still open on expiry day
       if (minutes >= 930) {
+        const exitPx = this.lastKnownPremium(trade);
         await emitExpiryExit(trade.signalId, trade.underlying, {
           direction: trade.decision,
           entry: trade.entryPrice,
-          exit: trade.highestPremium || trade.entryPrice,
+          exit: exitPx,
           expiry: trade.expiry,
         });
-        await this.closeTrade(trade, "EXPIRED");
+        await this.closeTrade(trade, "EXPIRED", exitPx);
         return;
       }
     }
@@ -527,18 +581,13 @@ class PaperWorkerSingleton {
     // Keep last 500 entries
     if (history.length > 500) history = history.slice(-500);
 
-    // 6. Check SL — direction aware!
-    // A PE plan has the stop ABOVE the entry and the targets BELOW it. Using the
-    // long-only test (price <= stop) fired a false SL hit the instant a PE was
-    // opened (entry 8.50, stop 10.20 → "SL HIT" at 8.50 with a POSITIVE P&L).
-    const isPe = trade.optionType === "PE" || trade.decision === "BUY_PE" || trade.decision === "BUY_PUT";
-    const slHit = isPe ? currentPrice >= trade.stopLoss : currentPrice <= trade.stopLoss;
-    if (slHit) {
+    // 6. Check SL / TP — side aware (a mirrored PE plan stops when the price
+    // RISES to the stop and targets when it FALLS to them).
+    const hit = detectPaperHit(trade, currentPrice);
+    if (hit === "SL_HIT") {
       // the fill is the stop level, or worse if the price gapped through it
-      const exitPrice = isPe
-        ? Math.max(currentPrice, trade.stopLoss)
-        : Math.min(currentPrice, trade.stopLoss);
-      const pnlPoints = exitPrice - trade.entryPrice;
+      const exitPrice = paperExitPrice(trade, "SL_HIT", currentPrice);
+      const pnlPoints = paperPnlPoints(trade, exitPrice);
       await emitSLHit(trade.signalId, trade.underlying, {
         direction: trade.decision,
         entry: trade.entryPrice,
@@ -550,15 +599,12 @@ class PaperWorkerSingleton {
         pnl: (pnlPoints * (trade.quantity || 1)).toFixed(2),
         exitReason: 'INITIAL_SL',
       });
-      await this.closeTrade(trade, "SL_HIT");
+      await this.closeTrade(trade, "SL_HIT", exitPrice);
       return;
     }
 
-    // 7. Check TP1 — mirrored for a PE (target below the entry)
-    const tp1Hit = isPe
-      ? (!!trade.target1 && currentPrice <= trade.target1)
-      : (!!trade.target1 && currentPrice >= trade.target1);
-    if (tp1Hit && trade.status === "OPEN") {
+    // 7. TP1
+    if (hit === "TP1_HIT") {
       trade.status = "TP1_HIT";
       trade.stopLoss = trade.entryPrice; // Move SL to breakeven
       await emitTP1Hit(trade.signalId, trade.underlying, {
@@ -567,7 +613,7 @@ class PaperWorkerSingleton {
         sl: trade.stopLoss,
         tp1: trade.target1,
         current: currentPrice,
-        pnl: ((currentPrice - trade.entryPrice) * (trade.quantity || 1)).toFixed(2),
+        pnl: (paperPnlPoints(trade, currentPrice) * (trade.quantity || 1)).toFixed(2),
       });
       await emitTrailingSL(trade.signalId, trade.underlying, {
         direction: trade.decision,
@@ -579,7 +625,7 @@ class PaperWorkerSingleton {
     }
 
     // 8. Check TP2
-    if (trade.target2 && currentPrice >= trade.target2 && trade.status === "TP1_HIT") {
+    if (hit === "TP2_HIT") {
       trade.status = "TP2_HIT";
       await emitTP2Hit(trade.signalId, trade.underlying, {
         direction: trade.decision,
@@ -588,13 +634,13 @@ class PaperWorkerSingleton {
         tp1: trade.target1,
         tp2: trade.target2,
         current: currentPrice,
-        pnl: ((currentPrice - trade.entryPrice) * (trade.quantity || 1)).toFixed(2),
+        pnl: (paperPnlPoints(trade, currentPrice) * (trade.quantity || 1)).toFixed(2),
       });
     }
 
     // 9. Check TP3
-    if (trade.target3 && currentPrice >= trade.target3 && trade.status === "TP2_HIT") {
-      await this.closeTrade(trade, "TP3_HIT");
+    if (hit === "TP3_HIT") {
+      await this.closeTrade(trade, "TP3_HIT", paperExitPrice(trade, "TP3_HIT", currentPrice));
       return;
     }
 
@@ -652,25 +698,46 @@ class PaperWorkerSingleton {
 
   // ── Close Trade ─────────────────────────────────────────────────
 
-  private async closeTrade(trade: any, exitSource: string): Promise<void> {
+  /** The last price we actually observed (the honest fill for a timed exit). */
+  private lastKnownPremium(trade: any): number {
+    try {
+      const hist = JSON.parse(trade.premiumHistory || "[]");
+      if (Array.isArray(hist) && hist.length) {
+        const last = Number(hist[hist.length - 1]?.premium);
+        if (last > 0) return last;
+      }
+    } catch { /* fall through */ }
+    return Number(trade.highestPremium) > 0 ? Number(trade.highestPremium) : Number(trade.entryPrice);
+  }
+
+  private async closeTrade(trade: any, exitSource: string, fillPrice?: number): Promise<void> {
     const now = new Date();
-    const exitPrice = trade.highestPremium || trade.entryPrice;
-
-    // Apply slippage
+    // The FILL we exited at. Never the MFE (highestPremium) for a stop-out —
+    // that reported a stop-out as a ₹533 profit.
+    const exitPrice = Number(fillPrice) > 0 ? Number(fillPrice) : this.lastKnownPremium(trade);
+    const entry = Number(trade.entryPrice);
+    const short = planSide(trade) === "SHORT";
     const slippage = exitPrice * (this.config.paperSlippageBps / 10_000);
-    const actualExit = exitSource === "SL_HIT"
-      ? exitPrice - slippage
-      : exitPrice + slippage;
+    // Slippage ALWAYS works against the position: a long sells at the bid, a
+    // short buys back at the ask. (The old rule made a long's target exit
+    // BETTER than the market and a short's stop exit better too.)
+    const actualExit = short ? exitPrice + slippage : exitPrice - slippage;
 
-    // Calculate P&L
-    const pnl = (actualExit - trade.entryPrice) * trade.quantity;
-    const pnlPercent = ((actualExit - trade.entryPrice) / trade.entryPrice) * 100;
+    // Calculate P&L (signed by the plan geometry — a mirrored bearish plan
+    // pays out the other way)
+    const pnlPoints = paperPnlPoints(trade, actualExit);
+    const pnl = pnlPoints * (trade.quantity || 1);
+    const pnlPercent = entry > 0 ? (pnlPoints / entry) * 100 : 0;
     const charges = this.calculateCharges(trade);
     const netPnl = pnl - charges;
 
-    // MFE/MAE
-    const mfe = (trade.highestPremium || trade.entryPrice) - trade.entryPrice;
-    const mae = (trade.lowestPremium || trade.entryPrice) - trade.entryPrice;
+    // MFE/MAE — "favourable" means favourable for THIS plan
+    const mfe = short
+      ? entry - (Number(trade.lowestPremium) || entry)
+      : (Number(trade.highestPremium) || entry) - entry;
+    const mae = short
+      ? entry - (Number(trade.highestPremium) || entry)
+      : (Number(trade.lowestPremium) || entry) - entry;
 
     const updated = {
       ...trade,

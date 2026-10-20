@@ -3,6 +3,7 @@ import {
   computeClosePnl,
   defaultQuantity,
   estimateFees,
+  inferPlanSide,
 } from "./sizing";
 
 describe("computeClosePnl", () => {
@@ -57,6 +58,95 @@ describe("computeClosePnl", () => {
     });
     expect(r.grossPnl).toBeCloseTo(10, 6); // qty 0 → treated as 1
     expect(r.rMultiple).toBe(0); // zero risk
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLAN GEOMETRY — the side comes from the levels, never from the letter.
+//
+// A bought PE can carry a MIRRORED (bearish) plan: stop ABOVE the entry,
+// targets BELOW it. The old long-only P&L booked such a stop-out as a WIN
+// (the app journal said −₹533 while the ledger said +₹533).
+describe("computeClosePnl — the plan side is read from the geometry", () => {
+  const MIRRORED_PE = { entryPrice: 41.05, stopLoss: 49.25, tp1: 24.65, quantity: 65 };
+
+  it("infers the side from the stop vs the entry", () => {
+    expect(inferPlanSide({ entryPrice: 41.05, stopLoss: 49.25 })).toBe("SHORT");
+    expect(inferPlanSide({ entryPrice: 100, stopLoss: 90 })).toBe("LONG");
+    // no usable stop → the target breaks the tie
+    expect(inferPlanSide({ entryPrice: 100, stopLoss: 0, tp1: 130 })).toBe("LONG");
+    expect(inferPlanSide({ entryPrice: 100, stopLoss: 0, tp1: 80 })).toBe("SHORT");
+    // no usable levels at all → the caller's flag
+    expect(inferPlanSide({ entryPrice: 100, isLong: false })).toBe("SHORT");
+    expect(inferPlanSide({ entryPrice: 100, isLong: true })).toBe("LONG");
+  });
+
+  it("a mirrored PE stop-out is a LOSS, never a win", () => {
+    const r = computeClosePnl({
+      isLong: true, // the caller still believed "BUY = long"
+      ...MIRRORED_PE,
+      exitPrice: 49.25, // the stop
+      fees: 0,
+    });
+    expect(r.side).toBe("SHORT");
+    expect(r.grossPnl).toBeCloseTo(-8.2 * 65, 6); // −₹533
+    expect(r.netPnl).toBeCloseTo(-8.2 * 65, 6);
+    expect(r.netPnl).toBeLessThan(0);
+    expect(r.rMultiple).toBeCloseTo(-1, 2);
+  });
+
+  it("a mirrored PE target hit is a GAIN", () => {
+    const r = computeClosePnl({
+      isLong: true,
+      ...MIRRORED_PE,
+      exitPrice: 24.65, // TP1
+      fees: 0,
+    });
+    expect(r.side).toBe("SHORT");
+    expect(r.grossPnl).toBeCloseTo(16.4 * 65, 6); // +₹1066
+    expect(r.netPnl).toBeGreaterThan(0);
+    expect(r.rMultiple).toBeCloseTo(2, 2);
+  });
+
+  it("a long-style PE (stop below, target above) keeps the long maths", () => {
+    const r = computeClosePnl({
+      isLong: true, entryPrice: 43.35, stopLoss: 36.85, tp1: 49.85,
+      exitPrice: 36.85, quantity: 225, fees: 0,
+    });
+    expect(r.side).toBe("LONG");
+    expect(r.grossPnl).toBeCloseTo(-6.5 * 225, 6);
+  });
+
+  it("an inverted plan can never book its stop-out as a win", () => {
+    // entry 440.55, stop 67.59 (below), target 178.06 (below) — the ZERO_HERO
+    // rows that were booked as a ₹24,242 "profit" on a stop-out.
+    const r = computeClosePnl({
+      isLong: false, entryPrice: 440.55, stopLoss: 67.59, tp1: 178.06,
+      exitPrice: 67.59, quantity: 65, fees: 0,
+    });
+    expect(r.side).toBe("LONG");
+    expect(r.grossPnl).toBeCloseTo((67.59 - 440.55) * 65, 6);
+    expect(r.netPnl).toBeLessThan(0);
+  });
+
+  it("keeps the R-multiple size-independent on a mirrored plan", () => {
+    const one = computeClosePnl({
+      isLong: true, ...MIRRORED_PE, exitPrice: 24.65, quantity: 1, fees: 0,
+    });
+    const lot = computeClosePnl({
+      isLong: true, ...MIRRORED_PE, exitPrice: 24.65, quantity: 65, fees: 0,
+    });
+    expect(one.rMultiple).toBeCloseTo(lot.rMultiple!, 6);
+    expect(lot.rMultiple).toBeCloseTo(2, 2);
+  });
+
+  it("an explicit side wins over the geometry", () => {
+    const r = computeClosePnl({
+      side: "SHORT", entryPrice: 100, stopLoss: 90, tp1: 130,
+      exitPrice: 110, quantity: 1, fees: 0,
+    });
+    expect(r.side).toBe("SHORT");
+    expect(r.grossPnl).toBeCloseTo(-10, 6);
   });
 });
 

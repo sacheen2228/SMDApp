@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Layers, TrendingUp, TrendingDown } from "lucide-react";
+import { DataFreshnessBadge, UnavailableCard } from "./DataFreshnessBadge";
 
 function RotationBadge({ rotation }: { rotation: string }) {
   const colors: Record<string, string> = {
@@ -41,38 +42,60 @@ export function SectorRotation() {
     );
   }
 
+  if (data.status === "UNAVAILABLE" || !data.sectors?.length) {
+    return (
+      <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
+            <Layers className="h-3 w-3" />
+            SECTOR ROTATION
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          <UnavailableCard title="Sector rotation" reason={data.error} meta={data.data} />
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <Layers className="h-3 w-3" />
           SECTOR ROTATION
+          <DataFreshnessBadge meta={data.data} className="ml-1" showReason />
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
         {/* Rotation Matrix */}
         <div className="grid grid-cols-2 gap-2 mb-3 text-[10px]">
+          {data.rotationMatrix == null ? (
+            <div className="col-span-2 text-[10px] text-zinc-500 mb-2">
+              Rotation needs two real sessions of sector data — unavailable.
+            </div>
+          ) : null}
           <div className="bg-emerald-500/10 border border-emerald-500/20 rounded p-2">
             <div className="font-bold text-emerald-400 mb-1">LEADING</div>
-            {data.rotationMatrix?.leading?.map((s: string) => (
+            {(data.rotationMatrix?.leading || []).map((s: string) => (
               <div key={s} className="text-zinc-300">{s}</div>
             )) || <div className="text-zinc-500">—</div>}
           </div>
           <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
             <div className="font-bold text-blue-400 mb-1">IMPROVING</div>
-            {data.rotationMatrix?.improving?.map((s: string) => (
+            {(data.rotationMatrix?.improving || []).map((s: string) => (
               <div key={s} className="text-zinc-300">{s}</div>
             )) || <div className="text-zinc-500">—</div>}
           </div>
           <div className="bg-orange-500/10 border border-orange-500/20 rounded p-2">
             <div className="font-bold text-orange-400 mb-1">WEAKENING</div>
-            {data.rotationMatrix?.weakening?.map((s: string) => (
+            {(data.rotationMatrix?.weakening || []).map((s: string) => (
               <div key={s} className="text-zinc-300">{s}</div>
             )) || <div className="text-zinc-500">—</div>}
           </div>
           <div className="bg-red-500/10 border border-red-500/20 rounded p-2">
             <div className="font-bold text-red-400 mb-1">LAGGING</div>
-            {data.rotationMatrix?.lagging?.map((s: string) => (
+            {(data.rotationMatrix?.lagging || []).map((s: string) => (
               <div key={s} className="text-zinc-300">{s}</div>
             )) || <div className="text-zinc-500">—</div>}
           </div>

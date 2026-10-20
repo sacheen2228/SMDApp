@@ -342,6 +342,34 @@ Config comes from `GATE_CONFIG` in `agent-brain-gate.ts` (single source of truth
 
 **Audit hygiene**: `strategyId: "test"` is rejected by the trade-audit API (`newSignalSchema`) — external scripts were polluting the closed ledger with fake `monerr-*` rows (8 deleted 2026-10-19). Note: the ledger's `spotPrice` column stores the **option premium**, not the underlying — never use it as spot.
 
+## NSE Options Signal — the A-E orchestrator + the GEX engine (2026-10-20)
+
+Lives in the skill tree: `skills/nse-options-signal/` (Python, stdlib only).
+
+| Piece | Where | Role |
+|---|---|---|
+| Orchestrator (the parent) | `scripts/orchestrator.py` | runs the panel, the consensus, the GEX isolation, the output |
+| Agent A (context) | `scripts/agents/agent_a.py` | reads `data/context.json` — CONTEXT, never a vote |
+| Agent B (levels) | `scripts/agents/agent_b.py` | chain/OI/PCR/level validation (two-source ±0.15%, wall ≥1.5×, not closed beyond, level stability) |
+| Agent C (structure) | `scripts/agents/agent_c.py` | BOS/CHoCH/sweeps + the skill's existing `scripts/breakout.py` |
+| Agent D (GEX) | `scripts/agents/agent_d.py` | runs `scripts/gex_engine.py`, validates `references/gex-output-schema.json`, checks the regime→strategy map |
+| Agent E (the plan) | `scripts/agents/agent_e.py` | the SOLE owner of strike/stop/targets/sizing |
+| GEX engine | `scripts/gex_engine.py` | the ONLY place gamma exposure is computed |
+| Job registry | `src/lib/orchestrator/skill-jobs.ts` | the six scheduled jobs (the repo's `scripts/dailyScanCron.ts` runs them) |
+| Rules + path mapping | `skills/nse-options-signal/references/agent-rules.md` | the veto catalogue, the A+ checklist, the vendored-file mapping |
+
+**Delegation**: B, C and D are child processes (`python3 scripts/agents/agent_*.py`), concurrent, 20 s each; the task is JSON on stdin, the result JSON on stdout. A timeout / non-zero exit / invalid JSON / missing field is a **mandatory veto**.
+
+**Consensus**: ≥2 of {B, C, D} on the same side, no opposing vote (neutral does not count), no veto. Agent A's context can only *conflict*: a conflict needs an objectively measured **A+ setup** (7 checks, `references/agent-rules.md` §5) + half size, else NO TRADE.
+
+**GEX isolation**: `engine="GEX"`, `trade_id` = `GEX-…`, the alerts go to the GEX outbox only (`data/gex_alerts.jsonl`), the GEX record never enters the main bias score, and GEX contributes at most ONE vote. `scripts/gex_exit_monitor.py` raises the operational "exit at market" alert on a 15-min close back through the invalidation — and refuses to claim a close it cannot verify.
+
+**Sizing**: the account equity is NEVER hardcoded — `scripts/account_equity.py` validates `data/account_equity.json` (`{equity, source, as_of}`) or the app's Breeze funds endpoint (`/api/positions` → `data.funds.allocated_equity`). The lot size comes from the contract master (`scripts/contract_master.py` → `src/lib/symbol-config.ts` / the bhavcopy `NewBrdLotQty`); a stock never inherits NIFTY's lot and an unknown lot fails closed.
+
+**Cron mapping** (documented in `skills/nse-options-signal/config/crontab.txt` — NOT an installable crontab): `eod-pcr` 15:35, `eod-fetch` 19:05 (retries to 22:00), `daily-bias` 08:30, `live-breadth` every 5 min 09:00-14:55, `gex-engine` every 5 min 09:30-15:00 (the engine's own session gates hold the exact window), `holidays` Sunday 10:00. Every job runs through `scripts/cron_job.sh` (flock, timeout, bounded retries, a structured JSON log, the weekend/holiday gate, and a non-zero exit on failure).
+
+**Tests**: `cd skills/nse-options-signal && python3 -m unittest discover -s tests` → 185 offline tests (68 pre-existing + 117 new), all green.
+
 ## Known Issues
 
 ### ML/AI module is NOT machine learning

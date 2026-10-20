@@ -75,20 +75,16 @@ describe("session-health reporting + single-owner alerting", () => {
     __setSessionAlertSenderForTests(null);
   });
 
-  test("SESSION_EXPIRED fires exactly one alert per episode, deduped", () => {
+  test("breeze SESSION_EXPIRED never pushes to Telegram (disabled 2026-10-19), episode still tracked", () => {
     reportSessionFailure("breeze", "SESSION_EXPIRED", "Breeze session expired and re-init failed");
     reportSessionFailure("breeze", "SESSION_EXPIRED", "Breeze session expired and re-init failed");
     reportSessionFailure("breeze", "SESSION_EXPIRED", "Invalid Token");
 
-    expect(sent.length).toBe(1);
-    expect(sent[0]).toContain("[SYSTEM][SESSION_EXPIRED]");
-    expect(sent[0]).toContain("breeze");
-    expect(sent[0]).toContain("Breeze session expired and re-init failed");
-    expect(sent[0]).toContain("set breeze session");
+    expect(sent.length).toBe(0); // no Telegram push for breeze
 
     const h = getSessionHealth().breeze;
     expect(h.kind).toBe("SESSION_EXPIRED");
-    expect(h.alertSent).toBe(true);
+    expect(h.alertSent).toBe(false); // nothing was dispatched
     expect(h.failureCount).toBe(3);
     expect(h.since).toBeTruthy();
   });
@@ -105,41 +101,41 @@ describe("session-health reporting + single-owner alerting", () => {
     expect(getSessionSummary().anySessionExpired).toBe(false);
   });
 
-  test("recovery re-arms the episode → next expiry alerts again", () => {
+  test("recovery re-arms the breeze episode → tracked again (still no Telegram push)", () => {
     reportSessionFailure("breeze", "SESSION_EXPIRED", "expired once");
-    expect(sent.length).toBe(1);
+    expect(sent.length).toBe(0);
 
     reportSessionRecovery("breeze");
-    expect(sent.length).toBe(1); // recovery itself does not alert
+    expect(sent.length).toBe(0); // recovery itself does not alert
     const h = getSessionHealth().breeze;
     expect(h.kind).toBeNull();
     expect(h.alertSent).toBe(false);
     expect(h.recoveredAt).toBeTruthy();
 
     reportSessionFailure("breeze", "SESSION_EXPIRED", "expired again");
-    expect(sent.length).toBe(2);
+    expect(sent.length).toBe(0); // breeze never pushes
     expect(getSessionHealth().breeze.failureCount).toBe(1);
   });
 
-  test("different sources alert independently (dedup is per source)", () => {
+  test("mo still alerts independently while breeze stays silent", () => {
     reportSessionFailure("breeze", "SESSION_EXPIRED", "breeze down");
     reportSessionFailure("mo", "SESSION_EXPIRED", "mo down");
     reportSessionFailure("breeze", "SESSION_EXPIRED", "breeze down again");
-    expect(sent.length).toBe(2);
-    expect(sent.some((m) => m.includes("mo"))).toBe(true);
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toContain("source=mo");
   });
 
   test("a generic data-gap report cannot downgrade an active expiry episode", () => {
     reportSessionFailure("breeze", "SESSION_EXPIRED", "token gone");
-    expect(sent.length).toBe(1);
+    expect(sent.length).toBe(0); // breeze never pushes
 
     reportSessionFailure("breeze", "NO_DATA", "option chain unavailable for NIFTY");
     const h = getSessionHealth().breeze;
     expect(h.kind).toBe("SESSION_EXPIRED"); // episode preserved
-    expect(h.alertSent).toBe(true); // still disarmed for this episode
+    expect(h.alertSent).toBe(false); // nothing was ever dispatched
 
     reportSessionFailure("breeze", "SESSION_EXPIRED", "still expired");
-    expect(sent.length).toBe(1); // no second alert
+    expect(sent.length).toBe(0);
     expect(getSessionHealth().breeze.failureCount).toBe(3);
   });
 
@@ -153,9 +149,10 @@ describe("session-health reporting + single-owner alerting", () => {
     expect(getSessionSummary().anySessionExpired).toBe(false);
   });
 
-  test("alert message includes remedy: manual token handoff path", () => {
-    reportSessionFailure("breeze", "SESSION_EXPIRED", "token gone");
-    expect(sent[0]).toContain("https://api.icicidirect.com/apiuser/login?api_key=");
+  test("mo alert message includes the TOTP remedy path", () => {
+    reportSessionFailure("mo", "SESSION_EXPIRED", "Invalid Token");
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toContain("MOTILAL_TOTP_KEY");
   });
 });
 
@@ -276,22 +273,22 @@ describe("alert dispatch confirmation", () => {
     __setSessionAlertSenderForTests(null);
   });
 
-  test("sender returning false (Telegram off-hours) does NOT consume the one-per-episode alert", () => {
+  test("sender returning false (Telegram off-hours) does NOT consume the one-per-episode alert (mo)", () => {
     let calls = 0;
     __setSessionAlertSenderForTests(() => { calls++; return false; });
-    reportSessionFailure("breeze", "SESSION_EXPIRED", "expired");
-    expect(getSessionHealth().breeze.alertSent).toBe(false);
+    reportSessionFailure("mo", "SESSION_EXPIRED", "expired");
+    expect(getSessionHealth().mo.alertSent).toBe(false);
     expect(calls).toBe(1);
 
-    reportSessionFailure("breeze", "SESSION_EXPIRED", "expired again");
+    reportSessionFailure("mo", "SESSION_EXPIRED", "expired again");
     expect(calls).toBe(2); // retried, not deduped into a lost alert
 
     __setSessionAlertSenderForTests(() => { calls++; return true; });
-    reportSessionFailure("breeze", "SESSION_EXPIRED", "still");
+    reportSessionFailure("mo", "SESSION_EXPIRED", "still");
     expect(calls).toBe(3);
-    expect(getSessionHealth().breeze.alertSent).toBe(true);
+    expect(getSessionHealth().mo.alertSent).toBe(true);
 
-    reportSessionFailure("breeze", "SESSION_EXPIRED", "still");
+    reportSessionFailure("mo", "SESSION_EXPIRED", "still");
     expect(calls).toBe(3); // confirmed → deduped
   });
 

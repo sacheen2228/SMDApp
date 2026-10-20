@@ -1,5 +1,5 @@
 // BTST Scanner
-// Reuses the live intraday scanner's real Yahoo Finance technicals, maps each
+// Reuses the live intraday scanner's real exchange technicals, maps each
 // bullish candidate into the BTST engine, and returns A+/A/B graded next-day ideas.
 // Also scans the index ETFs (NIFTYBEES for NIFTY, SENSEX ETF for SENSEX) so the
 // indices themselves appear as BTST candidates.
@@ -57,27 +57,28 @@ function calcATR(candles: Candle[], period = 14): number {
   return atr;
 }
 
-async function fetchYahooCandles(sym: string, range = "3mo", interval = "1d"): Promise<{ candles: Candle[]; price: number; changePct: number; volume: number } | null> {
+/**
+ * Daily candles for one symbol from the EXCHANGE's own history.
+ * Yahoo is banned (SOP §1) — the old fetcher pulled 3 months of Yahoo bars
+ * and silently returned null on failure.
+ */
+async function fetchDailyCandles(sym: string, range = "3mo", interval = "1d"): Promise<{ candles: Candle[]; price: number; changePct: number; volume: number } | null> {
   try {
-    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}.NS?range=${range}&interval=${interval}`, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result) return null;
-    const meta = result.meta;
-    const ts = result.timestamp;
-    const q = result.indicators?.quote?.[0];
-    if (!ts || !q?.close) return null;
-    const candles: Candle[] = [];
-    for (let i = 0; i < ts.length; i++) {
-      const close = q.close[i];
-      if (close == null) continue;
-      candles.push({ time: ts[i], open: q.open?.[i] ?? close, high: q.high?.[i] ?? close, low: q.low?.[i] ?? close, close });
-    }
-    const prevClose = meta.chartPreviousClose || meta.regularMarketPrice || candles[0]?.close || 0;
-    const price = meta.regularMarketPrice || candles.at(-1)?.close || 0;
-    const changePct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
-    const volume = meta.regularMarketVolume || 0;
+    const { getDailyBars } = await import("./daily-bars");
+    const bars = await getDailyBars(sym, 120);
+    if (!bars || bars.length < 30) return null;
+    const candles: Candle[] = bars.map((b) => ({
+      time: Math.floor(b.t / 1000),
+      open: b.o,
+      high: b.h,
+      low: b.l,
+      close: b.c,
+      volume: b.v || 0,
+    }));
+    const price = candles.at(-1)!.close;
+    const prev = candles.at(-2)?.close ?? price;
+    const changePct = prev > 0 ? ((price - prev) / prev) * 100 : 0;
+    const volume = candles.at(-1)?.volume || 0;
     return { candles, price, changePct, volume };
   } catch {
     return null;
@@ -95,7 +96,7 @@ async function buildIndexETFBTST(institutionalData?: {
 } | null): Promise<BTSTAnalysis[]> {
   const out: BTSTAnalysis[] = [];
   for (const etf of INDEX_ETFS) {
-    const d = await fetchYahooCandles(etf.sym);
+    const d = await fetchDailyCandles(etf.sym);
     if (!d || d.candles.length < 50) continue;
     const closes = d.candles.map((c) => c.close);
     const ema9 = calculateEMA(closes, 9).at(-1) ?? d.price;
@@ -127,9 +128,11 @@ async function buildIndexETFBTST(institutionalData?: {
       ema50,
       volume: d.volume,
       avgVolume,
-      oiChangePct: 0,
-      pcr: 1,
-      iv: 0,
+      // An ETF has no option chain: PCR / OI / IV are UNKNOWN (null), not
+      // "1.0 / 0 / 0" — those numbers scored the setup as a real signal.
+      oiChangePct: null,
+      pcr: null,
+      iv: null,
       sectorStrength: d.changePct * 3,
       relativeStrength: d.changePct,
       deliveryPct: 60, // ETFs are institutional/delivery-heavy
@@ -145,17 +148,24 @@ async function buildIndexETFBTST(institutionalData?: {
 }
 
 export async function runBTSTScan(): Promise<BTSTScanResult> {
-  // Reuse live scanner data (real Yahoo Finance quotes + 3mo candles)
+  // Reuse live scanner data (real exchange quotes + daily candles)
+  // Real index context (the scanner used to run with spotPrice 0, VIX 15,
+  // PCR 1 and max pain 0 — four invented numbers in the market context).
+  const { getNSEIndexQuote, getNSEIndiaVIX } = await import("./nse-api");
+  const [idxQuote, vixQuote] = await Promise.all([
+    getNSEIndexQuote("NIFTY").catch(() => null),
+    getNSEIndiaVIX().catch(() => null),
+  ]);
   const scan = await runIntradayScan({
     symbol: "NIFTY",
-    spotPrice: 0,
+    spotPrice: idxQuote?.regularMarketPrice || 0,
     optionChain: [],
-    vix: 15,
-    pcr: 1,
-    maxPain: 0,
+    vix: vixQuote?.value ?? null,
+    pcr: null,
+    maxPain: null,
     totalCallOI: 0,
     totalPutOI: 0,
-  });
+  } as any);
 
   // Fetch NSE Participant-wise OI institutional positioning
   let institutionalData: {
@@ -199,7 +209,8 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
 
     // Map scanner technicals → BTST engine input.
     // relativeStrength approximated from the stock's own momentum vs a flat market.
-    // deliveryPct / breadth are not available from Yahoo — derived as honest proxies.
+    // deliveryPct / breadth are not published by the free feeds — derived as
+    // honest proxies from the real relative volume / market breadth.
     const analysis = analyzeBTST({
       symbol: c.symbol,
       name: c.name,
@@ -466,7 +477,7 @@ export async function closeYesterdayBTST(): Promise<{ closed: number }> {
         // Proper exit is today — use the live close (same as the normal path)
         let live = liveCache.get(t.symbol);
         if (live === undefined) {
-          const d = await fetchYahooCandles(t.symbol, "5d", "1d");
+          const d = await fetchDailyCandles(t.symbol, "5d", "1d");
           live = d?.candles.at(-1)?.close ?? 0;
           liveCache.set(t.symbol, live);
         }

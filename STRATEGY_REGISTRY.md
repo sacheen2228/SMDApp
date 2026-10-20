@@ -82,10 +82,10 @@
 | Item | Status | Evidence |
 |------|--------|----------|
 | **S1-S8 (index)** | **LIVE in Jarvis, ABSENT from 30-agent path** | `pickStrategy()` called only from `orchestrator.ts:102` → reachable via `/api/jarvis`. Option Engine (`option-engine.ts`) imports zero jarvis modules — S1-S8 never checked. |
-| **Stock event-driven set** | **SCAFFOLDING** | `stock_event_driven` strategy set defined in `instrument-router.ts` but no stock-specific gates implemented. Earnings-calendar gate = **stub** (no calendar source). |
-| **Instrument Router** | **DEAD CODE** | `src/lib/instrument-router.ts` exists (170 lines) but **zero importers** in `src/`, `tests/`, or `*.md`. Nothing routes through it. |
+| **Stock event-driven set** | **REMOVED** | The `stock_event_driven` strategy set lived in `instrument-router.ts` — deleted in the Oct-11 dead-code purge; no stock-specific gates were ever implemented. Earnings-calendar gate was a **stub** (no calendar source). |
+| **Instrument Router** | **REMOVED (Oct-11 purge)** | `src/lib/instrument-router.ts` (170 lines, zero importers) was dead code and was deleted by commit `d7fb127`. Nothing routes through it. |
 | **Grok diff-backstop** | **LIVE + TESTED** | `hermesResponseMatchesSignal()` in `jarvis-adapters.ts:580`. Used by `/api/agent` (lines 488, 838) and `/api/jarvis/chat` (line 84). **23 tests pass / 0 fail** ✅ |
-| **Grok backstop (§6 numeric)** | **BROKEN** | `grokBackstop()` in `supervisor.ts:225`. `tests/agent-backstop.test.ts` **cannot load** — supervisor.ts:332 has `const` reassignment error. |
+| **Grok backstop (§6 numeric)** | **LIVE + TESTED** | `grokBackstop()` in `supervisor.ts:225`. `tests/agent-backstop.test.ts` loads cleanly — **4 pass / 0 fail** (verified 2026-10-19) ✅ |
 | **Confidence-tiered risk sizing** | **NOT BUILT in 30-agent system** | Neither engine computes `quantity`. Confidence only sets letter grade (A/B/C/D). Confidence-scaled sizing exists only in unrelated `zero-hero-ai/position-size-calculator.ts`. |
 | **Liquidity Trading (S3-STOCK)** | **NOT BUILT** | No `src/lib/strategies/` directory exists. This is what Part B of this prompt builds. |
 
@@ -93,27 +93,21 @@
 
 ## Critical Blockers
 
-### Compile Errors (system cannot load)
+### Compile Errors — RESOLVED (verified 2026-10-19)
 
-1. **`src/lib/agents/supervisor.ts:332`** — `const` reassignment
-   ```
-   line 290: const { consensus, confidence } = determineConsensus(...)
-   line 332: consensusConfidence = Math.max(...)  ← ERROR: reassign const
-   ```
-   Module cannot be imported at all. Blocks `pipeline.ts`, `index.ts`, `option-engine.ts`, `cash-futures-engine.ts`.
-
-2. **`src/lib/agents/learning-db.ts`** — truncated to 30 lines, missing exports
-   ```
-   pipeline.ts:20 → import { storeDecisionRecord, updateOutcome }  ← does not exist
-   index.ts:41 → export { storeDecisionRecord, ... }  ← does not exist
-   ```
+1. ~~**`src/lib/agents/supervisor.ts:332`** — `const` reassignment~~ — fixed in the Oct-11
+   cleanup; `tests/agent-backstop.test.ts` **4 pass / 0 fail** and
+   `tests/agent-system.test.ts` **34 pass / 0 fail**.
+2. ~~**`src/lib/agents/learning-db.ts`** — truncated, missing exports~~ — file is 152 lines;
+   `storeDecisionRecord` / `updateOutcome` both export and the module loads cleanly.
 
 ### Runtime State
 
-3. **`/api/agents/pipeline` returns 500** — only entry point, compile errors above.
+3. ~~**`/api/agents/pipeline` returns 500**~~ — RESOLVED: `GET /api/agents/pipeline` now
+   returns 200 `{"ok":true,...,"dryRun":true}` (verified 2026-10-19).
 4. **No UI/cron/chat calls the 30-agent system** — only reachable via manual `GET /api/agents/pipeline`.
 5. **Option Engine always NO_TRADE** — `grokDecision.candidate === undefined` → `entry = 0` → `checkStopLoss` fails.
-6. **All 30-agent files uncommitted** — `git status` shows every file as `??`.
+6. ~~**All 30-agent files uncommitted**~~ — RESOLVED: all agent files are tracked and committed.
 7. **No test uses real data** — all agent tests mock the snapshot.
 
 ### Test Evidence
@@ -122,11 +116,10 @@
 |-----------|--------|-----------|
 | `tests/agent-snapshot.test.ts` | 5 pass / 0 fail ✅ | MOCK (fetch stub) |
 | `tests/agent-bridge.test.ts` | 11 pass / 0 fail ✅ | MOCK (synthetic chain) |
-| `tests/agent-system.test.ts` | **0 pass / 1 fail / 1 error** ❌ | MOCK — cannot load supervisor |
-| `tests/agent-backstop.test.ts` | **0 pass / 1 fail / 1 error** ❌ | MOCK — cannot load supervisor |
+| `tests/agent-system.test.ts` | **34 pass / 0 fail** ✅ | MOCK (synthetic) |
+| `tests/agent-backstop.test.ts` | **4 pass / 0 fail** ✅ | MOCK (synthetic) |
 | `tests/jarvis-classifier.test.ts` | 23 pass / 0 fail ✅ | Unit (diff backstop) |
-| **Full `bun test`** | **ABORTS** — hangs on agent-system.test.ts | — |
-| **Excluding broken files** | **532 pass / 0 fail / 23 files** ✅ | — |
+| **Full `bun test`** | **1022 pass / 12 fail / 6 errors — runs to completion** (2026-10-19 post-revert; fails/errors pre-existing, no abort) | — |
 
 **No test feeds live market data to any of the 30 agents.**
 

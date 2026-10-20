@@ -6,6 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataFreshnessBadge } from "./DataFreshnessBadge";
 import { Badge } from "@/components/ui/badge";
 import { Bell, AlertTriangle, TrendingUp, TrendingDown, Volume2, Target, Shield, X, CheckCheck } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -297,6 +298,7 @@ export function AlertCenter() {
           {unreadCount > 0 && (
             <Badge className="bg-red-600 text-white text-[8px] px-1.5">{unreadCount}</Badge>
           )}
+          <DataFreshnessBadge meta={breadth?.data} className="ml-1" showReason />
         </CardTitle>
         {allAlerts.length > 8 && (
           <button

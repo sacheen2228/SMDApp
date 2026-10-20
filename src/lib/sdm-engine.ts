@@ -3,7 +3,8 @@
 
 import type { SDMOptionStrike, ScoreObject } from "@/types/sdm";
 import { buildOptionPlan } from "./option-plan";
-import { getLotSize } from "./symbol-config";
+import { getLotSizeStrict } from "./symbol-config";
+import { getRiskFreeRate } from "./greeks";
 
 // ─── 1. PCR Score ────────────────────────────────────────────────
 // Put-Call Ratio: total PE OI / total CE OI
@@ -592,9 +593,14 @@ export function scoreExpiryGammaTheta(
   else if (window === "danger") thetaRate = 40;
 
   // E) Gamma blast detection (only in danger window)
-  const currentVix = vix || 15;
+  //
+  // The VIX must be REAL. The old `vix || 15` turned a missing India VIX
+  // into a "calm market": lowVix became TRUE and the detector reported a
+  // blast signal the exchange never published. A missing VIX is UNKNOWN —
+  // it fires no low-volatility signal at all.
+  const currentVix = Number.isFinite(vix as number) && (vix as number) > 0 ? (vix as number) : null;
   const gammaBlastSignals = {
-    lowVix: currentVix < 15,
+    lowVix: currentVix !== null ? currentVix < 15 : false,
     flatThenBreakout: false, // Would need historical data to compute
     volumeSpike: false, // Would need volume comparison
     ivSpike: false, // Would need IV comparison
@@ -639,7 +645,9 @@ export function scoreExpiryGammaTheta(
   return {
     score,
     direction,
-    details: `WINDOW:${window}:GAMMA:${gammaValue.toFixed(4)}:THETA_RATE:${thetaRate}:BLAST:${gammaBlastDetected}:SIGNALS:${JSON.stringify(gammaBlastSignals)}`,
+    // VIX_KNOWN / VIX make the volatility read explicit: "N/A" = the feed
+    // was unavailable (never a fabricated 15).
+    details: `WINDOW:${window}:GAMMA:${gammaValue.toFixed(4)}:THETA_RATE:${thetaRate}:BLAST:${gammaBlastDetected}:VIX_KNOWN:${currentVix !== null}:VIX:${currentVix !== null ? currentVix.toFixed(1) : "N/A"}:SIGNALS:${JSON.stringify(gammaBlastSignals)}`,
   };
 }
 
@@ -688,7 +696,10 @@ export function parseGammaThetaDetails(details: string) {
 export function scorePremiumFairValue(
   strikes: SDMOptionStrike[],
   spot: number,
-  riskFreeRate: number = 0.065
+  // The risk-free rate is a documented, configurable assumption
+  // (see greeks.ts → getRiskFreeRate()). It used to be a second hardcoded
+  // 6.5% here — two independent rates in the same app.
+  riskFreeRate: number = getRiskFreeRate()
 ): ScoreObject {
   let atmStrike = strikes[0]?.strike || 0;
   let minDist = Infinity;
@@ -1158,7 +1169,9 @@ export function runFullAnalysis(
         symbol: chainSymbol,
         optionType: isCall ? "CE" : "PE",
         entryPremium: entryPrice,
-        lotSize: getLotSize(chainSymbol) || 1,
+        // The REAL contract lot — null when it is unknown (never a guess).
+        // The option plan then works in PER-UNIT points (no ₹ amount).
+        lotSize: getLotSizeStrict(chainSymbol) ?? 1,
       })
     : null;
   const stopLoss = plan?.stopLoss ?? (entryPrice > 0 ? Math.round(entryPrice * 0.85) : 0);
@@ -1290,7 +1303,11 @@ export function runFullAnalysis(
       putWriting: totalPEOI > totalCEOI,
     },
     greeks: {
-      vix: 15,
+      // UNKNOWN — runFullAnalysis has no VIX input. The old hardcoded 15
+      // made a missing India VIX read as a calm market; the API route
+      // overwrites this with the live VIX when it has one.
+      vix: null,
+      vixKnown: false,
       ivRank: 50,
       ivPercentile: 50,
       overallGreeksScore: Math.round(confidence),

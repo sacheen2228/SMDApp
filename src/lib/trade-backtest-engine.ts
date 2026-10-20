@@ -63,74 +63,116 @@ export async function fetchAllClosedTrades(
   return out;
 }
 
-// ─── Direct Yahoo Finance candle fetch (bypasses Breeze timeout) ─────
-export function getYahooSymbol(symbol: string, exchange?: string): string {
-  const map: Record<string, string> = {
-    NIFTY: '^NSEI', BANKNIFTY: '^NSEBANK', FINNIFTY: '^CNXFIN',
-    MIDCPNIFTY: '^NSEMDCP50', SENSEX: '^BSESN', BANKEX: '^BSESN',
-    // MCX Commodity → Yahoo US futures equivalents
-    CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
-    NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
-    GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
-    SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
-  };
-  const mapped = map[symbol.toUpperCase()];
-  if (mapped) return mapped;
-  const suffix = exchange?.toUpperCase() === 'BSE' ? '.BO' : '.NS';
-  return `${symbol.toUpperCase()}${suffix}`;
-}
-
-async function fetchCandlesDirect(
-  symbol: string,
-  interval: string = '1d',
-  limit: number = 1000,
-  exchange?: string
-): Promise<Candle[]> {
-  const yahooSymbol = getYahooSymbol(symbol, exchange);
-  const range = interval === '5m' ? '5d' : interval === '15m' ? '1mo' : interval === '1h' ? '3mo' : '1y';
-  const yahooInterval = interval === '1h' ? '60m' : interval;
-
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${range}&interval=${yahooInterval}`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) return [];
-
-    const json = await res.json();
-    const result = json?.chart?.result?.[0];
-    if (!result?.timestamp || !result?.indicators?.quote?.[0]) return [];
-
-    const ts = result.timestamp;
-    const q = result.indicators.quote[0];
-    const candles: Candle[] = [];
-
-    for (let i = 0; i < ts.length; i++) {
-      const close = q.close?.[i];
-      if (close == null) continue;
-      candles.push({
-        time: ts[i],
-        open: q.open?.[i] ?? close,
-        high: q.high?.[i] ?? close,
-        low: q.low?.[i] ?? close,
-        close,
-        volume: q.volume?.[i] || 0,
-      });
-    }
-    return candles.slice(-limit);
-  } catch {
-    return [];
-  }
-}
+// ─── The underlying's real price history (no Yahoo) ────────────────────
+//
+// The old source was Yahoo Finance: a third-party, delayed series pushed
+// into the replay as if it were the exchange's own. Yahoo is banned by the
+// data policy (AGENTS.md).
+//
+// What is left is REAL:
+//   • DAILY   → the exchange's own daily history (free NSE)
+//   • INTRADAY→ the broker's own intraday history (Breeze) for the trade's
+//     session. There is no free intraday source, so when Breeze has nothing
+//     the replay reports NO_DATA — a daily series is never replayed as if it
+//     were intraday (that was a fake 5-minute path).
 
 interface Candle {
-  time: number;
+  time: number; // epoch SECONDS (the replay multiplies by 1000)
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
+}
+
+/** "2026-10-20 10:15:00" (IST) → epoch seconds. */
+function istToEpochSeconds(istStr: string): number {
+  const s = String(istStr || "").trim().replace(" ", "T");
+  if (!s) return NaN;
+  const withOffset = /([Zz]|[+-]\d{2}:?\d{2})$/.test(s) ? s : `${s}+05:30`;
+  const ms = Date.parse(withOffset);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+}
+
+/** "16-Oct-2026" (the NSE history's trade date) → epoch seconds (IST midnight). */
+function nseTradeDateToEpochSeconds(raw: string): number {
+  const m = /^(\d{1,2})-([A-Za-z]{3,9})-(\d{4})$/.exec(String(raw || "").trim());
+  if (!m) return NaN;
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const mi = months.indexOf(m[2].slice(0, 3).toLowerCase());
+  if (mi < 0) return NaN;
+  const iso = `${m[3]}-${String(mi + 1).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  const ms = Date.parse(`${iso}T00:00:00+05:30`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+}
+
+/** The exchange's own DAILY history (free NSE) → daily candles. */
+async function fetchNSEDailyCandles(symbol: string, from: Date, to: Date): Promise<Candle[]> {
+  try {
+    const { getNSEHistoricalData } = await import("@/lib/nse-api");
+    const bars = await getNSEHistoricalData(symbol, from, to);
+    if (!Array.isArray(bars)) return [];
+    const out: Candle[] = [];
+    for (const b of bars as any[]) {
+      const open = Number(b?.chOpeningPrice);
+      const high = Number(b?.chTradeHighPrice);
+      const low = Number(b?.chTradeLowPrice);
+      const close = Number(b?.chClosingPrice);
+      if (!open || !high || !low || !close) continue;
+      const time = nseTradeDateToEpochSeconds(b?.mtimestamp);
+      if (!Number.isFinite(time)) continue;
+      out.push({ time, open, high, low, close, volume: Number(b?.chTotTradedQty || 0) });
+    }
+    return out.sort((a, b) => a.time - b.time);
+  } catch {
+    return [];
+  }
+}
+
+/** The broker's own intraday history (Breeze) for one session. */
+async function fetchBreezeIntradayCandles(
+  symbol: string,
+  dateStr: string,
+  interval: string
+): Promise<Candle[]> {
+  try {
+    const { getIntradayCandles } = await import("@/lib/breeze-historical");
+    const breezeInterval =
+      interval === "5m" ? "5minute" : interval === "1h" ? "15minute" : "15minute";
+    const res = await getIntradayCandles(symbol, dateStr, breezeInterval as any);
+    const out: Candle[] = [];
+    for (const c of (res?.candles || []) as any[]) {
+      const time = istToEpochSeconds(c?.time);
+      if (!Number.isFinite(time)) continue;
+      const open = Number(c?.open ?? 0);
+      const high = Number(c?.high ?? 0);
+      const low = Number(c?.low ?? 0);
+      const close = Number(c?.close ?? 0);
+      if (!open && !high && !low && !close) continue;
+      out.push({ time, open, high, low, close, volume: Number(c?.volume ?? 0) });
+    }
+    return out.sort((a, b) => a.time - b.time);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The real price history for one symbol over the replay window.
+ * Returns [] when no real source has the data (the trade is then NO_DATA).
+ */
+async function fetchSpotCandles(
+  symbol: string,
+  from: Date,
+  to: Date,
+  interval: string
+): Promise<Candle[]> {
+  if (interval === "1d") {
+    return fetchNSEDailyCandles(symbol, from, to);
+  }
+  // Intraday — the broker's own history for the session.
+  const dateStr = to.toISOString().slice(0, 10);
+  return fetchBreezeIntradayCandles(symbol, dateStr, interval);
 }
 
 // ─── Option premium replay path ──────────────────────────────────────────
@@ -373,7 +415,10 @@ export async function backtestAllTrades(
         const startDate = new Date(earliest - 7 * 24 * 60 * 60 * 1000); // 7 day buffer
         const endDate = new Date(latest + 1 * 24 * 60 * 60 * 1000);
 
-        // Use intraday candles for recent trades, daily for older ones
+        // Use intraday candles for recent trades, daily for older ones.
+        // The intraday path needs a REAL intraday source (the broker's own
+        // history) — when it has nothing the replay reports NO_DATA rather
+        // than replaying daily bars as if they were intraday.
         const holdingDays = (latest - earliest) / (24 * 60 * 60 * 1000);
         const daysAgo = (Date.now() - earliest) / (24 * 60 * 60 * 1000);
         let interval = '1d';
@@ -381,7 +426,7 @@ export async function backtestAllTrades(
         else if (daysAgo <= 30 && holdingDays < 7) interval = '15m';
         else if (daysAgo <= 90) interval = '1h';
 
-        const candles = await fetchCandlesDirect(symbol, interval, 1000, exchange);
+        const candles = await fetchSpotCandles(symbol, startDate, endDate, interval);
         return { key, candles };
       })
     );

@@ -1,5 +1,19 @@
-// Trade Opportunity Engine — Uses technical analysis detection engines
-// Breakout, Pullback, Momentum, Breakdown, Reversal detection with confirmations
+// Trade Opportunity Engine — technical detection engines on REAL data.
+//
+// Honesty notes (2026-10-20 audit):
+//   • `estimateIndicators()` invented every indicator it fed the detection
+//     engines: ema20 = prevClose + change*0.3, ema50 = ema200 = prevClose,
+//     vwap = (high+low+ltp)/3, rsi = a step function of changePct,
+//     macd = changePct*0.5, avgVolume = 2 000 000. The scanners therefore
+//     fired on made-up "EMA crossovers" — this is one of the sources of the
+//     WRONG SIGNALS. Every indicator now comes from the exchange's own daily
+//     bars.
+//   • The market context was fetched from `${INTERNAL_API_BASE}/api/market/
+//     regime` with an empty base URL, so the fetch always failed and the
+//     catch returned a hardcoded NEUTRAL / VIX 15 / CLOSED context. The
+//     regime route is now called in-process.
+//   • Entry / SL / TP fell back to ltp*0.985 / ltp*1.03 / ltp*1.05 when the
+//     engine found no setup. They are null now.
 
 import { NextResponse } from "next/server";
 import { fetchNIFTY50Stocks } from "@/lib/nse-stock-data";
@@ -12,13 +26,14 @@ import {
   scanStock,
   rrFromLevels,
   pickOptionLeg,
-  TechnicalIndicators,
-  ScanContext,
+  type ScanContext,
+  type TechnicalIndicators,
 } from "@/lib/technical-analysis";
-import { runIntradayScan } from "@/lib/intraday-scanner";
 import { getNSEEquityOptionChain } from "@/lib/nse-api";
 import { spotToPremiumLevels } from "@/lib/greeks";
 import { isTradingDay } from "@/lib/expiry-liquidity/market-session-config";
+import { getDailyBars, buildIndicators } from "@/lib/daily-bars";
+import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
 
 // ─── Option leg enrichment (live NSE equity chain) ─────────────────
 // Top rows of the card show the option strike to trade. Chain comes from
@@ -41,99 +56,27 @@ async function getCachedEquityChain(symbol: string) {
   return chain;
 }
 
-const REGIME_API = process.env.INTERNAL_API_BASE || "";
-
-async function getMarketContext(): Promise<ScanContext> {
+/**
+ * Market context for the detection engines. The regime route is called
+ * in-process (a self-fetch to an empty base URL always failed and produced
+ * a hardcoded NEUTRAL / VIX 15 / CLOSED context).
+ */
+async function getMarketContext(): Promise<ScanContext | null> {
   try {
-    const res = await fetch(`${REGIME_API}/api/market/regime`, {
-      next: { revalidate: 60 },
-    });
-    if (!res.ok) throw new Error("Regime fetch failed");
-    const data = await res.json();
+    const { GET: regimeGet } = await import("@/app/api/market/regime/route");
+    const res = await regimeGet();
+    const data: any = await res.json();
+    const regime = String(data?.regime || "");
+    const allowed = ["STRONG_BULLISH", "BULLISH", "NEUTRAL", "BEARISH", "STRONG_BEARISH", "HIGH VOLATILITY"];
     return {
-      marketRegime: data.regime || "NEUTRAL",
-      marketBreadth: data.avgIndexChange || 0,
-      vix: data.vix?.value || 15,
-      session: data.session || "CLOSED",
+      marketRegime: (allowed.includes(regime) ? regime : "NEUTRAL") as ScanContext["marketRegime"],
+      marketBreadth: typeof data?.breadthScore === "number" ? data.breadthScore : 50,
+      vix: typeof data?.vix?.value === "number" ? data.vix.value : 0,
+      session: (data?.session || "CLOSED") as ScanContext["session"],
     };
   } catch {
-    return {
-      marketRegime: "NEUTRAL",
-      marketBreadth: 0,
-      vix: 15,
-      session: "CLOSED",
-    };
+    return null;
   }
-}
-
-function estimateIndicators(stock: any, sectorAvg: number, marketAvg: number): TechnicalIndicators {
-  const range = stock.dayHigh - stock.dayLow;
-  const atr = range > 0 ? range : stock.ltp * 0.015;
-
-  // Estimate relVolume (would need avgVolume from historical data)
-  const avgVolume = 2000000; // placeholder - in production use real avg volume
-  const relVolume = stock.volume / avgVolume;
-
-  // Estimate EMAs from available data
-  // In production, these would come from historical data
-  const ema20 = stock.prevClose + (stock.change || 0) * 0.3; // rough estimate
-  const ema50 = stock.prevClose;
-  const ema200 = stock.prevClose;
-
-  // Estimate VWAP (typically between day high/low)
-  const vwap = (stock.dayHigh + stock.dayLow + stock.ltp) / 3;
-
-  // Estimate RSI from changePct
-  let rsi = 50;
-  if (stock.changePct > 3) rsi = 70;
-  else if (stock.changePct > 1.5) rsi = 60;
-  else if (stock.changePct > 0) rsi = 55;
-  else if (stock.changePct > -1.5) rsi = 45;
-  else if (stock.changePct > -3) rsi = 40;
-  else rsi = 30;
-
-  // Estimate MACD
-  const macd = {
-    macd: stock.changePct * 0.5,
-    signal: stock.changePct * 0.3,
-    histogram: stock.changePct * 0.2,
-  };
-
-  // Estimate Bollinger Bands
-  const bbMiddle = ema20;
-  const bbUpper = ema20 + atr * 2;
-  const bbLower = ema20 - atr * 2;
-
-  return {
-    ltp: stock.ltp,
-    open: stock.prevClose + (stock.change || 0) * 0.5,
-    high: stock.dayHigh,
-    low: stock.dayLow,
-    prevClose: stock.prevClose,
-    changePct: stock.changePct,
-    volume: stock.volume,
-    avgVolume,
-    relVolume,
-    vwap,
-    ema20,
-    ema50,
-    ema200,
-    rsi,
-    macd,
-    atr,
-    atrPct: (atr / stock.ltp) * 100,
-    bbUpper,
-    bbLower,
-    bbMiddle,
-    dayHigh: stock.dayHigh,
-    dayLow: stock.dayLow,
-    weekHigh52: stock.weekHigh52,
-    weekLow52: stock.weekLow52,
-    prevDayHigh: stock.dayHigh, // placeholder
-    prevDayLow: stock.dayLow, // placeholder
-    sectorChangePct: sectorAvg,
-    marketChangePct: marketAvg,
-  };
 }
 
 export async function GET(request: Request) {
@@ -143,12 +86,14 @@ export async function GET(request: Request) {
     // Friday's close and report stale moves as fresh setups.
     if (!isTradingDay()) {
       return NextResponse.json({
+        success: true,
+        status: "UNAVAILABLE",
         opportunities: [],
         totalStocks: 0,
-        avgScore: 0,
+        avgScore: null,
         topOppCount: 0,
-        marketContext: {},
-        reason: 'Non-trading day — no new prices are published on weekends or exchange holidays',
+        marketContext: null,
+        reason: "Non-trading day — no new prices are published on weekends or exchange holidays",
         timestamp: new Date().toISOString(),
       });
     }
@@ -161,29 +106,18 @@ export async function GET(request: Request) {
       getMarketContext(),
     ]);
 
-    // Also run intraday scan for additional signal sources
-    let intradayCandidates: any[] = [];
-    try {
-      const intradayResult = await runIntradayScan(
-        { symbol: "NIFTY", spotPrice: 0, optionChain: null, vix: context.vix, pcr: 1, maxPain: 0, totalCallOI: 0, totalPutOI: 0 },
-        null
-      );
-      intradayCandidates = intradayResult.candidates || [];
-    } catch {
-      // Intraday scan is optional — don't fail the whole endpoint
-    }
-
-    // Build intraday lookup by symbol
-    const intradayBySymbol: Record<string, any> = {};
-    for (const c of intradayCandidates) {
-      intradayBySymbol[c.symbol] = c;
-    }
-
     if (stocks.length === 0) {
-      return NextResponse.json({ success: true, opportunities: [], stockCount: 0 });
+      return NextResponse.json({
+        success: false,
+        status: "UNAVAILABLE",
+        opportunities: [],
+        stockCount: 0,
+        reason: "No quotes available from the exchange feeds",
+        timestamp: new Date().toISOString(),
+      });
     }
 
-    // Sector averages
+    // Sector averages (real)
     const sectorMap: Record<string, any[]> = {};
     for (const s of stocks) {
       if (!sectorMap[s.sector]) sectorMap[s.sector] = [];
@@ -195,61 +129,105 @@ export async function GET(request: Request) {
     }
     const marketAvg = stocks.reduce((sum: number, s: any) => sum + s.changePct, 0) / stocks.length;
 
-    // Scan each stock
-    const opportunities = stocks.map((s: any) => {
-      const indicators = estimateIndicators(s, sectorAvg[s.sector] || 0, marketAvg);
-      const scan = scanStock(indicators, context);
-      const intraday = intradayBySymbol[s.symbol];
+    // Real daily bars for every symbol (cached 15 min).
+    const symbols = stocks.map((s) => s.symbol);
+    const barLists = await Promise.all(
+      symbols.map(async (sym) => [sym, await getDailyBars(sym)] as const),
+    );
+    const barsBySymbol = new Map(barLists);
 
-      // Merge intraday score if available (20% weight)
-      let mergedScore = scan.overallScore;
-      let source = "TECHNICAL_ANALYSIS";
-      if (intraday && intraday.totalScore > 0) {
-        mergedScore = Math.round(scan.overallScore * 0.8 + intraday.totalScore * 0.2);
-        source = "TECHNICAL_ANALYSIS+INTRADAY";
+    const opportunities: any[] = [];
+    const noData: any[] = [];
+
+    for (const s of stocks) {
+      const bars = barsBySymbol.get(s.symbol) || [];
+      if (bars.length < 20) {
+        // No real history → no indicators, no setups. Listed separately so
+        // the card can say "no data" instead of scoring invented numbers.
+        noData.push({ symbol: s.symbol, name: s.name, reason: "No daily history from the exchange" });
+        continue;
       }
 
-      const entry = scan.bestSetup?.entryZone?.low || s.ltp;
-      const sl = scan.bestSetup?.stopLoss || s.ltp * 0.985;
-      const tp1 = scan.bestSetup?.targets?.[0] || s.ltp * 1.03;
-      const tp2 = scan.bestSetup?.targets?.[1] || s.ltp * 1.05;
+      const indicators = buildIndicators({
+        quote: {
+          ltp: s.ltp,
+          prevClose: s.prevClose,
+          changePct: s.changePct,
+          volume: s.volume,
+          dayHigh: s.dayHigh,
+          dayLow: s.dayLow,
+          weekHigh52: s.weekHigh52,
+          weekLow52: s.weekLow52,
+          sector: s.sector,
+          sectorChangePct: sectorAvg[s.sector] ?? 0,
+          marketChangePct: marketAvg,
+        },
+        bars,
+      });
 
-      return {
+      const scan = context
+        ? scanStock(indicators as unknown as TechnicalIndicators, context)
+        : scanStock(indicators as unknown as TechnicalIndicators);
+
+      const setup = scan.bestSetup;
+      const entry = setup?.entryZone?.low ?? null;
+      const sl = setup?.stopLoss ?? null;
+      const tp1 = setup?.targets?.[0] ?? null;
+      const tp2 = setup?.targets?.[1] ?? null;
+
+      opportunities.push({
         symbol: s.symbol,
         name: s.name,
         sector: s.sector,
         ltp: s.ltp,
         changePct: s.changePct,
         volume: s.volume,
-        relVolume: indicators.relVolume,
-        score: mergedScore,
-        setup: scan.bestSetup?.type || "WATCH",
+        relVolume: round(indicators.relVolume),
+        score: scan.overallScore,
+        setup: setup?.type || "WATCH",
         entryState: scan.entryState,
-        confidence: scan.bestSetup?.confidence >= 75 ? "VERY HIGH" :
-          scan.bestSetup?.confidence >= 60 ? "HIGH" :
-          scan.bestSetup?.confidence >= 45 ? "MEDIUM" : "LOW",
-        reasons: scan.bestSetup?.confirmations || [],
-        risks: scan.bestSetup?.warnings || [],
+        confidence:
+          setup?.confidence == null
+            ? "N/A"
+            : setup.confidence >= 75
+            ? "VERY HIGH"
+            : setup.confidence >= 60
+            ? "HIGH"
+            : setup.confidence >= 45
+            ? "MEDIUM"
+            : "LOW",
+        reasons: setup?.confirmations || [],
+        risks: setup?.warnings || [],
+        // Real levels only — no ltp*1.03 fallbacks.
         entry,
         sl,
         tp1,
         tp2,
-        // Display-truth: same numbers the dashboard row shows (never the
-        // scanner's internal entry — those disagreed on screen)
-        rr: rrFromLevels(entry, sl, tp1),
-        falseBreakoutRisk: scan.bestSetup ? "LOW" : "N/A",
-        source,
-        intradayGrade: intraday?.grade || null,
-        intradayDirection: intraday?.direction || null,
-      };
-    });
+        rr: entry != null && sl != null && tp1 != null ? rrFromLevels(entry, sl, tp1) : null,
+        falseBreakoutRisk: setup ? "LOW" : "N/A",
+        source: "TECHNICAL_ANALYSIS",
+        // The real inputs behind the score (auditable).
+        indicators: {
+          ema20: indicators.ema20,
+          ema50: indicators.ema50,
+          ema200: indicators.ema200,
+          vwap: indicators.vwap,
+          rsi: indicators.rsi,
+          macd: indicators.macd,
+          atr: indicators.atr,
+          avgVolume: indicators.avgVolume,
+        },
+        bars: bars.length,
+        option: null,
+      });
+    }
 
     // Sort by score, then by entryState priority
-    const statePriority = { CONFIRMED: 4, CONFIRMING: 3, WATCH: 2, INVALIDATED: 1 };
+    const statePriority: Record<string, number> = { CONFIRMED: 4, CONFIRMING: 3, WATCH: 2, INVALIDATED: 1 };
     opportunities.sort((a, b) => {
-      if (statePriority[b.entryState] !== statePriority[a.entryState]) {
-        return statePriority[b.entryState] - statePriority[a.entryState];
-      }
+      const pa = statePriority[a.entryState] ?? 0;
+      const pb = statePriority[b.entryState] ?? 0;
+      if (pb !== pa) return pb - pa;
       return b.score - a.score;
     });
 
@@ -264,8 +242,8 @@ export async function GET(request: Request) {
       try {
         const chain = await getCachedEquityChain(opp.symbol);
         // Long structure = stop below entry → CE; below → PE
-        const direction = opp.sl < opp.entry ? "LONG" : "SHORT";
-        const leg = pickOptionLeg(chain?.rows, opp.entry, direction);
+        const direction = opp.sl != null && opp.entry != null && opp.sl < opp.entry ? "LONG" : "SHORT";
+        const leg = pickOptionLeg(chain?.rows, opp.entry ?? opp.ltp, direction);
         if (leg) {
           opp.option = { ...leg, expiry: chain?.expiry };
           // Playbook: stop lives on the underlying, then re-priced to
@@ -273,22 +251,24 @@ export async function GET(request: Request) {
           // = skill-faithful conversion — the Rule Set C 10% cap (Today's
           // Trade) exits before the underlying stop and inflates R:R.
           // Absent on failure → card shows strike only, never fake levels.
-          const levels = spotToPremiumLevels({
-            spotEntry: opp.entry,
-            spotStopLoss: opp.sl,
-            spotT1: opp.tp1,
-            spotT2: opp.tp2,
-            premium: leg.premium,
-            strike: leg.strike,
-            expiry: chain?.expiry || "",
-            isCall: leg.side === "CE",
-            applyStopFloor: false,
-          });
-          if (levels.ok) {
-            opp.option.sl = levels.stopLoss;
-            opp.option.tp1 = levels.target1;
-            opp.option.tp2 = levels.target2;
-            opp.option.rr = levels.riskReward;
+          if (opp.entry != null && opp.sl != null && opp.tp1 != null && opp.tp2 != null) {
+            const levels = spotToPremiumLevels({
+              spotEntry: opp.entry,
+              spotStopLoss: opp.sl,
+              spotT1: opp.tp1,
+              spotT2: opp.tp2,
+              premium: leg.premium,
+              strike: leg.strike,
+              expiry: chain?.expiry || "",
+              isCall: leg.side === "CE",
+              applyStopFloor: false,
+            });
+            if (levels.ok) {
+              opp.option.sl = levels.stopLoss;
+              opp.option.tp1 = levels.target1;
+              opp.option.tp2 = levels.target2;
+              opp.option.rr = levels.riskReward;
+            }
           }
         }
       } catch {
@@ -296,23 +276,49 @@ export async function GET(request: Request) {
       }
     }
 
+    const clock = await getMarketClock();
+    const newestBar = [...barsBySymbol.values()]
+      .map((b) => b.at(-1)?.t ?? 0)
+      .reduce((a, b) => Math.max(a, b), 0);
+    const meta = buildCardMeta({
+      source: "nse",
+      providerTimestamp: newestBar ? new Date(newestBar) : clock.tradeDate,
+      ttlMs: 36 * 3600_000,
+      live: clock.isOpen,
+      reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+    });
+
     return NextResponse.json({
+      success: true,
+      status: meta.status,
+      meta,
       opportunities: topOpps,
       totalStocks: stocks.length,
       // Guard the divisor: an empty scan produced NaN before.
       avgScore: opportunities.length
         ? Math.round(opportunities.reduce((sum: number, o: any) => sum + o.score, 0) / opportunities.length)
-        : 0,
+        : null,
       topOppCount: opportunities.filter((o: any) => o.score >= 70).length,
-      marketContext: {
-        regime: context.marketRegime,
-        vix: context.vix,
-        session: context.session,
-        breadth: context.marketBreadth,
+      coverage: {
+        scanned: stocks.length,
+        analysed: opportunities.length,
+        noData: noData.length,
+        noDataSymbols: noData,
       },
+      marketContext: context
+        ? {
+            regime: context.marketRegime,
+            vix: context.vix,
+            session: context.session,
+            breadth: context.marketBreadth,
+          }
+        : null,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Opportunities fetch failed" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, status: "UNAVAILABLE", error: error.message || "Opportunities fetch failed" },
+      { status: 500 },
+    );
   }
 }

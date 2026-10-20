@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Activity,
+  AlertTriangle,
   RefreshCw,
   TrendingUp,
   BarChart3,
@@ -145,6 +146,8 @@ export default function MostActiveContracts() {
   const [data, setData] = useState<MostActiveData | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastFetch, setLastFetch] = useState<number>(0);
+  const [meta, setMeta] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("contracts");
 
   const fetchData = useCallback(async (force = false) => {
@@ -154,9 +157,17 @@ export default function MostActiveContracts() {
       const method = force ? "POST" : "GET";
       const res = await fetch(url, { method });
       const json = await res.json();
-      if (json.success) {
+      if (json.success && json.data) {
         setData(json.data);
+        setMeta(json.meta || null);
         setLastFetch(Date.now());
+        setError(null);
+      } else {
+        // The feed returned nothing (or failed) — say so instead of showing
+        // an empty "Most Active Contracts" card.
+        setData(null);
+        setMeta(json.data || null);
+        setError(json.error || "Most-active contracts unavailable");
       }
     } catch (err) {
       console.error("Failed to fetch most active contracts:", err);
@@ -189,6 +200,15 @@ export default function MostActiveContracts() {
                 puts={data.putsIndex?.data || []}
               />
             )}
+            {meta ? (
+              <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                meta.status === "AVAILABLE"
+                  ? "bg-emerald-500/15 text-ememerald-300 border-emerald-500/30"
+                  : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+              }`} title={meta.reason || ""}>
+                {meta.status} · {meta.sourceLabel || meta.source} · {meta.ageLabel}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             {ageMin !== null && (
@@ -209,6 +229,17 @@ export default function MostActiveContracts() {
         </div>
       </CardHeader>
       <CardContent className="pt-0">
+        {!data ? (
+          <div className="rounded border border-red-500/25 bg-red-500/5 p-3 mb-2">
+            <div className="flex items-center gap-2 text-[11px] font-semibold text-red-300">
+              <AlertTriangle className="h-3 w-3" />
+              Most active contracts — unavailable
+            </div>
+            <p className="mt-1 text-[10px] text-zinc-400">
+              {error || "NSE returned no most-active contracts. No rows are shown because none exist."}
+            </p>
+          </div>
+        ) : null}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="h-7 bg-zinc-800/50 mb-2">
             <TabsTrigger value="contracts" className="text-[10px] px-2 h-5">

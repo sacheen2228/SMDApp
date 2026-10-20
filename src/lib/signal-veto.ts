@@ -9,6 +9,21 @@
 // GATE_CONFIG.minAbsDelta, OTM beyond GATE_CONFIG.maxOtmSteps, missing critical
 // fields (fail closed), and the BTST path is left untouched.
 //
+// THE SIDE COMES FROM THE LEVEL GEOMETRY, NEVER FROM THE ACTION STRING.
+// A bought PE is not automatically a short: the stock scanner builds a MIRRORED
+// bearish plan (stop ABOVE the entry, targets BELOW) while the SDM engine builds
+// a LONG one for a PE (stop BELOW the entry, targets ABOVE). The old veto
+// assumed the long shape for every BUY and the short shape for every SELL, so
+// it hard-blocked every legitimate bearish option plan ("stop 49.25 not above
+// entry 41.05") and measured the R:R on the wrong side. The rule is now the
+// GEOMETRY the live monitors read (activeTradeTracker.planSide /
+// paper-worker.detectPaperHit) — but here the STOP decides (the monitors read
+// the target first and the stop as the tie-breaker): the stop is the risk
+// side, so the R:R is measured against the very level the monitor would fill
+// at and a stop-out is always a loss. The two rules only differ for an
+// INCOHERENT plan (stop and target on the same side), which this veto blocks
+// outright because its R:R comes out negative.
+//
 // SHADOW MODE (BRAIN_FLAGS.shadowVeto): the verdict is always computed and always
 // logged (would_block) — a QUALITY block does not suppress the alert, but every hard
 // safety block still does. Shadowing never loosens a hard gate.
@@ -70,6 +85,35 @@ export function tierFromWarnings(warnings: string[], hardFail: boolean): VetoTie
   return "C";
 }
 
+export type PlanSide = "LONG" | "SHORT";
+
+/**
+ * The side a plan pays out on — read from the LEVEL GEOMETRY, never from the
+ * action string:
+ *
+ *   stop BELOW the entry → a LONG plan (its targets sit above the entry)
+ *   stop ABOVE the entry → a MIRRORED/SHORT plan (its targets sit below)
+ *
+ * This is the GEOMETRY the live monitors read (activeTradeTracker.planSide,
+ * hermes/paper-worker.detectPaperHit). The option letter lies — the stock
+ * scanner builds a mirrored bearish plan for a bought PE while the SDM engine
+ * builds a long one — so only the levels can tell the two apart.
+ *
+ * The STOP decides here (the monitors read the target first and the stop as the
+ * tie-breaker): the stop is the risk side, so the R:R is measured against the
+ * very level the monitor would fill at, and a stop-out is always a loss. A plan
+ * whose stop and target disagree is incoherent: the R:R comes out negative and
+ * the veto blocks it.
+ *
+ * Returns null when the geometry cannot decide (missing or degenerate stop) —
+ * the caller then fails closed.
+ */
+export function vetoPlanSide(entry: number, stopLoss: number): PlanSide | null {
+  if (!Number.isFinite(entry) || !Number.isFinite(stopLoss)) return null;
+  if (stopLoss === entry) return null;
+  return stopLoss < entry ? "LONG" : "SHORT";
+}
+
 export function evaluateSignalVeto(input: VetoInput): VetoResult {
   const reasons: string[] = [];
   const fails: string[] = [];
@@ -83,9 +127,9 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
   const tp1 = input.tp1 != null ? Number(input.tp1) : NaN;
   const conf = Number(input.confidence) || 0;
   const action = String(input.action || "").toUpperCase();
-  const buy = action.includes("BUY");
-  const sell = action.includes("SELL");
-  const directionKnown = buy || sell;
+  // The action only tells us whether the INTENT is known — the plan's side is
+  // read from the levels (vetoPlanSide), never from BUY/SELL.
+  const directionKnown = action.includes("BUY") || action.includes("SELL");
   const hard = (msg: string) => { hardFail = true; fails.push(msg); reasons.push(msg); };
   const soft = (msg: string) => { qualityFail = true; warnings.push(msg); reasons.push(msg); };
 
@@ -106,19 +150,24 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
   if (isOption && input.requireExpiry && !input.expiry) hard("missing expiry");
   if (isOption && input.requireSpot && !(Number(input.spot) > 0)) hard("missing underlying spot");
 
-  // 2. Stop side + R:R — hard safety (only when the direction is known; an unknown
-  //    direction is a warning, never a false block)
-  if (directionKnown && Number.isFinite(entry) && Number.isFinite(sl) && Number.isFinite(tp1)) {
-    const stopOk = buy ? sl < entry : sl > entry;
-    if (!stopOk) {
-      hard(`stop ${sl} not ${buy ? "below" : "above"} entry ${entry}`);
-    } else {
-      const rr = buy ? (tp1 - entry) / (entry - sl) : (entry - tp1) / (sl - entry);
-      if (!Number.isFinite(rr) || rr < GATE_CONFIG.minOptionRR) {
-        hard(`option R:R ${Number.isFinite(rr) ? rr.toFixed(2) : "bad"} < ${GATE_CONFIG.minOptionRR}`);
-      }
+  // 2. Stop side + R:R — hard safety, measured on the PLAN GEOMETRY.
+  //    The side comes from the levels (a stop below the entry = long plan, a
+  //    stop above it = mirrored/short plan), so a legitimate bearish option
+  //    plan is no longer blocked for "not being long-side" and its R:R is
+  //    measured on the side it actually pays out on.
+  const side = vetoPlanSide(entry, sl);
+  if (side && Number.isFinite(tp1)) {
+    const risk = side === "LONG" ? entry - sl : sl - entry; // > 0 by construction
+    const reward = side === "LONG" ? tp1 - entry : entry - tp1;
+    const rr = reward / risk;
+    if (!Number.isFinite(rr) || rr < GATE_CONFIG.minOptionRR) {
+      hard(`option R:R ${Number.isFinite(rr) ? rr.toFixed(2) : "bad"} < ${GATE_CONFIG.minOptionRR}`);
     }
-  } else if (!directionKnown) {
+  } else if (Number.isFinite(entry) && Number.isFinite(sl)) {
+    // A stop that is not on ONE side of the entry is not a plan → fail closed.
+    hard(`stop ${sl} is not on one side of entry ${entry}`);
+  }
+  if (!directionKnown) {
     soft("direction unknown — R:R/stop side unverified");
   }
 

@@ -360,7 +360,11 @@ export function detectPullback(data: TechnicalIndicators, context?: ScanContext)
   }
 
   score += 20;
-  confirmations.push("Primary trend bullish (EMA20 > EMA50 > price)");
+  // The condition above is: price > EMA20 > EMA50. The old text said
+  // "EMA20 > EMA50 > price", which contradicts the actual state (and the
+  // numbers it is printed next to) — the dashboard showed a bullish reason
+  // under a price that was ABOVE both EMAs.
+  confirmations.push("Primary trend bullish (price > EMA20 > EMA50)");
 
   // Pullback to support zones
   const supportZones = [

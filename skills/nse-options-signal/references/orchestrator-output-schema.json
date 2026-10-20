@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-output-schema",
+  "title": "NSE Options Signal Orchestrator Output",
+  "description": "One record per orchestrator run. The core keys are the skill's own output-schema.md (agent_id, timestamp_ist, instrument, action, trade, reasons, gates_failed); the extra blocks are additive. NO_TRADE records have trade = null and must name the failed gate, the responsible agent, the observed value and the threshold in gates_failed.",
+  "type": "object",
+  "required": ["agent_id", "engine", "timestamp_ist", "instrument", "action", "decision", "consensus", "context", "agents", "gates_failed", "reasons", "trade", "summary", "disclaimer"],
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": { "const": "orchestrator" },
+    "engine": { "const": "ORCHESTRATOR" },
+    "source": { "const": "NSE_OPTIONS_SIGNAL" },
+    "role": { "const": "OPTIONS_RESEARCH_SECOND_OPINION" },
+    "authority": { "const": "RESEARCH_INPUT_ONLY" },
+    "can_force_trade": { "const": false },
+    "timestamp_ist": { "type": "string" },
+    "timestamp_iso": { "type": "string", "format": "date-time" },
+    "instrument": { "type": "string" },
+    "symbol": { "type": "string" },
+    "spot": { "type": ["number", "null"] },
+    "action": { "enum": ["BUY_CE", "BUY_PE", "NO_TRADE"] },
+    "decision": { "enum": ["BUY_CE", "BUY_PE", "NO_TRADE"] },
+    "bias": { "enum": ["BULLISH", "BEARISH", "NEUTRAL"] },
+    "confidence": { "enum": ["NA", "Moderate", "High", "Very high"] },
+    "consensus": {
+      "type": "object",
+      "required": ["votes", "required", "direction", "opposing_vote", "passed", "reason", "agreeing"],
+      "properties": {
+        "votes": { "type": "object" },
+        "required": { "type": "integer", "minimum": 1 },
+        "bullish_votes": { "type": "integer", "minimum": 0 },
+        "bearish_votes": { "type": "integer", "minimum": 0 },
+        "direction": { "enum": ["CE", "PE", "NEUTRAL"] },
+        "opposing_vote": { "type": "boolean" },
+        "passed": { "type": "boolean" },
+        "agreeing": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string" },
+        "size_multiplier": { "type": "number", "minimum": 0 }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["status", "pre_market_bias", "opposes_trade", "a_plus_required", "a_plus_met", "size_multiplier"],
+      "properties": {
+        "status": { "enum": ["OK", "STALE", "MISSING", "CORRUPT", "FUTURE"] },
+        "pre_market_bias": { "enum": ["BULLISH", "BEARISH", "TWO_WAY"] },
+        "age_minutes": { "type": ["number", "null"] },
+        "conflicts": { "type": "array", "items": { "type": "string" } },
+        "opposes_trade": { "type": "boolean" },
+        "a_plus_required": { "type": "boolean" },
+        "a_plus_met": { "type": "boolean" },
+        "a_plus_checks": { "type": "object" },
+        "size_multiplier": { "type": "number", "minimum": 0 }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "required": ["A", "B", "C", "D", "E"],
+      "properties": {
+        "A": { "$ref": "#/$defs/agent" },
+        "B": { "$ref": "#/$defs/agent" },
+        "C": { "$ref": "#/$defs/agent" },
+        "D": { "$ref": "#/$defs/agent" },
+        "E": { "$ref": "#/$defs/agent" }
+      }
+    },
+    "gates_failed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gate", "agent", "observed", "threshold"],
+        "properties": {
+          "gate": { "type": "string" },
+          "agent": { "enum": ["A", "B", "C", "D", "E"] },
+          "observed": { "type": "string" },
+          "threshold": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "reasons": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "trade": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["expiry", "strike", "option_type", "entry_zone", "stop_loss_premium", "tp1_premium", "tp2_premium", "underlying_invalidation", "underlying_targets", "risk_reward_tp1", "suggested_lots", "time_stop"],
+          "properties": {
+            "expiry": { "type": "string", "format": "date" },
+            "strike": { "type": "number", "exclusiveMinimum": 0 },
+            "option_type": { "enum": ["CE", "PE"] },
+            "entry_zone": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "stop_loss_premium": { "type": "number", "exclusiveMinimum": 0 },
+            "tp1_premium": { "type": "number" },
+            "tp2_premium": { "type": "number" },
+            "underlying_invalidation": { "type": "number" },
+            "underlying_targets": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "risk_reward_tp1": { "type": "number", "minimum": 2 },
+            "suggested_lots": { "type": "integer", "minimum": 1 },
+            "time_stop": { "type": "string" },
+            "delta": { "type": "number", "minimum": 0.35, "maximum": 0.7 },
+            "lot_size": { "type": "integer", "minimum": 1 },
+            "lot_size_source": { "type": "string" },
+            "risk_inr": { "type": "number", "minimum": 0 },
+            "size_note": { "type": "string" },
+            "expected_move_1sigma": { "type": "number" },
+            "option_checks": { "type": "object" },
+            "hours_to_expiry": { "type": "number" },
+            "vix": { "type": ["number", "null"] },
+            "order_type": { "const": "limit" }
+          }
+        }
+      ]
+    },
+    "key_levels": {
+      "type": "object",
+      "properties": {
+        "support": { "type": ["number", "null"] },
+        "resistance": { "type": ["number", "null"] },
+        "max_pain": { "type": ["number", "null"] },
+        "pcr": { "type": ["number", "null"] }
+      }
+    },
+    "gex": { "type": ["object", "null"] },
+    "gex_alert": { "type": ["object", "null"] },
+    "data_quality": {
+      "type": "object",
+      "properties": {
+        "snapshot_age_minutes": { "type": ["number", "null"] },
+        "history_snapshots": { "type": "integer", "minimum": 0 },
+        "context_status": { "type": "string" },
+        "conversion_warnings": { "type": "array", "items": { "type": "string" } },
+        "account_equity": { "type": ["number", "null"] },
+        "account_equity_source": { "type": ["string", "null"] }
+      }
+    },
+    "data_freshness_minutes": { "type": ["number", "null"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "disclaimer": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "NO_TRADE" } } },
+      "then": { "properties": { "trade": { "type": "null" } } },
+      "else": { "properties": { "trade": { "type": "object" } } }
+    }
+  ],
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "required": ["status", "direction", "vetoes"],
+      "properties": {
+        "status": { "enum": ["ok", "failed", "skipped"] },
+        "direction": { "enum": ["CE", "PE", "NEUTRAL"] },
+        "vetoes": { "type": "array", "items": { "type": "object" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ArrowUpRight, ArrowDownRight, Minus, Activity } from "lucide-react";
+import { DataFreshnessBadge } from "./DataFreshnessBadge";
 
 export function CASPanel() {
   const { data: breadth } = useQuery({
@@ -27,52 +28,64 @@ export function CASPanel() {
     refetchInterval: 120_000,
   });
 
-  // Derive CAS signal from available data
+  // Derive the CAS signal from the data that actually arrived.
   // Breadth API shape: { breadth: { score, advances, declines, volRatio, ... } }
-  // (reading `.breadthScore` off the envelope always defaulted to 50/0/0.)
+  // The old code defaulted a MISSING breadth score to 50, a missing vol ratio
+  // to 1 and a missing sector strength to 50, so a dead feed produced a
+  // confident "NEUTRAL 50" CAS reading. Missing inputs now make the card
+  // say "unavailable" instead.
   const b = breadth?.breadth;
-  const breadthScore = b?.score || 50;
-  const advances = b?.advances || 0;
-  const declines = b?.declines || 0;
-  const volRatio = b?.volRatio || 1;
-  const sectorStrength = sectors?.sectorStrengthScore || 50;
-  const regimeData = regime?.regime || "NEUTRAL";
+  const breadthScore = typeof b?.score === "number" ? b.score : null;
+  const advances = typeof b?.advances === "number" ? b.advances : null;
+  const declines = typeof b?.declines === "number" ? b.declines : null;
+  const volRatio = typeof b?.volRatio === "number" ? b.volRatio : null;
+  // The sectors endpoint publishes per-sector moves, not a "sector strength
+  // score" — derive it from the real sector averages.
+  const sectorList: any[] = sectors?.sectors || [];
+  const sectorStrength = sectorList.length
+    ? Math.round(
+        (sectorList.reduce((sum: number, s: any) => sum + (s.avgChangePct || 0), 0) /
+          sectorList.length + 50) * 10,
+      ) / 10
+    : null;
+  const regimeData = regime?.regime && regime.regime !== "UNKNOWN" ? regime.regime : null;
 
-  // CAS score: accumulation vs distribution
-  let casScore = 50;
-  if (breadthScore > 70) casScore += 15;
-  else if (breadthScore < 30) casScore -= 15;
-  if (volRatio > 1.5) casScore += 10;
-  else if (volRatio < 0.7) casScore -= 10;
-  if (sectorStrength > 60) casScore += 10;
-  else if (sectorStrength < 40) casScore -= 10;
-  if (regimeData.includes("BULL")) casScore += 10;
-  else if (regimeData.includes("BEAR")) casScore -= 10;
-  casScore = Math.min(100, Math.max(0, casScore));
+  // CAS score: accumulation vs distribution — only over the inputs we have.
+  const casParts: Array<{ w: number; v: number }> = [];
+  if (breadthScore != null) casParts.push({ w: 15, v: breadthScore > 70 ? 15 : breadthScore < 30 ? -15 : 0 });
+  if (volRatio != null) casParts.push({ w: 10, v: volRatio > 1.5 ? 10 : volRatio < 0.7 ? -10 : 0 });
+  if (sectorStrength != null) casParts.push({ w: 10, v: sectorStrength > 60 ? 10 : sectorStrength < 40 ? -10 : 0 });
+  if (regimeData) casParts.push({ w: 10, v: regimeData.includes("BULL") ? 10 : regimeData.includes("BEAR") ? -10 : 0 });
 
-  const casLabel = casScore >= 70 ? "ACCUMULATION" : casScore >= 55 ? "MILD ACCUMULATION" :
+  const casAvailable = casParts.length > 0;
+  const casScore = casAvailable
+    ? Math.min(100, Math.max(0, Math.round(50 + casParts.reduce((sum, p) => sum + p.v, 0))))
+    : null;
+
+  const casLabel = casScore == null ? "NO DATA" : casScore >= 70 ? "ACCUMULATION" : casScore >= 55 ? "MILD ACCUMULATION" :
     casScore >= 45 ? "NEUTRAL" : casScore >= 30 ? "MILD DISTRIBUTION" : "DISTRIBUTION";
 
-  const casColor = casScore >= 70 ? "text-emerald-400" : casScore >= 55 ? "text-emerald-300" :
+  const casColor = casScore == null ? "text-zinc-500" : casScore >= 70 ? "text-emerald-400" : casScore >= 55 ? "text-emerald-300" :
     casScore >= 45 ? "text-yellow-400" : casScore >= 30 ? "text-orange-400" : "text-red-400";
 
-  const casBadgeColor = casScore >= 70 ? "bg-emerald-600" : casScore >= 55 ? "bg-emerald-500/20 text-emerald-400" :
+  const casBadgeColor = casScore == null ? "bg-zinc-600" : casScore >= 70 ? "bg-emerald-600" : casScore >= 55 ? "bg-emerald-500/20 text-emerald-400" :
     casScore >= 45 ? "bg-yellow-500/20 text-yellow-400" : casScore >= 30 ? "bg-orange-500/20 text-orange-400" :
     "bg-red-600";
 
   // Price vs CAS matrix (sectors API field is avgChangePct, not changePct —
   // reading changePct gave NaN/undefined: matrix stuck on FLAT, flows "%")
-  const avgChange = sectors?.sectors?.length
-    ? sectors.sectors.reduce((sum: number, s: any) => sum + (s.avgChangePct || 0), 0) / sectors.sectors.length
-    : 0;
-  const priceUp = avgChange > 0.2;
-  const priceDown = avgChange < -0.2;
-  const accumulating = casScore > 55;
-  const distributing = casScore < 45;
+  const avgChange = sectorList.length
+    ? sectorList.reduce((sum: number, s: any) => sum + (s.avgChangePct || 0), 0) / sectorList.length
+    : null;
+  const priceUp = avgChange != null && avgChange > 0.2;
+  const priceDown = avgChange != null && avgChange < -0.2;
+  const accumulating = casScore != null && casScore > 55;
+  const distributing = casScore != null && casScore < 45;
 
   let matrixSignal: string;
   let matrixColor: string;
-  if (priceUp && accumulating) { matrixSignal = "STRONG BULLISH"; matrixColor = "text-emerald-400"; }
+  if (!casAvailable) { matrixSignal = "NO DATA"; matrixColor = "text-zinc-500"; }
+  else if (priceUp && accumulating) { matrixSignal = "STRONG BULLISH"; matrixColor = "text-emerald-400"; }
   else if (priceUp && distributing) { matrixSignal = "CAUTION — Distribution"; matrixColor = "text-orange-400"; }
   else if (priceDown && accumulating) { matrixSignal = "POSSIBLE ABSORPTION"; matrixColor = "text-yellow-400"; }
   else if (priceDown && distributing) { matrixSignal = "STRONG BEARISH"; matrixColor = "text-red-400"; }
@@ -92,12 +105,13 @@ export function CASPanel() {
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <Activity className="h-3 w-3" />
           CAS — ACCUMULATION / DISTRIBUTION
+          <DataFreshnessBadge meta={breadth?.data} className="ml-1" showReason />
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
         {/* CAS Score */}
         <div className="text-center mb-3">
-          <div className={`text-3xl font-black ${casColor}`}>{casScore}</div>
+          <div className={`text-3xl font-black ${casColor}`}>{casScore == null ? "—" : casScore}</div>
           <div className="text-[10px] text-zinc-500">/100</div>
           <Badge className={`mt-1 text-xs font-bold ${casBadgeColor}`}>{casLabel}</Badge>
         </div>
@@ -110,13 +124,13 @@ export function CASPanel() {
             <div className="flex justify-between">
               <span className="text-zinc-500">Market Price</span>
               <span className={priceUp ? "text-emerald-400" : priceDown ? "text-red-400" : "text-zinc-400"}>
-                {priceUp ? "↑ UP" : priceDown ? "↓ DOWN" : "→ FLAT"}
+                {avgChange == null ? "NO DATA" : priceUp ? "↑ UP" : priceDown ? "↓ DOWN" : "→ FLAT"}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-zinc-500">CAS Signal</span>
               <span className={accumulating ? "text-emerald-400" : distributing ? "text-red-400" : "text-zinc-400"}>
-                {accumulating ? "↑ ACCUM" : distributing ? "↓ DISTRIB" : "→ NEUTRAL"}
+                {casScore == null ? "NO DATA" : accumulating ? "↑ ACCUM" : distributing ? "↓ DISTRIB" : "→ NEUTRAL"}
               </span>
             </div>
           </div>

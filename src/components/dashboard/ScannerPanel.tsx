@@ -13,6 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DataFreshnessBadge } from "./DataFreshnessBadge";
 import { Label } from "@/components/ui/label";
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import {
@@ -365,6 +366,8 @@ export const ScannerPanel = memo(function ScannerPanel({
 
   const [dataSource, setDataSource] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [meta, setMeta] = useState<any>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const { data, isLoading, refetch, isFetching } = useQuery<any>({
     queryKey: ["scanner", symbol, useLive],
@@ -375,7 +378,9 @@ export const ScannerPanel = memo(function ScannerPanel({
       if (!res.ok) throw new Error("Scanner failed");
       const json = await res.json();
       if (json.dataSource) setDataSource(json.dataSource);
-      if (json.liveError) setLiveError(json.liveError);
+      setMeta(json.meta || null);
+      setWarnings(Array.isArray(json.warnings) ? json.warnings : []);
+      setLiveError(json.error || null);
       return json.data;
     },
     refetchInterval: 60000, // Refresh every minute
@@ -428,19 +433,20 @@ export const ScannerPanel = memo(function ScannerPanel({
                 {result.dataQuality === "PARTIAL" && (
                   <Badge className="ml-1 bg-yellow-600 text-[8px]">PARTIAL</Badge>
                 )}
+                {String(result.dataQuality) === "UNAVAILABLE" && (
+                  <Badge className="ml-1 bg-red-600 text-[8px]">NO DATA</Badge>
+                )}
+                <DataFreshnessBadge meta={meta} className="ml-1" showReason />
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant={useLive ? "default" : "outline"}
-              size="sm"
-              className={`h-7 text-[10px] gap-1 ${useLive ? "bg-emerald-600 hover:bg-emerald-700" : ""}`}
-              onClick={() => setUseLive(!useLive)}
-            >
-              {useLive ? <Zap className="h-3 w-3" /> : <Activity className="h-3 w-3" />}
-              {useLive ? "Live" : "Demo"}
-            </Button>
+            {/* The scanner has no demo mode — the API always answers with
+                real data. The old "Live | Demo" switch promised simulated
+                data that was never produced. */}
+            <span className="text-[10px] text-muted-foreground">
+              {useLive ? "Real exchange data" : "Real exchange data (auto-refresh off)"}
+            </span>
             <Button
               variant="outline"
               size="sm"
@@ -456,7 +462,7 @@ export const ScannerPanel = memo(function ScannerPanel({
       </div>
 
       {/* Live Data Source Banner */}
-      {useLive && dataSource && (
+      {useLive && dataSource && meta?.status === "AVAILABLE" && (
         <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-[10px] text-green-600">
           <div className="flex items-center gap-1.5">
             <CheckCircle className="h-3 w-3 shrink-0" />
@@ -465,12 +471,24 @@ export const ScannerPanel = memo(function ScannerPanel({
           </div>
         </div>
       )}
-      {useLive && liveError && !dataSource && (
+      {useLive && (meta?.status === "STALE" || meta?.status === "UNAVAILABLE" || liveError) && (
         <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-600">
           <div className="flex items-center gap-1.5">
             <AlertTriangle className="h-3 w-3 shrink-0" />
-            <span>{liveError}</span>
+            <span>
+              {meta?.reason || liveError || "Data is not live"}
+              {dataSource ? ` · source: ${dataSource}` : ""}
+            </span>
           </div>
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div className="mx-4 mt-2 space-y-1">
+          {warnings.map((w, i) => (
+            <div key={i} className="px-3 py-1.5 rounded-lg bg-zinc-500/10 border border-zinc-500/25 text-[10px] text-zinc-400">
+              {w}
+            </div>
+          ))}
         </div>
       )}
 

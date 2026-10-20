@@ -83,3 +83,6 @@ voices/
 # voice layer runtime state (startup dedup — machine-local)
 data/voice-state.json
 data/voice-config.json
+
+# nse-options-signal skill runtime state (snapshots, context, locks, logs)
+skills/nse-options-signal/data/

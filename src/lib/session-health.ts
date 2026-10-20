@@ -167,6 +167,12 @@ function buildAlertMessage(source: SessionSource, detail: string): string {
 }
 
 function sendAlert(source: SessionSource, detail: string): void {
+  // 2026-10-19 (user directive): breeze SESSION_EXPIRED no longer pushes to
+  // Telegram — flapping SDK errors ("internal error ... timeout") re-armed
+  // episodes and spammed duplicate alerts. Episode state, the status route,
+  // and Hermes check_session_tokens are unaffected; MO still alerts once
+  // per episode. alertSent stays false for breeze (nothing was dispatched).
+  if (source === "breeze") return;
   const msg = buildAlertMessage(source, detail);
   const confirm = (ok: boolean | void) => {
     if (ok !== false) state[source].alertSent = true;
@@ -387,7 +393,7 @@ export async function buildSessionStatusReport(
     remedies.push("mo: verify MOTILAL_TOTP_KEY matches the registered authenticator (TOTP auto-recovery runs on next MO call)");
   }
   if (summary.anySessionExpired) {
-    remedies.push(`active SESSION_EXPIRED episode(s): ${summary.expiredSources.join(", ")} — one Telegram alert per episode has been sent`);
+    remedies.push(`active SESSION_EXPIRED episode(s): ${summary.expiredSources.join(", ")} — status tracked here; Telegram push only for MO (breeze push disabled 2026-10-19)`);
   }
   return {
     checkedAt: new Date().toISOString(),

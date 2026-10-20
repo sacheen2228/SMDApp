@@ -31,9 +31,12 @@ export interface BTSTStockInput {
   ema50: number;
   volume: number;
   avgVolume: number;
-  oiChangePct: number; // F&O only (0 if none)
-  pcr: number;         // F&O only (1 if none)
-  iv: number;          // F&O only (0 if none)
+  // F&O inputs. `null` means UNKNOWN (no chain for this instrument) — it is
+  // NOT the same as 0 (a real "no OI change") and never the same as a
+  // neutral PCR of 1.
+  oiChangePct: number | null;
+  pcr: number | null;
+  iv: number | null;
   sectorStrength: number;  // -100..100
   relativeStrength: number; // vs NIFTY, %
   deliveryPct: number;  // delivery volume %
@@ -70,8 +73,8 @@ export interface BTSTAnalysis {
   relativeStrength: number;
   volumeMultiple: number;
   deliveryLabel: string;  // High / Medium / Low
-  oiLabel: string;        // Bullish / Neutral / Bearish
-  pcr: number;
+  oiLabel: string;        // Bullish / Neutral / Bearish / N/A
+  pcr: number | null;     // null = unknown (no chain for this instrument)
   smartMoney: "Active" | "Building" | "Absent";
   gapRisk: "Low" | "Medium" | "High";
   expectedGapPct: number; // signed
@@ -170,7 +173,8 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   } else {
     // Fallback: OI buildup for F&O (legacy path when institutional data unavailable)
     if (inp.isFNO) {
-      if (inp.oiChangePct >= 5) smartMoney += 3;
+      if (inp.oiChangePct == null) smartMoney += 0; // unknown → no credit
+      else if (inp.oiChangePct >= 5) smartMoney += 3;
       else if (inp.oiChangePct >= 0) smartMoney += 2;
       else smartMoney += 0;
     } else {
@@ -182,16 +186,22 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   // 3. OI (/20): only meaningful for F&O
   let oi = 0;
   if (inp.isFNO) {
-    // PCR < 1.2 bullish; OI change supports
-    if (inp.pcr < 1.0) oi += 9;
+    // PCR < 1.2 bullish; OI change supports.
+    // A missing PCR must NOT read as "PCR 0" (which the old `inp.pcr < 1.0`
+    // comparison did: null < 1.0 is true → a fabricated +9 OI score).
+    if (inp.pcr == null) oi += 4; // unknown → neutral, not bearish
+    else if (inp.pcr < 1.0) oi += 9;
     else if (inp.pcr < 1.2) oi += 6;
     else if (inp.pcr < 1.4) oi += 3;
     else oi += 1;
-    if (inp.oiChangePct >= 5) oi += 7;
+    if (inp.oiChangePct == null) oi += 0; // unknown → no credit
+    else if (inp.oiChangePct >= 5) oi += 7;
     else if (inp.oiChangePct >= 0) oi += 4;
     else oi += 1;
-    if (inp.iv > 0 && inp.iv < 30) oi += 4; // moderate IV = room to run
-    else oi += 2;
+    const iv = inp.iv;
+    if (iv != null && iv > 0 && iv < 30) oi += 4; // moderate IV = room to run
+    else if (iv != null && iv > 0) oi += 2;
+    // iv unknown → no point (the old `else oi += 2` credited a missing IV)
   } else {
     oi = 18; // equity has no OI; neutral-high default
   }
@@ -279,7 +289,15 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   const trendLabel = factors.trend >= 20 ? "Strong Bullish" : factors.trend >= 12 ? "Bullish" : "Weak";
   const sectorLabel = factors.sector >= 8 ? "Strong" : factors.sector >= 5 ? "Neutral" : "Weak";
   const deliveryLabel = inp.deliveryPct >= 60 ? "High" : inp.deliveryPct >= 45 ? "Medium" : "Low";
-  const oiLabel = !inp.isFNO ? "N/A" : inp.pcr != null && inp.pcr < 1.2 && inp.oiChangePct >= 0 ? "Bullish" : inp.pcr != null && inp.pcr < 1.4 ? "Neutral" : "Bearish";
+  const oiLabel = !inp.isFNO
+    ? "N/A"
+    : inp.pcr == null
+    ? "N/A" // no chain → unknown, not "Bearish"
+    : inp.pcr < 1.2 && (inp.oiChangePct ?? 0) >= 0
+    ? "Bullish"
+    : inp.pcr < 1.4
+    ? "Neutral"
+    : "Bearish";
   const smartMoneyLabel: "Active" | "Building" | "Absent" =
     factors.smartMoney >= 15 ? "Active" : factors.smartMoney >= 9 ? "Building" : "Absent";
 

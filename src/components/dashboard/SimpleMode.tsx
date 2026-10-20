@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getCurrentSession } from "@/lib/market-session";
+import { dataSourceBadge } from "@/lib/data-source-label";
 import {
   ArrowUp,
   ArrowDown,
@@ -514,7 +515,7 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Data</span>
               <span className={`font-semibold ${isLive ? "text-emerald-500" : "text-yellow-500"}`}>
-                {dataSource || "—"}
+                {dataSource ? dataSourceBadge(dataSource).display : "—"}
               </span>
             </div>
           </div>

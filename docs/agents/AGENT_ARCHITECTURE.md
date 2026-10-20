@@ -156,10 +156,8 @@ Ranks: ROOKIE → NOVICE → INTERMEDIATE → EXPERT → MASTER
 
 ### Core
 - `src/lib/agents/types.ts` — All agent types
-- `src/lib/agents/registry.ts` — Registration, lookup, health, tasks, signals, events
-- `src/lib/agents/heartbeat.ts` — Heartbeat monitoring
+- `src/lib/agents/registry.ts` — Registration, lookup, health, tasks, signals, events (heartbeat + task execution live here)
 - `src/lib/agents/signal-lifecycle.ts` — Signal state machine
-- `src/lib/agents/tasks.ts` — Task creation and execution
 - `src/lib/agents/reputation.ts` — Performance tracking
 
 ### External Integration

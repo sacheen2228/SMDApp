@@ -13,6 +13,7 @@ import {
   type StraddleChainInput,
 } from "@/lib/atm-straddle-range";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { getGreeksAssumptions } from "@/lib/greeks";
 
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get("symbol") || "NIFTY").toUpperCase();
@@ -31,7 +32,18 @@ export async function GET(req: NextRequest) {
     const atmStrike = d.summary.atmStrike;
     const pcr = d.summary.pcr;
     const maxPain = d.summary.maxPain;
-    const iv = d.summary.indiaVIX ?? 15;
+
+    // The IV is EITHER the live India VIX or the chain's own average IV —
+    // both are REAL numbers the exchange published. The old `?? 15` invented
+    // a 15% volatility when the VIX feed was down, and every band derived
+    // from it (support/resistance, the IV confidence) was then a guess.
+    const chainLegs = d.data.flatMap((r: any) => [r.ce, r.pe]).filter(Boolean);
+    const ivValues = chainLegs.map((l: any) => Number(l.iv)).filter((v: number) => Number.isFinite(v) && v > 0);
+    const chainAvgIV = ivValues.length ? ivValues.reduce((a, b) => a + b, 0) / ivValues.length : null;
+    const indiaVIX = d.summary.indiaVIX ?? null;
+    const iv = indiaVIX ?? chainAvgIV ?? 0;
+    const ivSource = indiaVIX != null ? "indiaVIX" : chainAvgIV != null ? "chain-avg-iv" : "unavailable";
+
     const chain = d.data.map((row: any) => ({
       strike: row.strike,
       ce: row.ce
@@ -63,7 +75,21 @@ export async function GET(req: NextRequest) {
     const closeParam = req.nextUrl.searchParams.get("close");
     const containment = closeParam ? evaluateContainment(symbol, Number(closeParam)) : undefined;
 
-    return NextResponse.json({ success: true, symbol, range, containment });
+    return NextResponse.json({
+      success: true,
+      symbol,
+      range,
+      containment,
+      // The assumptions behind the bands: which IV was used and where the
+      // greeks' risk-free rate came from. Never a fabricated 15.
+      assumptions: {
+        iv,
+        ivSource,
+        indiaVIX,
+        vixAvailable: indiaVIX != null,
+        ...getGreeksAssumptions(),
+      },
+    });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err?.message || "straddle compute failed" }, { status: 500 });
   }

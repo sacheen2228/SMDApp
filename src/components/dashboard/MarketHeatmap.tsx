@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useState, useMemo, useEffect } from "react";
+import { DataFreshnessBadge, UnavailableCard } from "./DataFreshnessBadge";
 import { LayoutGrid, Filter, X, ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -159,7 +160,9 @@ interface HeatmapCellProps {
 function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
   const getValue = () => {
     switch (colorMode) {
-      case "weekly": return stock.weeklyChangePct || 0;
+      // Weekly change is null when the feed has no weekly data — the cell
+      // shows "—" instead of a flat 0.0% that looks like a real week.
+      case "weekly": return stock.weeklyChangePct ?? 0;
       case "relVolume": return stock.volume && stock.avgVolume ? (stock.volume / stock.avgVolume - 1) * 100 : 0;
       default: return stock.changePct;
     }
@@ -176,9 +179,12 @@ function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
     lg: "min-w-[100px] min-h-[70px] p-2",
   };
 
+  // Relative volume only when the feed published a real average volume —
+  // the old fallback rendered "1.0x" for every symbol without one.
   const relVol = stock.avgVolume > 0 ? (stock.volume / stock.avgVolume).toFixed(1) + "x" : "";
   const pcr = stock.foData?.pcr;
-  const weeklySign = stock.weeklyChangePct >= 0 ? "+" : "";
+  const weekly = typeof stock.weeklyChangePct === "number" ? stock.weeklyChangePct : null;
+  const weeklySign = weekly != null && weekly >= 0 ? "+" : "";
 
   return (
     <button
@@ -186,20 +192,24 @@ function HeatmapCell({ stock, size, onClick, colorMode }: HeatmapCellProps) {
       className={`${color} ${sizeClasses[size]} ${textColor} rounded-sm flex flex-col justify-between items-center 
         hover:brightness-125 hover:ring-1 hover:ring-white/30 transition-all cursor-pointer text-center 
         relative overflow-hidden`}
-      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Wk: ${weeklySign}${stock.weeklyChangePct}% | Vol: ${(stock.volume/100000).toFixed(1)}L | PCR: ${pcr?.toFixed(2) || '—'} | ${stock.sector}`}
+      title={`${stock.symbol}: ${stock.changePct >= 0 ? "+" : ""}${stock.changePct}% | Wk: ${weekly == null ? '—' : `${weeklySign}${weekly}%`} | Vol: ${(stock.volume/100000).toFixed(1)}L | PCR: ${pcr?.toFixed(2) || '—'} | ${stock.sector}`}
     >
       <div className="flex flex-col items-center w-full">
         <span className="text-[9px] font-bold leading-tight truncate w-full">{stock.symbol}</span>
         {colorMode === "relVolume" ? (
           <span className={`text-[10px] font-black ${value > 0 ? "text-cyan-100" : "text-orange-100"}`}>
-            {relVol || "1.0x"}
+            {relVol || "—"}
           </span>
         ) : (
           <span className={`text-[10px] font-black ${value >= 0 ? "text-emerald-100" : "text-red-100"}`}>
             {value >= 0 ? "+" : ""}{value.toFixed(1)}%
           </span>
         )}
-        {colorMode === "daily" && <span className="text-[7px] text-zinc-300/60">Wk:{weeklySign}{stock.weeklyChangePct?.toFixed(1) || 0}%</span>}
+        {colorMode === "daily" && (
+          <span className="text-[7px] text-zinc-300/60">
+            Wk:{weekly == null ? "—" : `${weeklySign}${weekly.toFixed(1)}%`}
+          </span>
+        )}
         {colorMode === "weekly" && <span className="text-[7px] text-zinc-300/60">Day:{stock.changePct >= 0 ? "+" : ""}{stock.changePct}%</span>}
         {pcr != null && pcr > 0 && (
           <span className={`text-[7px] px-0.5 rounded ${pcr > 1.2 ? 'bg-emerald-500/30 text-emerald-300' : pcr < 0.8 ? 'bg-red-500/30 text-red-300' : 'bg-zinc-500/30 text-zinc-300'}`}>
@@ -300,7 +310,8 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
 
       // Volume filter
       if (volumeFilter.length > 0) {
-        const avgVol = stock.avgVolume || 1000000;
+        if (!stock.avgVolume || stock.avgVolume <= 0) return false; // no real average → no bucket
+        const avgVol = stock.avgVolume;
         const relVol = stock.volume / avgVol;
         const matches = volumeFilter.some(f => {
           if (f === "high") return relVol > 2;
@@ -313,7 +324,8 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
 
       // Relative volume filter
       if (relVolFilter.length > 0) {
-        const avgVol = stock.avgVolume || 1000000;
+        if (!stock.avgVolume || stock.avgVolume <= 0) return false; // no real average → no bucket
+        const avgVol = stock.avgVolume;
         const relVol = stock.volume / avgVol;
         const matches = relVolFilter.some(f => {
           const filter = REL_VOL_FILTERS.find(r => r.id === f);
@@ -322,13 +334,15 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
         if (!matches) return false;
       }
 
-      // Market cap filter (placeholder - would need real market cap data)
+      // Market cap filter — only for symbols whose feed published a real
+      // market cap (the old placeholder bucketed every unknown as "small").
       if (marketCapFilter.length > 0) {
-        // Placeholder logic - in production use actual market cap
+        const cap = stock.marketCap;
+        if (!cap || cap <= 0) return false;
         const matches = marketCapFilter.some(f => {
-          if (f === "large") return (stock.marketCap || 100000) > 50000;
-          if (f === "mid") return (stock.marketCap || 50000) > 10000 && (stock.marketCap || 50000) <= 50000;
-          if (f === "small") return (stock.marketCap || 5000) <= 10000;
+          if (f === "large") return cap > 50000;
+          if (f === "mid") return cap > 10000 && cap <= 50000;
+          if (f === "small") return cap <= 10000;
           return false;
         });
         if (!matches) return false;
@@ -354,9 +368,9 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
         const classification = stock.foData?.classification || "";
         const matches = foFilter.some(f => {
           if (f === "fo_only") return !!stock.foData;
-          if (f === "high_oi") return (stock.foData?.oi || 0) > 1000000;
-          if (f === "rising_oi") return (stock.foData?.oiChangePct || 0) > 5;
-          if (f === "falling_oi") return (stock.foData?.oiChangePct || 0) < -5;
+          if (f === "high_oi") return (stock.foData?.oi ?? 0) > 1000000;
+          if (f === "rising_oi") return (stock.foData?.oiChangePct ?? 0) > 5;
+          if (f === "falling_oi") return (stock.foData?.oiChangePct ?? 0) < -5;
           return classification === f.toUpperCase().replace("_", " ");
         });
         if (!matches) return false;
@@ -393,6 +407,14 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
       name,
       stocks,
       avgChangePct: stocks.reduce((sum, s) => sum + s.changePct, 0) / stocks.length,
+      // Real weekly average (null when the feed has no weekly data).
+      avgWeeklyChangePct: (() => {
+        const vals = stocks
+          .map((s) => (typeof s.weeklyChangePct === "number" ? s.weeklyChangePct : null))
+          .filter((v): v is number => v != null);
+        if (!vals.length) return null;
+        return parseFloat((vals.reduce((sum, v) => sum + v, 0) / vals.length).toFixed(2));
+      })(),
       advanceCount: stocks.filter(s => s.changePct > 0).length,
       declineCount: stocks.filter(s => s.changePct < 0).length,
     })).sort((a, b) => b.avgChangePct - a.avgChangePct);
@@ -416,6 +438,28 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
     );
   }
 
+  // The feed failed → an explicit unavailable panel, not an empty treemap
+  // that reads as "the market is flat".
+  if (marketData?.status === "UNAVAILABLE" || (!marketData && allData?.status === "UNAVAILABLE")) {
+    return (
+      <Card className="bg-[#0f1117] border-zinc-800">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
+            MARKET HEATMAP
+            <DataFreshnessBadge meta={marketData?.data || allData?.data} className="ml-1" showReason />
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          <UnavailableCard
+            title="Market heatmap"
+            reason={marketData?.error || allData?.error}
+            meta={marketData?.data || allData?.data}
+          />
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
@@ -424,6 +468,7 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
           <LayoutGrid className="h-3 w-3 text-zinc-400" />
           <span className="text-xs font-bold text-zinc-300">MARKET HEATMAP</span>
           <Badge variant="outline" className="text-[9px]">{data.stocks?.length || filteredStocks.length} stocks</Badge>
+          <DataFreshnessBadge meta={data.data} className="ml-1" showReason />
           {hasActiveFilters && (
             <Badge variant="secondary" className="text-[9px] bg-emerald-500/20 text-emerald-400">
               FILTERED
@@ -793,8 +838,8 @@ export function MarketHeatmap({ onStockClick, initialMarket = "NIFTY50" }: Marke
                     <span className="text-[9px] font-bold text-zinc-500">{sector.name}</span>
                     <div className="flex items-center gap-2">
                       {colorMode === "weekly" ? (
-                        <span className={`text-[9px] font-bold ${(sector.avgWeeklyChangePct || 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                          {(sector.avgWeeklyChangePct || 0) >= 0 ? "+" : ""}{(sector.avgWeeklyChangePct || 0).toFixed(2)}% Wk
+                        <span className={`text-[9px] font-bold ${sector.avgWeeklyChangePct == null ? "text-zinc-500" : (sector.avgWeeklyChangePct >= 0 ? "text-emerald-400" : "text-red-400")}`}>
+                          {sector.avgWeeklyChangePct == null ? "— Wk" : `${sector.avgWeeklyChangePct >= 0 ? "+" : ""}${sector.avgWeeklyChangePct.toFixed(2)}% Wk`}
                         </span>
                       ) : (
                         <span className={`text-[9px] font-bold ${sector.avgChangePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>

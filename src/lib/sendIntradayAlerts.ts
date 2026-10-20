@@ -13,7 +13,7 @@ import { ALL_SYMBOLS } from "./stockUniverse";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
 import {
   checkSLTP, addTrade, formatSLTPHit,
-  hasActiveTrade
+  hasActiveTrade, tickPx, fmtStrike
 } from "./activeTradeTracker";
 import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
@@ -51,7 +51,7 @@ async function fetchAndPushSignal(
     if (!alert) return;
 
     const conf = (alert.confidence || 0) / 100;
-    const rr = alert.rr || 1;
+    const rr = alert.rrGate || 1;
     if (conf < 0.6 || rr < 1.5) return;
 
     candidates.push({ symbol: sym, alert });
@@ -61,19 +61,70 @@ async function fetchAndPushSignal(
 }
 
 // Price fetcher for SL/TP checking — fetches live option price
-async function getCurrentOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
+/**
+ * The LIVE premium of the exact contract that was opened.
+ *
+ * Fail closed on anything that is not that contract's premium:
+ *   • a chain for a DIFFERENT expiry is a different contract (its premium would
+ *     silently move the stop/TP of this trade),
+ *   • a premium worth more than its underlying is not a premium (that is the
+ *     underlying itself leaking into the option price).
+ */
+export async function getCurrentOptionPrice(
+  symbol: string,
+  strike: number,
+  optionType: string,
+  expiry?: string
+): Promise<number> {
   try {
     const res = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`);
     if (!res.ok) return 0;
     const json = await res.json();
     const data = json?.data?.data || [];
-    const row = data.find((r: any) => r.strike === strike);
+
+    // The chain must be the expiry we opened (when both are known).
+    const chainExpiry = json?.data?.expiry || json?.data?.selectedExpiry || "";
+    const wantExpiry = expiryKey(expiry);
+    const haveExpiry = expiryKey(chainExpiry);
+    if (wantExpiry && haveExpiry && wantExpiry !== haveExpiry) {
+      console.warn(`[sendIntradayAlerts] ${symbol} chain expiry ${chainExpiry} ≠ trade expiry ${expiry} — no LTP`);
+      return 0;
+    }
+
+    const row = data.find((r: any) => Number(r.strike) === Number(strike));
     if (!row) return 0;
     const side = optionType === "CE" ? row.ce : row.pe;
-    return side?.ltp || 0;
+    const ltp = Number(side?.ltp || 0);
+    if (!(ltp > 0)) return 0;
+
+    // An option can never be worth more than its underlying. If the feed hands
+    // back the spot, it is not a premium → fail closed.
+    const spot = Number(json?.data?.spotPrice || 0);
+    if (spot > 0 && ltp >= spot) {
+      console.warn(`[sendIntradayAlerts] ${symbol} ${strike} ${optionType} ltp ${ltp} ≥ spot ${spot} — not a premium, ignoring`);
+      return 0;
+    }
+    return ltp;
   } catch {
     return 0;
   }
+}
+
+/** Normalise an expiry label to YYYY-MM-DD ("27-Oct-2026" → "2026-10-27"). */
+export function expiryKey(v: unknown): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  if (m) {
+    const months: Record<string, string> = {
+      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+    };
+    const mm = months[m[2].toLowerCase()];
+    if (mm) return `${m[3]}-${mm}-${m[1].padStart(2, "0")}`;
+  }
+  return null;
 }
 
 function sdmSignalToAlert(symbol: string, signal: any): any {
@@ -81,9 +132,26 @@ function sdmSignalToAlert(symbol: string, signal: any): any {
   if (signal.direction !== "CALL" && signal.direction !== "PUT") return null;
   if (!signal.entry || signal.entry <= 0) return null;
   if (!signal.strike || signal.strike <= 0) return null;
+  // FAIL CLOSED on a plan that cannot be monitored: no stop / no target means
+  // the trade would sit open forever (and the alert would print "₹undefined").
+  if (!signal.sl || signal.sl <= 0) return null;
+  if (!signal.tp1 || signal.tp1 <= 0) return null;
+  // The stop must be on the correct side of the entry for a BUY.
+  if (signal.sl >= signal.entry) return null;
+  // An option premium can never be worth more than its underlying — that is
+  // the underlying leaking into the option price.
+  const spot = Number(signal?.marketContext?.spot || 0);
+  if (spot > 0 && signal.entry >= spot) return null;
 
   const optionType = isCall ? "CE" : "PE";
-  const rr = signal.riskReward > 3 ? 4 : signal.riskReward > 2 ? 3 : signal.riskReward > 1 ? 2 : 1;
+  // The gate keeps the engine's own R:R bucket (unchanged behaviour); the
+  // DISPLAYED R:R is computed from the entry/stop/TP1 the alert actually shows,
+  // so the number and the levels can never disagree.
+  const rrGate = signal.riskReward > 3 ? 4 : signal.riskReward > 2 ? 3 : signal.riskReward > 1 ? 2 : 1;
+  const long = signal.tp1 > signal.entry;
+  const risk = long ? signal.entry - signal.sl : signal.sl - signal.entry;
+  const reward = long ? signal.tp1 - signal.entry : signal.entry - signal.tp1;
+  const rr = risk > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
 
   const reasons = (signal.whyThisTrade || [])
     .map((w: any) => `${w.label}: ${w.value}`)
@@ -107,11 +175,13 @@ function sdmSignalToAlert(symbol: string, signal: any): any {
     tp1: signal.tp1,
     tp2: signal.tp2 || signal.tp1,
     rr,
+    rrGate,
     confidence: Math.round(signal.confidence || 50),
     rationale: reasons + extra || "SDM V2 engine recommendation",
     expiry: expiryLabel,
     generatedAt: new Date().toISOString(),
     greeks: signal.greeks || null,
+    dataSource: signal?.dataHealth?.source || signal?.source || "unknown",
   };
 }
 
@@ -133,14 +203,15 @@ function formatSDMMessage(alert: any): string {
 ${emoji} ${alert.side} ${alert.instrument}
 ${direction} | Confidence: ${alert.confidence}%
 
-Strike: ${alert.strike} ${alert.optionType} ${alert.expiry ? `| ${alert.expiry}` : ""}
-Entry: ₹${alert.entry.toFixed(2)}
-Stop: ₹${alert.sl.toFixed(2)} (${pnlRisk}% risk)
-Target 1: ₹${alert.tp1.toFixed(2)} (${pnlReward}% gain)
-Target 2: ₹${alert.tp2.toFixed(2)}
+Strike: ${fmtStrike(alert.strike)} ${alert.optionType} ${alert.expiry ? `| ${alert.expiry}` : ""}
+Entry: ₹${tickPx(alert.entry)}
+Stop: ₹${tickPx(alert.sl)} (${pnlRisk}% risk)
+Target 1: ₹${tickPx(alert.tp1)} (${pnlReward}% gain)
+Target 2: ₹${tickPx(alert.tp2)}
 R:R 1:${alert.rr}${greeksLine}
 
 ${alert.rationale}
+📡 Data: SDM V2 · ${alert.dataSource || "unknown"}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 `;
@@ -172,7 +243,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   }
 
   // 1. Check active trades for SL/TP hits
-  const { hitSL, hitTP1, hitTP2, hitTP3 } = await checkSLTP(getCurrentOptionPrice);
+  const { hitSL, hitTP1, hitTP2, hitTP3 } = await checkSLTP(
+    (sym, strike, type, expiry) => getCurrentOptionPrice(sym, strike, type, expiry)
+  );
 
   let newAlerts = 0;
 
@@ -348,6 +421,13 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
             console.warn(`[sendIntradayAlerts] skip ${stock.symbol} — chain ${chainAgeMin!.toFixed(0)}m old`);
             continue;
           }
+          // Fail closed on an implausible plan: the premium must be a real
+          // option premium (never the underlying's price) and the stop must sit
+          // on the correct side of the entry.
+          if (!isPlausibleOptionPlan(stock, opt)) {
+            console.warn(`[sendIntradayAlerts] skip ${stock.symbol} — implausible option plan (premium ₹${opt?.premium} / stop ₹${opt?.stopLoss})`);
+            continue;
+          }
           const sig = `${stock.symbol}|${opt.strike}|${opt.optionType}|BUY|stock-scanner`;
           if (alreadySentToday(sig)) continue;
 
@@ -381,6 +461,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               status: "ACTIVE",
               sentAt: new Date().toISOString(),
               source: "stock-scanner",
+              expiry: expiryKey(opt.expiry) || undefined,
             }, true); // skipAlert=true — stock alert already sent above
             // Migration: also record executed intraday trades to Trade Audit sidecar.
             await recordIntradayTrade({
@@ -416,9 +497,36 @@ function describeSources(sources?: { daily?: string; intraday?: string; quotes?:
   if (sources.quotes) parts.push(`quotes ${sources.quotes}`);
   if (sources.daily) parts.push(`daily ${sources.daily}`);
   if (sources.intraday && sources.intraday !== "none") parts.push(`5m ${sources.intraday}`);
+  if (sources.intraday === "none") parts.push("5m UNAVAILABLE (no intraday feed)");
   if (sources.chain) parts.push(`chain ${sources.chain}`);
-  if (sources.intraday === "none") parts.push("5m UNAVAILABLE (session setups need Breeze)");
+  else parts.push("chain UNKNOWN");
   return parts.join(" · ") || "scanner";
+}
+
+/**
+ * Fail closed on a plan that is not a trade:
+ *   • the premium must be a real option premium — an option can never be worth
+ *     more than its underlying, so a premium ≥ the underlying's price is the
+ *     underlying leaking into the option price (the live "BHARTIARTL — PE /
+ *     Strike 1875.2 / Entry ₹1875.20" contract that never existed),
+ *   • the stop must sit on the opposite side of the entry from the target,
+ *   • every level must be present.
+ */
+export function isPlausibleOptionPlan(stock: any, opt: any): boolean {
+  const premium = Number(opt?.premium);
+  const sl = Number(opt?.stopLoss);
+  const tp1 = Number(opt?.targets?.[0]);
+  if (!(premium > 0) || !(sl > 0) || !(tp1 > 0)) return false;
+  if (tp1 === premium) return false;
+
+  // The underlying's price, when the scanner knows it.
+  const underlying = Number(stock?.currentPrice);
+  if (underlying > 0 && premium >= underlying) return false;
+
+  // The stop must be on the opposite side of the entry from the target.
+  const long = tp1 > premium;
+  if (long ? !(sl < premium) : !(sl > premium)) return false;
+  return true;
 }
 
 export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?: string; intraday?: string; quotes?: string; chain?: string }): string {
@@ -427,20 +535,26 @@ export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?:
   // R:R must come from the OPTION's own plan (entry / stop / TP1) — the
   // underlying stock's riskReward is a different instrument's number and
   // produced values like "1:39.4" and "1:0.8" for the same 1:2 option plan.
-  const risk = isCall ? opt.premium - opt.stopLoss : opt.stopLoss - opt.premium;
-  const reward = isCall ? (opt.targets?.[0] ?? opt.premium) - opt.premium : opt.premium - (opt.targets?.[0] ?? opt.premium);
+  // The side comes from the plan GEOMETRY (a bought PE has its stop BELOW the
+  // entry, a mirrored bearish PE has it ABOVE) — the option letter lies.
+  const premium = Number(opt.premium);
+  const stopLoss = Number(opt.stopLoss);
+  const tp1 = Number(opt.targets?.[0] ?? premium);
+  const long = tp1 > premium;
+  const risk = long ? premium - stopLoss : stopLoss - premium;
+  const reward = long ? tp1 - premium : premium - tp1;
   const rr = risk > 0 ? `1:${(reward / risk).toFixed(1)}` : "—";
   const reasons = (stock.reasons || []).slice(0, 3).join(" · ") || "Scanner pick";
   const direction = isCall ? "Bullish" : "Bearish";
-  const targets = opt.targets.map((t: number, i: number) => `T${i + 1} ₹${t.toFixed(2)}`).join(" | ");
+  const targets = (opt.targets || []).map((t: number, i: number) => `T${i + 1} ₹${tickPx(t)}`).join(" | ");
 
   return `📊 STOCK OPTION — ${stock.symbol}
 
-${emoji} BUY ${opt.optionType} | ${stock.symbol} ${opt.strike}
+${emoji} BUY ${opt.optionType} | ${stock.symbol} ${fmtStrike(opt.strike)}
 
 📅 Monthly Expiry: ${opt.expiryLabel}
-💰 Premium: ₹${opt.premium.toFixed(2)}
-🛑 Stop Loss: ₹${opt.stopLoss.toFixed(2)}
+💰 Premium: ₹${tickPx(premium)}
+🛑 Stop Loss: ₹${tickPx(stopLoss)}
 🎯 ${targets}
 📐 R:R ${rr}
 ⭐ Confidence: ${stock.totalScore}%

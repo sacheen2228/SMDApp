@@ -40,9 +40,9 @@ REFACTOR → Clean up → Keep tests green
 One behavior per test. Clear name. Real code, not mocks.
 
 ```typescript
-// src/lib/__tests__/sdm-engine.test.ts
+// tests/sdm-engine.test.ts
 import { describe, it, expect } from "bun:test";
-import { computeSDMScore } from "../sdm-engine";
+import { computeSDMScore } from "@/lib/sdm-engine";
 
 describe("computeSDMScore", () => {
   it("returns 0 for NO_DATA regime when all sources unavailable", () => {
@@ -61,7 +61,7 @@ describe("computeSDMScore", () => {
 ### Verify RED — Watch It Fail
 
 ```bash
-bun test src/lib/__tests__/sdm-engine.test.ts
+bun test tests/sdm-engine.test.ts
 ```
 
 Confirm: test fails (not errors). Failure message is expected.
@@ -86,9 +86,9 @@ After green only. Remove duplication. Improve names. Keep tests green.
 
 | Component | What to Test | How |
 |---|---|---|
-| **Scoring engines** (SDM, ORCA, CAS) | Score calculation, regime detection, thresholds | Unit tests with fixed inputs |
+| **Scoring engines** (SDM, CAS) | Score calculation, regime detection, thresholds | Unit tests with fixed inputs |
 | **Detection engines** (breakout, pullback, etc.) | Signal classification, scoring | Unit tests with known patterns |
-| **Data fallback chains** | Breeze → NSE → Yahoo fallback order | Mock fetch, verify chain order |
+| **Data fallback chains** | NSE → BSE → MOAPI → Breeze → `NO_DATA` fallback order | Mock fetch, verify chain order |
 | **Greeks calculator** | Black-Scholes math, edge cases | Known analytical values |
 | **Backtest engines** | Trade replay, P&L calculation, MFE/MAE | Fixed trade + candle data |
 | **CAS time engine** | Window detection, confirmation scoring | Fixed time + config inputs |
@@ -105,15 +105,15 @@ After green only. Remove duplication. Improve names. Keep tests green.
 ## Test File Location
 
 ```
-src/lib/__tests__/<module-name>.test.ts    # unit tests
-src/app/api/__tests__/<endpoint>.test.ts   # API route tests
+tests/<module-name>.test.ts    # unit tests (flat in tests/)
+tests/<endpoint>.test.ts       # API route tests
 ```
 
 ## Running Tests
 
 ```bash
 bun test                          # all tests
-bun test src/lib/__tests__/       # specific directory
+bun test tests/                # specific directory
 bun test --watch                  # watch mode
 ```
 

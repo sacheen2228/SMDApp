@@ -8,9 +8,23 @@
 // prices with real OI/volume and the underlying level, and it is always
 // labelled `BHAVCOPY` (EOD) so no card can mistake it for a live chain.
 //
+// EXPIRY: the bhavcopy file lists the contract that just expired first, the
+// same way the live contract list does. An EOD file must never hand back a
+// DEAD contract as if it were tradable — the nearest contract that is still
+// trading is selected, and an expired one is refused outright.
+//
 // Data: NSE/BSE bhavcopy (src/lib/option-bhavcopy.ts) — real exchange files.
 import type { OptionChainData, OptionLeg, OptionStrike, ProviderResult } from "../types";
 import { loadBhavcopyForTrade, type PremiumCandle } from "@/lib/option-bhavcopy";
+import {
+  EXPIRY_UNAVAILABLE,
+  expiryUnavailableReason,
+  isExpiryExpired,
+  isSameExpiry,
+  selectNearestLiveExpiry,
+  toIsoDate,
+  type CanonicalOptionChain,
+} from "@/lib/data-layer/chains/option-chain";
 
 /** Trading days to walk back when today's file is not published yet. */
 const MAX_LOOKBACK_DAYS = 6;
@@ -40,7 +54,7 @@ export function __setBhavcopyLoaderForTests(fn: typeof loadBhavcopyForTrade | nu
 export const bhavcopyProvider = {
   id: "bhavcopy",
 
-  async getOptionChain(symbol: string, expiry?: string): Promise<ProviderResult<OptionChainData>> {
+  async getOptionChain(symbol: string, expiry?: string): Promise<ProviderResult<CanonicalOptionChain>> {
     const sym = String(symbol || "").toUpperCase();
     if (!sym) {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: "no symbol" };
@@ -60,13 +74,49 @@ export const bhavcopyProvider = {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: `no bhavcopy rows for ${sym}` };
     }
 
-    // Pick the expiry: the requested one if present, else the nearest in the file.
+    // Every contract present in the file.
     const expiries = [...new Set(rows.map((r) => String(r.expiry).slice(0, 10)))].sort();
     if (!expiries.length) {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: "bhavcopy has no expiries" };
     }
-    const wanted = expiry ? String(expiry).slice(0, 10) : expiries[0];
-    const selected = expiries.includes(wanted) ? wanted : expiries[0];
+
+    // Pick the expiry: the requested one when it is present AND still
+    // trading, else the nearest contract in the file that is still trading.
+    // An expired contract is NEVER selected — serving a dead contract from an
+    // EOD file is exactly the masquerade this provider must avoid.
+    let selected: string | null = null;
+    if (expiry) {
+      const wanted = toIsoDate(expiry);
+      if (!wanted) {
+        return {
+          data: null, fallbackUsed: true, source: "NO_DATA",
+          fallbackReason: `${EXPIRY_UNAVAILABLE}: "${expiry}" is not a valid expiry date`,
+        };
+      }
+      const match = expiries.find((e) => isSameExpiry(e, wanted));
+      if (!match) {
+        return {
+          data: null, fallbackUsed: true, source: "NO_DATA",
+          fallbackReason: expiryUnavailableReason(sym, expiry, expiries),
+        };
+      }
+      if (isExpiryExpired(match)) {
+        return {
+          data: null, fallbackUsed: true, source: "NO_DATA",
+          fallbackReason: `${EXPIRY_UNAVAILABLE}: expiry "${expiry}" has expired — the bhavcopy EOD fallback never serves a dead contract`,
+        };
+      }
+      selected = match;
+    } else {
+      selected = selectNearestLiveExpiry(expiries);
+      if (!selected) {
+        return {
+          data: null, fallbackUsed: true, source: "NO_DATA",
+          fallbackReason: `${EXPIRY_UNAVAILABLE}: the bhavcopy file for ${sym} (${usedDate}) holds no contract that is still trading`,
+        };
+      }
+    }
+
     const legs = rows.filter((r) => String(r.expiry).slice(0, 10) === selected);
     if (!legs.length) {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: `no ${selected} rows for ${sym}` };
@@ -86,6 +136,10 @@ export const bhavcopyProvider = {
 
     const spot = legs.find((r) => r.underlying && r.underlying > 0)?.underlying ?? null;
 
+    // The file's own date is the as-of stamp: this is END-OF-DAY data, never
+    // a live chain.
+    const asOf = new Date(`${usedDate}T15:30:00+05:30`).toISOString();
+
     return {
       data: {
         underlying: sym,
@@ -96,6 +150,10 @@ export const bhavcopyProvider = {
         source: "BHAVCOPY",
         fallbackUsed: true,
         freshness: "STALE",
+        asOf,
+        expiryRequested: expiry ?? null,
+        expirySelection: expiry ? "requested" : "nearest-live",
+        isEod: true,
       },
       fallbackUsed: true,
       source: "BHAVCOPY",

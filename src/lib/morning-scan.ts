@@ -6,6 +6,7 @@ import { buildOptionPlan } from "./option-plan";
 import { getLotSize } from "./symbol-config";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { sendTelegramMessage } from "./telegram";
+import { isPlausibleOptionPremium } from "./morningSignalGenerator";
 
 const SCAN_FILE = "/tmp/morning-scan-history.json";
 
@@ -142,6 +143,43 @@ function formatIndexOptionMessage(opt: IndexOption, rank: number): string {
   return msg;
 }
 
+// ── Index option plan (one builder for every leg) ──
+// Plan: rupee risk (20% of the amount deployed) + 1:2 / 1:3 / 1:4 targets.
+// The old 25%/30%/60% ladder was a 1.2:1 plan — under the gate's 1.5 floor.
+//
+// GUARD: the chain premium must be a PREMIUM. A row priced on the strike
+// scale (the underlying price used as a premium) is a contract that does not
+// exist — it would be monitored forever with no LTP.
+function buildIndexOptionPlan(
+  symbol: string,
+  optionType: "CE" | "PE",
+  premium: number,
+  strike: number
+): { entry: number; sl: number; tp1: number; tp2: number; rr: number } | null {
+  const guard = isPlausibleOptionPremium({ entry: premium, strike });
+  if (!guard.ok) {
+    console.warn(`[MorningScan] skip ${symbol} ${optionType} strike ${strike} — ${guard.reason}`);
+    return null;
+  }
+
+  const plan = buildOptionPlan({
+    symbol, optionType, entryPremium: premium, lotSize: getLotSize(symbol) || 65,
+  });
+  if (!plan) {
+    console.warn(`[MorningScan] skip ${symbol} ${optionType} strike ${strike} — no valid option plan`);
+    return null;
+  }
+
+  const entry = plan.entry;
+  const sl = plan.stopLoss;
+  const tp1 = plan.targets[0] ?? entry;
+  const tp2 = plan.targets[1] ?? tp1;
+  // A PE plan is mirrored (stop above the entry, targets below) → both
+  // differences are negative, so the ratio stays positive.
+  const rr = (tp1 - entry) / (entry - sl);
+  return { entry, sl, tp1, tp2, rr };
+}
+
 // ── Scan NIFTY/SENSEX options from Motilal ──
 async function scanIndexOptions(): Promise<IndexOption[]> {
   const options: IndexOption[] = [];
@@ -176,17 +214,9 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
         // CE trade
         if (strike.ce && strike.ce.ltp > 0) {
           const premium = strike.ce.ltp;
-          // Plan: rupee risk (20% of the amount deployed) + 1:2 / 1:3 / 1:4 targets.
-          // The old 25%/30%/60% ladder was a 1.2:1 plan — under the gate's 1.5 floor.
-          const plan = buildOptionPlan({
-            symbol: "NIFTY", optionType: "CE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
-          });
-          const sl = plan?.stopLoss ?? premium * 0.75;
-          const tp1 = plan?.targets[0] ?? premium * 1.30;
-          const tp2 = plan?.targets[1] ?? premium * 1.60;
-          const rr = (tp1 - premium) / (premium - sl);
+          const plan = buildIndexOptionPlan("NIFTY", "CE", premium, strike.strike);
 
-          if (rr >= 1.2 && premium >= 10) {
+          if (plan && plan.rr >= 1.2 && premium >= 10) {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
             if (isITM_CE) reasoning.push("ITM call");
@@ -198,11 +228,11 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
               strike: strike.strike,
               type: "CE",
               ltp: premium,
-              entry: premium,
-              stopLoss: sl,
-              target1: tp1,
-              target2: tp2,
-              riskReward: rr,
+              entry: plan.entry,
+              stopLoss: plan.sl,
+              target1: plan.tp1,
+              target2: plan.tp2,
+              riskReward: plan.rr,
               spotPrice: spot,
               pcr,
               reasoning,
@@ -213,15 +243,9 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
         // PE trade
         if (strike.pe && strike.pe.ltp > 0) {
           const premium = strike.pe.ltp;
-          const plan = buildOptionPlan({
-            symbol: "NIFTY", optionType: "PE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
-          });
-          const sl = plan?.stopLoss ?? premium * 0.75;
-          const tp1 = plan?.targets[0] ?? premium * 1.30;
-          const tp2 = plan?.targets[1] ?? premium * 1.60;
-          const rr = (tp1 - premium) / (premium - sl);
+          const plan = buildIndexOptionPlan("NIFTY", "PE", premium, strike.strike);
 
-          if (rr >= 1.2 && premium >= 10) {
+          if (plan && plan.rr >= 1.2 && premium >= 10) {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
             if (isITM_PE) reasoning.push("ITM put");
@@ -233,11 +257,11 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
               strike: strike.strike,
               type: "PE",
               ltp: premium,
-              entry: premium,
-              stopLoss: sl,
-              target1: tp1,
-              target2: tp2,
-              riskReward: rr,
+              entry: plan.entry,
+              stopLoss: plan.sl,
+              target1: plan.tp1,
+              target2: plan.tp2,
+              riskReward: plan.rr,
               spotPrice: spot,
               pcr,
               reasoning,
@@ -269,12 +293,12 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
 
         if (strike.ce && strike.ce.ltp > 0) {
           const premium = strike.ce.ltp;
-          const sl = premium * 0.75;
-          const tp1 = premium * 1.30;
-          const tp2 = premium * 1.60;
-          const rr = (tp1 - premium) / (premium - sl);
+          // Same house plan as NIFTY — the old 25%/30%/60% ladder was 1.2:1
+          // (under the gate's 1.5 floor) and it priced SENSEX with the NIFTY
+          // lot size.
+          const plan = buildIndexOptionPlan("SENSEX", "CE", premium, strike.strike);
 
-          if (rr >= 1.2 && premium >= 10) {
+          if (plan && plan.rr >= 1.2 && premium >= 10) {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
             if (pcr > 1.2) reasoning.push(`Bullish PCR ${pcr.toFixed(2)}`);
@@ -285,11 +309,11 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
               strike: strike.strike,
               type: "CE",
               ltp: premium,
-              entry: premium,
-              stopLoss: sl,
-              target1: tp1,
-              target2: tp2,
-              riskReward: rr,
+              entry: plan.entry,
+              stopLoss: plan.sl,
+              target1: plan.tp1,
+              target2: plan.tp2,
+              riskReward: plan.rr,
               spotPrice: spot,
               pcr,
               reasoning,
@@ -299,15 +323,10 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
 
         if (strike.pe && strike.pe.ltp > 0) {
           const premium = strike.pe.ltp;
-          const plan = buildOptionPlan({
-            symbol: "NIFTY", optionType: "PE", entryPremium: premium, lotSize: getLotSize("NIFTY") || 65,
-          });
-          const sl = plan?.stopLoss ?? premium * 0.75;
-          const tp1 = plan?.targets[0] ?? premium * 1.30;
-          const tp2 = plan?.targets[1] ?? premium * 1.60;
-          const rr = (tp1 - premium) / (premium - sl);
+          // SENSEX lot size (the old call planned a SENSEX put with NIFTY's).
+          const plan = buildIndexOptionPlan("SENSEX", "PE", premium, strike.strike);
 
-          if (rr >= 1.2 && premium >= 10) {
+          if (plan && plan.rr >= 1.2 && premium >= 10) {
             const reasoning: string[] = [];
             if (isATM) reasoning.push("ATM strike");
             if (pcr > 0 && pcr < 0.8) reasoning.push(`Bearish PCR ${pcr.toFixed(2)}`);
@@ -318,11 +337,11 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
               strike: strike.strike,
               type: "PE",
               ltp: premium,
-              entry: premium,
-              stopLoss: sl,
-              target1: tp1,
-              target2: tp2,
-              riskReward: rr,
+              entry: plan.entry,
+              stopLoss: plan.sl,
+              target1: plan.tp1,
+              target2: plan.tp2,
+              riskReward: plan.rr,
               spotPrice: spot,
               pcr,
               reasoning,

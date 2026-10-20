@@ -1,8 +1,21 @@
 // Breakout Strategy API Endpoint
-// Runs candlestick breakout + fakeout detection engine
+// Runs the candlestick breakout + fakeout detection engine on REAL candles.
+//
+// Honesty notes (2026-10-20 audit):
+//   • `spotPrice` defaulted to 24 000 — an invented NIFTY level that the
+//     card rendered as the live spot (the real NIFTY was 22 888).
+//   • `vix` defaulted to 15.
+//   • `stats.winRate` was 0 when there were no signals, which reads as
+//     "0% win rate" instead of "no signals".
+// The engine only produces a signal from real intraday candles; when the
+// candle feed is empty the route says so instead of showing an empty
+// "0% win rate" card.
 
 import { NextRequest, NextResponse } from "next/server";
 import { CandlestickBreakoutIndia, type BreakoutSignal } from "@/lib/candlestick-breakout";
+import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { getNSEIndiaVIX, getNSEIndexQuote } from "@/lib/nse-api";
+import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 
 // Cache strategy instance per session
 let strategyInstance: CandlestickBreakoutIndia | null = null;
@@ -28,38 +41,56 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol") || "NIFTY";
 
-    // Fetch real market data: Breeze → NSE → Yahoo → Simulation fallback
-    let spotPrice = 24000;
-    let vix = 15;
+    const warnings: string[] = [];
 
-    try {
-      const { getOptionChain, getOptionChainExpiries } = await import("@/lib/icici-breeze/option-chain");
-      const { initSession } = await import("@/lib/icici-breeze/auth");
-      await initSession().catch(() => {});
-      const expiries = await getOptionChainExpiries(symbol);
-      for (const exp of expiries.slice(0, 3)) {
-        const chain = await getOptionChain(symbol, exp);
-        if (chain) {
-          spotPrice = chain.spotPrice;
-          break;
-        }
+    // ── Spot (real) ───────────────────────────────────────────────────
+    // Canonical chain (NSE → BSE → MO) first, then the free index quote.
+    let spotPrice: number | null = null;
+    let spotSource = "none";
+    let chainAsOf: string | null = null;
+
+    const chain = await Promise.race([
+      fetchLiveOptionChain(symbol),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000)),
+    ]).catch(() => null);
+
+    if (chain?.success && chain.data?.spotPrice) {
+      spotPrice = chain.data.spotPrice;
+      spotSource = chain.source;
+      chainAsOf = chain.data.collectedAt ?? null;
+    } else {
+      const idx = await getNSEIndexQuote(symbol).catch(() => null);
+      if (idx?.regularMarketPrice) {
+        spotPrice = idx.regularMarketPrice;
+        spotSource = "nse";
       }
-    } catch (e) {
-      console.warn("[Breakout] Breeze failed, trying NSE...");
-      try {
-        const { getNSEOptionChain } = await import("@/lib/nse-api");
-        const nseData = await getNSEOptionChain(symbol);
-        if (nseData?.records?.underlyingValue) {
-          spotPrice = nseData.records.underlyingValue;
-        }
-      } catch {
-        // final fallback
+      if (!chain?.success) {
+        warnings.push(`Option chain unavailable (${chain?.error || "no provider answered"}).`);
       }
     }
 
-    // Run strategy simulation
+    // ── VIX (real) ────────────────────────────────────────────────────
+    const vixQuote = await getNSEIndiaVIX().catch(() => null);
+    const vix: number | null = vixQuote && vixQuote.value > 0 ? vixQuote.value : null;
+    if (vix == null) warnings.push("INDIA VIX unavailable.");
+
+    if (spotPrice == null || spotPrice <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          status: "UNAVAILABLE",
+          error: `No exchange quote for ${symbol} — breakout analysis needs the real spot.`,
+          warnings,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 503 },
+      );
+    }
+
+    // Run the strategy on real candles (returns null when the candle feed
+    // is empty — the engine never simulates).
     const strategy = getStrategy();
-    const signal = await strategy.simulateFromMarketData(spotPrice, vix, symbol);
+    const signal = await strategy.simulateFromMarketData(spotPrice, vix ?? 0, symbol);
 
     // Get current S/R levels
     const levels = strategy.sr.getAllLevels();
@@ -67,17 +98,31 @@ export async function GET(request: NextRequest) {
     const recentSignals: BreakoutSignal[] = [];
     if (signal) {
       recentSignals.push(signal);
+    } else {
+      warnings.push("No intraday candles available — no breakout/fakeout pattern could be evaluated.");
     }
 
     const validSignals = recentSignals.filter((s) => s.type === "BREAKOUT_SIGNAL");
     const fakeouts = recentSignals.filter((s) => s.type === "FAKEOUT_ALERT");
     const noPatterns = recentSignals.filter((s) => s.type === "NO_PATTERN");
 
+    const clock = await getMarketClock();
+    const meta = buildCardMeta({
+      source: spotSource,
+      providerTimestamp: chainAsOf ?? clock.tradeDate ?? null,
+      ttlMs: 120_000,
+      live: clock.isOpen,
+      reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+    });
+
     return NextResponse.json({
       success: true,
+      status: meta.status,
+      meta,
       data: {
         symbol,
         spotPrice,
+        spotSource,
         vix,
         signal,
         srLevels: levels.map((l) => ({
@@ -91,9 +136,10 @@ export async function GET(request: NextRequest) {
           valid: validSignals.length,
           fakeouts: fakeouts.length,
           noPattern: noPatterns.length,
+          // null (not 0) when there is no signal to grade.
           winRate: recentSignals.length > 0
             ? Math.round((validSignals.length / recentSignals.length) * 100)
-            : 0,
+            : null,
         },
         config: {
           min_break_pct: 0.3,
@@ -108,13 +154,14 @@ export async function GET(request: NextRequest) {
           ],
         },
         giftNiftyBias: strategy.sr.gift_nifty_bias,
-        timestamp: new Date().toISOString(),
       },
+      warnings,
+      timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
     console.error("[Breakout API] Error:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "Strategy failed" },
+      { success: false, status: "UNAVAILABLE", error: error.message || "Strategy failed" },
       { status: 500 }
     );
   }

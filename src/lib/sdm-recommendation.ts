@@ -55,7 +55,7 @@ import {
   getPositionSizeMultiplier,
   type SessionInfo,
 } from './market-session';
-import { getLotSize } from './symbol-config';
+import { getLotSizeStrict } from './symbol-config';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
 
 // ─── Constants ────────────────────────────────────────────────────
@@ -780,19 +780,39 @@ function getTimeSensitiveNote(
 // MAIN ENTRY POINT — generateTradeRecommendation
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * A VIX we can actually use.
+ *
+ * 0 / NaN / null / undefined = UNKNOWN. The old code substituted 15
+ * (`vix || 15`), so a missing India VIX was scored as a CALM market: the
+ * buyer-confluence gate read the "CALM" regime (sizeMultiplier 1.0) and the
+ * expected move was a fabricated 15%-of-spot number. A missing feed must make
+ * the engine STRICTER, not more permissive.
+ */
+function knownVix(vix: number | null | undefined): number | null {
+  const v = Number(vix);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 export async function generateTradeRecommendation(
   optionChain: SDMOptionStrike[],
   spot: number,
   symbol: string,
   expiryDate: string,
   candles: Record<string, CandleData[]>,
-  vix: number,
+  vix: number | null | undefined,
   source: string,
   lastUpdate: string,
   overrideDirection?: 'CALL' | 'PUT',
   institutionalFilterIn?: InstitutionalFilter
 ): Promise<SDMRecommendation> {
-  const lotSize = getLotSize(symbol);
+  // The REAL contract lot — null when the symbol is not in the NSE F&O lot
+  // table. A ₹ risk/position size cannot be computed without it (and never
+  // with a guessed NIFTY-sized lot).
+  const lot = getLotSizeStrict(symbol);
+  const lotSize = lot ?? 1; // the honest per-unit amount
+  // The VIX is either REAL or UNKNOWN — never defaulted to 15.
+  const vixNum = knownVix(vix);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
   const today = new Date();
   const expiry = new Date(expiryDate);
@@ -811,8 +831,8 @@ export async function generateTradeRecommendation(
   if (healthReport.status === 'OFFLINE') {
     return buildWAITRecommendation(
       spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdate,
-      lotSize, healthReport,
+      currentWindow, timeInMinutes, currentTime, vixNum ?? null, source, lastUpdate,
+      lot, healthReport,
       'Data health OFFLINE — cannot generate trade recommendation'
     );
   }
@@ -858,7 +878,10 @@ export async function generateTradeRecommendation(
     consensus,
     volumeAnalysis,
     oiAnalysis,
-    vix,
+    // 0 = the VIX is UNKNOWN. The volatility factor then reads
+    // "VIX 0.0 — too low" (a CONSERVATIVE 40, never a permissive calm-market
+    // bonus) and the recommendation is forced to WAIT further down.
+    vix: vixNum ?? 0,
     currentWindow,
     tradeDirection: tempDirection,
     entryPrice: tempEntry,
@@ -887,8 +910,8 @@ export async function generateTradeRecommendation(
     const action = validation.action;
     return buildWAITRecommendation(
       spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdate,
-      lotSize, healthReport,
+      currentWindow, timeInMinutes, currentTime, vixNum ?? null, source, lastUpdate,
+      lot, healthReport,
       validation.reason,
       action === 'NO_TRADE' ? 'NO_TRADE' : undefined,
       undefined, undefined, gexResult, marketStructure, consensus,
@@ -912,7 +935,7 @@ export async function generateTradeRecommendation(
   const selectedData = optionChain.find((s) => s.strike === selectedStrike);
   const isCallDir = preliminaryDirection === 'CALL';
   const entryPrice = isCallDir ? (selectedData?.ce?.ltp || 0) : (selectedData?.pe?.ltp || 0);
-  const tradeLevels = computeTradeLevels(entryPrice, atr, spot, sellerSLResult, isCallDir, isExpiryDay, currentWindow, vix);
+  const tradeLevels = computeTradeLevels(entryPrice, atr, spot, sellerSLResult, isCallDir, isExpiryDay, currentWindow, vixNum ?? 0);
 
   const fullQualityInput: QualityScoreInput = {
     spot,
@@ -923,7 +946,8 @@ export async function generateTradeRecommendation(
     consensus,
     volumeAnalysis,
     oiAnalysis,
-    vix,
+    // 0 = the VIX is UNKNOWN (never a fabricated 15).
+    vix: vixNum ?? 0,
     currentWindow,
     tradeDirection: preliminaryDirection,
     entryPrice,
@@ -935,8 +959,8 @@ export async function generateTradeRecommendation(
   if (qualityScore.overall < 50) {
     return buildWAITRecommendation(
       spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdate,
-      lotSize, healthReport,
+      currentWindow, timeInMinutes, currentTime, vixNum ?? null, source, lastUpdate,
+      lot, healthReport,
       `Quality score ${qualityScore.overall} (grade ${qualityScore.grade}) below 50 threshold`,
       undefined,
       qualityScore, sellerSLResult, gexResult, marketStructure, consensus,
@@ -980,7 +1004,7 @@ export async function generateTradeRecommendation(
   // ── Step 8: Entry / SL / Targets ───────────────────────────────
   const finalLevels = computeTradeLevels(
     finalEntry, atr, spot, sellerSLResult, finalIsCall,
-    isExpiryDay, currentWindow, vix
+    isExpiryDay, currentWindow, vixNum ?? 0
   );
 
   // ── Step 9: Smart Entry ────────────────────────────────────────
@@ -1023,19 +1047,22 @@ export async function generateTradeRecommendation(
   riskAmount *= sessionMultiplier;
 
   // Vega-aware reduction: when VIX > 20 (elevated IV), cut size by 40%
-  // because options are expensive and IV crush risk is higher
-  if (vix > 20) {
-    const vixRatio = Math.min(vix / 14, 3); // 14 = long-term VIX median
+  // because options are expensive and IV crush risk is higher.
+  // An UNKNOWN VIX (no feed) is NOT "VIX 0" — it gets no vega adjustment.
+  if (vixNum !== null && vixNum > 20) {
+    const vixRatio = Math.min(vixNum / 14, 3); // 14 = long-term VIX median
     riskAmount *= Math.max(1 - (vixRatio - 1) * 0.4, 0.4);
   }
 
-  const riskPerLot = finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lotSize : 0;
-  const lots = riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
+  // The ₹ sizing needs the REAL lot. With an unknown lot size there is NO
+  // ₹ risk and NO position size (a per-unit number would be a fiction).
+  const riskPerLot = lot !== null && finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lot : 0;
+  const lots = lot !== null && riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
 
   // Notional-aware position cap: max 5% of capital in notional exposure
-  const notionalPerLot = finalEntry * lotSize;
-  const notionalCapLots = notionalPerLot > 0 ? Math.floor(capital * 0.05 / notionalPerLot) : 10;
-  const clampedLots = Math.min(lots, notionalCapLots, 10);
+  const notionalPerLot = lot !== null ? finalEntry * lot : 0;
+  const notionalCapLots = notionalPerLot > 0 ? Math.floor(capital * 0.05 / notionalPerLot) : 0;
+  const clampedLots = lot !== null ? Math.min(lots, notionalCapLots, 10) : 0;
 
   const positionSizing: PositionSizing = {
     lots: clampedLots,
@@ -1068,8 +1095,20 @@ export async function generateTradeRecommendation(
   const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
   const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
+  // Set when the VIX feed was unavailable — the recommendation is a WAIT and
+  // says why (never a "calm market" trade).
+  let vixUnavailable = false;
 
   if (direction !== 'WAIT') {
+    // ── Unknown VIX → fail closed (a DATA gate, checked first) ─────
+    // The buyer-confluence gate scores the VIX regime (COMPLACENT / CALM /
+    // NORMAL / ELEVATED / FEAR) and the expected move needs it too. With no
+    // VIX there is no volatility read at all, so no trade is proposed —
+    // and the reason says so instead of blaming the session.
+    if (vixNum === null) {
+      direction = 'WAIT';
+      vixUnavailable = true;
+    } else {
     // Session check: is trading allowed right now?
     const tradeCheck = isTradeAllowed(direction === 'CALL' ? 'CALL' : 'PUT', session);
     if (!tradeCheck.allowed) {
@@ -1088,11 +1127,13 @@ export async function generateTradeRecommendation(
         pcr: pcr, maxPain: maxPain, spotPrice: spot,
         ceOIBuildup: false, peOIBuildup: false, oiPattern: 'NEUTRAL',
         ivRank: 50,
-        atmIV: Math.max(atmStrikeData?.ce?.iv ?? 0, atmStrikeData?.pe?.iv ?? 0) || 15,
+        // The ATM IV the chain actually carries. 0 = the chain published no
+        // ATM IV (UNKNOWN) — the old `|| 15` invented a "normal" 15% IV.
+        atmIV: Math.max(atmStrikeData?.ce?.iv ?? 0, atmStrikeData?.pe?.iv ?? 0),
         ivTrend: 'STABLE',
         atmStraddlePrice: 0, expectedMove: 0,
         gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
-        indiaVix: vix, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
+        indiaVix: vixNum ?? 0, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
         currentHour: ist.getHours(), currentMinute: ist.getMinutes(),
         isExpiryDay: session?.isExpiryDay || false,
         daysToExpiry: session?.daysToExpiry || 7,
@@ -1106,6 +1147,7 @@ export async function generateTradeRecommendation(
       if (confluence.action === 'NO_TRADE' || confluence.hardBlocks.length > 0) {
         direction = 'WAIT';
       }
+    }
     }
   }
 
@@ -1123,7 +1165,7 @@ export async function generateTradeRecommendation(
   // Probabilities
   const probabilities = computeLiveProbabilities(
     finalEntry, finalLevels.tp1, finalLevels.tp2, finalLevels.tp3,
-    finalLevels.sl, spot, finalSelectedStrike, vix, daysToExpiry,
+    finalLevels.sl, spot, finalSelectedStrike, vixNum ?? 0, daysToExpiry,
     finalIsCall ? 'CALL' : 'PUT'
   );
 
@@ -1144,7 +1186,9 @@ export async function generateTradeRecommendation(
     changePercent: 0,
     pcr,
     maxPain,
-    vix,
+    // 0 = UNKNOWN (the VIX feed was unavailable) — never a fabricated 15.
+    vix: vixNum ?? 0,
+    vixAvailable: vixNum !== null,
     trend: marketStructure.trend === 'UPTREND' ? 'bullish'
           : marketStructure.trend === 'DOWNTREND' ? 'bearish' : 'sideways',
     regime: qualityScore.overall >= 70 ? 'trending' : 'ranging',
@@ -1164,13 +1208,16 @@ export async function generateTradeRecommendation(
   const sellerSLZone = buildSellerSLZone(sellerSLResult, optionChain, spot);
 
   // Gamma Theta Data
-  const gammaThetaData = buildGammaThetaData(gexResult, optionChain, spot, vix);
+  const gammaThetaData = buildGammaThetaData(gexResult, optionChain, spot, vixNum ?? 0);
 
   // Trade grade
   const tradeGrade = qualityScore.grade;
 
-  // Expected move
-  const expectedMove = spot * (vix || 15) / 100 * Math.sqrt(daysToExpiry / 365);
+  // Expected move — UNKNOWN without a real VIX (never a 15%-VIX guess).
+  const expectedMove = vixNum !== null
+    ? spot * (vixNum / 100) * Math.sqrt(daysToExpiry / 365)
+    : 0;
+  const expectedMoveAvailable = vixNum !== null;
 
   // Holding time
   const holdingTimeEstimate = estimateHoldingTime(isExpiryDay, currentWindow, smartEntryResult.action);
@@ -1194,7 +1241,9 @@ export async function generateTradeRecommendation(
   const maxTrades = isExpiryDay ? 4 : Infinity;
 
   // Reason
-  const reason = dirResult.reasons.slice(0, 2).join('; ') || `Quality ${qualityScore.overall} (${qualityScore.grade})`;
+  const reason = vixUnavailable
+    ? 'VIX unavailable — no volatility read, so no trade is proposed (expected move unknown)'
+    : (dirResult.reasons.slice(0, 2).join('; ') || `Quality ${qualityScore.overall} (${qualityScore.grade})`);
 
   // Smart entry/exit actions
   const smartEntry: SmartEntryAction = direction === 'WAIT' ? 'WAIT_VOLUME_CONFIRMATION' : smartEntryResult.action;
@@ -1269,6 +1318,9 @@ export async function generateTradeRecommendation(
     marketRegime,
     holdingTimeEstimate,
     expectedMove,
+    expectedMoveAvailable,
+    lotSize,
+    lotSizeKnown: lot !== null,
     consensus,
     qualityScore,
     session: {
@@ -1293,10 +1345,10 @@ function buildWAITRecommendation(
   currentWindow: ExpiryWindow,
   timeInMinutes: number,
   currentTime: Date,
-  vix: number,
+  vix: number | null,
   source: string,
   lastUpdate: string,
-  lotSize: number,
+  lotSize: number | null,
   healthReport: DataHealthReport,
   reason: string,
   forceDirection?: 'NO_TRADE',
@@ -1325,18 +1377,23 @@ function buildWAITRecommendation(
     nearestSL: 'CE', distanceToSL: 0, sellerExhaustion: false,
   };
 
+  const vixNum = knownVix(vix);
+  const lotSizeNum = lotSize ?? 1; // the honest per-unit amount
   const emptyGammaTheta: GammaThetaData = {
     gammaExposure: 0, thetaDecayRate: 0, premiumDecayPercent: 0, ivSkew: 0,
     gammaBlastDetected: false,
     gammaBlastSignals: { lowVix: false, flatThenBreakout: false, volumeSpike: false, ivSpike: false, extremePCR: false },
-    vixLevel: vix,
+    vixLevel: vixNum ?? 0,
   };
 
   const emptyMarketContext: MarketContext = {
     spot, change: 0, changePercent: 0,
     pcr: oiAnalysis?.pcrOI || oiAnalysis?.pcrVolume || 0,
     maxPain: oiAnalysis?.maxPain || spot,
-    vix, trend: 'sideways', regime: 'trending',
+    // 0 = UNKNOWN (no VIX feed) — never a fabricated 15.
+    vix: vixNum ?? 0,
+    vixAvailable: vixNum !== null,
+    trend: 'sideways', regime: 'trending',
   };
 
   const emptyScores: SDMScores = {
@@ -1388,7 +1445,13 @@ function buildWAITRecommendation(
     positionSizing: { lots: 0, quantity: 0, riskAmount: 0, positionValue: 0, maxLoss: 0 },
     marketRegime: 'trending',
     holdingTimeEstimate: 'N/A',
-    expectedMove: spot * (vix || 15) / 100 * Math.sqrt(daysToExpiry / 365),
+    lotSize: lotSizeNum,
+    lotSizeKnown: lotSize !== null,
+    // UNKNOWN without a real VIX (never a 15%-VIX guess).
+    expectedMove: vixNum !== null
+      ? spot * (vixNum / 100) * Math.sqrt(daysToExpiry / 365)
+      : 0,
+    expectedMoveAvailable: vixNum !== null,
     consensus: undefined,
     qualityScore,
   };
@@ -1419,9 +1482,12 @@ export function generateRecommendation(
 
   // We run the async function — in practice it completes synchronously
   // because all V2 modules are synchronous
+  // The VIX is passed through AS IS — a missing VIX stays missing (the
+  // engine then reports the expected move as UNKNOWN and proposes no trade).
+  // The old `vix ?? 15` turned a missing feed into a calm-market trade.
   generateTradeRecommendation(
     optionChain, spotPrice, symbol, expiryDate,
-    candles, vix ?? 15, source,
+    candles, vix, source,
     lastUpdate || new Date().toISOString()
   ).then((r) => { result = r; });
 
@@ -1435,7 +1501,7 @@ export function generateRecommendation(
   // Synchronous fallback — same logic as generateTradeRecommendation
   return generateRecommendationSync(
     optionChain, spotPrice, symbol, expiryDate,
-    currentTime, vix ?? 15, tradesTakenToday, lastUpdate, source
+    currentTime, vix ?? null, tradesTakenToday, lastUpdate, source
   );
 }
 
@@ -1447,12 +1513,15 @@ function generateRecommendationSync(
   symbol: string,
   expiryDate: string,
   currentTime: Date,
-  vix: number,
+  vix: number | null,
   tradesTakenToday: number,
   lastUpdate: string | undefined,
   source: string
 ): SDMRecommendation {
-  const lotSize = getLotSize(symbol);
+  // The REAL contract lot — null when it is not known (never a guess).
+  const lot = getLotSizeStrict(symbol);
+  const lotSize = lot ?? 1; // the honest per-unit amount
+  const vixNum = knownVix(vix);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
   const today = new Date();
   const expiry = new Date(expiryDate);
@@ -1471,7 +1540,7 @@ function generateRecommendationSync(
     return buildWAITRecommendation(
       spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
       currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
-      lotSize, healthReport, 'Data health OFFLINE'
+      lot, healthReport, 'Data health OFFLINE'
     );
   }
 
@@ -1525,8 +1594,10 @@ function generateRecommendationSync(
   const tempTP1 = tempEntry * 1.15;
 
   const qualityInput: QualityScoreInput = {
+    // 0 = the VIX is UNKNOWN (never a fabricated 15) — the volatility factor
+    // then reads conservatively instead of scoring a "calm market".
     spot, candles, optionChain, gexResult, marketStructure, consensus,
-    volumeAnalysis, oiAnalysis, vix, currentWindow,
+    volumeAnalysis, oiAnalysis, vix: vixNum ?? 0, currentWindow,
     tradeDirection: tempIsCall ? 'CALL' : 'PUT',
     entryPrice: tempEntry, stopLoss: tempSL, target1: tempTP1,
   };
@@ -1536,7 +1607,7 @@ function generateRecommendationSync(
     return buildWAITRecommendation(
       spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
       currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
-      lotSize, healthReport,
+      lot, healthReport,
       `Quality score ${qualityScore.overall} (grade ${qualityScore.grade}) below 50`,
       undefined, qualityScore, sellerSLResult, gexResult, marketStructure,
       consensus, volumeAnalysis, oiAnalysis, atr
@@ -1554,7 +1625,7 @@ function generateRecommendationSync(
   const finalData = optionChain.find((s) => s.strike === finalStrike);
   const finalEntry = finalIsCall ? (finalData?.ce?.ltp || 0) : (finalData?.pe?.ltp || 0);
 
-  const finalLevels = computeTradeLevels(finalEntry, atr, spot, sellerSLResult, finalIsCall, isExpiryDay, currentWindow, vix);
+  const finalLevels = computeTradeLevels(finalEntry, atr, spot, sellerSLResult, finalIsCall, isExpiryDay, currentWindow, vixNum ?? 0);
 
   // Confidence
   const confidence = clamp(Math.round(qualityScore.overall * 0.6 + dirResult.confidence * 0.4), 0, 100);
@@ -1583,9 +1654,10 @@ function generateRecommendationSync(
   // Position sizing
   const capital = 100000;
   const riskAmount = capital * 0.01;
-  const riskPerLot = finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lotSize : 0;
-  const lots = riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
-  const clampedLots = Math.min(lots, 10);
+  // No ₹ sizing without the REAL lot (an unknown lot ⇒ no ₹ amount).
+  const riskPerLot = lot !== null && finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lot : 0;
+  const lots = lot !== null && riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
+  const clampedLots = lot !== null ? Math.min(lots, 10) : 0;
 
   const positionSizing: PositionSizing = {
     lots: clampedLots, quantity: clampedLots * lotSize, riskAmount,
@@ -1600,7 +1672,7 @@ function generateRecommendationSync(
   const premiumFairValue = computePremiumFairValue(optionChain, spot, finalEntry, finalIsCall ? 'CALL' : 'PUT');
   const probabilities = computeLiveProbabilities(
     finalEntry, finalLevels.tp1, finalLevels.tp2, finalLevels.tp3,
-    finalLevels.sl, spot, finalStrike, vix, daysToExpiry, finalIsCall ? 'CALL' : 'PUT'
+    finalLevels.sl, spot, finalStrike, vixNum ?? 0, daysToExpiry, finalIsCall ? 'CALL' : 'PUT'
   );
 
   const dataHealth: DataHealth = {
@@ -1616,7 +1688,10 @@ function generateRecommendationSync(
   const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
 
   const marketContext: MarketContext = {
-    spot, change: 0, changePercent: 0, pcr, maxPain, vix,
+    spot, change: 0, changePercent: 0, pcr, maxPain,
+    // 0 = UNKNOWN (no VIX feed) — never a fabricated 15.
+    vix: vixNum ?? 0,
+    vixAvailable: vixNum !== null,
     trend: marketStructure.trend === 'UPTREND' ? 'bullish'
           : marketStructure.trend === 'DOWNTREND' ? 'bearish' : 'sideways',
     regime: qualityScore.overall >= 70 ? 'trending' : 'ranging',
@@ -1627,9 +1702,13 @@ function generateRecommendationSync(
   const whyThisTrade = buildWhyThisTrade(qualityScore, consensus, gexResult, sellerSLResult, smartEntryResult, finalIsCall ? 'CALL' : 'PUT');
   const sdmScores = buildSDMScores(gexResult, marketStructure, consensus, volumeAnalysis, oiAnalysis, sellerSLResult, optionChain, spot);
   const sellerSLZone = buildSellerSLZone(sellerSLResult, optionChain, spot);
-  const gammaThetaData = buildGammaThetaData(gexResult, optionChain, spot, vix);
+  const gammaThetaData = buildGammaThetaData(gexResult, optionChain, spot, vixNum ?? 0);
 
-  const expectedMove = spot * (vix || 15) / 100 * Math.sqrt(daysToExpiry / 365);
+  // UNKNOWN without a real VIX (never a 15%-VIX guess).
+  const expectedMove = vixNum !== null
+    ? spot * (vixNum / 100) * Math.sqrt(daysToExpiry / 365)
+    : 0;
+  const expectedMoveAvailable = vixNum !== null;
   const holdingTimeEstimate = estimateHoldingTime(isExpiryDay, currentWindow, smartEntryResult.action);
   const timeSensitiveNote = getTimeSensitiveNote(isExpiryDay, currentWindow, smartEntryResult.action);
 
@@ -1684,6 +1763,9 @@ function generateRecommendationSync(
     marketRegime,
     holdingTimeEstimate,
     expectedMove,
+    expectedMoveAvailable,
+    lotSize,
+    lotSizeKnown: lot !== null,
     consensus,
     qualityScore,
   };

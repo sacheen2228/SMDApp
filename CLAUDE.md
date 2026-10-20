@@ -154,10 +154,10 @@ do one of these, stop:
 
 | Data type | Source chain (first success wins) |
 |---|---|
-| OI / IV / Spot | Breeze → NSE → BSE |
+| OI / IV / Spot | NSE / BSE (exchange-aware) → MOAPI → Breeze (opt-in) → `NO_DATA` |
 | Greeks | Computed from IV (Black-Scholes), not fetched directly |
-| Candles | Breeze (primary) → MO (if wired) → NSE (index-only, best-effort) — see open items |
-| India VIX | Yahoo (`fetchIndiaVIX`) |
+| Candles | Breeze → MO → NO_DATA (index-only NSE chart best-effort) — see open items |
+| India VIX | NSE `indiaVIX` → `null` (no Yahoo) |
 | Breadth | NSE gainers/losers |
 | News evidence | Read from recorded `marketContext` at signal time, not re-fetched |
 

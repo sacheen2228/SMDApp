@@ -7,7 +7,7 @@ import {
   type BreakoutSignal,
   type Candle,
 } from "@/lib/candlestick-breakout";
-import { getLotSize } from "@/lib/symbol-config";
+import { getLotSizeStrict } from "@/lib/symbol-config";
 import {
   getBacktestDataProvider,
   createBacktestRunMeta,
@@ -48,7 +48,10 @@ export interface BacktestTrade {
   oiScore: number;
   greekScore: number;
   combinedScore: number;
+  /** The REAL contract lot — 1 (per unit) when it is NOT known. */
   lotSize: number;
+  /** false → `lotSize` is the per-unit placeholder and `pnl` is null. */
+  lotSizeKnown: boolean;
   riskAmount: number;
   riskReward: number;
 }
@@ -74,6 +77,8 @@ export interface BacktestPerformance {
   totalDays: number;
   tradingDays: number;
   totalTrades: number;
+  /** Trades with NO ₹ P&L (the contract lot size was unknown). */
+  pnlUnknownTrades: number;
   wins: number;
   losses: number;
   expired: number;
@@ -188,7 +193,9 @@ function simulateTrade(
   oiScore: number,
   greekScore: number
 ): BacktestTrade {
-  const lotSize = getLotSize(symbol) || 65;
+  // The REAL contract lot — null when it is not known (never a guess).
+  const lot = getLotSizeStrict(symbol);
+  const lotSize = lot ?? 1; // the honest per-unit amount
 
   const entry = signal.entryPrice || signal.level;
   const sl = signal.slPrice || (signal.direction === "bullish" ? entry * 0.995 : entry * 1.005);
@@ -248,7 +255,9 @@ function simulateTrade(
   const priceDiff = signal.direction === "bullish"
     ? (exitPrice! - entry)
     : (entry - exitPrice!);
-  const pnl = Math.round(priceDiff * lotSize);
+  // A trade with an unknown lot size has NO ₹ P&L (null) — it is not a flat
+  // ₹0 trade, it is an un-priced one.
+  const pnl = computeTradePnl(exitPrice!, entry, lot, signal.direction === "bullish");
   const pnlPct = Math.round((priceDiff / entry) * 10000) / 100;
   const riskReward = Math.abs(tp1 - entry) / Math.abs(entry - sl);
 
@@ -277,9 +286,29 @@ function simulateTrade(
     greekScore,
     combinedScore: Math.round((signal.confidence || 50) * 0.4 + qualityScore * 0.6),
     lotSize,
+    lotSizeKnown: lot !== null,
     riskAmount,
     riskReward: Math.round(riskReward * 100) / 100,
   };
+}
+
+// ─── The ₹ P&L ──────────────────────────────────────────────────────
+/**
+ * The trade P&L in ₹.
+ *
+ * `lot` is the REAL contract lot; null means the lot size is NOT known (the
+ * symbol is not in the NSE F&O lot table) — and then there is NO ₹ amount:
+ * a per-unit or NIFTY-sized P&L would be a fiction.
+ */
+export function computeTradePnl(
+  exitPrice: number,
+  entry: number,
+  lot: number | null,
+  isLong: boolean = true
+): number | null {
+  if (lot === null || !(lot > 0)) return null;
+  const diff = isLong ? exitPrice - entry : entry - exitPrice;
+  return Math.round(diff * lot);
 }
 
 // ─── Performance Calculator ────────────────────────────────────
@@ -291,12 +320,16 @@ function computePerformance(
   const wins = allTrades.filter((t) => t.status === "WIN").length;
   const losses = allTrades.filter((t) => t.status === "LOSS").length;
   const expired = allTrades.filter((t) => t.status === "EXPIRED").length;
-  const totalPnL = allTrades.reduce((s, t) => s + (t.pnl || 0), 0);
-  const avgPnLPerTrade = allTrades.length > 0 ? Math.round(totalPnL / allTrades.length) : 0;
+  // A trade with an unknown lot size has NO ₹ P&L — it is excluded from the
+  // money metrics (and counted separately) instead of counting as ₹0.
+  const pnlTrades = allTrades.filter((t) => t.pnl !== null);
+  const pnlUnknownTrades = allTrades.length - pnlTrades.length;
+  const totalPnL = pnlTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const avgPnLPerTrade = pnlTrades.length > 0 ? Math.round(totalPnL / pnlTrades.length) : 0;
   const avgPnLPerDay = tradingDays > 0 ? Math.round(totalPnL / tradingDays) : 0;
 
-  const winTrades = allTrades.filter((t) => t.pnl && t.pnl > 0);
-  const lossTrades = allTrades.filter((t) => t.pnl && t.pnl < 0);
+  const winTrades = pnlTrades.filter((t) => t.pnl && t.pnl > 0);
+  const lossTrades = pnlTrades.filter((t) => t.pnl && t.pnl < 0);
   const maxWin = winTrades.length > 0 ? Math.max(...winTrades.map((t) => t.pnl || 0)) : 0;
   const maxLoss = lossTrades.length > 0 ? Math.min(...lossTrades.map((t) => t.pnl || 0)) : 0;
 
@@ -329,7 +362,7 @@ function computePerformance(
   const sharpeRatio = stdDev > 0 ? Math.round((avgDaily / stdDev) * 100) / 100 : 0;
 
   // Expectancy
-  const winRate = allTrades.length > 0 ? wins / allTrades.length : 0;
+  const winRate = pnlTrades.length > 0 ? wins / pnlTrades.length : 0;
   const avgWin = winTrades.length > 0 ? grossProfit / winTrades.length : 0;
   const avgLoss = lossTrades.length > 0 ? grossLoss / lossTrades.length : 0;
   const expectancy = Math.round(winRate * avgWin - (1 - winRate) * avgLoss);
@@ -388,6 +421,7 @@ function computePerformance(
     totalDays: dailyResults.length,
     tradingDays,
     totalTrades: allTrades.length,
+    pnlUnknownTrades,
     wins,
     losses,
     expired,

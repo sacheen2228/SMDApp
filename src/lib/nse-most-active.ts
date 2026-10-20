@@ -86,11 +86,21 @@ async function fetchNSEEndpoint(
 }
 
 // ─── Normalize data from NSE response ───────────────────────────
+// The live endpoint answers with a CATEGORY wrapper, e.g.
+//   { "volume": { "data": [ …contracts… ], "timestamp": "…" } }
+// The old mapper only looked at `raw.data`, so every category came back
+// empty and the card rendered "Most Active F&O Contracts" with nothing in
+// it. Both shapes are handled now.
 function normalizeContracts(raw: any): MostActiveCategory {
-  const data = Array.isArray(raw?.data) ? raw.data : [];
+  const rows: any[] = Array.isArray(raw?.data)
+    ? raw.data
+    : Array.isArray(raw?.volume?.data)
+      ? raw.volume.data
+      : [];
+  const timestamp = raw?.timestamp || raw?.volume?.timestamp || "";
   return {
-    data: data.map((d: any) => ({
-      instrument: d.instrument || "",
+    data: rows.map((d: any) => ({
+      instrument: d.instrument || d.instrumentType || "",
       underlying: d.underlying || "",
       expiryDate: d.expiryDate || "",
       optionType: d.optionType || "",
@@ -102,7 +112,7 @@ function normalizeContracts(raw: any): MostActiveCategory {
       openInterest: d.openInterest || 0,
       underlyingValue: d.underlyingValue || 0,
     })),
-    timestamp: raw?.timestamp || "",
+    timestamp,
   };
 }
 

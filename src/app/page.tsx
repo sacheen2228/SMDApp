@@ -22,6 +22,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { useTheme } from 'next-themes';
 import { useTradingStore } from '@/stores/useTradingStore';
+import { dataSourceBadge } from '@/lib/data-source-label';
 import { OrderPanel } from '@/components/dashboard/OrderPanel';
 import { OrderBook } from '@/components/dashboard/OrderBook';
 import { PositionTracker } from '@/components/dashboard/PositionTracker';
@@ -938,8 +939,8 @@ export default function TradingDashboard() {
             {data?.dataSource && (
               <>
                 <div className="w-px h-3 bg-border" />
-                <Badge className="text-[8px]" variant={data.dataSource === 'simulation' ? 'outline' : 'default'}>
-                  {data.dataSource === 'icici-breeze' ? 'LIVE' : data.dataSource === 'simulation' ? 'DEMO' : 'Yahoo'}
+                <Badge className="text-[8px]" variant={dataSourceBadge(data.dataSource).isLive ? 'default' : 'outline'}>
+                  {dataSourceBadge(data.dataSource).label}
                 </Badge>
               </>
             )}

@@ -80,40 +80,11 @@ export interface ProResearchDossier {
   dataSource: string;
 }
 
-// ─── Fundamentals via Yahoo quoteSummary (crumb flow) ────────────
-let yahooCrumb: { value: string; cookies: string } | null = null;
-
-async function getYahooCrumb(): Promise<{ value: string; cookies: string } | null> {
-  if (yahooCrumb) return yahooCrumb;
-  try {
-    const jarRes = await fetch("https://fc.yahoo.com/", { signal: AbortSignal.timeout(8000) });
-    // Extract only the A= / A3= cookie pairs — the raw header also carries
-    // Expires/Path attributes whose values contain commas that break naive
-    // split(",") parsing.
-    const setCookies = jarRes.headers.get("set-cookie") || "";
-    const pairs = [...setCookies.matchAll(/([A-Za-z0-9]+)=([^;]*);/g)]
-      .map(m => `${m[1]}=${m[2].trim()}`)
-      .join("; ");
-    if (!pairs) return null;
-
-    let crumb = "";
-    for (let attempt = 0; attempt < 3 && !crumb; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
-      const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
-        signal: AbortSignal.timeout(8000),
-        headers: { Cookie: pairs, "User-Agent": "Mozilla/5.0" },
-      });
-      const text = (await crumbRes.text()).replace(/"/g, "").trim();
-      if (text && !text.toLowerCase().includes("too many")) crumb = text;
-    }
-    if (!crumb) return null;
-
-    yahooCrumb = { value: crumb, cookies: pairs };
-    return yahooCrumb;
-  } catch {
-    return null;
-  }
-}
+// ─── Fundamentals via the free Moneycontrol price feed ─────────────
+// Yahoo is banned (SOP §1): the old quoteSummary + crumb flow is gone.
+// Moneycontrol publishes P/E, P/B, dividend yield, market cap and the 52-week
+// range for the symbols it covers. Names outside that map report
+// "no free fundamentals feed" instead of an invented number.
 
 async function fetchFundamentals(symbol: string): Promise<FundamentalSnapshot> {
   const empty = (note: string): FundamentalSnapshot => ({
@@ -132,33 +103,35 @@ async function fetchFundamentals(symbol: string): Promise<FundamentalSnapshot> {
   });
 
   try {
-    const crumb = await getYahooCrumb();
-    if (!crumb) return empty("Fundamental data unavailable (Yahoo crumb denied).");
+    const { MC_ID_MAP } = await import("@/lib/nse-stock-data");
+    const mcId = MC_ID_MAP[symbol.toUpperCase()];
+    if (!mcId) {
+      return empty("Fundamental data unavailable (no free fundamentals feed for this symbol).");
+    }
+    const url = `https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/${mcId}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return empty("Fundamental data unavailable (feed HTTP " + res.status + ").");
+    const json: any = await res.json();
+    if (json?.code !== "200" || !json.data) {
+      return empty("Fundamental data unavailable (no result from the free fundamentals feed).");
+    }
+    const d = json.data;
 
-    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}.NS?modules=summaryDetail,financialData,price,defaultKeyStatistics&crumb=${encodeURIComponent(crumb.value)}`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      headers: { Cookie: crumb.cookies, "User-Agent": "Mozilla/5.0" },
-    });
-    if (!res.ok) return empty("Fundamental data unavailable (Yahoo quoteSummary HTTP " + res.status + ").");
-
-    const r = res.json();
-    const data = await r;
-    const quote = data?.quoteSummary?.result?.[0];
-    if (!quote) return empty("Fundamental data unavailable (no result from Yahoo).");
-
-    const summ = quote.summaryDetail || {};
-    const fin = quote.financialData || {};
-    const price = quote.price || {};
-
-    const trailingPE = summ.trailingPE?.raw ?? null;
-    const marketCap = summ.marketCap?.raw ?? null;
-    const revenueGrowth = fin.revenueGrowth?.raw ?? null;
-    const profitMargins = fin.profitMargins?.raw ?? null;
-    const priceToBook = summ.priceToBook?.raw ?? null;
-    const dividendYield = summ.dividendYield?.raw ?? null;
-    const fiftyTwoWeekHigh = summ.fiftyTwoWeekHigh?.raw ?? null;
-    const fiftyTwoWeekLow = summ.fiftyTwoWeekLow?.raw ?? null;
+    const num = (v: any): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) && n !== 0 ? n : null;
+    };
+    // Moneycontrol publishes the ratio P/E in `PE` and the 52-week range in
+    // `52H` / `52L`; market cap is in lakh crore.
+    const trailingPE = num(d.PE) ?? num(d.P_C);
+    const marketCap = num(d.MKTCAP) != null ? num(d.MKTCAP)! * 1e12 : null;
+    // MC publishes no revenue growth / margin in this feed → null (unknown).
+    const revenueGrowth = null;
+    const profitMargins = null;
+    const priceToBook = num(d.PB);
+    const dividendYield = num(d.DY) != null ? num(d.DY)! / 100 : null;
+    const fiftyTwoWeekHigh = num(d["52H"]);
+    const fiftyTwoWeekLow = num(d["52L"]);
 
     // Score + red flags
     let score = 55;
@@ -368,7 +341,9 @@ export async function runProResearch(candidate: WeeklyCandidate): Promise<ProRes
     institutional,
     risk,
     timestamp,
-    dataSource: "Yahoo Finance + NSE announcements + news feeds",
+    dataSource:
+      "NSE daily history + NSE announcements + news feeds" +
+      (fundamental?.available ? " + Moneycontrol fundamentals" : " (fundamentals unavailable)"),
   };
 
   const synth = synthesizeVerdict(base);

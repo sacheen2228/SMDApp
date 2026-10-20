@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gex-output-schema",
+  "title": "GEX Engine Output",
+  "description": "One record per engine run. Every record has engine = GEX. Trade records have action BUY_CE or BUY_PE; all others are NO_TRADE with trade = null.",
+  "type": "object",
+  "required": ["engine", "symbol", "timestamp", "spot", "vix", "gex", "failed_gates", "action", "trade_id", "strategy", "reasons", "trade"],
+  "additionalProperties": false,
+  "properties": {
+    "engine": { "const": "GEX" },
+    "symbol": { "type": "string", "examples": ["NIFTY", "BANKNIFTY"] },
+    "timestamp": { "type": "string", "format": "date-time", "description": "Run time, ISO 8601 with IST offset (+05:30)." },
+    "spot": { "type": "number", "exclusiveMinimum": 0 },
+    "vix": { "type": ["number", "null"] },
+    "gex": {
+      "type": "object",
+      "required": ["net_cr", "flip", "call_wall", "call_wall_strength", "put_wall", "put_wall_strength", "pin", "regime", "net_trend", "net_history_cr", "data_quality"],
+      "additionalProperties": false,
+      "properties": {
+        "net_cr": { "type": "number", "description": "Net GEX in Rs crore per 1% move (calls +, puts -), expiry-weighted." },
+        "flip": { "type": ["number", "null"], "description": "Gamma flip level. Null if no zero crossing within +-3% of spot." },
+        "call_wall": { "type": ["number", "null"], "description": "Strike at or above spot with the largest call GEX." },
+        "call_wall_strength": { "type": "number", "minimum": 0, "description": "Top call GEX divided by the second-largest on the same side." },
+        "put_wall": { "type": ["number", "null"], "description": "Strike at or below spot with the largest put GEX." },
+        "put_wall_strength": { "type": "number", "minimum": 0 },
+        "pin": { "type": ["number", "null"], "description": "Strike within 1% of spot with the largest absolute net GEX." },
+        "regime": { "enum": ["POSITIVE_GEX", "NEGATIVE_GEX", "TRANSITION"] },
+        "net_trend": { "enum": ["RISING", "FALLING", "MIXED", "UNKNOWN"], "description": "Net GEX across the last 3 history snapshots plus current. UNKNOWN if history is short." },
+        "net_history_cr": { "type": "array", "items": { "type": "number" } },
+        "data_quality": { "enum": ["ok", "degraded"] }
+      }
+    },
+    "failed_gates": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Global gates that failed (stale data, expiry under 3h, cooldown, etc.). Non-empty means NO_TRADE."
+    },
+    "action": { "enum": ["BUY_CE", "BUY_PE", "NO_TRADE"] },
+    "trade_id": { "type": ["string", "null"], "pattern": "^GEX-[A-Z0-9&-]+-\\d{8}-\\d{4}-[1-4]$", "description": "GEX-<SYMBOL>-<YYYYMMDD>-<HHMM>-<strategy number>. Null for NO_TRADE." },
+    "strategy": {
+      "enum": ["GEX-1 PIN_FADE", "GEX-2 FLIP_BREAK", "GEX-3 NEG_TREND", "GEX-4 WALL_BREAK", null]
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "Each reason cites a number from the data. For NO_TRADE, the gate or near-miss that blocked it."
+    },
+    "trade": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["strike", "type", "expiry", "delta", "entry", "entry_range", "premium_sl", "underlying_invalidation", "tp1", "tp1_action", "tp2", "tp2_action", "lots", "risk_inr", "time_stop", "order_type", "option_checks", "expected_move_1sigma", "size_note"],
+          "additionalProperties": false,
+          "properties": {
+            "strike": { "type": "number" },
+            "type": { "enum": ["CE", "PE"] },
+            "expiry": { "type": "string", "format": "date" },
+            "delta": { "type": "number", "minimum": 0.35, "maximum": 0.7, "description": "Absolute delta. Never below 0.35." },
+            "entry": { "type": "number", "exclusiveMinimum": 0 },
+            "entry_range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[bid, ask]" },
+            "premium_sl": { "type": "number", "exclusiveMinimum": 0 },
+            "underlying_invalidation": { "type": "number", "description": "Underlying level that cancels the idea." },
+            "tp1": { "type": "number" },
+            "tp1_action": { "type": "string" },
+            "tp2": { "type": "number" },
+            "tp2_action": { "type": "string" },
+            "lots": { "type": "integer", "minimum": 1 },
+            "risk_inr": { "type": "number", "minimum": 0 },
+            "time_stop": { "type": "string" },
+            "order_type": { "const": "limit" },
+            "option_checks": {
+              "type": "object",
+              "required": ["rr_tp1", "tp2_in_1sigma"],
+              "properties": {
+                "rr_tp1": { "$ref": "#/$defs/check" },
+                "tp2_in_1sigma": { "$ref": "#/$defs/check" },
+                "room_to_next_level": { "$ref": "#/$defs/check" }
+              },
+              "additionalProperties": false
+            },
+            "expected_move_1sigma": { "type": "number", "description": "One-day 1-sigma move in points from ATM IV." },
+            "size_note": { "enum": ["full", "halved (VIX > 20)"] }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "NO_TRADE" } } },
+      "then": { "properties": { "trade": { "type": "null" }, "trade_id": { "type": "null" }, "strategy": { "type": "null" } } },
+      "else": {
+        "properties": { "trade": { "type": "object" }, "trade_id": { "type": "string" }, "strategy": { "type": "string" }, "failed_gates": { "maxItems": 0 } }
+      }
+    }
+  ],
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": ["pass", "value"],
+      "properties": { "pass": { "type": "boolean" }, "value": { "type": ["number", "string"] } }
+    }
+  }
+}

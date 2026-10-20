@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 
 const PYTHON_DIR = join(process.cwd(), "python-screener");
 const WRAPPER = join(PYTHON_DIR, "wrapper.py");
@@ -26,6 +27,31 @@ async function runPython(input: any): Promise<any> {
   }
 }
 
+/**
+ * The chain's own provenance: source + age. A failed chain is an explicit
+ * UNAVAILABLE state (the Python screener used to receive a
+ * `{success:false}` blob and answer as if it had screened something).
+ */
+async function chainMeta(chain: any) {
+  if (!chain?.success) {
+    return buildCardMeta({
+      source: "none",
+      providerTimestamp: null,
+      ttlMs: 60_000,
+      live: false,
+      reason: chain?.error || "Option chain unavailable",
+    });
+  }
+  const clock = await getMarketClock();
+  return buildCardMeta({
+    source: chain.source || "nse",
+    providerTimestamp: chain.ageMs != null ? new Date(Date.now() - chain.ageMs) : clock.tradeDate,
+    ttlMs: 120_000,
+    live: clock.isOpen,
+    reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+  });
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action") || "screen";
@@ -33,6 +59,7 @@ export async function GET(req: NextRequest) {
   const direction = searchParams.get("direction") || "CE";
 
   const chainResult = await fetchLiveOptionChain(symbol).catch(() => ({ success: false as const, source: 'none' as const, error: 'fetch failed' }));
+  const meta = await chainMeta(chainResult);
 
   const result = await runPython({
     action,
@@ -40,7 +67,14 @@ export async function GET(req: NextRequest) {
     direction,
     chain_data: chainResult,
   });
-  return NextResponse.json(result);
+
+  return NextResponse.json({
+    ...result,
+    status: result?.success ? meta.status : "UNAVAILABLE",
+    meta,
+    chainSource: chainResult?.success ? chainResult.source : "none",
+    chainAgeMs: (chainResult as any)?.ageMs ?? null,
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -48,9 +82,16 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const symbol = body.symbol || "NIFTY";
     const chainResult = await fetchLiveOptionChain(symbol).catch(() => ({ success: false as const, source: 'none' as const, error: 'fetch failed' }));
+    const meta = await chainMeta(chainResult);
     const result = await runPython({ ...body, chain_data: chainResult });
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ...result,
+      status: result?.success ? meta.status : "UNAVAILABLE",
+      meta,
+      chainSource: chainResult?.success ? chainResult.source : "none",
+      chainAgeMs: (chainResult as any)?.ageMs ?? null,
+    });
   } catch (e: any) {
-    return NextResponse.json({ success: false, error: e.message }, { status: 500 });
+    return NextResponse.json({ success: false, status: "UNAVAILABLE", error: e.message }, { status: 500 });
   }
 }

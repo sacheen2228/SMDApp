@@ -13,6 +13,8 @@
 import {
   getMonitoredTrades, updateTradeStatus, getTrade,
   isTerminalTradeStatus, type ActiveTrade,
+  detectPlanHit, stopFillPrice, targetLevel,
+  planPnlRupees, planPnlPct, tickPx, fmtStrike,
 } from "./activeTradeTracker";
 import { sendTelegramMessage } from "./telegram";
 import { sendAlertText } from "./agents/telegram-alerts";
@@ -69,7 +71,7 @@ export async function fetchLTP(symbol: string, strike: number, optionType: strin
     return 0;
   }
 
-  // Equity / futures LTP — Breeze quotes
+  // Equity / futures LTP — Breeze quotes first
   try {
     const { getQuotes } = await import("@/lib/icici-breeze/option-chain");
     const q = await getQuotes(symbol, "NSE");
@@ -77,15 +79,12 @@ export async function fetchLTP(symbol: string, strike: number, optionType: strin
     if (ltp > 0) return ltp;
   } catch {}
 
-  // Equity fallback — Yahoo Finance
+  // Equity fallback — the FREE NSE/Moneycontrol quotes (never Yahoo: the SOP
+  // says a price that is not from the exchange is not a price we may act on).
   try {
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}.NS?interval=1m&range=1d`,
-      { signal: AbortSignal.timeout(5000) }
-    );
-    const json = await res.json();
-    const meta = json?.chart?.result?.[0]?.meta;
-    const ltp = Number(meta?.regularMarketPrice ?? 0);
+    const { fetchStockQuotes } = await import("@/lib/nse-stock-data");
+    const quotes = await fetchStockQuotes([symbol]);
+    const ltp = Number(quotes?.[symbol]?.ltp ?? quotes?.[symbol.toUpperCase()]?.ltp ?? 0);
     if (ltp > 0) return ltp;
   } catch {}
 
@@ -105,22 +104,25 @@ function isMarketOpen(): boolean {
 }
 
 // ── Alert builders (full TASK-3 field set) ──
-function pnlStr(entry: number, price: number, side: "BUY" | "SELL"): string {
-  const diff = side === "BUY" ? price - entry : entry - price;
-  const pct = entry > 0 ? (diff / entry) * 100 : 0;
-  const sign = diff >= 0 ? "+" : "";
-  const icon = diff >= 0 ? "🟢" : "🔴";
-  return `${icon} P&L: ${sign}₹${diff.toFixed(2)} (${sign}${pct.toFixed(1)}%)`;
+/** Signed P&L for the POSITION (lot-multiplied) + the % of the premium.
+ *  The sign follows the plan geometry — a mirrored (bearish) plan pays out the
+ *  other way, so its stop-out is a LOSS and its target is a GAIN. */
+function pnlStr(t: ActiveTrade, price: number): string {
+  const pnl = planPnlRupees(t, price);
+  const pct = planPnlPct(t, price);
+  const icon = pnl >= 0 ? "🟢" : "🔴";
+  const r = Math.round(pnl * 100) / 100;
+  return `${icon} P&L: ₹${r < 0 ? "-" : "+"}${Math.abs(r).toFixed(2)} (${Math.abs(pct).toFixed(1)}%)`;
 }
 
 function card(t: ActiveTrade): string {
   return [
     `📊 ${t.symbol} — ${t.optionType || t.instrument}`,
     `⚡ Direction: ${t.side} ${t.optionType === "CE" ? "CALL" : t.optionType === "PE" ? "PUT" : t.instrument || ""}`.trim(),
-    t.strike ? `🎯 Strike: ${t.strike}` : "",
+    t.strike ? `🎯 Strike: ${fmtStrike(t.strike)}` : "",
     `🧾 Trade ID: ${t.id}`,
     t.confidence ? `💪 Confidence: ${t.confidence}%` : "",
-    `💰 Entry: ₹${t.entry.toFixed(2)}`,
+    `💰 Entry: ₹${tickPx(t.entry)}`,
   ].filter(Boolean).join("\n");
 }
 
@@ -131,11 +133,11 @@ function buildAlert(t: ActiveTrade, alertType: TPSLAlertType, ltp: number): TPSL
     : t.optionType === "CE" ? "CALL"
     : t.optionType === "PE" ? "PUT"
     : "EQUITY") as "CALL" | "PUT" | "FUTURES" | "EQUITY";
-  const hitPrice =
-    alertType === "SL_HIT" ? t.sl :
-    alertType === "TP1_HIT" ? t.tp1 :
-    alertType === "TP2_HIT" ? t.tp2 :
-    (t.tp3 ?? t.tp2);
+  // The FILL: the stop level (or worse on a gap) for an SL, the target level
+  // for a TP. Never the entry — a stop-out is not a fill at the entry.
+  const hitPrice = alertType === "SL_HIT"
+    ? stopFillPrice(t, ltp)
+    : targetLevel(t, alertType as "TP1_HIT" | "TP2_HIT" | "TP3_HIT");
   const labels: Record<string, string> = {
     SL_HIT: t.status === "TP1_HIT" ? "TRAILED SL HIT" : "SL HIT — TRADE CLOSED",
     TP1_HIT: "TARGET 1 HIT",
@@ -150,11 +152,13 @@ function buildAlert(t: ActiveTrade, alertType: TPSLAlertType, ltp: number): TPSL
     `${isTP ? "🎯" : "🚨"} ${labels[alertType] || alertType}`,
     `${"━".repeat(20)}`,
     card(t),
-    `💲 Current LTP: ₹${ltp.toFixed(2)}`,
-    `🛑 SL: ₹${t.sl.toFixed(2)}`,
-    `🎯 TP Level: ₹${hitPrice.toFixed(2)} (${alertType.replace("_HIT", "")})`,
-    t.tp1 ? `TP1: ₹${t.tp1.toFixed(2)} | TP2: ₹${t.tp2.toFixed(2)}${t.tp3 ? ` | TP3: ₹${t.tp3.toFixed(2)}` : ""}` : "",
-    pnlStr(t.entry, hitPrice, t.side),
+    `💲 Current LTP: ₹${tickPx(ltp)}`,
+    `🛑 SL: ₹${tickPx(t.sl)}`,
+    alertType === "SL_HIT"
+      ? `📉 Exit: ₹${tickPx(hitPrice)} (stop${hitPrice > t.sl ? " — gapped" : ""})`
+      : `🎯 TP Level: ₹${tickPx(hitPrice)} (${alertType.replace("_HIT", "")})`,
+    t.tp1 ? `TP1: ₹${tickPx(t.tp1)} | TP2: ₹${tickPx(t.tp2)}${t.tp3 ? ` | TP3: ₹${tickPx(t.tp3)}` : ""}` : "",
+    pnlStr(t, hitPrice),
     `🕐 Hit time: ${hitTime}`,
     `📌 Final status: ${finalStatus}`,
     `${"━".repeat(20)}`,
@@ -175,10 +179,8 @@ function buildAlert(t: ActiveTrade, alertType: TPSLAlertType, ltp: number): TPSL
     tp1: t.tp1,
     tp2: t.tp2,
     tp3: t.tp3,
-    pnl: t.side === "BUY" ? hitPrice - t.entry : t.entry - hitPrice,
-    pnlPct: t.entry > 0
-      ? ((t.side === "BUY" ? hitPrice - t.entry : t.entry - hitPrice) / t.entry) * 100
-      : 0,
+    pnl: planPnlRupees(t, hitPrice),
+    pnlPct: planPnlPct(t, hitPrice),
     timestamp: new Date().toISOString(),
     message,
     sent: false,
@@ -203,34 +205,16 @@ async function alertNewTrade(t: ActiveTrade): Promise<void> {
 }
 
 // ── Detection helpers ──
+/**
+ * THE hit ladder — shared with the 15-minute monitor (activeTradeTracker).
+ * Side-aware: a MIRRORED (bearish) plan has its stop ABOVE the entry and its
+ * targets BELOW it, so it stops when the price RISES to the stop and targets
+ * when it FALLS to them. Testing it like a long fired a false SL the moment
+ * the trade opened (price 41.05 <= stop 49.25).
+ */
 function detectHit(t: ActiveTrade, ltp: number): TPSLAlertType | null {
   if (isTerminalTradeStatus(t, t.status)) return null;
-
-  if (t.side === "BUY") {
-    // A PE plan is MIRRORED: the stop sits ABOVE the entry and the targets BELOW it.
-    // Testing it like a long (ltp <= sl) fired a false SL the moment the trade opened.
-    const isPe = t.optionType === "PE" || /PUT|PE/i.test(String(t.instrument || ""));
-    if (isPe) {
-      if (ltp >= t.sl) return "SL_HIT";
-      if (t.status === "ACTIVE" && t.tp1 > 0 && ltp <= t.tp1) return "TP1_HIT";
-      if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp <= t.tp2) return "TP2_HIT";
-      if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp <= t.tp3) return "TP3_HIT";
-    } else {
-      // 1) SL check — always first (covers trailed SL after TP1)
-      if (ltp <= t.sl) return "SL_HIT";
-      // 2) TP ladder by status
-      if (t.status === "ACTIVE" && ltp >= t.tp1) return "TP1_HIT";
-      if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp >= t.tp2) return "TP2_HIT";
-      if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp >= t.tp3) return "TP3_HIT";
-    }
-  } else {
-    // SELL (equity/futures/commodities): SL above entry, TP below
-    if (ltp >= t.sl) return "SL_HIT";
-    if (t.status === "ACTIVE" && ltp <= t.tp1) return "TP1_HIT";
-    if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp <= t.tp2) return "TP2_HIT";
-    if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp <= t.tp3) return "TP3_HIT";
-  }
-  return null;
+  return detectPlanHit(t, ltp) as TPSLAlertType | null;
 }
 
 /** Test seam: the pure hit detector. */
@@ -279,7 +263,10 @@ export async function pollTradesOnce(
       detected++;
 
       // 1) Tracker: status update + DB persist + lock update/release
-      await updateTradeStatus(trade.id, hit);
+      //    The exit price is the FILL (the stop level, or worse on a gap) — the
+      //    journal must never record the entry price as the exit.
+      const fill = hit === "SL_HIT" ? stopFillPrice(trade, ltp) : undefined;
+      await updateTradeStatus(trade.id, hit, fill);
       const fresh = getTrade(trade.id) ?? trade; // may be deleted if terminal
 
       // 2) Telegram: delivery-flagged alert (dedup + retry)

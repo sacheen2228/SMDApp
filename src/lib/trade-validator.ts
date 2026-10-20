@@ -5,7 +5,6 @@ import { db } from "@/lib/db";
 import { getNSEHistoricalData, getNSEOptionChain } from "@/lib/nse-api";
 import { initSession } from "@/lib/icici-breeze/auth";
 import { getOptionChain } from "@/lib/icici-breeze/option-chain";
-import { getYahooSymbol } from "@/lib/trade-backtest-engine";
 
 export interface ValidationResult {
   tradeId: string;
@@ -47,7 +46,7 @@ export interface ValidationReport {
 
 // ─── Get daily high/low from NSE historical data ─────────────────
 // Exported for scripts/repair-legacy-exits.ts — real day OHLC/close for an
-// arbitrary past date (NSE first, exact-date Yahoo daily as fallback).
+// arbitrary past date (the exchange's own daily history).
 const NSE_MONTHS: Record<string, string> = {
   jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
   jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
@@ -114,40 +113,9 @@ export async function getDailyRange(symbol: string, date: Date): Promise<{ high:
     }
   } catch { /* fall through */ }
 
-  // Fallback: Yahoo Finance daily OHLC for the exact date (real data, never fabricated)
-  try {
-    const yahooSymbol = getYahooSymbol(nseSymbol);
-    const dayMs = 86400000;
-    const p1 = Math.floor((date.getTime() - 4 * dayMs) / 1000);
-    const p2 = Math.floor((date.getTime() + 2 * dayMs) / 1000);
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?period1=${p1}&period2=${p2}&interval=1d`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(8000),
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const result = json?.chart?.result?.[0];
-      const ts: number[] = result?.timestamp || [];
-      const q = result?.indicators?.quote?.[0];
-      const target = date.toISOString().slice(0, 10);
-      const pad = (n: number) => String(n).padStart(2, "0");
-      for (let i = 0; i < ts.length; i++) {
-        // Shift epoch to IST before reading the calendar date
-        const ist = new Date((ts[i] + 19800) * 1000);
-        const dstr = `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth() + 1)}-${pad(ist.getUTCDate())}`;
-        if (dstr === target) {
-          const high = Number(q?.high?.[i]);
-          const low = Number(q?.low?.[i]);
-          const close = Number(q?.close?.[i]);
-          if (high > 0 && low > 0 && Number.isFinite(high) && Number.isFinite(low)) {
-            return { high, low, close: Number.isFinite(close) && close > 0 ? close : (high + low) / 2 };
-          }
-        }
-      }
-    }
-  } catch { /* fall through */ }
-
+  // No Yahoo fallback: it is banned by the data policy (AGENTS.md) and it
+  // was a third-party series served as if it were the exchange's own. The
+  // exchange's daily history above is the only source — no data → null.
   return null;
 }
 

@@ -104,7 +104,13 @@ export interface MarketContext {
   changePercent: number;
   pcr: number;
   maxPain: number;
+  /**
+   * The India VIX. 0 means UNKNOWN (the VIX feed was unavailable) — never a
+   * fabricated 15. Read `vixAvailable` to tell "no VIX" from "a VIX of 0".
+   */
   vix: number;
+  /** false → `vix` is 0 because the VIX feed was unavailable. */
+  vixAvailable?: boolean;
   trend: "bullish" | "bearish" | "sideways";
   regime: MarketRegime;
   atr?: number;
@@ -236,7 +242,21 @@ export interface SDMRecommendation {
   positionSizing: PositionSizing;
   marketRegime: MarketRegime;
   holdingTimeEstimate: string;
+  /**
+   * The contract lot size. 1 means "per unit" — the contract lot size was
+   * NOT known (see `lotSizeKnown`). It is NEVER a guessed NIFTY-sized lot.
+   */
+  lotSize: number;
+  /** false → the contract lot size is unknown (lotSize is the per-unit 1). */
+  lotSizeKnown?: boolean;
+  /**
+   * The expected 1-sigma move in points. 0 means UNKNOWN (no VIX → the move
+   * cannot be computed) — never a fabricated 15%-VIX estimate. Read
+   * `expectedMoveAvailable` to tell "not computable" from a real 0.
+   */
   expectedMove: number;
+  /** false → `expectedMove` is 0 because it could not be computed. */
+  expectedMoveAvailable?: boolean;
   // V2 enriched fields
   consensus?: ConsensusResult;
   qualityScore?: QualityScore;

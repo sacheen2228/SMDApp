@@ -148,12 +148,84 @@ trade construction (real LTP, spread/liquidity/RR gates), clock/theta/expiry
 gates, backward-compatible output keys, and frozen scorer parity used by
 `scripts/backtest_history.py`.
 
+## The A-E orchestrator (added 2026-10-20)
+
+`scripts/orchestrator.py` runs a five-agent panel on one snapshot:
+
+| Agent | Process | Owns | Vote |
+|---|---|---|---|
+| A | the parent (in-process) | `data/context.json` (bias, breadth, movers, freshness) | none - context is NOT a vote |
+| B | child process | chain / OI / PCR / level validation | CE / PE / NEUTRAL |
+| C | child process | structure (BOS/CHoCH/sweeps) + breakout/fakeout | CE / PE / NEUTRAL |
+| D | child process | the GEX engine's record + its gates | CE / PE / NEUTRAL |
+| E | child process | strike, stop, targets, sizing (the SOLE owner) | the final plan |
+
+- B, C and D run **concurrently** as child processes with a hard 20 s budget.
+  A timeout, a non-zero exit, invalid JSON or a missing field is a mandatory
+  veto - it can never become a silent pass.
+- The direction needs **>= 2 of {B, C, D}** on the same side, no opposing
+  vote (a neutral vote does not count) and no mandatory veto.
+- Agent A's context only detects a CONFLICT with the trade direction; a
+  conflict forces an objectively measured **A+ setup** (see
+  `references/agent-rules.md`) and half size, otherwise NO TRADE.
+- Every NO TRADE names the failed gate, the responsible agent, the observed
+  value and the threshold, and carries a three-line plain-language summary.
+- The output validates against `references/orchestrator-output-schema.json`
+  (`scripts/jsonschema_mini.py`, stdlib only).
+
+### GEX engine (added 2026-10-20)
+
+`scripts/gex_engine.py` is the ONLY place gamma exposure is computed.
+Agent D validates its record against `references/gex-output-schema.json` and
+checks the regime -> strategy mapping (POSITIVE_GEX -> GEX-1 PIN_FADE,
+NEGATIVE_GEX -> GEX-3 NEG_TREND / GEX-4 WALL_BREAK, TRANSITION -> GEX-2
+FLIP_BREAK after a confirmed 15-minute close beyond the flip). The GEX gates
+are: snapshot < 15 min, >= 3 history snapshots, the 09:30-15:00 session,
+>= 3 h to expiry, a non-frozen feed and a 30-minute cooldown.
+
+**GEX isolation:** `engine="GEX"`, `trade_id` starts with `GEX-`, the alerts
+go to the GEX channel outbox only (`data/gex_alerts.jsonl`), the GEX record is
+never merged into the main bias score and GEX contributes at most ONE vote.
+`scripts/gex_exit_monitor.py` raises the operational "exit at market" alert
+when a 15-minute close goes back through the invalidation - and refuses to
+claim a close it cannot verify.
+
+### Scheduling
+
+The repo's existing scheduler (`scripts/dailyScanCron.ts`, the
+`smdapp-cron.service` user unit) owns the six skill jobs; they are declared
+once in `src/lib/orchestrator/skill-jobs.ts` and run through
+`scripts/cron_job.sh` (flock + timeout + bounded retries + a structured JSON
+log + the trading-day gate). The mapping is documented in
+`config/crontab.txt` - that file is NOT an installable crontab.
+
+| job | schedule (IST) | command |
+|---|---|---|
+| `eod-pcr` | 35 15 * * 1-5 | `eod_fetch.py --from-snapshot` |
+| `eod-fetch` | 5 19 * * 1-5 | `eod_fetch.py --eod --retry-until 22:00` |
+| `daily-bias` | 30 8 * * 1-5 | `daily_bias.py` |
+| `live-breadth` | */5 9-14 * * 1-5 | `live_fetch.sh` (snapshot + breadth/movers) |
+| `gex-engine` | */5 9-14 * * 1-5 | `run_gex.py` (the engine's own gates hold 09:30-15:00) |
+| `holidays` | 0 10 * * 0 | `eod_fetch.py --holidays` |
+
+### Path mapping (the vendored `gex_engine` package)
+
+See `references/agent-rules.md` §9. In short: `gex_engine.py` and
+`structure.py` were adopted as-is (with the documented adaptations),
+`eod_fetch.py` was rewritten as a thin adapter over the EXISTING
+`scripts/nse_fetch.py` (one NSE client, not two), `candle_builder.py` and
+`daily_bias.py` were adopted, and the package's crontab became the mapping
+document.
+
 ## What must NOT change
 
 - Thresholds **+40 / -40**, component weights, and gate semantics
   (`references/scoring-rules.md`, `references/strategies.md` are frozen).
 - `scripts/greeks.py`, `scripts/levels.py`, `scripts/breakout.py`, `scripts/backtest_history.py`
   and the existing `backtest_report.*` / `score_ceiling_audit.*` reports.
+  (Agent C re-verifies two of `breakout.py`'s outputs - the volume ratio and
+  the "poked N times" flag - instead of changing the file; see
+  `references/agent-rules.md` §4.)
 - `option_chain_score` / `fii_score` / `breadth_score` signatures and math
   (imported by the backtest).
 - Any SMDApp production file: this skill is consumed by Grok only as an

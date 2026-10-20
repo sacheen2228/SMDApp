@@ -1,7 +1,73 @@
 // Black-Scholes Greeks Calculator
 // Used for both simulated and live option chain data
+//
+// ── THE RISK-FREE RATE IS AN EXPLICIT, CONFIGURABLE ASSUMPTION ──────────
+// It used to be a silent `const RISK_FREE_RATE = 0.07` buried inside the
+// maths: every delta/theta/gamma/vega carried it invisibly and nobody could
+// tell WHICH rate produced a number. It is now:
+//   • a named, documented constant          → DEFAULT_RISK_FREE_RATE
+//   • overridable at runtime                → RISK_FREE_RATE env var (decimal)
+//   • surfaced to the caller                → getGreeksAssumptions()
+// and every API payload that ships greeks carries the `assumptions` block so
+// the rate behind the numbers is visible.
 
-const RISK_FREE_RATE = 0.07; // Risk-free rate ~7% (India)
+/**
+ * The risk-free rate used when nothing else is configured.
+ * 7% is the long-run Indian 10-year government bond yield neighbourhood —
+ * an ASSUMPTION, not a market read. Override it with RISK_FREE_RATE.
+ */
+export const DEFAULT_RISK_FREE_RATE = 0.07;
+
+export interface GreeksAssumptions {
+  /** The rate actually used by the maths (a decimal: 0.07 = 7%). */
+  riskFreeRate: number;
+  /** Where the rate came from — "env:RISK_FREE_RATE" or the documented default. */
+  riskFreeRateSource: "env:RISK_FREE_RATE" | "default";
+  /** The pricing model behind every delta/theta/gamma/vega in this payload. */
+  model: "Black-Scholes-Merton";
+  /** A one-line, human-readable statement of the assumption. */
+  note: string;
+}
+
+let cachedEnvRaw: string | undefined = undefined;
+let cachedRate: number = DEFAULT_RISK_FREE_RATE;
+let cachedSource: GreeksAssumptions["riskFreeRateSource"] = "default";
+
+/**
+ * The risk-free rate for the Black-Scholes maths.
+ *
+ * Reads RISK_FREE_RATE from the environment (a decimal, e.g. 0.065 for 6.5%).
+ * A missing, unparseable or non-positive value falls back to
+ * DEFAULT_RISK_FREE_RATE — never to a silent hardcoded constant buried in
+ * the maths.
+ */
+export function getRiskFreeRate(): number {
+  const raw = process.env.RISK_FREE_RATE;
+  if (raw === cachedEnvRaw) return cachedRate;
+  const parsed = Number(raw);
+  const usable = raw != null && raw !== "" && Number.isFinite(parsed) && parsed > 0;
+  cachedEnvRaw = raw;
+  cachedRate = usable ? parsed : DEFAULT_RISK_FREE_RATE;
+  cachedSource = usable ? "env:RISK_FREE_RATE" : "default";
+  return cachedRate;
+}
+
+/**
+ * The assumptions behind every Greek in a payload — the caller MUST ship
+ * this next to the greeks so a reader can see which rate was used.
+ */
+export function getGreeksAssumptions(): GreeksAssumptions {
+  const rate = getRiskFreeRate();
+  return {
+    riskFreeRate: rate,
+    riskFreeRateSource: cachedSource,
+    model: "Black-Scholes-Merton",
+    note:
+      `Black-Scholes-Merton with a ${(rate * 100).toFixed(2)}% risk-free rate ` +
+      `(${cachedSource === "env:RISK_FREE_RATE" ? "from RISK_FREE_RATE" : "default assumption"}). ` +
+      `No dividend yield is modelled.`,
+  };
+}
 
 // Standard normal CDF (Abramowitz-Stegun approximation)
 function normCdf(x: number): number {
@@ -39,10 +105,11 @@ export function bsPrice(
   if (!(spot > 0) || !(strike > 0) || !(T > 0) || !(iv > 0)) {
     return intrinsic; // degenerate: no time value
   }
+  const r = getRiskFreeRate();
   const sqrtT = Math.sqrt(T);
-  const d1 = (Math.log(spot / strike) + (RISK_FREE_RATE + (iv * iv) / 2) * T) / (iv * sqrtT);
+  const d1 = (Math.log(spot / strike) + (r + (iv * iv) / 2) * T) / (iv * sqrtT);
   const d2 = d1 - iv * sqrtT;
-  const disc = Math.exp(-RISK_FREE_RATE * T);
+  const disc = Math.exp(-r * T);
   const price = isCall
     ? spot * normCdf(d1) - strike * disc * normCdf(d2)
     : strike * disc * normCdf(-d2) - spot * normCdf(-d1);
@@ -63,7 +130,8 @@ export function impliedVolFromPremium(
   isCall: boolean,
 ): number | null {
   if (!(premium > 0) || !(spot > 0) || !(strike > 0) || !(timeToExpiry > 0)) return null;
-  const disc = Math.exp(-RISK_FREE_RATE * timeToExpiry);
+  const r = getRiskFreeRate();
+  const disc = Math.exp(-r * timeToExpiry);
   const intrinsic = isCall ? Math.max(spot - strike * disc, 0) : Math.max(strike * disc - spot, 0);
   const upper = isCall ? spot : strike * disc; // no-arb bounds
   if (premium < intrinsic - 0.01 || premium > upper + 0.01) return null;
@@ -90,7 +158,7 @@ export function calculateGreeks(
   iv: number, // as decimal (e.g., 0.15 for 15%)
   isCall: boolean
 ): { delta: number; theta: number; gamma: number; vega: number; d1: number; d2: number } {
-  const r = 0.07; // Risk-free rate ~7%
+  const r = getRiskFreeRate(); // risk-free rate — see getGreeksAssumptions()
   const sqrtT = Math.sqrt(Math.max(timeToExpiry, 0.0001));
 
   // Avoid division by zero

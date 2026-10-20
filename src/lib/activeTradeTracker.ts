@@ -56,9 +56,143 @@ export interface ActiveTrade {
   tp2AlertSent?: boolean;
   tp3AlertSent?: boolean;
   slAlertSent?: boolean;
+  // The price the trade actually exited at (the stop level, or worse on a gap).
+  // Set by the monitor when it closes a trade — the alerts must never show the
+  // entry price as the exit.
+  exitPrice?: number;
 }
 
 const activeTrades = new Map<string, ActiveTrade>();
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLAN GEOMETRY — the single source of truth for "which way does this trade
+// pay out", shared by BOTH monitors, the P&L, the R:R and every alert text.
+//
+// THE LETTER LIES, THE GEOMETRY DOES NOT:
+//   • a CE plan         → stop BELOW the entry, targets ABOVE   (LONG)
+//   • a bought PE plan  → stop BELOW the entry, targets ABOVE   (LONG)
+//   • a mirrored PE plan→ stop ABOVE the entry, targets BELOW   (SHORT)
+// The stock scanner builds the MIRRORED plan (a short-premium bearish trade)
+// while the SDM engine builds the LONG one for a PE. Both are internally
+// consistent, so the side must be read from the LEVELS — never from "PE" —
+// or the P&L sign, the stop side and the TP ladder can disagree with each
+// other (that is how a stop-out was reported as a ₹533 profit).
+// ═══════════════════════════════════════════════════════════════════════
+
+export type PlanSide = "LONG" | "SHORT";
+
+export interface PlanLevels {
+  side?: string;
+  optionType?: string;
+  decision?: string;
+  entry?: number;
+  entryPrice?: number;
+  sl?: number;
+  stopLoss?: number;
+  tp1?: number;
+  target1?: number;
+}
+
+function numOr(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * The side the plan pays out on — THE STOP DECIDES.
+ *
+ * The stop is the risk side, so a stop-out is ALWAYS a loss. The target only
+ * breaks the tie when there is no usable stop.
+ *
+ * This must agree with the two other readers of the same geometry:
+ *   • src/lib/signal-veto.ts            vetoPlanSide()  — stop first
+ *   • trade-audit/src/utils/sizing.ts   inferPlanSide() — stop first
+ *
+ * The old rule read the TARGET first and used the stop only as the tie
+ * breaker. On an INCOHERENT plan (stop and target on the SAME side of the
+ * entry — e.g. entry 440.55, stop 67.59, target 178.06) that made the app
+ * read "SHORT", so the stop-out at 67.59 was booked as a ₹24,242 WIN.
+ */
+export function planSide(t: PlanLevels): PlanSide {
+  const entry = numOr(t.entry ?? t.entryPrice);
+  const sl = numOr(t.sl ?? t.stopLoss);
+  if (entry > 0 && sl > 0 && sl !== entry) return sl < entry ? "LONG" : "SHORT";
+  const tp1 = numOr(t.tp1 ?? t.target1);
+  if (entry > 0 && tp1 > 0 && tp1 !== entry) return tp1 > entry ? "LONG" : "SHORT";
+  // No usable levels → fall back to what the trade declares.
+  if (String(t.side || "").toUpperCase() === "SELL") return "SHORT";
+  const opt = String(t.optionType || (String(t.decision || "").toUpperCase().includes("PE") ? "PE" : ""));
+  if (opt.toUpperCase() === "PE") return "SHORT";
+  return "LONG";
+}
+
+/** Signed P&L in premium points (per unit) at `price`. */
+export function planPnlPoints(t: PlanLevels, price: number): number {
+  const entry = numOr(t.entry ?? t.entryPrice);
+  if (!(entry > 0)) return 0;
+  const move = numOr(price) - entry;
+  return planSide(t) === "SHORT" ? -move : move;
+}
+
+/** Signed P&L in ₹ for the whole position (lot size applied). */
+export function planPnlRupees(t: PlanLevels & { symbol?: string }, price: number): number {
+  const lot = getLotSize(String(t.symbol || "")) ?? 65;
+  return planPnlPoints(t, price) * lot;
+}
+
+/**
+ * Signed P&L as a % of the PREMIUM (per unit).
+ * The rupee P&L is lot-multiplied while the entry is per-unit — dividing one
+ * by the other produced "Loss: ₹110.50 (1300.0%)" for a 20% stop.
+ */
+export function planPnlPct(t: PlanLevels, price: number): number {
+  const entry = numOr(t.entry ?? t.entryPrice);
+  if (!(entry > 0)) return 0;
+  return (planPnlPoints(t, price) / entry) * 100;
+}
+
+export type PlanHit = "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT";
+
+/**
+ * THE hit ladder — one rule for every monitor (the 15-minute scanner and the
+ * 5-second TIGER loop). Side-aware: a mirrored (bearish) plan stops when the
+ * price RISES to its stop and targets when it FALLS to them.
+ */
+export function detectPlanHit(trade: PlanLevels & { status?: string }, ltp: number): PlanHit | null {
+  if (!(ltp > 0)) return null;
+  const short = planSide(trade) === "SHORT";
+  const sl = numOr(trade.sl ?? trade.stopLoss);
+  const tp1 = numOr(trade.tp1 ?? trade.target1);
+  const tp2 = numOr((trade as any).tp2 ?? (trade as any).target2);
+  const tp3 = numOr((trade as any).tp3 ?? (trade as any).target3);
+  const status = String(trade.status || "ACTIVE");
+
+  // 1) SL — always first (also covers the stop trailed to breakeven after TP1)
+  if (sl > 0 && (short ? ltp >= sl : ltp <= sl)) return "SL_HIT";
+  // 2) the TP ladder, by status
+  if (status === "ACTIVE" && tp1 > 0 && (short ? ltp <= tp1 : ltp >= tp1)) return "TP1_HIT";
+  if (status === "TP1_HIT" && tp2 > 0 && (short ? ltp <= tp2 : ltp >= tp2)) return "TP2_HIT";
+  if (status === "TP2_HIT" && tp3 > 0 && (short ? ltp <= tp3 : ltp >= tp3)) return "TP3_HIT";
+  return null;
+}
+
+/**
+ * The fill price of a stop: the stop level, or WORSE when the price gapped
+ * through it. Never the entry — that is what a stop-out is not.
+ */
+export function stopFillPrice(trade: PlanLevels, ltp: number): number {
+  const sl = numOr(trade.sl ?? trade.stopLoss);
+  if (!(ltp > 0)) return sl;
+  if (!(sl > 0)) return ltp;
+  return planSide(trade) === "SHORT" ? Math.max(ltp, sl) : Math.min(ltp, sl);
+}
+
+/** The level a TP hit was filled at. */
+export function targetLevel(trade: PlanLevels & { tp2?: number; tp3?: number; target2?: number; target3?: number }, hit: PlanHit): number {
+  if (hit === "TP3_HIT") return numOr(trade.tp3 ?? trade.target3) || numOr(trade.tp2 ?? trade.target2);
+  if (hit === "TP2_HIT") return numOr(trade.tp2 ?? trade.target2);
+  return numOr(trade.tp1 ?? trade.target1);
+}
 
 // ─── Persistent alert flags (restart safety) ─────────────────────
 const ALERT_FLAGS_PATH = path.join(process.cwd(), "data", "tpsl-alert-flags.json");
@@ -155,19 +289,16 @@ export function isTerminalTradeStatus(trade: ActiveTrade, status: ActiveTrade['s
 }
 
 function getPnl(trade: ActiveTrade, hitPrice: number): number {
-  const lotSize = getLotSize(trade.symbol) ?? 65;
-  if (trade.side === 'BUY') return (hitPrice - trade.entry) * lotSize;
-  return (trade.entry - hitPrice) * lotSize;
+  // Signed by the PLAN geometry (a mirrored bearish plan pays out the other way).
+  return planPnlRupees(trade, hitPrice);
 }
 
-/** Percentage move on the PREMIUM (per unit).
+/** Percentage move on the PREMIUM (per unit, signed).
  *  getPnl() is in ₹ (already multiplied by the lot size) while trade.entry is the
  *  per-unit premium — dividing one by the other produced nonsense like
  *  "Loss: ₹110.50 (1300.0%)" for a 20% stop. */
 function getPnlPct(trade: ActiveTrade, hitPrice: number): number {
-  if (!(trade.entry > 0)) return 0;
-  const move = trade.side === "BUY" ? hitPrice - trade.entry : trade.entry - hitPrice;
-  return (move / trade.entry) * 100;
+  return planPnlPct(trade, hitPrice);
 }
 
 function getHoldingMins(trade: ActiveTrade): number {
@@ -417,7 +548,11 @@ export function getTrade(id: string): ActiveTrade | undefined {
   return activeTrades.get(id);
 }
 
-export async function updateTradeStatus(id: string, status: ActiveTrade['status']): Promise<void> {
+export async function updateTradeStatus(
+  id: string,
+  status: ActiveTrade['status'],
+  exitPrice?: number
+): Promise<void> {
   const trade = activeTrades.get(id);
   if (!trade) return;
   // Guard: never reopen / regress a terminal trade
@@ -454,11 +589,15 @@ export async function updateTradeStatus(id: string, status: ActiveTrade['status'
 
   if (terminal) {
     // ── FINAL EXIT: write exit fields, close audit, release lock ──
-    const hitPrice = status === 'SL_HIT' ? trade.sl
+    // The exit price is the FILL (the stop level, or worse on a gap) when the
+    // monitor supplies it — never the entry.
+    const hitPrice = exitPrice && exitPrice > 0 ? exitPrice
+      : status === 'SL_HIT' ? trade.sl
       : status === 'TP1_HIT' ? trade.tp1
       : status === 'TP2_HIT' ? trade.tp2
       : status === 'TP3_HIT' ? (trade.tp3 ?? trade.tp2)
       : 0;
+    trade.exitPrice = hitPrice;
     const pnl = getPnl(trade, hitPrice);
     const pnlPct = getPnlPct(trade, hitPrice);
 
@@ -605,7 +744,7 @@ export interface SLTPCheckResult {
 }
 
 export async function checkSLTP(
-  getCurrentPrice: (symbol: string, strike: number, optionType: string) => Promise<number>
+  getCurrentPrice: (symbol: string, strike: number, optionType: string, expiry?: string) => Promise<number>
 ): Promise<SLTPCheckResult> {
   const hitSL: ActiveTrade[] = [];
   const hitTP1: ActiveTrade[] = [];
@@ -616,38 +755,28 @@ export async function checkSLTP(
   // otherwise TP1-trailed trades are never re-checked for TP2/SL.
   for (const trade of getMonitoredTrades()) {
     try {
-      const currentPrice = await getCurrentPrice(trade.symbol, trade.strike, trade.optionType);
+      const currentPrice = await getCurrentPrice(trade.symbol, trade.strike, trade.optionType, trade.expiry);
       if (currentPrice <= 0) continue;
 
-      if (trade.side === 'BUY') {
-        if (currentPrice <= trade.sl && trade.status !== 'SL_HIT') {
-          await updateTradeStatus(trade.id, 'SL_HIT');
-          hitSL.push({ ...trade, status: 'SL_HIT' });
-        } else if (trade.status === 'TP2_HIT' && currentPrice >= (trade.tp3 ?? Infinity)) {
-          await updateTradeStatus(trade.id, 'TP3_HIT');
-          hitTP3.push({ ...trade, status: 'TP3_HIT' });
-        } else if (trade.status === 'TP1_HIT' && currentPrice >= trade.tp2) {
-          await updateTradeStatus(trade.id, 'TP2_HIT');
-          hitTP2.push({ ...trade, status: 'TP2_HIT' });
-        } else if (trade.status === 'ACTIVE' && currentPrice >= trade.tp1) {
-          await updateTradeStatus(trade.id, 'TP1_HIT');
-          hitTP1.push({ ...trade, status: 'TP1_HIT' });
-        }
-      } else {
-        if (currentPrice >= trade.sl && trade.status !== 'SL_HIT') {
-          await updateTradeStatus(trade.id, 'SL_HIT');
-          hitSL.push({ ...trade, status: 'SL_HIT' });
-        } else if (trade.status === 'TP2_HIT' && currentPrice <= (trade.tp3 ?? -Infinity)) {
-          await updateTradeStatus(trade.id, 'TP3_HIT');
-          hitTP3.push({ ...trade, status: 'TP3_HIT' });
-        } else if (trade.status === 'TP1_HIT' && currentPrice <= trade.tp2) {
-          await updateTradeStatus(trade.id, 'TP2_HIT');
-          hitTP2.push({ ...trade, status: 'TP2_HIT' });
-        } else if (trade.status === 'ACTIVE' && currentPrice <= trade.tp1) {
-          await updateTradeStatus(trade.id, 'TP1_HIT');
-          hitTP1.push({ ...trade, status: 'TP1_HIT' });
-        }
-      }
+      // ONE ladder for every monitor — side-aware (a mirrored bearish plan
+      // stops when the price RISES to the stop and targets when it FALLS).
+      // The old long-only test fired a FALSE "STOP LOSS HIT" on a PE the moment
+      // it opened (price 41.05 <= stop 49.25) and never fired its TP1.
+      const hit = detectPlanHit(trade, currentPrice);
+      if (!hit) continue;
+
+      // The fill: the stop level (or worse on a gap) for an SL, the target level
+      // for a TP. Never the entry.
+      const fill = hit === "SL_HIT"
+        ? stopFillPrice(trade, currentPrice)
+        : targetLevel(trade, hit);
+
+      await updateTradeStatus(trade.id, hit, fill);
+      const closed: ActiveTrade = { ...trade, status: hit, exitPrice: fill };
+      if (hit === "SL_HIT") hitSL.push(closed);
+      else if (hit === "TP1_HIT") hitTP1.push(closed);
+      else if (hit === "TP2_HIT") hitTP2.push(closed);
+      else hitTP3.push(closed);
     } catch {
       // skip if price fetch fails
     }
@@ -656,24 +785,61 @@ export async function checkSLTP(
   return { hitSL, hitTP1, hitTP2, hitTP3 };
 }
 
+// ─── Alert text helpers ───────────────────────────────────────────────
+
+/** Money with the sign ALWAYS in front of the digits: ₹-533.00 / ₹+1066.00. */
+export function signedMoney(v: number): string {
+  if (!Number.isFinite(v)) return "₹0.00";
+  const r = Math.round(v * 100) / 100;
+  return `₹${r < 0 ? "-" : "+"}${Math.abs(r).toFixed(2)}`;
+}
+
+/** A price rounded to the exchange tick (5.100000000000001 → 5.10). */
+export function tickPx(v: number, tick = 0.05): string {
+  if (!Number.isFinite(v)) return "—";
+  const ticks = Math.round(v / tick) * tick;
+  return (Math.round(ticks * 100) / 100).toFixed(2);
+}
+
+/** A strike: integers stay integers (2460), anything else gets 2 decimals. */
+export function fmtStrike(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+
 // Format SL/TP hit message for Telegram
-export function formatSLTPHit(trade: ActiveTrade, hitType: 'SL' | 'TP1' | 'TP2' | 'TP3'): string {
-  const isLoss = hitType === 'SL';
-  const header = isLoss ? '❌ STOP LOSS HIT' : hitType === 'TP3' ? '✅ TARGET 3 HIT (1:4)' : hitType === 'TP2' ? '✅ TARGET 2 HIT (1:3)' : '✅ TARGET 1 HIT (1:2)';
-  const emoji = isLoss ? '🔴' : '🟢';
-  const hitPrice = isLoss ? trade.sl : hitType === 'TP3' ? (trade.tp3 ?? trade.tp2) : hitType === 'TP2' ? trade.tp2 : trade.tp1;
-  const pnl = getPnl(trade, hitPrice);
-  const pnlPct = getPnlPct(trade, hitPrice);
+export function formatSLTPHit(
+  trade: ActiveTrade,
+  hitType: 'SL' | 'TP1' | 'TP2' | 'TP3',
+  exitPrice?: number
+): string {
+  const isStop = hitType === 'SL';
+  const header = isStop ? '❌ STOP LOSS HIT' : hitType === 'TP3' ? '✅ TARGET 3 HIT (1:4)' : hitType === 'TP2' ? '✅ TARGET 2 HIT (1:3)' : '✅ TARGET 1 HIT (1:2)';
+  const emoji = isStop ? '🔴' : '🟢';
+  // The fill: the stop level (or worse on a gap) for an SL, the target level for a TP.
+  const level = isStop ? trade.sl
+    : hitType === 'TP3' ? (trade.tp3 ?? trade.tp2)
+    : hitType === 'TP2' ? trade.tp2
+    : trade.tp1;
+  const fill = Number(exitPrice ?? trade.exitPrice ?? level);
+  const pnl = planPnlRupees(trade, fill);
+  const pnlPct = planPnlPct(trade, fill);
+  const isLoss = pnl < 0;
+  const pnlLine = `${isLoss ? 'Loss' : 'Gain'}: ${signedMoney(pnl)} (${Math.abs(pnlPct).toFixed(1)}%)`;
+  const exitLine = isStop
+    ? `📉 Exit: ₹${tickPx(fill)}`
+    : `🎯 Target: ₹${tickPx(fill)}`;
 
   return `
 ${emoji} ${header}
 
 📊 ${trade.symbol} — ${trade.instrument}
-💰 Entry: ₹${trade.entry.toFixed(2)}
-🎯 Strike: ${trade.strike}
-${isLoss ? `Loss: ₹${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)` : `Gain: ₹${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%)`}
+💰 Entry: ₹${tickPx(trade.entry)}
+🎯 Strike: ${fmtStrike(trade.strike)}
+${exitLine}
+${pnlLine}
 
-${isLoss ? '🔄 Moving to next setup on next scan...' : '📈 Let the remaining ride or book full profits as per your plan'}
+${isStop ? '🔄 Moving to next setup on next scan...' : '📈 Let the remaining ride or book full profits as per your plan'}
 
 ⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
   `.trim();
