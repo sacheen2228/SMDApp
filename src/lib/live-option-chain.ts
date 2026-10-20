@@ -172,17 +172,12 @@ export async function fetchLiveOptionChain(
       : null;
 
   // VIX — optional enrichment; null when unavailable (never a fabricated 15).
+  // Free NSE source (the data policy bans Yahoo quotes).
   let liveVix: number | null = null;
   try {
     const { getNSEIndiaVIX } = await import('@/lib/nse-api');
     liveVix = (await getNSEIndiaVIX())?.value ?? null;
   } catch {}
-  if (liveVix == null) {
-    try {
-      const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
-      liveVix = (await fetchIndiaVIX())?.value ?? null;
-    } catch {}
-  }
 
   // ageMs must reflect the PROVIDER's published timestamp, not when we
   // collected it — otherwise a cache hit or a delayed feed reads as LIVE.

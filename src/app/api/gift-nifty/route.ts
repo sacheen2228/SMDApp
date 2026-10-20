@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchYahooIndexData } from '@/lib/yahoo-finance-api';
+import { getNSEIndices } from '@/lib/nse-api';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const spotPrice = parseFloat(searchParams.get('spot') || '0');
 
-    const data = await fetchYahooIndexData('GIFTNIFTY');
+    // GIFT NIFTY (SGX) is no longer quoted by any free source — the documented
+    // proxy is the NSE NIFTY 50 spot, read from the exchange.
+    const nseIdx = await getNSEIndices();
+    const nifty = nseIdx?.find((i: any) => String(i.key).toUpperCase() === 'NIFTY');
+    const data = nifty?.ltp ? { regularMarketPrice: nifty.ltp, previousClose: nifty.prevClose, change: nifty.change, changePct: nifty.changePct, name: nifty.name } : null;
     if (data && data.regularMarketPrice && data.previousClose) {
       const gap = data.regularMarketPrice - data.previousClose;
       return NextResponse.json({

@@ -266,8 +266,8 @@ class RecoveryEngine {
     try {
       // VIX
       try {
-        const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
-        const vix = await fetchIndiaVIX().catch(() => null);
+        const { getNSEIndiaVIX } = await import('@/lib/nse-api');
+        const vix = await getNSEIndiaVIX().catch(() => null);
         brief.vix = vix?.value ?? null;
       } catch {}
 

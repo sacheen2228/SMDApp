@@ -49,9 +49,9 @@ async function gatherRealData(symbol: string): Promise<{
     // 2. India VIX — Yahoo (bounded 2s)
     (async () => {
       try {
-        const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
+        const { getNSEIndiaVIX } = await import('@/lib/nse-api');
         const v = await Promise.race([
-          fetchIndiaVIX(),
+          getNSEIndiaVIX(),
           new Promise<null>((_, r) => setTimeout(() => r(new Error('VIX_TIMEOUT')), 2000)),
         ]);
         return (v as any)?.value ?? null;

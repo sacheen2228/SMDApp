@@ -340,8 +340,8 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     }
   } catch {}
   try {
-    const { fetchIndiaVIX } = await import("@/lib/yahoo-finance-api");
-    const vix = await fetchIndiaVIX();
+    const { getNSEIndiaVIX } = await import("@/lib/nse-api");
+    const vix = await getNSEIndiaVIX();
     if (vix?.value) vixLevel = vix.value.toFixed(1);
   } catch {}
 

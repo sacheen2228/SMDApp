@@ -434,8 +434,24 @@ export async function fetchSpotWithFallback(
           return null;
         }
         case "yahoo": {
-          const { fetchYahooIndexData } = await import("@/lib/yahoo-finance-api");
-          return fetchYahooIndexData(symbol);
+          // Free NSE/BSE data — the provider tree is NSE/BSE primary and Yahoo is
+          // banned by the data policy. The case key is kept for the provider
+          // registry, but the source is now the exchange.
+          const { getNSEIndices } = await import("@/lib/nse-api");
+          const idx = await getNSEIndices();
+          const row = idx?.find(
+            (i: any) => String(i.key).toUpperCase() === symbol.toUpperCase() || String(i.name).toUpperCase() === symbol.toUpperCase(),
+          );
+          if (row?.ltp) {
+            return { ltp: row.ltp, change: row.change, changePct: row.changePct, prevClose: row.prevClose, name: row.name };
+          }
+          const { fetchStockQuotes } = await import("@/lib/nse-stock-data");
+          const quotes = await fetchStockQuotes([symbol]);
+          const eq: any = quotes?.[symbol] || quotes?.[symbol.toUpperCase()];
+          if (eq?.ltp != null) {
+            return { ltp: eq.ltp, change: eq.change ?? 0, changePct: eq.changePct ?? 0, name: eq.name ?? symbol };
+          }
+          return null;
         }
         default:
           return null;

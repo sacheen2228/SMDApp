@@ -184,10 +184,10 @@ export async function GET(request: NextRequest) {
     if (!chainData) {
       // Use Yahoo Finance for spot price as context
       try {
-        const { fetchYahooIndexData, fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
+        const { getNSEIndiaVIX, getNSEIndexQuote } = await import('@/lib/nse-api');
         const [yahooData, vixData] = await Promise.all([
-          fetchYahooIndexData(symbol).catch(() => null),
-          fetchIndiaVIX().catch(() => null),
+          getNSEIndexQuote(symbol).catch(() => null),
+          getNSEIndiaVIX().catch(() => null),
         ]);
         const spot = yahooData?.regularMarketPrice || 0;
         if (spot > 0) {

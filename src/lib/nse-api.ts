@@ -96,12 +96,10 @@ export async function getNSEHistoricalData(symbol: string, from: Date, to: Date)
 }
 
 export async function getNSEGainers() {
-  // NSE's equity-stockIndices endpoint is dead (404). Fall back to real
-  // Yahoo Finance quotes for the NIFTY 50 universe, sorted by change %.
-  try {
-    const stocks = await fetchYahooTopMovers("gainers");
-    if (stocks.length > 0) return stocks;
-  } catch {}
+  // Free NSE quotes for the NIFTY 50 universe, sorted by change % (Yahoo is not
+  // a data source in this project).
+  const viaQuotes = await nseTopMovers("gainers");
+  if (viaQuotes.length > 0) return viaQuotes;
   const client = getNSEClient();
   try {
     const data = await client.listEquityStocksByIndex('NIFTY 50');
@@ -113,11 +111,22 @@ export async function getNSEGainers() {
   }
 }
 
-export async function getNSELosers() {
+/** NIFTY 50 top movers from the free NSE batch quote endpoint. */
+async function nseTopMovers(dir: "gainers" | "losers"): Promise<Array<{ symbol: string; name: string; ltp: number; change: number; changePct: number }>> {
   try {
-    const stocks = await fetchYahooTopMovers("losers");
-    if (stocks.length > 0) return stocks;
-  } catch {}
+    const { fetchNIFTY50Stocks } = await import("./nse-stock-data");
+    const stocks = await fetchNIFTY50Stocks();
+    const rows = stocks
+      .filter((s: any) => Number(s.ltp) > 0 && Number(s.changePct) !== 0)
+      .map((s: any) => ({ symbol: s.symbol, name: s.name || s.symbol, ltp: Number(s.ltp), change: Number(s.change) || 0, changePct: Number(s.changePct) || 0 }));
+    rows.sort((a: any, b: any) => (dir === "gainers" ? b.changePct - a.changePct : a.changePct - b.changePct));
+    return rows.slice(0, 10);
+  } catch { return []; }
+}
+
+export async function getNSELosers() {
+  const viaQuotes = await nseTopMovers("losers");
+  if (viaQuotes.length > 0) return viaQuotes;
   const client = getNSEClient();
   try {
     const data = await client.listEquityStocksByIndex('NIFTY 50');
@@ -135,55 +144,6 @@ export async function getNSELosers() {
 const yahooTopMoversCache = new Map<string, { data: any[]; ts: number }>();
 const YAHOO_MOVERS_TTL = 30_000;
 
-async function fetchYahooTopMovers(kind: "gainers" | "losers"): Promise<any[]> {
-  const cacheKey = `yahoo-${kind}`;
-  const cached = yahooTopMoversCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < YAHOO_MOVERS_TTL) return cached.data;
-
-  const { NIFTY50_STOCKS } = await import('@/lib/intraday-scanner');
-  const CONCURRENCY = 10;
-  const DEADLINE = Date.now() + 25_000;
-  const rows: { symbol: string; ltp: number; change: number; pChange: number; volume: number }[] = [];
-
-  const fetchOne = async (sym: string) => {
-    const yahooSym = `${sym}.NS`;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-      if (!res.ok) return;
-      const data = await res.json();
-      const meta = data?.chart?.result?.[0]?.meta;
-      if (!meta?.regularMarketPrice) return;
-      const prevClose = meta.chartPreviousClose || meta.regularMarketPrice;
-      const price = meta.regularMarketPrice;
-      const change = price - prevClose;
-      const pChange = prevClose > 0 ? (change / prevClose) * 100 : 0;
-      rows.push({
-        symbol: sym,
-        ltp: Math.round(price * 100) / 100,
-        change: Math.round(change * 100) / 100,
-        pChange: Math.round(pChange * 100) / 100,
-        volume: meta.regularMarketVolume || 0,
-      });
-    } catch {
-      // skip unavailable symbol rather than fabricate data
-    }
-  };
-
-  // Probe one stock first. If Yahoo is unreachable, bail in ~4s.
-  await fetchOne(NIFTY50_STOCKS[0].symbol);
-  if (rows.length === 0) return [];
-
-  for (let i = 0; i < NIFTY50_STOCKS.length && Date.now() < DEADLINE; i += CONCURRENCY) {
-    const batch = NIFTY50_STOCKS.slice(i, i + CONCURRENCY).map((s) => s.symbol);
-    await Promise.all(batch.map(fetchOne));
-  }
-
-  rows.sort((a, b) => (kind === "gainers" ? b.pChange - a.pChange : a.pChange - b.pChange));
-  const top = rows.slice(0, 10);
-  yahooTopMoversCache.set(cacheKey, { data: top, ts: Date.now() });
-  return top;
-}
 
 export async function getNSEFnoLots() {
   const client = getNSEClient();
@@ -357,4 +317,87 @@ export async function getNSEIndexChart(indexName: string): Promise<NSEChartPoint
     throw new Error(`NSE chart index=${indexName} HTTP ${res.status}: ${(text || "empty body").slice(0, 120)}`);
   }
   return json.grapthData.map(parseNSEChartPoint).filter(Boolean) as NSEChartPoint[];
+}
+
+
+// ── Index symbol registry (exchange-side; the Yahoo module re-exports it) ──
+export const INDEX_SYMBOL_KEYS: Record<string, string> = {
+  NIFTY: "NIFTY 50",
+  BANKNIFTY: "NIFTY BANK",
+  FINNIFTY: "NIFTY MIDCAP 50",
+  MIDCPNIFTY: "NIFTY MIDCAP 50",
+  NIFTYNXT50: "NIFTY NEXT 50",
+  SENSEX: "S&P BSE SENSEX",
+  BANKEX: "S&P BSE BANKEX",
+  INDIAVIX: "INDIA VIX",
+};
+
+/** True when the symbol is one of the exchange indices. */
+export function isIndexSymbol(symbol: string): boolean {
+  return !!INDEX_SYMBOL_KEYS[String(symbol || "").trim().toUpperCase()];
+}
+
+// ── Free NSE ATR14 + prev close (replaces the Yahoo helpers) ──────────
+const atrCacheNSE = new Map<string, { atr: number; at: number }>();
+
+/** ATR(14) from the exchange's own daily history — no Yahoo, no VIX estimate. */
+export async function getNSEATR14(symbol: string, fallback: number): Promise<{ atr: number; source: "real" | "vix-estimate" }> {
+  const sym = String(symbol || "NIFTY").toUpperCase();
+  const cached = atrCacheNSE.get(sym);
+  if (cached && Date.now() - cached.at < 15 * 60_000) return { atr: cached.atr, source: "real" };
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - 60 * 86_400_000);
+    const bars = (await getNSEHistoricalData(sym, from, to)) || [];
+    if (bars.length >= 15) {
+      let sum = 0;
+      for (let i = bars.length - 14; i < bars.length; i++) {
+        const c = bars[i];
+        const prev = bars[i - 1];
+        sum += Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+      }
+      const atr = Math.round((sum / 14) * 100) / 100;
+      if (atr > 0) {
+        atrCacheNSE.set(sym, { atr, at: Date.now() });
+        return { atr, source: "real" };
+      }
+    }
+  } catch { /* fall through to the caller's estimate */ }
+  return { atr: fallback, source: "vix-estimate" };
+}
+
+/** One index quote from the free NSE index list (Yahoo-shaped payload, NSE source). */
+export async function getNSEIndexQuote(symbol: string): Promise<{
+  symbol: string; name: string; regularMarketPrice: number; previousClose: number;
+  change: number; changePct: number;
+} | null> {
+  const sym = String(symbol || "").toUpperCase();
+  const idx = await getNSEIndices();
+  const row = idx?.find(
+    (i: any) => String(i.key).toUpperCase() === sym || String(i.name).toUpperCase() === sym || String(i.name).toUpperCase().startsWith(sym),
+  );
+  if (!row?.ltp) return null;
+  return {
+    symbol: sym,
+    name: row.name,
+    regularMarketPrice: row.ltp,
+    previousClose: row.prevClose,
+    change: row.change,
+    changePct: row.changePct,
+  };
+}
+
+/** Previous close from the exchange index list (indices) or the option chain. */
+export async function getNSEPrevClose(symbol: string): Promise<number | null> {
+  const sym = String(symbol || "").toUpperCase();
+  try {
+    const idx = await getNSEIndices();
+    const row = idx?.find((i: any) => String(i.key).toUpperCase() === sym || String(i.name).toUpperCase() === sym);
+    if (row?.prevClose) return row.prevClose;
+  } catch { /* try the chain below */ }
+  try {
+    const chain = await getNSEOptionChain(sym);
+    const pc = Number((chain as any)?.priceInfo?.previousClose || (chain as any)?.priceInfo?.prevClose || 0);
+    return pc > 0 ? pc : null;
+  } catch { return null; }
 }

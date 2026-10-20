@@ -2,7 +2,7 @@
 // Separates the testable store path (captureAndStore) from the live fetch glue
 // (fetchRawMarketData), so the storage layer is verifiable without a Breeze session.
 import { getOptionChain, getOptionChainExpiries, getQuotes } from "@/lib/icici-breeze/option-chain";
-import { fetchIndiaVIX } from "@/lib/yahoo-finance-api";
+import { getNSEIndiaVIX } from "@/lib/nse-api";
 import { getNSEGainers, getNSELosers, getNSEOptionChain } from "@/lib/nse-api";
 import { getBSEOptionChain, getBSEExpiryDates } from "@/lib/bse-api";
 import { calculateGreeks } from "@/lib/greeks";
@@ -205,7 +205,7 @@ export async function fetchRawMarketData(symbol: string): Promise<RawMarketData>
   const [chainRes, quotesRes, vixRes, gainersRes, losersRes] = await Promise.allSettled([
     getOptionChain(symbol, nearestExpiry),
     getQuotes(symbol),
-    fetchIndiaVIX(),
+    getNSEIndiaVIX(),
     getNSEGainers(),
     getNSELosers(),
   ]);

@@ -56,6 +56,14 @@ describe("fetchStockQuotes (stubbed Yahoo)", () => {
           },
         });
       }
+      if (url.includes("/api/allIndices")) {
+        // free NSE index list — the index leg no longer uses Yahoo
+        return Response.json({
+          data: [
+            { index: "NIFTY 50", last: 22400, previousClose: 22300, change: 100, percentChange: 0.45 },
+          ],
+        });
+      }
       if (url.includes("v8/finance/chart")) {
         return Response.json({
           chart: {
@@ -79,7 +87,7 @@ describe("fetchStockQuotes (stubbed Yahoo)", () => {
     globalThis.fetch = realFetch;
   });
 
-  it("returns index (v8 chart) + equity (v7 batch) quotes", async () => {
+  it("returns index (free NSE list) + equity quotes", async () => {
     const quotes = await fetchStockQuotes(["NIFTY", "RELIANCE", "bogus/../../etc"]);
     expect(quotes.NIFTY.ltp).toBe(22400);
     expect(quotes.NIFTY.changePct).toBeCloseTo(((22400 - 22300) / 22300) * 100, 1);

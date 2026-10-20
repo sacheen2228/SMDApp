@@ -168,8 +168,8 @@ class MorningIntelligence {
   // ── Fetch VIX ──
   private async fetchVIX(): Promise<{ value: number | null; interpretation: string }> {
     try {
-      const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
-      const vix = await fetchIndiaVIX().catch(() => null);
+      const { getNSEIndiaVIX } = await import('@/lib/nse-api');
+      const vix = await getNSEIndiaVIX().catch(() => null);
       const value = vix?.value ?? null;
 
       if (!value) return { value: null, interpretation: 'Unavailable' };

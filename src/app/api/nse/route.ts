@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getNSEOptionChain, getNSEMarketStatus, getNSEGainers, getNSELosers, getNSEIndiaVIX } from '@/lib/nse-api';
-import { fetchYahooDailyCandles } from '@/lib/yahoo-finance-api';
+import { getNSEHistoricalData } from '@/lib/nse-api';
 
 // Index symbols the broken nse-bse-api historical path cannot handle
 const INDEX_SYMBOLS = new Set([
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
 
         // Indices: Yahoo free path only (nse-bse-api historical is broken for them)
         if (isIndex) {
-          const raw = await fetchYahooDailyCandles(symbol, limit);
+          const raw = await getNSEHistoricalData(symbol, limit);
           const candles = raw.map((c) => ({
             date: new Date(c.time).toISOString().slice(0, 10),
             open: c.open,
@@ -82,7 +82,7 @@ export async function GET(request: NextRequest) {
           }
         } catch {}
 
-        const raw = await fetchYahooDailyCandles(symbol, limit);
+        const raw = await getNSEHistoricalData(symbol, limit);
         const candles = raw.map((c) => ({
           date: new Date(c.time).toISOString().slice(0, 10),
           open: c.open,

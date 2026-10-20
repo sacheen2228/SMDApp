@@ -6,7 +6,7 @@
 // Returns whatever data was successfully fetched — never throws.
 
 import { fetchWithFallback, FallbackSource } from "./fetch-with-fallback";
-import { fetchYahooIndexData, isIndexSymbol } from "./yahoo-finance-api";
+import { isIndexSymbol } from "./nse-api";
 
 const NSE_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -470,7 +470,7 @@ export async function getBreadthData(): Promise<{
 }
 
 // ─── Arbitrary-symbol quotes (watchlist / single names) ─────────────────
-// Indices resolve via yahoo-finance-api v8 chart (own 2min cache + rate
+// Indices resolve via the free NSE index list (own 2min cache + rate
 // limit); equities via the yahoo v7 batch above, per-stock chart fallback.
 export interface QuoteRow {
   symbol: string;
@@ -504,14 +504,17 @@ export async function fetchStockQuotes(rawSymbols: string[]): Promise<Record<str
   const equities = symbols.filter((s) => !isIndexSymbol(s));
 
   if (indices.length) {
-    await Promise.all(
-      indices.map(async (s) => {
-        const d = await fetchYahooIndexData(s);
-        if (d && d.regularMarketPrice) {
-          out[s] = { symbol: s, name: d.name || s, ltp: d.regularMarketPrice, change: round2(d.change), changePct: round2(d.changePct) };
-        }
-      }),
-    );
+    // Free NSE index quotes (the exchange is the source; Yahoo is not used).
+    const { getNSEIndices } = await import("@/lib/nse-api");
+    const nseIdx = await getNSEIndices();
+    for (const s of indices) {
+      const row = nseIdx?.find(
+        (i: any) => String(i.key).toUpperCase() === s.toUpperCase() || String(i.name).toUpperCase() === s.toUpperCase(),
+      );
+      if (row?.ltp) {
+        out[s] = { symbol: s, name: row.name || s, ltp: row.ltp, change: round2(row.change), changePct: round2(row.changePct) };
+      }
+    }
   }
 
   if (equities.length) {

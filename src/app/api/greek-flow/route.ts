@@ -10,7 +10,7 @@ import {
 } from "@/lib/option-acceleration-engine";
 import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 import { getNearestExpiry, isExpiryDay } from "@/lib/expiry-calculator";
-import { getRealATR14 } from "@/lib/yahoo-finance-api";
+import { getNSEATR14 } from "@/lib/nse-api";
 
 export const dynamic = "force-dynamic";
 
@@ -89,7 +89,7 @@ export async function GET(request: Request) {
     const vixEstimatedRange = expectedMove * (0.4 + sessionPct * 0.2);
 
     // Real ATR from daily candles (Yahoo, cached 1h) — fallback to VIX-derived estimate
-    const atrResult = await getRealATR14(symbol, Math.round(vixEstimatedRange * 100) / 100);
+    const atrResult = await getNSEATR14(symbol, Math.round(vixEstimatedRange * 100) / 100);
     const atr = atrResult.atr;
     const atrSource = atrResult.source;
 

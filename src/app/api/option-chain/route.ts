@@ -72,9 +72,9 @@ export async function GET(request: NextRequest) {
     let liveVix: number | null = null;
     let livePrevClose: number | null = null;
     try {
-      const { fetchIndiaVIX } = await import('@/lib/yahoo-finance-api');
+      const { getNSEIndiaVIX } = await import('@/lib/nse-api');
       const vixRes = await Promise.race([
-        fetchIndiaVIX(),
+        getNSEIndiaVIX(),
         new Promise<null>((_, reject) => setTimeout(() => reject(new Error('VIX_TIMEOUT')), 2000))
       ]);
       liveVix = vixRes?.value ?? null;
@@ -97,12 +97,12 @@ export async function GET(request: NextRequest) {
       }
     } catch {}
 
-    // Yahoo fallback for prev close (with timeout)
+    // Free NSE fallback for prev close (with timeout)
     if (!livePrevClose) {
       try {
-        const { fetchPrevClose } = await import('@/lib/yahoo-finance-api');
+        const { getNSEPrevClose } = await import('@/lib/nse-api');
         livePrevClose = await Promise.race([
-          fetchPrevClose(symbol),
+          getNSEPrevClose(symbol),
           new Promise<null>((_, reject) => setTimeout(() => reject(new Error('PREVCLOSE_TIMEOUT')), 2000))
         ]);
       } catch {}
@@ -766,12 +766,13 @@ export async function GET(request: NextRequest) {
       chainData.summary.callOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.ce?.oiChg || 0), 0);
       chainData.summary.putOiChange = optionChainStrikes.reduce((sum, s) => sum + (s.pe?.oiChg || 0), 0);
     }
-    // Get NIFTY futures price from Yahoo (NIFTY 50 futures)
+    // NIFTY futures proxy — free NSE index spot (Yahoo is not a data source here).
     try {
-      const { fetchYahooIndexData } = await import('@/lib/yahoo-finance-api');
-      const futuresData = await fetchYahooIndexData('NIFTY');
-      if (futuresData?.regularMarketPrice) {
-        chainData.summary.futuresPrice = futuresData.regularMarketPrice;
+      const { getNSEIndices } = await import('@/lib/nse-api');
+      const nseIdx = await getNSEIndices();
+      const nifty = nseIdx?.find((i: any) => String(i.key).toUpperCase() === 'NIFTY');
+      if (nifty?.ltp) {
+        chainData.summary.futuresPrice = nifty.ltp;
       }
     } catch {}
 
