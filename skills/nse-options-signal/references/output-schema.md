@@ -89,6 +89,25 @@ Additive keys - never removed, never renamed:
                     "achievable_max": 0, "achievable_min": 0,
                     "unavailable_groups": [], "partial_implementations": {}},
   "score_ceiling_message": null,
+  "breakout_validation": {
+    "applicable": true,
+    "level": 24600,
+    "direction": "up",
+    "mandatory": {
+      "close_confirm": {"pass": true, "value": "close 24650.00 vs level 24600 (need 24.60)"},
+      "volume": {"pass": true, "value": "18400 vs avg 9200 = 2.00x (need 1.5x, futures volume (snapshot))"},
+      "oi_confirm": {"pass": true, "value": "CE OI 24600: 2.40M -> 1.90M (-500000) falling; futures OI +12000 rising; nearby PE OI +34000"}
+    },
+    "supporting": {
+      "hold_retest": {"pass": true, "value": "retest close 24680.00 (level 24600) held beyond"},
+      "candle_quality": {"pass": true, "value": "body 71% of range, close at 88% of range"},
+      "room": {"pass": true, "value": "next level 25100, distance 500.00 (need 160.00 = 2.0x stop 80.00)"},
+      "htf_breadth": {"pass": true, "value": "15m trend agrees; heavyweights 3/3 (100%) in direction"},
+      "premium_response": {"pass": true, "value": "CE premium 210.00 -> 236.00; IV 13.4 -> 13.1 (0.3%)"}
+    },
+    "fakeout_flags": [],
+    "verdict": "VALID_BREAKOUT"
+  },
   "risk_flags": ["VIX_HIGH: ..."],
   "notes": ["..."],
   "confidence": "Moderate | High | Very high | NA"
@@ -96,6 +115,13 @@ Additive keys - never removed, never renamed:
 ```
 
 Notes:
+- `breakout_validation` is required whenever the strategy is S2/S4/S6 or the entry
+  is near a level (see `references/breakout-rules.md`). `verdict` is one of
+  `VALID_BREAKOUT` / `FAKEOUT` / `WAIT_FOR_RETEST` / `NOT_APPLICABLE`.
+  A `FAKEOUT` verdict or any `fakeout_flags` entry is a NO-TRADE gate.
+  Every check reports pass/fail **with its number** (e.g. "Volume 2.1x avg",
+  "Call OI 24,600: 2.4M -> 1.9M"); a check that cannot be computed reports
+  `UNKNOWN` (never a silent pass).
 - `action` (legacy) and `decision` (v2.1) always carry the same value;
   the only legal values are `BUY_CE`, `BUY_PE`, `NO_TRADE` - **never SELL**.
 - `components` (legacy, 4 keys) keeps its original semantics;

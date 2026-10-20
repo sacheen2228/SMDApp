@@ -1,0 +1,29 @@
+{
+  "_comment": "Single source of thresholds for the breakout validator (scripts/breakout.py). Starting values — paper-trade and tune per instrument.",
+  "close_confirm_pct": 0.1,
+  "close_confirm_atr_mult": 0.25,
+  "volume_mult": 1.5,
+  "volume_avg_bars": 20,
+  "body_pct_min": 0.6,
+  "close_position_min": 0.25,
+  "exhaustion_atr_mult": 2.0,
+  "room_stop_mult": 2.0,
+  "retest_buffer_atr_mult": 0.5,
+  "htf_breadth_min": 0.6,
+  "iv_fall_max_pct": 5.0,
+  "pokes_max": 3,
+  "pokes_window_min": 60,
+  "reversal_wick_body_mult": 2.0,
+  "session_open": "09:30",
+  "session_close": "15:30",
+  "last_minutes_no_entry": 20,
+  "pre_open_minutes": 15,
+  "heavyweights": {
+    "NIFTY": ["HDFCBANK", "ICICIBANK", "RELIANCE"],
+    "BANKNIFTY": ["HDFCBANK", "ICICIBANK", "SBIN"],
+    "FINNIFTY": ["HDFCBANK", "ICICIBANK", "RELIANCE"],
+    "MIDCPNIFTY": ["HDFCBANK", "ICICIBANK", "RELIANCE"]
+  },
+  "min_supporting_passes": 2,
+  "min_total_passes": 5
+}

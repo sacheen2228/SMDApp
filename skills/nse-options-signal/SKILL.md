@@ -26,6 +26,7 @@ This is a decision-support framework, NOT guaranteed prediction or licensed inve
 1. **Fetch data** - run `scripts/nse_fetch.py` (or read the same sources via your own tool). See `references/data-sources.md` for the 11 sources and what each is used for. The fetch stamps **provenance** (source / timestamps / status) under `meta.provenance`.
 2. **Score** - run `scripts/score_signal.py` on the fetched JSON, or apply `references/scoring-rules.md` by hand. Produces a bias score from -100 (strong bearish) to +100 (strong bullish), plus `agreement`, `data_quality`, `news_context` and `score_ceiling` blocks.
 2b. **Levels + strategy** - run `scripts/levels.py` (OI walls, max pain, expected-move bands, confluence zones, liquid strikes), pick the regime (trend vs range vs event) and ONE named strategy from `references/strategies.md` (S1-S8). No named strategy at a level = NO TRADE.
+2c. **Breakout / fakeout validation** - for S2/S4/S6 and any entry near a level, run `scripts/breakout.py` (8 checks: 3 mandatory + 5 supporting, fakeout red flags, verdict VALID_BREAKOUT / FAKEOUT / WAIT_FOR_RETEST). Rules and thresholds: `references/breakout-rules.md` + `references/breakout-thresholds.json`. A FAKEOUT verdict or any red flag is a NO-TRADE gate.
 3. **Gate** - apply the no-trade filters (below). Any failed gate => `NO TRADE`.
 4. **Build trade** - if score >= +40 => BUY CE; if score <= -40 => BUY PE; otherwise NO TRADE. Pick strike, SL, TP using `references/scoring-rules.md` section "Trade construction".
 5. **Respond** using the exact JSON schema in `references/output-schema.md`, then a 3-5 line human summary. For supervisor handoff, also emit `scripts/grok_handoff.py` JSON.
@@ -104,6 +105,7 @@ Trade only if >= 4 of these 8 groups agree on direction.
 - Major event today (RBI policy, Union Budget, US Fed night, results of index heavyweight) -> reduce size 50% or NO TRADE.
 - Option bid-ask spread > 2% of premium or low OI/volume strike -> pick another strike or NO TRADE.
 - Greeks gates: < 3 hours to expiry, ATM theta > 10% of premium/day, or VIX > 25 -> NO TRADE or half size + ITM only. TP2 must fit inside the 1-sigma expected move.
+- Breakout validation (step 5 of the agent prompt) failed, or any fakeout red flag is present -> NO TRADE.
 - BSE sources unavailable -> treat as 0 and say so; never fabricate values.
 - Daily loss limit hit (default 3% of capital) -> NO TRADE for the day.
 
@@ -140,7 +142,7 @@ Offline, deterministic, stdlib-only (no network, no new dependencies):
 python3 -m unittest discover -s tests        # from the skill root
 ```
 
-Covers provenance/freshness gates, news dedup + look-ahead + unverified
+Covers provenance/freshness gates, breakout/fakeout validation (close confirmation, volume, OI confirmation, red flags, verdict), news dedup + look-ahead + unverified
 handling, 4-of-8 agreement, score-ceiling reporting, decide() thresholds,
 trade construction (real LTP, spread/liquidity/RR gates), clock/theta/expiry
 gates, backward-compatible output keys, and frozen scorer parity used by
@@ -150,7 +152,7 @@ gates, backward-compatible output keys, and frozen scorer parity used by
 
 - Thresholds **+40 / -40**, component weights, and gate semantics
   (`references/scoring-rules.md`, `references/strategies.md` are frozen).
-- `scripts/greeks.py`, `scripts/levels.py`, `scripts/backtest_history.py`
+- `scripts/greeks.py`, `scripts/levels.py`, `scripts/breakout.py`, `scripts/backtest_history.py`
   and the existing `backtest_report.*` / `score_ceiling_audit.*` reports.
 - `option_chain_score` / `fii_score` / `breadth_score` signatures and math
   (imported by the backtest).
