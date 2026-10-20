@@ -1,10 +1,10 @@
 /// <reference types="bun-types" />
 // /api/quotes — arbitrary-symbol quotes for the Watchlist tab (indices via
-// yahoo-finance-api v8 chart, equities via nse-stock-data yahoo batch).
+// free NSE: index list + index-constituent lists (no Yahoo).
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { sanitizeQuoteSymbols, fetchStockQuotes } from "@/lib/nse-stock-data";
-import { isIndexSymbol } from "@/lib/yahoo-finance-api";
+import { isIndexSymbol } from "@/lib/nse-api";
 
 describe("sanitizeQuoteSymbols", () => {
   it("uppercases, trims and dedupes", () => {
@@ -54,6 +54,15 @@ describe("fetchStockQuotes (stubbed Yahoo)", () => {
               fiftyTwoWeekLow: 2400, averageDailyVolume3Month: 5000000,
             }],
           },
+        });
+      }
+      if (url.includes("equity-stockIndices")) {
+        // free NSE index-constituent list — the equity leg no longer uses Yahoo
+        return Response.json({
+          data: [
+            { symbol: "RELIANCE", lastPrice: 2900, previousClose: 2880, pChange: 0.694,
+              totalTradedVolume: 1000000, high: 2910, low: 2870, high52: 3000, low52: 2400, averageDailyVolume: 5000000 },
+          ],
         });
       }
       if (url.includes("/api/allIndices")) {

@@ -161,7 +161,7 @@ async function analyzeFIIDII(ctx: AgentContext): Promise<AgentResearchOutput> {
 // ═══════════════════════════════════════════════════════════════════
 // AGENT 03 — GLOBAL MARKET
 // Analyzes: US indices, Asian markets, overnight risk
-// Source: yahoo-finance-api.ts, /api/news
+// Source: /api/news (free)
 // ═══════════════════════════════════════════════════════════════════
 
 async function analyzeGlobalMarket(ctx: AgentContext): Promise<AgentResearchOutput> {
@@ -1598,7 +1598,7 @@ async function analyzeMomentum(ctx: AgentContext): Promise<AgentResearchOutput> 
 // ═══════════════════════════════════════════════════════════════════
 // AGENT 25 — ATR / VOLATILITY
 // Analyzes: ATR, expected move, stop distance, target feasibility
-// Source: yahoo-finance-api.ts (getRealATR14)
+// Source: nse-api.ts (getNSEATR14)
 // ═══════════════════════════════════════════════════════════════════
 
 async function analyzeATR(ctx: AgentContext): Promise<AgentResearchOutput> {
@@ -1921,7 +1921,7 @@ async function analyzeCommodityMCX(ctx: AgentContext): Promise<AgentResearchOutp
 export const REGISTRY: AgentDefinition[] = [
   { id: 'MARKET_REGIME', name: 'Market Regime', category: 'MARKET', description: 'Bullish/bearish/range regime, trend strength, volatility', supportedInstruments: ['ALL'], dataSources: ['/api/market/regime'], requiredInputs: ['regime', 'regimeBias', 'regimeConfidence'], analysisFn: analyzeMarketRegime },
   { id: 'FII_DII', name: 'FII/DII', category: 'FLOW', description: 'FII cash activity, DII activity, institutional positioning', supportedInstruments: ['ALL'], dataSources: ['/api/fii-dii'], requiredInputs: ['fiiNet', 'diiNet', 'fiiBias'], analysisFn: analyzeFIIDII },
-  { id: 'GLOBAL_MARKET', name: 'Global Market', category: 'CONTEXT', description: 'US indices, Asian markets, overnight risk', supportedInstruments: ['ALL'], dataSources: ['yahoo-finance-api', '/api/news'], requiredInputs: ['newsSentiment', 'headlines'], analysisFn: analyzeGlobalMarket },
+  { id: 'GLOBAL_MARKET', name: 'Global Market', category: 'CONTEXT', description: 'US indices, Asian markets, overnight risk', supportedInstruments: ['ALL'], dataSources: ['/api/news'], requiredInputs: ['newsSentiment', 'headlines'], analysisFn: analyzeGlobalMarket },
   { id: 'INDIA_VIX', name: 'India VIX', category: 'VOLATILITY', description: 'VIX level, trend, volatility regime, premium environment', supportedInstruments: ['INDEX'], dataSources: ['option-chain-summary'], requiredInputs: ['vix'], analysisFn: analyzeIndiaVIX },
   { id: 'MARKET_BREADTH', name: 'Market Breadth', category: 'MARKET', description: 'Advances, declines, A/D ratio, breadth trend', supportedInstruments: ['INDEX'], dataSources: ['/api/market/breadth'], requiredInputs: ['trend', 'volume', 'spot', 'pdh', 'pdl'], analysisFn: analyzeMarketBreadth },
   { id: 'SECTOR_ROTATION', name: 'Sector Rotation', category: 'MARKET', description: 'Leading/weak sectors, sector momentum, NIFTY contribution', supportedInstruments: ['ALL'], dataSources: ['/api/market/heatmap'], requiredInputs: ['symbol'], analysisFn: analyzeSectorRotation },
@@ -1943,7 +1943,7 @@ export const REGISTRY: AgentDefinition[] = [
   { id: 'BREAKOUT', name: 'Breakout/Fakeout', category: 'STRUCTURE', description: 'Breakout confirmation, volume, retest, false breakout detection', supportedInstruments: ['ALL'], dataSources: ['breakout-engine', 'market-structure'], requiredInputs: ['spot', 'pdh', 'pdl', 'volume'], analysisFn: analyzeBreakout },
   { id: 'MTF_CONFIRMATION', name: 'MTF Confirmation', category: 'SIGNALS', description: 'Multi-timeframe indicator alignment — 15M→5M→3M confirmation', supportedInstruments: ['ALL'], dataSources: ['mtf-signal-engine'], requiredInputs: ['trend', 'lastEvent'], analysisFn: analyzeMTFConfirmation },
   { id: 'MOMENTUM', name: 'Momentum', category: 'SIGNALS', description: 'Price momentum, acceleration, trend strength, divergence', supportedInstruments: ['ALL'], dataSources: ['ml-engine'], requiredInputs: ['spot', 'prevClose'], analysisFn: analyzeMomentum },
-  { id: 'ATR', name: 'ATR/Volatility', category: 'RISK', description: 'ATR, expected move, stop distance, target feasibility', supportedInstruments: ['ALL'], dataSources: ['yahoo-finance-api-ATR'], requiredInputs: ['spot', 'rawContext'], analysisFn: analyzeATR },
+  { id: 'ATR', name: 'ATR/Volatility', category: 'RISK', description: 'ATR, expected move, stop distance, target feasibility', supportedInstruments: ['ALL'], dataSources: ['nse-api-ATR'], requiredInputs: ['spot', 'rawContext'], analysisFn: analyzeATR },
   { id: 'NEWS', name: 'News', category: 'CONTEXT', description: 'Market news, company news, macro events, sentiment', supportedInstruments: ['ALL'], dataSources: ['/api/news', 'sentiment-analyzer'], requiredInputs: ['newsSentiment', 'newsScore', 'headlines'], analysisFn: analyzeNews },
   { id: 'EVENT_RISK', name: 'Event Risk', category: 'CONTEXT', description: 'RBI, Fed, earnings, elections, macro announcements', supportedInstruments: ['ALL'], dataSources: ['market-session', 'expiry-calendar'], requiredInputs: ['daysToExpiry'], analysisFn: analyzeEventRisk },
   { id: 'SENTIMENT', name: 'Sentiment', category: 'CONTEXT', description: 'Market sentiment, news sentiment, positioning sentiment', supportedInstruments: ['ALL'], dataSources: ['sentiment-analyzer', 'news'], requiredInputs: ['newsSentiment', 'newsScore'], analysisFn: analyzeSentiment },
