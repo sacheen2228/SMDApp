@@ -191,7 +191,11 @@ export async function getOptionChain(
     const { bseProvider } = await import('@/lib/data-layer/providers/bse');
     const result = await bseProvider.getOptionChain(symbol, expiry);
     if (result.data) return result;
-    // BSE failed — no further fallback for BSE-only indices
+    // BSE live chain failed (the endpoint answers 403/302) — fall back to the
+    // exchange bhavcopy (EOD close + real OI), clearly labelled BHAVCOPY.
+    const { bhavcopyProvider } = await import('@/lib/data-layer/providers/bhavcopy');
+    const eod = await bhavcopyProvider.getOptionChain(symbol, expiry);
+    if (eod.data) return eod;
     return result;
   }
 
@@ -205,12 +209,17 @@ export async function getOptionChain(
   const moResult = await moProvider.getOptionChain(symbol, expiry);
   if (moResult.data) return moResult;
 
+  // Last resort: the exchange bhavcopy (EOD close + real OI), labelled BHAVCOPY.
+  const { bhavcopyProvider } = await import('@/lib/data-layer/providers/bhavcopy');
+  const eod = await bhavcopyProvider.getOptionChain(symbol, expiry);
+  if (eod.data) return eod;
+
   // All providers failed
   return {
     data: null,
     fallbackUsed: true,
     source: 'NO_DATA',
-    fallbackReason: `NSE + MOAPI unavailable for ${symbol}`,
+    fallbackReason: `NSE + MOAPI + BHAVCOPY unavailable for ${symbol}`,
   };
 }
 

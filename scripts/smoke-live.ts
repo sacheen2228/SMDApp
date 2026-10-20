@@ -32,12 +32,13 @@ for (const r of routes) {
       method,
       headers: { "Content-Type": "application/json" },
       body: method === "POST" ? JSON.stringify({ symbol: "NIFTY" }) : undefined,
-      signal: AbortSignal.timeout(35_000),
+      signal: AbortSignal.timeout(Number(process.env.SMOKE_TIMEOUT_MS || 20_000)),
     });
     status = res.status;
     body = await res.text();
   } catch (e: any) {
     rows.push({ route: r, method, status: 0, ms: Date.now() - t0, bytes: 0, verdict: "TIMEOUT", note: String(e.message).slice(0, 60) });
+    console.log(`TIMEOUT    ${r.padEnd(34)}${method.padEnd(5)}`);
     continue;
   }
   const ms = Date.now() - t0;
@@ -58,6 +59,7 @@ for (const r of routes) {
     else if (nullish && bytes < 400) { verdict = "THIN"; note = "null fields"; }
   }
   rows.push({ route: r, method, status, ms, bytes, verdict, note });
+  console.log(`${verdict.padEnd(11)}${r.padEnd(34)}${method.padEnd(5)}${String(status).padEnd(5)}${String(ms).padStart(6)}ms ${String(bytes).padStart(8)}B ${note}`);
 }
 
 rows.sort((a, b) => a.verdict.localeCompare(b.verdict) || b.bytes - a.bytes);

@@ -234,6 +234,7 @@ async function scanEquityUniverse(priceFilter: number): Promise<InstrumentOpport
     if (candles.length < 50) continue;
 
     const spot = candles[candles.length - 1]?.close || 0;
+    const dayVolume = candles.slice(-24).reduce((sum, c) => sum + (c.volume || 0), 0);
     if (spot > priceFilter) {
       filteredOut++;
       continue;
@@ -255,7 +256,10 @@ async function scanEquityUniverse(priceFilter: number): Promise<InstrumentOpport
       tp2: spot * 1.04,
       tp3: spot * 1.06,
       rr: 2.5,
-      liquidity: stock?.volume ? Math.min(100, stock.volume / 100000 * 50) : 50,
+      // liquidity from the real bar volume (day proxy = last 24 x 5m bars).
+      // The old code referenced an undefined `stock` → ReferenceError → the whole
+      // master-selection / master-workflow card 500'd.
+      liquidity: dayVolume > 0 ? Math.min(100, (dayVolume / 100000) * 50) : 50,
       expectedMove: spot * 0.03,
       capitalEfficiency: 0.7,
       historicalExpectancy: 0.35,
@@ -285,6 +289,7 @@ async function scanStockFnoUniverse(includeFutures: boolean, includeOptions: boo
     if (candles.length < 50) continue;
 
     const spot = candles[candles.length - 1]?.close || 0;
+    const dayVolume = candles.slice(-24).reduce((sum, c) => sum + (c.volume || 0), 0);
 
     if (includeFutures) {
       futures.push({
@@ -302,7 +307,7 @@ async function scanStockFnoUniverse(includeFutures: boolean, includeOptions: boo
         tp2: spot * 1.03,
         tp3: spot * 1.045,
         rr: 2.2,
-        liquidity: stock?.volume ? Math.min(100, stock.volume / 100000 * 50) : 50,
+        liquidity: dayVolume > 0 ? Math.min(100, (dayVolume / 100000) * 50) : 50,
         expectedMove: spot * 0.02,
         capitalEfficiency: 0.75,
         historicalExpectancy: 0.4,

@@ -360,23 +360,37 @@ export async function GET(request: NextRequest) {
     // Normalize option chain via central data layer (only when no chain was
     // already found by the provider tree — normalize is a structure adapter,
     // not a data source)
+    // Map a canonical chain (NSE/BSE/MOAPI/BHAVCOPY) into the route's response shape.
+    const mapCanonical = (normResult: any) => {
+      chainData = {
+        data: normResult.data.strikes.map((s: any) => ({
+          strike: s.strike,
+          ce: s.ce ? { ltp: s.ce.ltp || 0, oi: s.ce.oi || 0, oiChg: s.ce.oiChange || 0, volume: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: 0, bid: s.ce.bid || 0, ask: s.ce.ask || 0 } : null,
+          pe: s.pe ? { ltp: s.pe.ltp || 0, oi: s.pe.oi || 0, oiChg: s.pe.oiChange || 0, volume: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: 0, bid: s.pe.bid || 0, ask: s.pe.ask || 0 } : null,
+        })),
+        spotPrice: normResult.data.spot || 0,
+        expiry: normResult.data.expiry,
+        selectedExpiry: normResult.data.expiry || '',
+        summary: { spotPrice: normResult.data.spot },
+      };
+      source = normResult.source;
+      providerTs = providerTimestamp(normResult.data);
+      dataTimestamp = providerTs ?? new Date();
+    };
+
     if (!chainData && rawNse) {
       const normResult = normalizeOptionChain(rawNse, expiry, symbol);
-      if (normResult.data) {
-        chainData = {
-          data: normResult.data.strikes.map((s: any) => ({
-            strike: s.strike,
-            ce: s.ce ? { ltp: s.ce.ltp || 0, oi: s.ce.oi || 0, oiChg: s.ce.oiChange || 0, volume: s.ce.volume || 0, iv: s.ce.iv || 0, delta: s.ce.delta || 0, gamma: s.ce.gamma || 0, theta: s.ce.theta || 0, vega: 0, bid: s.ce.bid || 0, ask: s.ce.ask || 0 } : null,
-            pe: s.pe ? { ltp: s.pe.ltp || 0, oi: s.pe.oi || 0, oiChg: s.pe.oiChange || 0, volume: s.pe.volume || 0, iv: s.pe.iv || 0, delta: s.pe.delta || 0, gamma: s.pe.gamma || 0, theta: s.pe.theta || 0, vega: 0, bid: s.pe.bid || 0, ask: s.pe.ask || 0 } : null,
-          })),
-          spotPrice: normResult.data.spot || 0,
-          expiry: normResult.data.expiry,
-          selectedExpiry: normResult.data.expiry || '',
-          summary: { spotPrice: normResult.data.spot },
-        };
-        source = normResult.source;
-        providerTs = providerTimestamp(normResult.data);
-        dataTimestamp = providerTs ?? new Date();
+      if (normResult.data) mapCanonical(normResult);
+    }
+    if (!chainData) {
+      // Last resort: the canonical exchange-aware chain (NSE primary, BSE for
+      // SENSEX/BANKEX, MOAPI, and the bhavcopy EOD fallback when the live BSE
+      // endpoint is blocked). Keeps this route on ONE provider tree.
+      const { getOptionChain: canonicalChain } = await import("@/lib/data-layer/chains/option-chain");
+      const canon = await canonicalChain(symbol, expiry);
+      if (canon.data) {
+        mapCanonical(canon);
+        if (canon.fallbackReason) console.warn(`[API] ${symbol} chain from fallback: ${canon.fallbackReason}`);
       }
     }
     if (!chainData) {
