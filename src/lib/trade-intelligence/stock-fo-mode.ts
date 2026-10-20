@@ -347,7 +347,30 @@ function scoreStock(
       target2 = conv.target2;
       riskReward = conv.riskReward;
     } else {
+      // The reprice FAILED → there is no honest premium level for this option.
+      // Keeping the SPOT levels as the option's entry produced trades like
+      // "BHARTIARTL PE, entry ₹1875.20" (the STOCK price as an option premium) —
+      // an unresolvable contract that then sat OPEN forever with no LTP.
+      // Fail closed instead.
       premiumNote = conv.reason;
+      return {
+        symbol,
+        name: quote.name || symbol,
+        sector: quote.sector || "",
+        direction: "NO_TRADE",
+        confidence: 0,
+        score: 0,
+        entry: 0,
+        stopLoss: 0,
+        target1: 0,
+        target2: 0,
+        riskReward: 0,
+        rMultiple: 0,
+        expectedMove: 0,
+        rationale: [`Premium reprice failed — no trade: ${conv.reason}`],
+        premiumNote: conv.reason,
+        asOf: new Date().toISOString(),
+      } as any;
     }
   }
 

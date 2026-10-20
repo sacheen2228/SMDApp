@@ -527,24 +527,38 @@ class PaperWorkerSingleton {
     // Keep last 500 entries
     if (history.length > 500) history = history.slice(-500);
 
-    // 6. Check SL
-    if (currentPrice <= trade.stopLoss) {
+    // 6. Check SL — direction aware!
+    // A PE plan has the stop ABOVE the entry and the targets BELOW it. Using the
+    // long-only test (price <= stop) fired a false SL hit the instant a PE was
+    // opened (entry 8.50, stop 10.20 → "SL HIT" at 8.50 with a POSITIVE P&L).
+    const isPe = trade.optionType === "PE" || trade.decision === "BUY_PE" || trade.decision === "BUY_PUT";
+    const slHit = isPe ? currentPrice >= trade.stopLoss : currentPrice <= trade.stopLoss;
+    if (slHit) {
+      // the fill is the stop level, or worse if the price gapped through it
+      const exitPrice = isPe
+        ? Math.max(currentPrice, trade.stopLoss)
+        : Math.min(currentPrice, trade.stopLoss);
+      const pnlPoints = exitPrice - trade.entryPrice;
       await emitSLHit(trade.signalId, trade.underlying, {
         direction: trade.decision,
         entry: trade.entryPrice,
         sl: trade.stopLoss,
-        exit: currentPrice,
+        exit: exitPrice,
         tp1: trade.target1,
         tp2: trade.target2,
         tp3: trade.target3,
+        pnl: (pnlPoints * (trade.quantity || 1)).toFixed(2),
         exitReason: 'INITIAL_SL',
       });
       await this.closeTrade(trade, "SL_HIT");
       return;
     }
 
-    // 7. Check TP1
-    if (trade.target1 && currentPrice >= trade.target1 && trade.status === "OPEN") {
+    // 7. Check TP1 — mirrored for a PE (target below the entry)
+    const tp1Hit = isPe
+      ? (!!trade.target1 && currentPrice <= trade.target1)
+      : (!!trade.target1 && currentPrice >= trade.target1);
+    if (tp1Hit && trade.status === "OPEN") {
       trade.status = "TP1_HIT";
       trade.stopLoss = trade.entryPrice; // Move SL to breakeven
       await emitTP1Hit(trade.signalId, trade.underlying, {
@@ -553,7 +567,7 @@ class PaperWorkerSingleton {
         sl: trade.stopLoss,
         tp1: trade.target1,
         current: currentPrice,
-        pnl: ((currentPrice - trade.entryPrice) * trade.quantity).toFixed(2),
+        pnl: ((currentPrice - trade.entryPrice) * (trade.quantity || 1)).toFixed(2),
       });
       await emitTrailingSL(trade.signalId, trade.underlying, {
         direction: trade.decision,
@@ -574,7 +588,7 @@ class PaperWorkerSingleton {
         tp1: trade.target1,
         tp2: trade.target2,
         current: currentPrice,
-        pnl: ((currentPrice - trade.entryPrice) * trade.quantity).toFixed(2),
+        pnl: ((currentPrice - trade.entryPrice) * (trade.quantity || 1)).toFixed(2),
       });
     }
 

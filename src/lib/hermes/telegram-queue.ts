@@ -219,6 +219,21 @@ export class TelegramQueue {
 }
 
 // ─── Get Singleton ────────────────────────────────────────────────
+/** Prices are tick-rounded for display (5.100000000000001 → 5.1). */
+function fmtPx(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '-';
+  return String(Math.round(n * 100) / 100);
+}
+
+/** Money with the sign in front of the symbol: -₹12.50 / ₹12.50 / "-" when missing. */
+function fmtMoney(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '-';
+  const r = Math.round(n * 100) / 100;
+  return `${r < 0 ? "-₹" : "₹"}${Math.abs(r)}`;
+}
+
 export function getTelegramQueue(): TelegramQueue {
   if (!queueInstance) {
     queueInstance = new TelegramQueue();
@@ -260,7 +275,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `SL: ₹${p.sl ?? '-'}`,
         `Current: ₹${p.current ?? '-'}`,
         ``,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         `Holding: ${p.holdingTime || '-'}`,
         ``,
         `⏰ ${ts}`,
@@ -276,7 +291,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `TP1: ₹${p.tp1 ?? '-'}`,
         `Current: ₹${p.current ?? '-'}`,
         ``,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -291,7 +306,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}`,
         `Current: ₹${p.current ?? '-'}`,
         ``,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -301,11 +316,11 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `🚨 <b>SL HIT</b>`,
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
-        `Entry: ₹${p.entry ?? '-'} → SL: ₹${p.sl ?? '-'}`,
-        `Exit: ₹${p.exit ?? '-'}`,
-        p.tp1 || p.tp2 || p.tp3 ? `TP1: ₹${p.tp1 ?? '-'} | TP2: ₹${p.tp2 ?? '-'}${p.tp3 ? ` | TP3: ₹${p.tp3}` : ''}` : '',
+        `Entry: ₹${fmtPx(p.entry)} → SL: ₹${fmtPx(p.sl)}`,
+        `Exit: ₹${fmtPx(p.exit)}`,
+        p.tp1 || p.tp2 || p.tp3 ? `TP1: ₹${fmtPx(p.tp1)} | TP2: ₹${fmtPx(p.tp2)}${p.tp3 ? ` | TP3: ₹${fmtPx(p.tp3)}` : ''}` : '',
         ``,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         `Reason: ${p.exitReason || 'INITIAL_SL'}`,
         ``,
         `⏰ ${ts}`,
@@ -340,7 +355,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
         `Holding: ${p.holdingTime || '-'}`,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -352,7 +367,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Expiry: ${p.expiry || '-'}`,
         `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         ``,
         `⏰ ${ts}`,
       ].join('\n');
@@ -363,7 +378,7 @@ export function formatEventForTelegram(event: HermesEvent): string {
         ``,
         `<b>${event.symbol}</b> ${p.direction || ''}`,
         `Entry: ₹${p.entry ?? '-'} → Exit: ₹${p.exit ?? '-'}`,
-        `P&L: ${p.pnl ?? '-'} | Net: ${p.netPnL ?? '-'}`,
+        `P&L: ${fmtMoney(p.pnl)} | Net: ${p.netPnL != null ? fmtMoney(p.netPnL) : '-'}`,
         `MFE: ₹${p.mfe ?? '-'} | MAE: ₹${p.mae ?? '-'}`,
         `Exit Reason: ${p.exitReason || '-'}`,
         ``,

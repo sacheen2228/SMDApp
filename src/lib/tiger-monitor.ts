@@ -207,12 +207,22 @@ function detectHit(t: ActiveTrade, ltp: number): TPSLAlertType | null {
   if (isTerminalTradeStatus(t, t.status)) return null;
 
   if (t.side === "BUY") {
-    // 1) SL check — always first (covers trailed SL after TP1)
-    if (ltp <= t.sl) return "SL_HIT";
-    // 2) TP ladder by status
-    if (t.status === "ACTIVE" && ltp >= t.tp1) return "TP1_HIT";
-    if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp >= t.tp2) return "TP2_HIT";
-    if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp >= t.tp3) return "TP3_HIT";
+    // A PE plan is MIRRORED: the stop sits ABOVE the entry and the targets BELOW it.
+    // Testing it like a long (ltp <= sl) fired a false SL the moment the trade opened.
+    const isPe = t.optionType === "PE" || /PUT|PE/i.test(String(t.instrument || ""));
+    if (isPe) {
+      if (ltp >= t.sl) return "SL_HIT";
+      if (t.status === "ACTIVE" && t.tp1 > 0 && ltp <= t.tp1) return "TP1_HIT";
+      if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp <= t.tp2) return "TP2_HIT";
+      if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp <= t.tp3) return "TP3_HIT";
+    } else {
+      // 1) SL check — always first (covers trailed SL after TP1)
+      if (ltp <= t.sl) return "SL_HIT";
+      // 2) TP ladder by status
+      if (t.status === "ACTIVE" && ltp >= t.tp1) return "TP1_HIT";
+      if (t.status === "TP1_HIT" && t.tp2 > 0 && ltp >= t.tp2) return "TP2_HIT";
+      if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp >= t.tp3) return "TP3_HIT";
+    }
   } else {
     // SELL (equity/futures/commodities): SL above entry, TP below
     if (ltp >= t.sl) return "SL_HIT";
@@ -221,6 +231,11 @@ function detectHit(t: ActiveTrade, ltp: number): TPSLAlertType | null {
     if (t.status === "TP2_HIT" && t.tp3 && t.tp3 > 0 && ltp <= t.tp3) return "TP3_HIT";
   }
   return null;
+}
+
+/** Test seam: the pure hit detector. */
+export function detectHitForTest(t: any, ltp: number): TPSLAlertType | null {
+  return detectHit(t, ltp);
 }
 
 // ── Core monitor loop (exported for e2e tests) ──
