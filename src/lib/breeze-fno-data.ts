@@ -369,6 +369,7 @@ export async function fetchOptionChainSnapshot(
         const raw = await getNSEOptionChain(symbol);
         const snap = nseChainToSnapshot(raw, spot, symbol);
         if (!snap) console.warn(`[F&O] NSE chain empty or unusable for ${symbol}`);
+        if (snap) { snap.source = "NSE"; snap.asOf = new Date().toISOString(); }
         return snap;
       } catch (err) {
         const msg = typeof err === 'string' ? err : (err as any)?.message || String(err);
@@ -389,6 +390,7 @@ export async function fetchOptionChainSnapshot(
   return withTimeout(
     fetchBreezeSnapshot(symbol, spot).then((r) => {
       breezeOptionsCooldownUntil = r ? 0 : Date.now() + OPTION_CHAIN_COOLDOWN;
+      if (r) { r.source = "Breeze"; r.asOf = new Date().toISOString(); }
       return r;
     }),
     6_000,

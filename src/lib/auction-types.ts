@@ -255,6 +255,9 @@ export interface OptionMetrics {
 export interface OptionChainSnapshot {
   symbol: string;
   spot: number;
+  /** Where this chain came from ("NSE" | "Breeze" | "BHAVCOPY") and when. */
+  source?: string;
+  asOf?: string;
   atmStrike: number;
   expiry: string;
   strikes: OptionChainStrike[];

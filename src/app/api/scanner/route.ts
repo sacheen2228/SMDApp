@@ -3,7 +3,7 @@
 // Uses Yahoo Finance API for real stock data + News sentiment
 
 import { NextRequest, NextResponse } from "next/server";
-import { runIntradayScan, recordIntradayScannerResults, recordIntradayScannerSignals, type ScannerConfig } from "@/lib/intraday-scanner";
+import { runIntradayScan, recordIntradayScannerResults, recordIntradayScannerSignals, type ScannerConfig, type ScannerMarketData } from "@/lib/intraday-scanner";
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
@@ -101,6 +101,72 @@ function getSector(symbol: string): string {
     LTIM: "IT", HDFCAMC: "Finance", PIDILITIND: "Chemical",
   };
   return sectorMap[symbol] || "Other";
+}
+
+/**
+ * Free market data for the scanner: NSE daily history (3 months) + NSE quotes for
+ * anything the quote path missed. Bounded concurrency + deadline so the scan never
+ * crawls (the scanner tab must stay instant).
+ */
+const dailyHistoryCache = new Map<string, { at: number; bars: any[] }>();
+const DAILY_HISTORY_TTL = 10 * 60_000;
+
+async function buildScannerMarketData(symbols: string[]): Promise<ScannerMarketData> {
+  const dailyCandles = new Map<string, any[]>();
+  const quoteFallback = new Map<string, any>();
+  const sources = { daily: "nse", intraday: "none", quotes: "nse" };
+  try {
+    const { getNSEHistoricalData } = await import("@/lib/nse-api");
+    const to = new Date();
+    const from = new Date(to.getTime() - 100 * 86_400_000);
+    const CONCURRENCY = 12;
+    const DEADLINE = Date.now() + 10_000;
+    for (let i = 0; i < symbols.length && Date.now() < DEADLINE; i += CONCURRENCY) {
+      const batch = symbols.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(batch.map(async (sym) => {
+        try {
+          const cached = dailyHistoryCache.get(sym);
+          if (cached && Date.now() - cached.at < DAILY_HISTORY_TTL) {
+            if (cached.bars.length >= 20) dailyCandles.set(sym, cached.bars);
+            return;
+          }
+          const bars: any = await getNSEHistoricalData(sym, from, to);
+          if (!Array.isArray(bars) || bars.length < 20) return;
+          const mapped = bars.map((b: any) => {
+            const t = Date.parse(String(b.mtimestamp || b.timestamp || ""));
+            const o = Number(b.chOpeningPrice ?? b.open);
+            const h = Number(b.chTradeHighPrice ?? b.high);
+            const l = Number(b.chTradeLowPrice ?? b.low);
+            const c = Number(b.chClosingPrice ?? b.close);
+            const v = Number(b.chTotTradedQty ?? b.volume ?? 0);
+            if (!Number.isFinite(t) || !Number.isFinite(o) || !Number.isFinite(c)) return null;
+            return { time: t, open: o, high: Number.isFinite(h) ? h : c, low: Number.isFinite(l) ? l : c, close: c, volume: Number.isFinite(v) ? v : 0 };
+          }).filter(Boolean);
+          if (mapped.length >= 20) {
+            dailyCandles.set(sym, mapped as any);
+            dailyHistoryCache.set(sym, { at: Date.now(), bars: mapped as any });
+          }
+        } catch { /* a missing history = no daily context for that name */ }
+      }));
+    }
+  } catch { /* NSE unavailable → no daily context (honest) */ }
+  try {
+    const { fetchFreeNSEQuotes } = await import("@/lib/nse-stock-data");
+    const free = await fetchFreeNSEQuotes(symbols);
+    for (const [sym, q] of free) {
+      quoteFallback.set(sym, {
+        last_price: String(q.ltp),
+        change: String(q.change ?? 0),
+        change_percent: String(q.changePct ?? 0),
+        volume: String(q.volume ?? 0),
+        open: String(q.dayHigh ?? q.ltp),
+        day_high: String(q.dayHigh ?? q.ltp),
+        day_low: String(q.dayLow ?? q.ltp),
+        previous_close: String(q.prevClose ?? q.ltp),
+      });
+    }
+  } catch { /* no quote fallback */ }
+  return { dailyCandles, quoteFallback, sources };
 }
 
 export async function GET(request: NextRequest) {
@@ -271,8 +337,14 @@ export async function GET(request: NextRequest) {
       }, 16_000)),
     ]);
 
+    // ─── Market data for the scan (SERVER side) ───
+    // The scanner module is imported by client components too, so it may not pull
+    // in server-only modules (nse-api → session-health → telegram → voice → fs/path).
+    // Free NSE daily history + free NSE quotes are fetched here and handed over.
+    const marketData = await buildScannerMarketData(NIFTY50_SYMBOLS);
+
     // Run the scan
-    const result = await runIntradayScan(config, optionChains);
+    const result = await runIntradayScan(config, optionChains, marketData);
 
     // Apply real news scores to candidates
     if (marketNews && marketNews.articles.length > 0) {
@@ -391,6 +463,7 @@ export async function GET(request: NextRequest) {
       data: result,
       liveQuotesCount: (result.candidates || []).length,
       dataSource,
+      dataSources: result.dataSources,
       liveError,
       timestamp: new Date().toISOString(),
     });

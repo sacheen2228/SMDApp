@@ -146,6 +146,21 @@ ${alert.rationale}
 `;
 }
 
+/** Age of a chain in minutes (null when unknown). */
+export function chainAgeMinutes(chainAsOf?: string): number | null {
+  if (!chainAsOf) return null;
+  const t = Date.parse(chainAsOf);
+  if (!Number.isFinite(t)) return null;
+  return (Date.now() - t) / 60000;
+}
+
+/** A plan built on a chain older than this is not a trade (fail closed). */
+export function isChainFresh(chainAsOf?: string, maxMinutes = 15): boolean {
+  const age = chainAgeMinutes(chainAsOf);
+  if (age == null) return true;         // unknown age → not provably stale
+  return age <= maxMinutes;
+}
+
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
   if (!isTelegramSendWindow()) {
       console.error("[sendIntradayAlerts] outside 09:10-15:30 IST window — skipping");
@@ -326,10 +341,24 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 
         for (const stock of highConfStocks) {
           const opt = stock.monthlyOptionTrade;
+          // Fail closed on a stale chain: a plan built on an old premium is not a
+          // trade. (The chain age is what "which data?" means in practice.)
+          const chainAgeMin = chainAgeMinutes((opt as any)?.chainAsOf);
+          if (!isChainFresh((opt as any)?.chainAsOf)) {
+            console.warn(`[sendIntradayAlerts] skip ${stock.symbol} — chain ${chainAgeMin!.toFixed(0)}m old`);
+            continue;
+          }
           const sig = `${stock.symbol}|${opt.strike}|${opt.optionType}|BUY|stock-scanner`;
           if (alreadySentToday(sig)) continue;
 
-          const text = formatStockOptionAlert(stock, opt);
+          const chainSrc = (opt as any)?.chainSource || scanData?.dataSources?.chain;
+          const chainAge = (opt as any)?.chainAsOf
+            ? ` (${Math.max(0, Math.round((Date.now() - Date.parse((opt as any).chainAsOf)) / 60000))}m ago)`
+            : "";
+          const text = formatStockOptionAlert(stock, opt, {
+            ...(scanData?.dataSources || {}),
+            chain: chainSrc ? `${chainSrc}${chainAge}` : undefined,
+          });
           const results = await Promise.all(
             DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
           );
@@ -380,10 +409,27 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   return { ran: true, newAlerts };
 }
 
-function formatStockOptionAlert(stock: any, opt: any): string {
+/** One line that says exactly where the numbers came from. */
+function describeSources(sources?: { daily?: string; intraday?: string; quotes?: string; chain?: string }): string {
+  if (!sources) return "scanner (source label unavailable)";
+  const parts: string[] = [];
+  if (sources.quotes) parts.push(`quotes ${sources.quotes}`);
+  if (sources.daily) parts.push(`daily ${sources.daily}`);
+  if (sources.intraday && sources.intraday !== "none") parts.push(`5m ${sources.intraday}`);
+  if (sources.chain) parts.push(`chain ${sources.chain}`);
+  if (sources.intraday === "none") parts.push("5m UNAVAILABLE (session setups need Breeze)");
+  return parts.join(" · ") || "scanner";
+}
+
+export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?: string; intraday?: string; quotes?: string; chain?: string }): string {
   const isCall = opt.optionType === "CE";
   const emoji = isCall ? "🟢" : "🔴";
-  const rr = stock.riskReward ? `1:${stock.riskReward.toFixed(1)}` : "—";
+  // R:R must come from the OPTION's own plan (entry / stop / TP1) — the
+  // underlying stock's riskReward is a different instrument's number and
+  // produced values like "1:39.4" and "1:0.8" for the same 1:2 option plan.
+  const risk = isCall ? opt.premium - opt.stopLoss : opt.stopLoss - opt.premium;
+  const reward = isCall ? (opt.targets?.[0] ?? opt.premium) - opt.premium : opt.premium - (opt.targets?.[0] ?? opt.premium);
+  const rr = risk > 0 ? `1:${(reward / risk).toFixed(1)}` : "—";
   const reasons = (stock.reasons || []).slice(0, 3).join(" · ") || "Scanner pick";
   const direction = isCall ? "Bullish" : "Bearish";
   const targets = opt.targets.map((t: number, i: number) => `T${i + 1} ₹${t.toFixed(2)}`).join(" | ");
@@ -399,6 +445,7 @@ ${emoji} BUY ${opt.optionType} | ${stock.symbol} ${opt.strike}
 📐 R:R ${rr}
 ⭐ Confidence: ${stock.totalScore}%
 📈 ${direction} | ${reasons}
+📡 Data: ${describeSources(sources)}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 `.trim();

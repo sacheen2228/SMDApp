@@ -20,6 +20,17 @@ import { markTradeAlertSent, getTradeAlertFlag } from '../activeTradeTracker';
 type AlertSender = (text: string) => Promise<boolean>;
 let alertSender: AlertSender = sendTelegramMessage;
 
+/** Send plain text through the SAME injectable sender the TP/SL alerts use.
+ *  Anything that alerts the user (including monitoring errors) must go through
+ *  this — otherwise a test run pushes fixtures to the real Telegram bot. */
+export async function sendAlertText(text: string): Promise<boolean> {
+  try {
+    return await alertSender(text);
+  } catch {
+    return false;
+  }
+}
+
 /** Override the Telegram sender (tests only). Returns previous sender. */
 export function __setAlertSenderForTests(fn: AlertSender | null): AlertSender {
   const prev = alertSender;

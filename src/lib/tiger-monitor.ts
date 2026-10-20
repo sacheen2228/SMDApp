@@ -15,6 +15,7 @@ import {
   isTerminalTradeStatus, type ActiveTrade,
 } from "./activeTradeTracker";
 import { sendTelegramMessage } from "./telegram";
+import { sendAlertText } from "./agents/telegram-alerts";
 import { sendTPSLAlert, retryFailedAlerts } from "./agents/telegram-alerts";
 import type { TPSLAlert, TPSLAlertType } from "./agents/agent-contract";
 
@@ -248,7 +249,9 @@ export async function pollTradesOnce(
             `Trade remains OPEN — no TP/SL detection until feed recovers`,
             `Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
           ].join("\n");
-          await sendTelegramMessage(msg).catch(() => {});
+          // through the injectable sender: a test run must never push a fixture
+          // (e.g. symbol "TP1E…") to the real Telegram bot
+          await sendAlertText(msg).catch(() => {});
           errors.push(`LTP unavailable for ${trade.symbol} (${trade.id}) after ${fails} attempts`);
         }
         continue;

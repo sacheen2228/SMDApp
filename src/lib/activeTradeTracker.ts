@@ -160,8 +160,14 @@ function getPnl(trade: ActiveTrade, hitPrice: number): number {
   return (trade.entry - hitPrice) * lotSize;
 }
 
+/** Percentage move on the PREMIUM (per unit).
+ *  getPnl() is in ₹ (already multiplied by the lot size) while trade.entry is the
+ *  per-unit premium — dividing one by the other produced nonsense like
+ *  "Loss: ₹110.50 (1300.0%)" for a 20% stop. */
 function getPnlPct(trade: ActiveTrade, hitPrice: number): number {
-  return trade.entry > 0 ? (getPnl(trade, hitPrice) / trade.entry) * 100 : 0;
+  if (!(trade.entry > 0)) return 0;
+  const move = trade.side === "BUY" ? hitPrice - trade.entry : trade.entry - hitPrice;
+  return (move / trade.entry) * 100;
 }
 
 function getHoldingMins(trade: ActiveTrade): number {
@@ -333,6 +339,11 @@ export function getActiveTrades(): ActiveTrade[] {
  * THIS is what the TIGER poll loop must iterate. getActiveTrades() is only
  * for "can we open a fresh entry" checks.
  */
+/** Test-only: drop a trade from the in-memory active list (no DB write). */
+export function removeTradeForTest(id: string): void {
+  activeTrades.delete(id);
+}
+
 export function getMonitoredTrades(): ActiveTrade[] {
   return Array.from(activeTrades.values())
     .filter(t => !isTerminalTradeStatus(t, t.status));

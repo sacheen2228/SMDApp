@@ -25,6 +25,9 @@ export interface ScannerConfig {
 }
 
 export interface MonthlyOptionTrade {
+  /** Provenance of the chain the plan was built from (never a silent source). */
+  chainSource?: string;
+  chainAsOf?: string;
   strike: number;
   optionType: "CE" | "PE";
   expiry: string;
@@ -129,6 +132,8 @@ export interface ScanResult {
   overallBias: string;
   keyRisks: string[];
   dataQuality: "LIVE" | "SIMULATED" | "PARTIAL";
+  /** Where the data behind this scan actually came from (shown in alerts). */
+  dataSources?: { daily: string; intraday: string; quotes: string; chain?: string };
   marketSentiment?: {
     overall: number;
     label: string;
@@ -241,7 +246,7 @@ function generateMonthlyOptionTrade(
     const target3 = plan.targets[2] ?? target2;
 
     const label = chain.expiry || monthly.label || monthly.date;
-    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}+`;
+    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹{target3}+`;
 
     return {
       strike: chain.atmStrike,
@@ -253,6 +258,8 @@ function generateMonthlyOptionTrade(
       targets: [target1, target2, target3],
       direction: "BUY",
       summary,
+      chainSource: chain.source || "unknown",
+      chainAsOf: chain.asOf,
     };
   }
 
@@ -373,6 +380,8 @@ interface YahooData {
   quotes: Map<string, any>;
   candles: Map<string, Candle[]>;        // 3mo daily bars (trend + prev levels)
   intradayCandles: Map<string, Candle[]>; // last trading day's 5m bars (engine input)
+  /** Where each leg actually came from — the alert must say it. */
+  sources: { daily: string; intraday: string; quotes: string };
 }
 
 // One chart call returns BOTH the live quote (meta) and 3 months of daily
@@ -388,7 +397,17 @@ const YAHOO_CACHE_TTL = 30_000;
 // imported by client components for its types, so it must never statically
 // depend on the Breeze client (Node-only `path`, etc.).
 
-async function fetchYahooData(symbols: string[]): Promise<YahooData> {
+/** Market data the server already fetched (free NSE) — the scanner module is
+ *  imported by client components, so it must NEVER import a server-only module. */
+export interface ScannerMarketData {
+  /** Daily bars per symbol (free NSE equity history) */
+  dailyCandles?: Map<string, Candle[]>;
+  /** Quotes for symbols the free quote paths missed */
+  quoteFallback?: Map<string, any>;
+  sources?: { daily: string; intraday: string; quotes: string };
+}
+
+async function fetchYahooData(symbols: string[], provided?: ScannerMarketData): Promise<YahooData> {
   const cacheKey = symbols.join(",");
   const cached = yahooCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < YAHOO_CACHE_TTL) return cached.data;
@@ -454,35 +473,30 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     if (i + 5 < mcEntries.length) await new Promise(r => setTimeout(r, 200));
   }
 
-  // ─── YAHOO BATCH: Fallback for stocks Moneycontrol missed ───
-  if (quotes.size < symbols.length) {
-    const missing = symbols.filter(s => !quotes.has(s));
-    try {
-      const yahooSyms = missing.map(s => `${s}.NS`);
-      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSyms.join(","))}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const data = await res.json();
-        for (const q of data?.quoteResponse?.result || []) {
-          const sym = q.symbol?.replace(".NS", "");
-          if (!sym || !q.regularMarketPrice) continue;
-          const prev = q.regularMarketPreviousClose || q.regularMarketPrice;
-          quotes.set(sym, {
-            last_price: String(q.regularMarketPrice),
-            change: String((q.regularMarketPrice - prev).toFixed(2)),
-            change_percent: String(((q.regularMarketPrice - prev) / prev * 100).toFixed(2)),
-            volume: String(q.regularMarketVolume || 0),
-          });
-        }
-      }
-    } catch {}
+  // ─── FREE NSE QUOTES come from the server (index-constituent lists) ───
+  if (provided?.quoteFallback) {
+    for (const [sym, q] of provided.quoteFallback) quotes.set(sym, q);
   }
 
-  if (quotes.size === 0) return { quotes, candles, intradayCandles };
+  if (quotes.size === 0) {
+    return { quotes, candles, intradayCandles, sources: { daily: "none", intraday: "none", quotes: "none" } };
+  }
 
-  // ─── YAHOO CHART: Daily + intraday candles (best effort, non-blocking) ───
+  // ─── DAILY CANDLES come from the server (free NSE equity history) ───
+  // This module is imported by client components, so it must not pull in a
+  // server-only module (nse-api → session-health → telegram → voice → fs/path).
+  const dailySource = provided?.sources?.daily || "nse";
+  if (provided?.dailyCandles) {
+    for (const [sym, bars] of provided.dailyCandles) candles.set(sym, bars);
+  }
+
+  // ─── INTRADAY 5m: free sources only by default (NSE has no free equity
+  //     intraday; Breeze is the live one and is auth-gated). Yahoo stays behind
+  //     SCANNER_INTRADAY_YAHOO=1 for anyone who wants the extra setups. ───
   // Skip if deadline approaching or Yahoo is rate-limited
-  if (Date.now() < DEADLINE - 5000) {
+  const useYahooIntraday = process.env.SCANNER_INTRADAY_YAHOO === "1";
+  let intradaySource = "none";
+  if (useYahooIntraday && Date.now() < DEADLINE - 5000) {
     const stocksWithQuotes = symbols.filter(s => quotes.has(s));
     for (let i = 0; i < stocksWithQuotes.length; i += CONCURRENCY) {
       if (Date.now() >= DEADLINE) break;
@@ -490,27 +504,7 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
       await Promise.allSettled(batch.map(async (sym) => {
         const yahooSym = `${sym}.NS`;
         try {
-          const [dailyRes, intradayRes] = await Promise.all([
-            fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`, { signal: AbortSignal.timeout(4000) }),
-            fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`, { signal: AbortSignal.timeout(4000) }),
-          ]);
-          if (dailyRes.ok) {
-            const dailyData = await dailyRes.json();
-            const result = dailyData?.chart?.result?.[0];
-            const timestamps = result?.timestamp || [];
-            const ohlc = result?.indicators?.quote?.[0] || {};
-            const dailyCandles: Candle[] = [];
-            for (let j = 0; j < timestamps.length; j++) {
-              if (ohlc.open?.[j] != null && ohlc.close?.[j] != null) {
-                dailyCandles.push({
-                  time: timestamps[j],
-                  open: ohlc.open[j], high: ohlc.high[j], low: ohlc.low[j],
-                  close: ohlc.close[j], volume: ohlc.volume?.[j] || 0,
-                });
-              }
-            }
-            if (dailyCandles.length > 0) candles.set(sym, dailyCandles);
-          }
+          const intradayRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`, { signal: AbortSignal.timeout(4000) });
           if (intradayRes.ok) {
             const intraData = await intradayRes.json();
             const intraResult = intraData?.chart?.result?.[0];
@@ -533,7 +527,12 @@ async function fetchYahooData(symbols: string[]): Promise<YahooData> {
     }
   }
 
-  const data: YahooData = { quotes, candles, intradayCandles };
+  const data: YahooData = {
+    quotes, candles, intradayCandles,
+    sources: provided?.sources
+      ? { ...provided.sources, intraday: intradaySource !== "none" ? intradaySource : (provided.sources.intraday || "none") }
+      : { daily: dailySource, intraday: intradaySource, quotes: "nse" },
+  };
   yahooCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
@@ -558,13 +557,15 @@ export interface GeneratedCandidates {
   candidates: StockCandidate[];
   liveCount: number;
   total: number;
+  dataSources: { daily: string; intraday: string; quotes: string };
 }
 
 export async function generateCandidates(
   config: ScannerConfig,
   marketDirection: MarketDirection,
   sectors: SectorStrength[],
-  optionChains?: Map<string, OptionChainSnapshot | null>
+  optionChains?: Map<string, OptionChainSnapshot | null>,
+  marketData?: ScannerMarketData
 ): Promise<GeneratedCandidates> {
   const candidates: StockCandidate[] = [];
   let liveCount = 0;
@@ -573,8 +574,8 @@ export async function generateCandidates(
   // Fetch real prices + 3mo daily OHLC candles + last-session 5m intraday
   // candles from Yahoo Finance (free, no auth). Daily bars drive the trend
   // context; the real 5m bars drive the signal engine's session profile.
-  const { quotes: realQuotes, candles: realCandles, intradayCandles: realIntraday } =
-    await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol));
+  const { quotes: realQuotes, candles: realCandles, intradayCandles: realIntraday, sources: dataSources } =
+    await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol), marketData);
 
   // Scan ALL stocks (sector filter applied in UI)
   const universe = NIFTY50_STOCKS;
@@ -935,13 +936,15 @@ export async function generateCandidates(
     candidates: candidates.sort((a, b) => b.totalScore - a.totalScore),
     liveCount,
     total: universe.length,
+    dataSources: { ...dataSources },
   };
 }
 
 // ─── Main Scan Function ───────────────────────────────────────────
 export async function runIntradayScan(
   config: ScannerConfig,
-  optionChains?: Map<string, OptionChainSnapshot | null>
+  optionChains?: Map<string, OptionChainSnapshot | null>,
+  marketData?: ScannerMarketData
 ): Promise<ScanResult> {
   // Step 1: Market Direction
   const marketDirection = analyzeMarketDirection(config);
@@ -950,7 +953,7 @@ export async function runIntradayScan(
   const sectors = analyzeSectors(marketDirection);
 
   // Step 3-8: Generate and score candidates (live Yahoo data only)
-  const { candidates, liveCount, total } = await generateCandidates(config, marketDirection, sectors, optionChains);
+  const { candidates, liveCount, total, dataSources } = await generateCandidates(config, marketDirection, sectors, optionChains, marketData);
 
   // Filter — show all candidates, sector filter applied in UI
   const highProbCandidates = candidates.filter(c => c.totalScore >= 20);
@@ -996,6 +999,7 @@ export async function runIntradayScan(
         : liveCount > 0
         ? "PARTIAL"
         : "SIMULATED",
+    dataSources,
   };
 }
 
