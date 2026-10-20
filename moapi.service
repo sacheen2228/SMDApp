@@ -1,0 +1,14 @@
+[Unit]
+Description=Motilal Oswal MOAPI Service (broadcast feed + session window)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sachin/Desktop/SMDApp/moapi-service
+ExecStart=/usr/bin/python3 -m moapi.service
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/sachin/Desktop/SMDApp/.env
+
+[Install]
+WantedBy=user.target
