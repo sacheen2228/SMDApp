@@ -8,6 +8,7 @@ import { validateTrade, isTradeValid } from "./trade-validator";
 import { evaluateNoTrade, shouldRejectTrade } from "./no-trade-engine";
 import { isDataUsable } from "./freshness";
 import { getInstrumentConfig, isMCXInstrument } from "../instrument-config";
+import { GATE_CONFIG } from "../agent-brain-gate";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -37,7 +38,10 @@ export const DEFAULT_PAPER_CONFIG: PaperConfig = {
   maxOpenPaperTrades: 5,
   maxHoldingMinutes: 390, // 6.5 hours = full day
   paperSlippageBps: 5, // 0.05%
-  startingCapital: 100_000,
+  // THE PAPER ACCOUNT MIRRORS THE REAL ONE (2026-10-20): ₹25,000 — the same
+  // capital the live book trades. A ₹1,00,000 paper account makes the paper
+  // equity curve, drawdown and position sizes say nothing about the real book.
+  startingCapital: GATE_CONFIG.capital,
   brokeragePerTrade: 20, // flat per trade
   sttPercent: 0.05, // on sell side for options
   exchangeChargesPercent: 0.00345,

@@ -102,6 +102,11 @@
             "lot_size": { "type": "integer", "minimum": 1 },
             "lot_size_source": { "type": "string" },
             "risk_inr": { "type": "number", "minimum": 0 },
+            "deployed_inr": { "type": "number", "minimum": 0, "description": "The Rs committed in the trade (lots x entry x lot size)." },
+            "deployed_budget_inr": { "type": "number", "minimum": 0 },
+            "risk_budget_inr": { "type": "number", "minimum": 0 },
+            "risk_pct_of_trade": { "type": "number", "minimum": 0 },
+            "stop_points": { "type": "number", "minimum": 0 },
             "size_note": { "type": "string" },
             "expected_move_1sigma": { "type": "number" },
             "option_checks": { "type": "object" },
@@ -123,6 +128,21 @@
     },
     "gex": { "type": ["object", "null"] },
     "gex_alert": { "type": ["object", "null"] },
+    "sizing": {
+      "type": "object",
+      "description": "The per-trade capital model (2026-10-20): the rupee risk is a percentage of the amount DEPLOYED in the trade, never a percentage of the account equity.",
+      "properties": {
+        "trade_budget": { "type": ["number", "null"], "description": "The Rs that may be deployed in one trade (the ceiling, capped by the validated equity)." },
+        "deployed_budget": { "type": ["number", "null"], "description": "min(trade budget, validated equity, deployment cap)." },
+        "risk_pct_of_trade": { "type": ["number", "null"], "description": "The rupee risk as a % of the deployed amount (default 20)." },
+        "risk_budget": { "type": ["number", "null"], "description": "riskPctOfTrade% x the deployed budget - the rupee-risk ceiling." },
+        "deployed": { "type": ["number", "null"], "description": "The Rs actually committed in the trade (lots x entry x lot size)." },
+        "risk_inr": { "type": ["number", "null"], "description": "The actual max loss at the stop (lots x stop points x lot size)." },
+        "lots": { "type": ["integer", "null"], "minimum": 0 },
+        "account_equity": { "type": ["number", "null"] },
+        "max_deployment_per_trade": { "type": ["number", "null"] }
+      }
+    },
     "data_quality": {
       "type": "object",
       "properties": {

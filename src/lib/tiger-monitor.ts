@@ -33,40 +33,125 @@ let monitorRunning = false;
 let monitorTimer: ReturnType<typeof setInterval> | null = null;
 const ltpFailCounts = new Map<string, number>();
 
-// ── LTP fetcher (Breeze → NSE → Yahoo) ──
+// ── LTP fetcher (MO path → Breeze → NSE) ──
 // Exported for the EOD square-off route — same honest price source for the
 // 15:31 close as the live SL/TP monitor uses.
-export async function fetchLTP(symbol: string, strike: number, optionType: string): Promise<number> {
+//
+// THE ORDER (explicit):
+//   1. THE MO PATH — the MOAPI service (src/lib/motilal/service.ts) and then
+//      the direct Motilal REST client (src/lib/motilal/market.ts). A Motilal
+//      premium is only used when it PASSES THE PLAUSIBILITY GUARD
+//      (src/lib/motilal/quote.ts): it must be a positive price, it must be
+//      the trade's contract (strike + option type + expiry), and it must be
+//      strictly below the underlying price. A price that fails the guard is
+//      REJECTED — never used, never displayed.
+//   2. BREEZE — the authorised ICICI feed (the option chain).
+//   3. NSE — the exchange's own chain (free, no token).
+//   4. 0 — "LTP feed unavailable" (the monitor reports it; it never invents
+//      a price).
+//
+// When the MOAPI service is not configured (MOAPI_SERVICE_URL unset) or is
+// down, rung 1 produces nothing and the behaviour is EXACTLY what it was
+// before the service existed.
+export interface LTPFetchDeps {
+  /** The MO path (service → direct Motilal REST), guarded. */
+  moPath?: (ref: {
+    symbol: string;
+    strike: number;
+    optionType: string;
+    expiry?: string;
+  }) => Promise<number>;
+  /** The Breeze option chain. */
+  breezeChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
+  /** The NSE option chain. */
+  nseChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
+}
+
+/** The default MO path — the service, then the direct Motilal REST client. */
+async function defaultMOPath(ref: {
+  symbol: string;
+  strike: number;
+  optionType: string;
+  expiry?: string;
+}): Promise<number> {
+  const { resolveMOOptionLTP } = await import("@/lib/motilal/quote");
+  const result = await resolveMOOptionLTP({
+    symbol: ref.symbol,
+    strike: ref.strike,
+    optionType: ref.optionType,
+    expiry: ref.expiry,
+  });
+  return result.ltp > 0 ? result.ltp : 0;
+}
+
+/** The default Breeze rung (unchanged behaviour). */
+async function defaultBreezeChain(
+  symbol: string,
+  strike: number,
+  optionType: string
+): Promise<number> {
+  // Option premium from Breeze (getOptionChain needs an expiry — "" = nearest)
+  try {
+    const { getOptionChain } = await import("@/lib/icici-breeze/option-chain");
+    const chain = await getOptionChain(symbol, "");
+    if (chain) {
+      const idx = chain.strikes.indexOf(strike);
+      if (idx >= 0) {
+        const call = chain.calls[idx];
+        const put = chain.puts[idx];
+        const leg = optionType === "CE" ? call : put;
+        if (leg?.ltp && leg.ltp > 0) return leg.ltp;
+      }
+    }
+  } catch {}
+  return 0;
+}
+
+/** The default NSE rung (unchanged behaviour). */
+async function defaultNSEChain(
+  symbol: string,
+  strike: number,
+  optionType: string
+): Promise<number> {
+  // Option premium from NSE API
+  try {
+    const { getNSEOptionChain } = await import("@/lib/nse-api");
+    const data = await getNSEOptionChain(symbol);
+    if (data?.records?.data) {
+      const row = data.records.data.find((r: any) => r.strikePrice === strike);
+      if (row) {
+        const leg = optionType === "CE" ? row.CE : row.PE;
+        if (leg?.lastPrice && leg.lastPrice > 0) return leg.lastPrice;
+      }
+    }
+  } catch {}
+  return 0;
+}
+
+export async function fetchLTP(
+  symbol: string,
+  strike: number,
+  optionType: string,
+  expiry?: string,
+  deps?: LTPFetchDeps
+): Promise<number> {
   const isOption = optionType === "CE" || optionType === "PE";
 
   if (isOption && strike > 0) {
-    // Option premium from Breeze (getOptionChain needs an expiry — "" = nearest)
-    try {
-      const { getOptionChain } = await import("@/lib/icici-breeze/option-chain");
-      const chain = await getOptionChain(symbol, "");
-      if (chain) {
-        const idx = chain.strikes.indexOf(strike);
-        if (idx >= 0) {
-          const call = chain.calls[idx];
-          const put = chain.puts[idx];
-          const leg = optionType === "CE" ? call : put;
-          if (leg?.ltp && leg.ltp > 0) return leg.ltp;
-        }
-      }
-    } catch {}
+    // 1. The MO path (service → direct REST) — guarded.
+    const moPath = deps?.moPath ?? defaultMOPath;
+    const mo = await moPath({ symbol, strike, optionType, expiry });
+    if (mo > 0) return mo;
 
-    // Option premium from NSE API
-    try {
-      const { getNSEOptionChain } = await import("@/lib/nse-api");
-      const data = await getNSEOptionChain(symbol);
-      if (data?.records?.data) {
-        const row = data.records.data.find((r: any) => r.strikePrice === strike);
-        if (row) {
-          const leg = optionType === "CE" ? row.CE : row.PE;
-          if (leg?.lastPrice && leg.lastPrice > 0) return leg.lastPrice;
-        }
-      }
-    } catch {}
+    // 2. Breeze (existing).
+    const breezeChain = deps?.breezeChain ?? defaultBreezeChain;
+    const breeze = await breezeChain(symbol, strike, optionType);
+    if (breeze > 0) return breeze;
+
+    // 3. NSE (existing).
+    const nseChain = deps?.nseChain ?? defaultNSEChain;
+    const nse = await nseChain(symbol, strike, optionType);
+    if (nse > 0) return nse;
 
     return 0;
   }
@@ -229,7 +314,9 @@ export async function pollTradesOnce(
   const errors: string[] = [];
   let detected = 0;
   let sent = 0;
-  const resolver = resolveLTP ?? ((t: ActiveTrade) => fetchLTP(t.symbol, t.strike, t.optionType));
+  const resolver =
+    resolveLTP ??
+    ((t: ActiveTrade) => fetchLTP(t.symbol, t.strike, t.optionType, t.expiry));
 
   const trades = getMonitoredTrades(); // non-terminal only
   for (const trade of trades) {

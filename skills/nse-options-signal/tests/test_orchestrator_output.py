@@ -20,6 +20,7 @@ sys.path.insert(0, HERE)
 
 import orch_fixtures as F  # noqa: E402
 import jsonschema_mini  # noqa: E402
+import option_math  # noqa: E402
 import orchestrator  # noqa: E402
 
 NOW = F.NOW
@@ -31,7 +32,9 @@ def make_args(tmp, snapshot, history_dir, context_path, equity_path, **kw):
     args = argparse.Namespace(
         snapshot=snapshot, history=history_dir, context=context_path, out=None,
         now=NOW_ISO, symbol="NIFTY", strategy=None, ohlc=None, timeout=30.0,
-        risk_pct=1.0, max_lots=None, account_equity=equity_path,
+        risk_pct=option_math.CFG["risk_pct_of_trade"],
+        trade_budget=option_math.CFG["trade_budget"],
+        max_lots=None, account_equity=equity_path,
         account_equity_from_api=False, equity_max_age_hours=24.0,
         gex_out=os.path.join(tmp, "gex_trades.jsonl"),
         gex_alert_out=os.path.join(tmp, "gex_alerts.jsonl"),

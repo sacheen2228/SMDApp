@@ -14,13 +14,32 @@ Hard rules encoded here (references/agent-rules.md):
   * delta 0.50-0.60 preferred, never below 0.35
   * strike must be in the top-5 OI on the traded side
   * bid-ask spread <= 2% of the mid
-  * premium stop 25%-30% of the premium
+  * the premium stop is the RUPEE-RISK stop (see the capital model below), never
+    beyond the underlying invalidation
   * TP1 reward:risk >= 1:2, TP2 inside the 1-sigma expected move
   * < 3 hours to expiry  -> NO TRADE
   * theta > 10% of premium per day -> NO TRADE
   * VIX > 20 -> halve the size
   * lots = min(risk-limited, affordable, strategy cap), always rounded DOWN
   * no hardcoded capital: the account equity MUST come from a validated source
+
+THE PER-TRADE CAPITAL MODEL (2026-10-20, mirrors src/lib/agent-brain-gate.ts)
+---------------------------------------------------------------------------
+The user's rule: "if I spend Rs 10,000 I take Rs 2,000 of risk"  ->
+the rupee risk is a PERCENTAGE OF THE AMOUNT DEPLOYED IN THAT TRADE.
+
+    deployed_budget = min(tradeBudget, validated equity, deployment cap)  <- the CEILING
+    risk_budget     = riskPctOfTrade% x deployed_budget                   <- the rupee-risk CEILING
+    stop points     = entry x riskPctOfTrade%                              <- the rupee-risk stop
+    lots            = min(floor(risk_budget / (stop x lot + costs)),       <- risk-limited
+                          floor(deployed_budget / (entry x lot + costs)),   <- affordable
+                          strategy cap)                                     <- NEVER rounded UP
+    deployed        = lots x entry x lot      (the money actually committed)
+    risk            = lots x stop x lot       (the ACTUAL max loss)
+
+ZERO LOTS -> NO TRADE.  The validated account equity is the CEILING of the
+deployment - it is NEVER the risk base (the old "1% of a large validated
+equity" model made every NIFTY lot unaffordable -> 0 lots -> NO TRADE forever).
 """
 import math
 import os
@@ -41,15 +60,27 @@ CFG = {
     "delta_acceptable": (0.45, 0.70),
     "max_spread_pct": 2.0,
     "max_strike_distance_pct": 0.02,
-    "stop_pct_min": 0.25,
+    # the stop is the RUPEE-RISK stop (riskPctOfTrade% of the entry premium).
+    # The old structural band (25%-30% of the premium) is superseded by it:
+    # 25% of a Rs 300 premium risks Rs 4,875 a lot, which the rupee risk
+    # budget (Rs 4,000 on a Rs 20,000 deployment) cannot carry -> 0 lots.
+    # `stop_pct_max` survives as the cap on how far the underlying invalidation
+    # may sit (a wider invalidation is a NO TRADE).
     "stop_pct_max": 0.30,
     "rr_tp1": 2.0,
     "rr_tp2": 3.0,
     "min_hours_to_expiry": 3.0,
     "max_theta_pct_per_day": 10.0,
     "vix_high": 20.0,
-    "risk_pct": 1.0,
-    "max_risk_pct": 2.0,
+    # ---- the per-trade capital model (mirrors src/lib/agent-brain-gate.ts) ---
+    # The rupee risk is a % of the amount DEPLOYED in the trade, NOT 1% of a
+    # large validated equity: "if I spend Rs 10,000 I take Rs 2,000 of risk".
+    "risk_pct_of_trade": 20.0,     # the rupee risk = 20% of the deployed amount
+    "max_risk_pct_of_trade": 20.0,  # the hard cap on that percentage
+    "trade_budget": 20_000.0,      # the Rs DEPLOYED per trade (the ceiling)
+    "costs_per_lot": 0.0,          # brokerage + charges per lot (0 by default)
+    "min_stop_ticks": 8,           # the stop is floored at 8 ticks (noise)
+    "tick_size": 0.05,
     "max_lots_per_trade": 10,
     "gex_max_lots": 2,
 }
@@ -151,51 +182,158 @@ def pick_strike(rows, side, spot, T, vix, cfg=None):
     return best, rejected
 
 
-def size_position(risk_per_unit, lot_size, entry, account_equity, risk_pct,
-                  max_lots=None, deployment_cap=None, vix=None, cfg=None):
-    """lots = min(risk-limited, affordable, strategy cap). Never rounds UP.
+def clamp_risk_pct(risk_pct=None, cfg=None):
+    """The risk percentage of the DEPLOYED amount (capped, never zero)."""
+    cfg = dict(CFG, **(cfg or {}))
+    pct = float(risk_pct if risk_pct is not None else cfg["risk_pct_of_trade"])
+    return min(float(cfg["max_risk_pct_of_trade"]), max(0.1, pct))
 
-    account_equity MUST be a validated number (see scripts/account_equity.py).
+
+def deployment_budget(account_equity, trade_budget=None, deployment_cap=None, cfg=None):
+    """The Rs that may be DEPLOYED in ONE trade.
+
+    The validated account equity is the CEILING of the deployment, never the
+    risk base: the rupee risk is a % of what the trade actually deploys.
+
+        deployed_budget = min(tradeBudget, validated equity, deployment cap)
     """
     cfg = dict(CFG, **(cfg or {}))
     if not account_equity or float(account_equity) <= 0:
-        return {"lots": 0, "risk_amount": 0.0, "risk_lots": 0, "affordable_lots": 0,
-                "cap_lots": 0, "reason": "no validated account equity"}
-    risk_pct = min(float(risk_pct or cfg["risk_pct"]), cfg["max_risk_pct"])
-    risk_amount = float(account_equity) * risk_pct / 100.0
-    risk_per_lot = float(risk_per_unit) * float(lot_size)
-    if risk_per_lot <= 0:
-        return {"lots": 0, "risk_amount": risk_amount, "risk_lots": 0, "affordable_lots": 0,
-                "cap_lots": 0, "reason": "risk per lot is zero"}
-    risk_lots = int(risk_amount // risk_per_lot)
-    capital_per_lot = float(entry) * float(lot_size)
-    deployable = float(account_equity)
+        return {"ok": False, "deployed_budget": 0.0, "equity": 0.0,
+                "trade_budget": float(cfg["trade_budget"]), "deployment_cap": 0.0,
+                "reason": "no validated account equity"}
+    equity = float(account_equity)
+    budget = float(trade_budget) if trade_budget not in (None, 0) else float(cfg["trade_budget"])
+    if budget <= 0:
+        budget = equity
+    budget = min(budget, equity)
+    cap = 0.0
     if deployment_cap:
-        deployable = min(deployable, float(deployment_cap))
-    affordable_lots = int(deployable // capital_per_lot) if capital_per_lot > 0 else 0
+        try:
+            cap = float(deployment_cap)
+        except (TypeError, ValueError):
+            cap = 0.0
+    if cap > 0:
+        budget = min(budget, cap)
+    return {"ok": True, "deployed_budget": budget, "equity": equity,
+            "trade_budget": float(cfg["trade_budget"]), "deployment_cap": cap, "reason": ""}
+
+
+def risk_budget(deployed_amount, risk_pct=None, cfg=None):
+    """The rupee risk: riskPctOfTrade% of the amount DEPLOYED in the trade."""
+    cfg = dict(CFG, **(cfg or {}))
+    pct = clamp_risk_pct(risk_pct, cfg)
+    return {"risk_pct_of_trade": pct,
+            "risk_budget": float(deployed_amount or 0) * pct / 100.0}
+
+
+def rupee_stop_points(entry, risk_pct=None, cfg=None):
+    """The premium points per unit that the rupee risk allows.
+
+    The risk is riskPctOfTrade% of the DEPLOYED amount and the deployed amount
+    is entry x units, so the stop distance is always entry x riskPct% - it does
+    NOT depend on the number of lots.
+    """
+    return float(entry or 0) * clamp_risk_pct(risk_pct, cfg) / 100.0
+
+
+def size_position(risk_per_unit, lot_size, entry, account_equity, risk_pct=None,
+                  max_lots=None, deployment_cap=None, vix=None, cfg=None,
+                  trade_budget=None):
+    """lots = min(risk-limited, affordable, strategy cap). Never rounds UP.
+
+    account_equity MUST be a validated number (see scripts/account_equity.py).
+    It is the CEILING of the deployment - the risk base is the amount the
+    trade actually deploys, never the equity.
+    """
+    cfg = dict(CFG, **(cfg or {}))
+    empty = {"lots": 0, "risk_amount": 0.0, "risk_lots": 0, "affordable_lots": 0,
+             "cap_lots": 0, "risk_per_lot": 0.0, "capital_per_lot": 0.0,
+             "deployed_budget": 0.0, "deployed": 0.0, "risk_pct_of_trade": 0.0,
+             "costs_per_lot": 0.0, "halved": False, "reason": ""}
+    if not account_equity or float(account_equity) <= 0:
+        out = dict(empty)
+        out["reason"] = "no validated account equity"
+        return out
+    lot = float(lot_size or 0)
+    if lot <= 0:
+        out = dict(empty)
+        out["reason"] = "unknown lot size - sizing fails closed"
+        return out
+    entry = float(entry or 0)
+    if entry <= 0:
+        out = dict(empty)
+        out["reason"] = "invalid entry premium"
+        return out
+
+    budget = deployment_budget(account_equity, trade_budget, deployment_cap, cfg)
+    if not budget.get("ok"):
+        out = dict(empty)
+        out["reason"] = budget.get("reason") or "no validated account equity"
+        return out
+    deployed_budget = budget["deployed_budget"]
+    pct = clamp_risk_pct(risk_pct, cfg)
+    risk_amount = deployed_budget * pct / 100.0
+    costs = float(cfg.get("costs_per_lot", 0.0) or 0.0)
+    risk_per_lot = float(risk_per_unit) * lot + costs
+    if risk_per_lot <= 0:
+        out = dict(empty)
+        out.update({"risk_amount": risk_amount, "deployed_budget": deployed_budget,
+                    "risk_pct_of_trade": pct})
+        out["reason"] = "risk per lot is zero"
+        return out
+    risk_lots = int(risk_amount // risk_per_lot)
+    capital_per_lot = entry * lot + costs
+    affordable_lots = int(deployed_budget // capital_per_lot)
     cap_lots = int(max_lots if max_lots is not None else cfg["max_lots_per_trade"])
     lots = min(risk_lots, affordable_lots, cap_lots)
     halved = False
     if vix and vix > cfg["vix_high"]:
         lots = lots // 2
         halved = True
-    return {"lots": max(0, lots), "risk_amount": risk_amount, "risk_lots": risk_lots,
+    lots = max(0, lots)
+    deployed = entry * lot * lots
+    return {"lots": lots, "risk_amount": risk_amount, "risk_lots": risk_lots,
             "affordable_lots": affordable_lots, "cap_lots": cap_lots,
             "risk_per_lot": risk_per_lot, "capital_per_lot": capital_per_lot,
-            "halved": halved,
+            "deployed_budget": deployed_budget, "deployed": deployed,
+            "risk_pct_of_trade": pct, "costs_per_lot": costs, "halved": halved,
             "reason": "" if lots >= 1 else
-                      "1 lot needs Rs %.0f of risk / Rs %.0f of capital, budget Rs %.0f" % (
-                          risk_per_lot, capital_per_lot, risk_amount)}
+                      "1 lot needs Rs %.0f of risk (stop Rs %.2f x %d) / Rs %.0f of premium; "
+                      "the budget allows Rs %.0f of risk and Rs %.0f of deployment" % (
+                          risk_per_lot, float(risk_per_unit), int(lot), capital_per_lot,
+                          risk_amount, deployed_budget)}
+
+
+def cap_lots_to_budget(lots, risk_per_unit, lot_size, entry, account_equity, risk_pct=None,
+                       max_lots=None, deployment_cap=None, cfg=None, trade_budget=None):
+    """Re-apply the canonical sizing to an existing lot count. NEVER increases it.
+
+    Every producer of a lot count (Agent E, the GEX engine) must pass through
+    this so two engines can never disagree about the size of a trade.
+    """
+    sizing = size_position(risk_per_unit, lot_size, entry, account_equity, risk_pct,
+                           max_lots=max_lots, deployment_cap=deployment_cap, cfg=cfg,
+                           trade_budget=trade_budget)
+    capped = min(int(lots or 0), sizing["lots"])
+    sizing["lots"] = max(0, capped)
+    sizing["lots_before_cap"] = int(lots or 0)
+    return sizing["lots"], sizing
 
 
 def build_plan(rows, side, spot, vix, T, expiry_date, lot_size, account_equity,
                risk_pct=None, underlying_invalidation=None, blocking_level=None,
                hours_to_expiry=None, cfg=None, max_lots=None, deployment_cap=None,
-               strategy=None, r=RISK_FREE):
+               strategy=None, r=RISK_FREE, trade_budget=None):
     """Build the option plan. Returns (plan_dict_or_None, reasons_list).
 
     `plan_dict` uses the GEX trade shape (references/gex-output-schema.json),
     so the GEX engine and Agent E produce the same structure.
+
+    `risk_pct` is the rupee risk as a % of the amount DEPLOYED in the trade
+    (default: CFG["risk_pct_of_trade"] = 20).  `trade_budget` is the Rs that
+    may be deployed in one trade (default: CFG["trade_budget"] = 20,000) and is
+    itself capped by the validated account equity.
     """
     cfg = dict(CFG, **(cfg or {}))
     vix = float(vix or 0)
@@ -228,8 +366,13 @@ def build_plan(rows, side, spot, vix, T, expiry_date, lot_size, account_equity,
         return None, ["theta %.1f%% of premium/day (>%.0f%%) - no fresh buys" % (
             theta_pct, cfg["max_theta_pct_per_day"])]
 
-    # ---- stop: 25-30% of the premium, and it must sit on the underlying
-    # invalidation that Agent B validated (never beyond it).
+    # ---- stop: the RUPEE-RISK stop (riskPctOfTrade% of the amount deployed in
+    # the trade, which for a long option is riskPctOfTrade% of the entry
+    # premium).  It is the CEILING of the stop distance - the rupee risk never
+    # grows.  The underlying invalidation that Agent B validated may only make
+    # the stop TIGHTER (never beyond the invalidation), and the stop is floored
+    # at the 8-tick noise floor so a cheap option is not stopped out by noise.
+    # An invalidation that would need more than 30% of the premium is refused.
     if underlying_invalidation is None:
         return None, ["no validated underlying invalidation level"]
     sl_points = abs(float(spot) - float(underlying_invalidation))
@@ -240,8 +383,13 @@ def build_plan(rows, side, spot, vix, T, expiry_date, lot_size, account_equity,
     if implied_stop_pct > cfg["stop_pct_max"]:
         return None, ["underlying invalidation needs a %.1f%% premium stop (>%.0f%% max)" % (
             implied_stop_pct * 100, cfg["stop_pct_max"] * 100)]
-    stop_pct = max(cfg["stop_pct_min"], implied_stop_pct)
-    stop_pct = min(stop_pct, cfg["stop_pct_max"])
+    rupee_stop_pct = clamp_risk_pct(risk_pct, cfg) / 100.0
+    stop_pct = min(rupee_stop_pct, implied_stop_pct)
+    floor_points = float(cfg["min_stop_ticks"]) * float(cfg["tick_size"])
+    if entry * stop_pct < floor_points:
+        stop_pct = floor_points / entry
+    if stop_pct >= 1.0:
+        return None, ["the rupee-risk stop is not inside the premium"]
     premium_sl = round(entry * (1.0 - stop_pct), 2)
     risk_per_unit = entry - premium_sl
     if risk_per_unit <= 0:
@@ -278,12 +426,16 @@ def build_plan(rows, side, spot, vix, T, expiry_date, lot_size, account_equity,
         return None, ["failed option-math checks: " + ", ".join(
             "%s (%s)" % (k, checks[k]["value"]) for k in failed)]
 
-    # ---- sizing
+    # ---- sizing (the per-trade capital model)
     sizing = size_position(risk_per_unit, lot_size, entry, account_equity,
-                           risk_pct if risk_pct is not None else cfg["risk_pct"],
-                           max_lots=max_lots, deployment_cap=deployment_cap, vix=vix, cfg=cfg)
+                           risk_pct if risk_pct is not None else cfg["risk_pct_of_trade"],
+                           max_lots=max_lots, deployment_cap=deployment_cap, vix=vix, cfg=cfg,
+                           trade_budget=trade_budget)
     if sizing["lots"] < 1:
         return None, ["zero lots: %s" % sizing.get("reason", "risk budget too small")]
+
+    deployed_inr = round(entry * float(lot_size) * sizing["lots"], 2)
+    risk_inr = round(sizing["lots"] * risk_per_unit * float(lot_size), 2)
 
     plan = {
         "strike": strike,
@@ -299,15 +451,29 @@ def build_plan(rows, side, spot, vix, T, expiry_date, lot_size, account_equity,
         "tp2": tp2,
         "tp2_action": "book rest or trail",
         "lots": sizing["lots"],
-        "risk_inr": round(sizing["lots"] * risk_per_unit * float(lot_size), 0),
+        "risk_inr": risk_inr,
+        "deployed_inr": deployed_inr,
+        "deployed_budget_inr": round(sizing["deployed_budget"], 2),
+        "risk_budget_inr": round(sizing["risk_amount"], 2),
+        "risk_pct_of_trade": sizing["risk_pct_of_trade"],
+        "stop_points": round(risk_per_unit, 2),
+        "stop_pct": round(risk_per_unit / entry, 4) if entry else None,
+        "sizing": {"risk_lots": sizing["risk_lots"],
+                   "affordable_lots": sizing["affordable_lots"],
+                   "cap_lots": sizing["cap_lots"],
+                   "risk_per_lot": round(sizing["risk_per_lot"], 2),
+                   "capital_per_lot": round(sizing["capital_per_lot"], 2),
+                   "costs_per_lot": sizing["costs_per_lot"]},
         "time_stop": "exit if no move in 30 min or by 15:10 IST",
         "order_type": "limit",
         "option_checks": checks,
         "expected_move_1sigma": round(exp_move, 0),
-        "size_note": "halved (VIX > 20)" if sizing.get("halved") else "full",
+        "size_note": ("halved (VIX > 20)" if sizing.get("halved") else "full"),
     }
-    reasons.append("delta %.2f strike %s, spread %.2f%%, stop %.1f%% of premium, TP1 %.1fR" % (
-        delta, strike, best["spread_pct"], stop_pct * 100, rr_tp1))
+    reasons.append("delta %.2f strike %s, spread %.2f%%, stop %.1f%% of premium (the rupee-risk "
+                   "stop: %.0f%% of the deployed Rs %.0f), TP1 %.1fR" % (
+                       delta, strike, best["spread_pct"], stop_pct * 100,
+                       sizing["risk_pct_of_trade"], deployed_inr, rr_tp1))
     if strategy:
         reasons.append("strategy %s" % strategy)
     return plan, reasons

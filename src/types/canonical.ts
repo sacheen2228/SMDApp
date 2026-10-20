@@ -83,6 +83,8 @@ export interface OptionChain {
   putOiChange: number;
 
   timestamp: string;
+  /** the PROVIDER's own timestamp for this chain (null when it gave none) */
+  providerTimestamp?: string | null;
   dataSource: string;
   freshness: DataFreshness;
 }

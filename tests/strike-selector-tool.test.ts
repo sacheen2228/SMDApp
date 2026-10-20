@@ -20,7 +20,7 @@ const baseArgs = {
   days: 5,
   target: 22550,
   stop: 22350,
-  capital: 200000,
+  capital: 25000,      // the real trading capital (GATE_CONFIG.capital)
   lotSize: 75,
   holdDays: 0.25,
 };
@@ -36,8 +36,9 @@ describe("strike_selector tool", () => {
   }, 30000);
 
   it("answers SKIP honestly when no strike passes the gates", async () => {
-    // stop 60 pts under risk budget of ₹2000 → size gate fails on every strike
-    const out = await executeTool("strike_selector", { ...baseArgs, stop: 22340 }, ctx);
+    // lot 200 → ₹32,144 premium per lot does not fit the ₹20,000 deployment cap
+    // → 0 lots on every strike → the tool must say SKIP, never loosen the gates.
+    const out = await executeTool("strike_selector", { ...baseArgs, lotSize: 200 }, ctx);
     expect(out).toMatch(/SKIP/i);
     expect(out).not.toContain("Recommended strike");
   }, 30000);

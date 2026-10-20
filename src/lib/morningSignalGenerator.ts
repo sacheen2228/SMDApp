@@ -201,6 +201,11 @@ export function directionLabel(s: MorningSignal): "BULLISH" | "BEARISH" {
  * The house option plan (rupee risk + 1:2 / 1:3 / 1:4 ladder). The TP/SL
  * monitor implements exactly this convention — CE: stop below the entry,
  * PE: stop above it — so every option trade registered here is built with it.
+ *
+ * 0 LOTS = NO TRADE. The plan returns `lots: 0` when the contract does not fit
+ * the per-trade deployment budget (one lot of a RELIANCE CE at ₹90 costs ₹45,000
+ * against a ₹20,000 cap) — the signal is dropped there and then, so it never
+ * reaches the tracker or Telegram.
  */
 function planForOption(symbol: string, type: "CE" | "PE", premium: number) {
   const lotSize = getLotSize(symbol) || 1;
@@ -237,7 +242,7 @@ export function mapIndexFOSignal(s: IndexFOSignal): MorningSignal | null {
     const hasContract = s.premium > 0 && s.strike > 0 && !!s.expiry;
     if (hasContract) {
       const plan = planForOption(s.symbol, type, s.premium);
-      if (plan) {
+      if (plan && plan.lots >= 1) {
         return {
           symbol: s.symbol,
           name: s.symbol,
@@ -259,9 +264,12 @@ export function mapIndexFOSignal(s: IndexFOSignal): MorningSignal | null {
           premium: s.premium,
         };
       }
-      // A contract exists but no honest plan can be built from it → no trade.
+      // A contract exists but no honest, AFFORDABLE plan can be built from it →
+      // no trade (no tracker row, no Telegram).
       console.log(
-        `[MorningSignals] DROP ${s.symbol} — ${dir} contract without a valid option plan`
+        plan
+          ? `[MorningSignals] DROP ${s.symbol} — ${dir} 0 lots (${plan.notes.join("; ")})`
+          : `[MorningSignals] DROP ${s.symbol} — ${dir} contract without a valid option plan`
       );
       return null;
     }
@@ -330,9 +338,12 @@ export function mapStockFOSignal(s: StockFOSignal): MorningSignal | null {
 
   if (isCe || isPe) {
     const type: MorningSignalType = isCe ? "CE" : "PE";
+    let plan: ReturnType<typeof planForOption> = null;
     if (s.premium > 0 && s.strike > 0 && s.expiry) {
-      const plan = planForOption(s.symbol, type, s.premium);
-      if (plan) {
+      plan = planForOption(s.symbol, type, s.premium);
+      // 0 lots = the contract does not fit the per-trade budget → NO TRADE
+      // (no tracker row, no Telegram). Never size it up to 1 lot.
+      if (plan && plan.lots >= 1) {
         return {
           symbol: s.symbol,
           name: s.name,
@@ -356,7 +367,9 @@ export function mapStockFOSignal(s: StockFOSignal): MorningSignal | null {
       }
     }
     console.log(
-      `[MorningSignals] DROP ${s.symbol} — ${dir} without a real premium/strike/expiry (no honest option contract)`
+      plan
+        ? `[MorningSignals] DROP ${s.symbol} — ${dir} 0 lots (${plan.notes.join("; ")})`
+        : `[MorningSignals] DROP ${s.symbol} — ${dir} without a real premium/strike/expiry (no honest option contract)`
     );
     return null;
   }

@@ -26,6 +26,7 @@ import account_equity as equity_mod  # noqa: E402
 import gex_engine  # noqa: E402
 import gex_exit_monitor  # noqa: E402
 import gex_snapshot  # noqa: E402
+import option_math  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DATA = os.environ.get("GEX_DATA_DIR", os.path.join(os.path.dirname(HERE), "data"))
@@ -39,6 +40,12 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(DATA, "gex_trades.jsonl"))
     ap.add_argument("--alerts", default=os.path.join(DATA, "gex_alerts.jsonl"))
     ap.add_argument("--account-equity", default=os.path.join(DATA, "account_equity.json"))
+    ap.add_argument("--risk-pct", type=float, default=None,
+                    help="the rupee risk as a %% of the amount DEPLOYED in the trade "
+                         "(default: %s)" % option_math.CFG["risk_pct_of_trade"])
+    ap.add_argument("--trade-budget", type=float, default=None,
+                    help="the Rs that may be DEPLOYED in one trade (default: %s); it is itself "
+                         "capped by the validated account equity" % option_math.CFG["trade_budget"])
     ap.add_argument("--now", default=None)
     a = ap.parse_args(argv)
     now = gex_snapshot.parse_ts(a.now) if a.now else datetime.now(IST)
@@ -65,7 +72,8 @@ def main(argv=None):
     equity = equity_payload.get("equity") if equity_payload.get("ok") else None
 
     history = gex_engine.load_history(gex_hist_dir, now)
-    record = gex_engine.run(gex_snap, history, now, a.out, account_equity=equity)
+    record = gex_engine.run(gex_snap, history, now, a.out, account_equity=equity,
+                             risk_pct=a.risk_pct, trade_budget=a.trade_budget)
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "a") as fh:

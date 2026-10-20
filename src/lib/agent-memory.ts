@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { JarvisSignal } from "@/lib/jarvis/types";
+import { GATE_CONFIG } from "@/lib/agent-brain-gate";
 
 const MEMORY_DIR = join(process.cwd(), "data", "agent-memory");
 const FILES = {
@@ -52,7 +53,7 @@ interface Prediction {
   resolvedAt?: string;
 }
 
-interface UserPreferences {
+export interface UserPreferences {
   defaultSymbol: string;
   defaultCapital: number;
   riskPerTradePct: number;
@@ -89,24 +90,49 @@ function saveJson<T>(file: string, data: T[]) {
   writeFileSync(join(MEMORY_DIR, file), JSON.stringify(data, null, 2));
 }
 
+/** The model's preferences — the PER-TRADE capital + the 20%-of-deployed risk. */
+export const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  defaultSymbol: "NIFTY",
+  // PER-TRADE MODEL (user rule, 2026-10-20): the trading capital is ₹20–30k
+  // PER TRADE and the risk is 20% of the amount DEPLOYED in the trade.
+  defaultCapital: GATE_CONFIG.capital,
+  riskPerTradePct: GATE_CONFIG.riskPctOfTrade,
+  preferredStrategies: [],
+  ignoredAlerts: [],
+  lastUpdated: new Date().toISOString(),
+};
+
+// The auto-written defaults before the per-trade model (2026-10-20). A stored
+// file that still holds EXACTLY these was never edited by the user, so it is
+// migrated to the model instead of keeping the old "1% of a ₹1L account" risk.
+const LEGACY_DEFAULTS = { defaultCapital: 100000, riskPerTradePct: 2 };
+
 function loadPrefs(): UserPreferences {
   ensureDir();
   const path = join(MEMORY_DIR, FILES.preferences);
   if (!existsSync(path)) {
-    const defaults: UserPreferences = {
-      defaultSymbol: "NIFTY",
-      defaultCapital: 100000,
-      riskPerTradePct: 2,
-      preferredStrategies: [],
-      ignoredAlerts: [],
-      lastUpdated: new Date().toISOString(),
-    };
+    const defaults: UserPreferences = { ...DEFAULT_USER_PREFERENCES };
     saveJson(FILES.preferences, [defaults]);
     return defaults;
   }
   try {
     const arr = JSON.parse(readFileSync(path, "utf-8")) as UserPreferences[];
-    return arr[0] || loadPrefs();
+    const prefs = arr[0];
+    if (!prefs) return loadPrefs();
+    if (
+      prefs.defaultCapital === LEGACY_DEFAULTS.defaultCapital &&
+      prefs.riskPerTradePct === LEGACY_DEFAULTS.riskPerTradePct
+    ) {
+      const migrated: UserPreferences = {
+        ...prefs,
+        defaultCapital: DEFAULT_USER_PREFERENCES.defaultCapital,
+        riskPerTradePct: DEFAULT_USER_PREFERENCES.riskPerTradePct,
+        lastUpdated: new Date().toISOString(),
+      };
+      saveJson(FILES.preferences, [migrated]);
+      return migrated;
+    }
+    return prefs;
   } catch { return loadPrefs(); }
 }
 
@@ -281,7 +307,7 @@ export function getMemorySummary(): string {
     parts.push(`Best setup: ${bestSetup.setup} on ${bestSetup.symbol} — ${(bestSetup.winRate * 100).toFixed(0)}% WR over ${bestSetup.totalTrades} trades`);
   }
   parts.push(`Predictions: ${preds.length} resolved, ${(wins / Math.max(preds.length, 1) * 100).toFixed(0)}% accuracy`);
-  parts.push(`Default capital: ₹${prefs.defaultCapital.toLocaleString("en-IN")} | Risk per trade: ${prefs.riskPerTradePct}%`);
+  parts.push(`Trading capital: ₹${prefs.defaultCapital.toLocaleString("en-IN")} | Risk: ${prefs.riskPerTradePct}% of the amount DEPLOYED in the trade (max ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} deployed per trade)`);
   if (recentPatterns.length > 0) {
     parts.push(`Recent trades: ${recentPatterns.map(p => `${p.symbol} ${p.strategy} ${p.exit?.pnl ? (p.exit.pnl > 0 ? "+" : "") + "₹" + p.exit.pnl.toFixed(0) : "open"}`).join(", ")}`);
   }

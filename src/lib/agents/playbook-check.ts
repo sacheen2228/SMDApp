@@ -6,12 +6,14 @@
 // aggregation; the 30 agents own their factors) and does NOT re-implement
 // strike math (greeks/sizing own that). It only ANDs existing agent evidence
 // + the engine candidate against the checklist. Any "no" = skip the trade.
-// Thresholds: playbook rules — option R:R >= 1:2, risk <= 1% of capital.
+// Thresholds: playbook rules — option R:R >= 1:2, risk <= 20% of the ₹
+// DEPLOYED in the trade (the per-trade model, GATE_CONFIG.riskPctOfTrade).
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { AgentResearchOutput } from './agent-contract';
 import type { TradeCandidate } from '../trade-validator-gate';
 import { getLotSize } from '../challenge/capital-manager';
+import { GATE_CONFIG, positionSize } from '../agent-brain-gate';
 
 export interface PlaybookItemResult {
   item: number;
@@ -34,11 +36,13 @@ export interface PlaybookCheckEnv {
   capital?: number;
 }
 
-export const PLAYBOOK_MAX_RISK_PCT = 1;
+export const PLAYBOOK_MAX_RISK_PCT = GATE_CONFIG.riskPctOfTrade;
 const PLAYBOOK_MIN_RR = 2;
 const CROWD_THRESHOLD = 65;
 const OPPOSE_MIN_CONF = 60;
-const DEFAULT_CAPITAL = 100000;
+const DEFAULT_CAPITAL = GATE_CONFIG.capital;
+/** ₹ committed to ONE trade — the per-trade deployment cap. */
+const DEPLOY_BUDGET = GATE_CONFIG.tradeBudget;
 
 export const PLAYBOOK_ITEM_LABELS: Record<number, string> = {
   1: 'Flow aligned',
@@ -137,7 +141,8 @@ export function evaluatePlaybookCheck(
   // 5. Candle confirmation present?
   items.push(checkOpposition(5, agentOutputs, ['BREAKOUT', 'MOMENTUM'], short));
 
-  // 6. Strike selector passes: option R:R >= 1:2 and lots >= 1 at the 1% budget.
+  // 6. Strike selector passes: option R:R >= 1:2 and lots >= 1 at the
+  //    per-trade budget (risk = 20% of the ₹ DEPLOYED in the trade).
   const entry = candidate.entry;
   const sl = candidate.stopLoss;
   const tp1 = candidate.target1;
@@ -145,8 +150,9 @@ export function evaluatePlaybookCheck(
   const rr = perUnitRisk > 0 && tp1 > entry ? (tp1 - entry) / perUnitRisk : 0;
   const lotSize = candidate.lotSize || getLotSize(candidate.symbol);
   const riskPerLot = perUnitRisk * lotSize;
-  const budget = capital * (PLAYBOOK_MAX_RISK_PCT / 100);
-  const lots = riskPerLot > 0 ? Math.floor(budget / riskPerLot) : 0;
+  const ps = positionSize({ entry, sl, lotSize, capital });
+  const budget = ps.riskAmount;                 // ₹ at risk (20% of the deployment)
+  const lots = ps.lots;
   const i6notes: string[] = [];
   let i6pass = true;
   if (rr < PLAYBOOK_MIN_RR) {
@@ -157,9 +163,9 @@ export function evaluatePlaybookCheck(
   }
   if (lots < 1) {
     i6pass = false;
-    i6notes.push(`${lotSize}-unit lot risk ₹${riskPerLot} > ${PLAYBOOK_MAX_RISK_PCT}% budget ₹${budget} — lots ${lots} < 1`);
+    i6notes.push(`${lotSize}-unit lot risk ₹${Math.round(riskPerLot).toLocaleString("en-IN")} > ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade) — lots ${lots} < 1`);
   } else {
-    i6notes.push(`${lots} lot(s) within ${PLAYBOOK_MAX_RISK_PCT}% budget (lot ${lotSize})`);
+    i6notes.push(`${lots} lot(s) within the ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade; lot ${lotSize})`);
   }
   i6notes.push('theta cost not verified (no theta input)');
   items.push({ item: 6, label: PLAYBOOK_ITEM_LABELS[6], pass: i6pass, note: i6notes.join('; ') });
@@ -174,15 +180,15 @@ export function evaluatePlaybookCheck(
     i7notes.push(`R:R ${rr.toFixed(2)} ≥ ${PLAYBOOK_MIN_RR}`);
   }
   if (candidate.maxLoss != null) {
-    const cap = capital * (PLAYBOOK_MAX_RISK_PCT / 100);
+    const cap = budget;
     if (candidate.maxLoss > cap) {
       i7pass = false;
-      i7notes.push(`maxLoss ₹${candidate.maxLoss} > ${PLAYBOOK_MAX_RISK_PCT}% of ₹${capital} (₹${cap})`);
+      i7notes.push(`maxLoss ₹${candidate.maxLoss} > ₹${Math.round(cap).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade)`);
     } else {
-      i7notes.push(`maxLoss ₹${candidate.maxLoss} ≤ ${PLAYBOOK_MAX_RISK_PCT}% of ₹${capital}`);
+      i7notes.push(`maxLoss ₹${candidate.maxLoss} ≤ ₹${Math.round(cap).toLocaleString("en-IN")} (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade)`);
     }
   } else {
-    i7notes.push(`maxLoss unknown — risk % unchecked (item 6 already enforces lot feasibility; capital default ₹${capital})`);
+    i7notes.push(`maxLoss unknown — risk % unchecked (item 6 already enforces lot feasibility; ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade, capital ₹${capital.toLocaleString("en-IN")})`);
   }
   if (candidate.instrument === 'CALL' || candidate.instrument === 'PUT') {
     i7notes.push('stop is premium-based (underlying stop not in candidate)');

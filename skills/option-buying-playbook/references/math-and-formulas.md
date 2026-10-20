@@ -15,7 +15,7 @@ Do not guess a strike. Compute it. Run `scripts/strike_selector.py` (pure Python
 10. Model limits
 
 ## 1. Inputs required
-spot S, direction (call/put), India VIX (or ATM IV) in %, calendar days to expiry, target price, stop price (both on the **underlying**), expected holding time in days, capital, risk %, lot size (verify with broker), strike step. Optional: live premiums from the chain, assumed IV change at exit.
+spot S, direction (call/put), India VIX (or ATM IV) in %, calendar days to expiry, target price, stop price (both on the **underlying**), expected holding time in days, lot size (verify with broker), strike step. The capital model is built in (capital Rs 25,000, trade budget Rs 20,000, risk 20% of the amount deployed) — override with `--capital`, `--risk-pct`, `--trade-budget`. Optional: live premiums from the chain, assumed IV change at exit.
 If an input is missing, ask for it, or state the assumption explicitly. Never invent live premiums.
 
 ## 2. Expected move from VIX
@@ -58,11 +58,14 @@ IV shift: use 0 for a normal directional trade; use -2 to -5 vol points for post
 - Expected-value sanity check: P(target) x Gain - P(stop) x Loss should be positive. With touch probabilities, require P(target) x R:R > P(stop) as a minimum.
 
 ## 7. Position sizing
-- Risk budget = capital x risk% (1% default, 2% max).
+The per-trade model (mirrors `GATE_CONFIG` in `src/lib/agent-brain-gate.ts` and `scripts/capital_model.py`):
+- **deployed budget = min(trade budget, capital)** — default min(Rs 20,000, Rs 25,000) = Rs 20,000. This is the rupee amount put into THIS trade.
+- **risk budget = deployed budget x risk %** — default 20% of the deployed amount (Rs 20,000 deployed -> Rs 4,000 at risk). The risk is a rupee amount, not a % of a large account.
 - Risk per lot = (entry - option_at_stop) x lot_size (use the repriced stop premium, not a flat guess).
-- **Lots = floor(risk budget / risk per lot).** If lots < 1: do not take it. Tighten the stop to a nearer structure level, choose a cheaper strike, use a debit spread, or skip.
-- Premium outlay per lot = entry x lot_size; check it against available margin and a sensible share of capital.
-- Daily loss cap: sum of risk across open trades must stay under 2-3% of capital.
+- Premium outlay per lot = entry x lot_size.
+- **Lots = min(floor(risk budget / (risk per lot + costs)), floor(deployed budget / (premium per lot + costs)), strategy cap)** — floor only, never round up. The second term is the AFFORDABILITY cap: the premium actually committed per lot must fit the deployed budget.
+- If lots < 1: do not take it. Tighten the stop to a nearer structure level, choose a cheaper strike, use a debit spread, or skip. Never risk more to make one lot fit.
+- Daily loss cap: with 20% risk per trade, one stop = 20% of the account — allow two losses, then stop.
 
 ## 8. Gates and ranking algorithm
 A strike must pass **all** of these defaults (adjustable):
@@ -72,33 +75,38 @@ A strike must pass **all** of these defaults (adjustable):
 | Theta cost over the hold | at most 6% of premium (relax to about 12-14% for 2+ day swings) | Time decay must not eat the edge |
 | Hold-time break-even | at most 50% of expected move | Needs only a modest move to be profitable |
 | Option reward:risk | at least 1.5 (aim for 2) | After theta, convexity and IV shift |
-| Lots | at least 1 within risk budget | Respects 1% rule |
+| Lots | at least 1 within the risk AND affordability budget | Respects the per-trade rule |
 Ranking: among passing strikes, strikes within 10% of the best option R:R are treated as equal, and the one with delta nearest 0.55 wins. If none pass, the answer is **SKIP / tighten stop / spread**, never "relax the rules".
 
 Pseudocode:
 ```
+deployed = min(trade_budget, capital)          # Rs 20,000
+risk_budget = deployed * risk_pct/100          # Rs 4,000 at 20%
 em = S*IV*sqrt(hold/252)
 if target_pts/em > 1.0: warn or skip
 for K in strikes:
     entry = chain premium or BS price; iv_K = implied vol if premium given
     p_t = BS(target, t-hold, iv_K+shift); p_s = BS(stop, t-hold, iv_K+shift)
-    RR = (p_t-entry)/(entry-p_s); lots = floor(budget/((entry-p_s)*lot))
+    RR = (p_t-entry)/(entry-p_s)
+    lots = min(floor(risk_budget/((entry-p_s)*lot + costs)),
+               floor(deployed/(entry*lot + costs)), max_lots)
     pass = delta_ok and theta_ok and be_ok and RR>=min_rr and lots>=1
 choose per ranking above, else SKIP
 ```
 
 ## 9. Worked example (real script output)
-Command: spot 25,100; VIX 14; 3 days to expiry; call; target 25,200; stop 25,070; capital Rs 3,00,000; 1% risk (Rs 3,000); lot 75; hold 0.25 day.
+Command: spot 25,100; VIX 14; 3 days to expiry; call; target 25,200; stop 25,070; lot 75; hold 0.25 day (default capital model: capital Rs 25,000, trade budget Rs 20,000, risk 20% of the deployed amount).
+- Deployed budget = min(Rs 20,000, Rs 25,000) = Rs 20,000; risk budget = 20% of Rs 20,000 = Rs 4,000.
 - Expected 1-sigma move over the hold: 110.7 points (daily: 221.4). Target = 100 points = 90% of that, so the script warns it is a stretch.
 - Underlying R:R = 100/30 = 3.33.
 | Strike | Entry | Delta | Premium at target | Premium at stop | Option R:R | Result |
 |---|---|---|---|---|---|---|
-| 24,950 ITM | 224.7 | 0.70 | 295.1 | 198.6 | 2.69 | pass |
+| 24,950 ITM | 224.7 | 0.70 | 295.1 | 198.6 | 2.69 | pass (1 lot) |
 | 25,050 ITM | 161.1 | 0.58 | 219.7 | 138.3 | 2.56 | **recommended** (delta nearest 0.55) |
-| 25,100 ATM | 133.9 | 0.52 | 186.2 | 112.9 | 2.50 | pass |
+| 25,100 ATM | 133.9 | 0.52 | 186.2 | 112.9 | 2.50 | pass (1 lot) |
 | 25,200 OTM | 88.7 | 0.40 | 128.4 | 71.9 | 2.37 | fails theta/delta gates |
 Notice the underlying R:R of 3.33 shrank to about 2.5 on the option, and OTM options lose their edge because theta takes a larger share of a small premium.
-A 10-day swing example (target 25,350, stop 25,000, 2-day hold) fails the sizing gate at Rs 2,00,000-3,00,000 capital because a 100-point stop costs more than the 1% budget per lot. That is the correct output: tighten the stop, use a spread, or skip.
+A 10-day swing example (target 25,350, stop 25,000, 2-day hold) fails the sizing gate at the Rs 20,000 deployment cap because a 100-point stop costs more than the Rs 4,000 risk budget per lot. That is the correct output: tighten the stop, use a spread, or skip.
 
 ## 10. Model limits (state these when relevant)
 Flat-IV Black-Scholes ignores skew, intraday IV changes and gap risk. Probabilities are approximations. VIX describes Nifty only; use the stock's or Bank Nifty's own IV for those. Index options are European-style; stock options in India are physically settled, so check rules near expiry. Results are only as good as the inputs; prefer live chain premiums, and re-run when spot or VIX moves materially. Educational output, not financial advice.

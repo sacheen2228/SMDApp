@@ -17,6 +17,7 @@ import { releaseTradeLock } from "../active-trade-lock";
 import { recordSignalOutcome } from "@/lib/agents/reputation";
 import { getCurrentSession } from "../market-session";
 import { planSide, planPnlPoints } from "../activeTradeTracker";
+import { GATE_CONFIG } from "../agent-brain-gate";
 
 // ── Paper hit detection (side-aware) ─────────────────────────────────────
 //
@@ -98,13 +99,13 @@ export interface PaperWorkerConfig {
   maxOpenPaperTrades: number;          // default 5
   maxHoldingMinutes: number;           // default 390
   paperSlippageBps: number;            // default 5
-  startingCapital: number;             // default 100000
+  startingCapital: number;             // default 25000 (the real account)
   noTradeObservationWindowMs: number;  // default 60min
   instruments: string[];               // default NSE indices
   sendTelegram: boolean;               // default true
 }
 
-const DEFAULT_CONFIG: PaperWorkerConfig = {
+export const DEFAULT_PAPER_WORKER_CONFIG: PaperWorkerConfig = {
   enabled: true,
   signalEvaluationIntervalMs: 30_000,
   tradeMonitoringIntervalMs: 5_000,
@@ -113,7 +114,11 @@ const DEFAULT_CONFIG: PaperWorkerConfig = {
   maxOpenPaperTrades: 5,
   maxHoldingMinutes: 390,
   paperSlippageBps: 5,
-  startingCapital: 100_000,
+  // THE PAPER ACCOUNT MIRRORS THE REAL ONE (2026-10-20): ₹25,000, not ₹1,00,000.
+  // A paper account ten times bigger than the live one makes the paper results
+  // say nothing about the real book (the position sizing and the drawdown are
+  // measured against this number).
+  startingCapital: GATE_CONFIG.capital,
   noTradeObservationWindowMs: 60 * 60_000,
   instruments: ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"],
   sendTelegram: true,
@@ -194,9 +199,9 @@ async function upsertAccount(data: {
   } else {
     await prisma.hermesPaperAccount.create({
       data: {
-        startingCapital: DEFAULT_CONFIG.startingCapital,
-        currentCapital: DEFAULT_CONFIG.startingCapital,
-        availableCapital: DEFAULT_CONFIG.startingCapital,
+        startingCapital: DEFAULT_PAPER_WORKER_CONFIG.startingCapital,
+        currentCapital: DEFAULT_PAPER_WORKER_CONFIG.startingCapital,
+        availableCapital: DEFAULT_PAPER_WORKER_CONFIG.startingCapital,
         ...data,
       },
     });
@@ -216,7 +221,7 @@ class PaperWorkerSingleton {
   private performance = new PaperPerformanceEngine();
 
   constructor(config: Partial<PaperWorkerConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = { ...DEFAULT_PAPER_WORKER_CONFIG, ...config };
     this.state = {
       status: "STOPPED",
       lastSignalEvaluation: null,
@@ -775,7 +780,16 @@ class PaperWorkerSingleton {
     }
 
     // Update account
-    const capital = 100_000; // TODO: load from account
+    // NOTE: this is the PAPER ACCOUNT equity (a separate account-equity
+    // boundary for the paper ledger), NOT the per-trade risk base. The
+    // per-trade model lives in GATE_CONFIG/positionSize(): risk = 20% of the
+    // amount DEPLOYED, ≤ ₹20,000 deployed per trade. The paper worker never
+    // sizes a position from this number — the quantity comes from the
+    // upstream candidate (candidate.quantity) and its risk from
+    // candidate.riskAmount.
+    // THE PAPER ACCOUNT = the real account (₹25,000) — the paper equity curve
+    // must mirror the live one, otherwise the paper results prove nothing.
+    const capital = GATE_CONFIG.capital;
     await upsertAccount({
       currentCapital: capital + netPnl,
       realizedPnL: netPnl,
@@ -1027,8 +1041,8 @@ export async function getPaperEngineData() {
     closedTrades,
     noTradeObservations: noTradeObs,
     account: account || {
-      startingCapital: DEFAULT_CONFIG.startingCapital,
-      currentCapital: DEFAULT_CONFIG.startingCapital,
+      startingCapital: DEFAULT_PAPER_WORKER_CONFIG.startingCapital,
+      currentCapital: DEFAULT_PAPER_WORKER_CONFIG.startingCapital,
       realizedPnL: 0,
       totalSignals: 0,
       totalTrades: 0,

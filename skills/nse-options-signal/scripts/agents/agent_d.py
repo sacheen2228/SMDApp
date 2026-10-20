@@ -98,7 +98,8 @@ def run(task):
     equity = task.get("account_equity")
     record = gex_engine.run(gex_snap, history, now, task.get("gex_out_path"),
                             account_equity=equity, risk_pct=task.get("risk_pct"),
-                            max_lots=task.get("max_lots"))
+                            max_lots=task.get("max_lots"),
+                            trade_budget=task.get("trade_budget"))
 
     # ---- schema validation (fail closed)
     schema = _schema()

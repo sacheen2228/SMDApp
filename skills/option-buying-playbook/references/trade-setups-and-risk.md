@@ -25,15 +25,19 @@
 ## Minimum reward:risk 1:2. Skip if the next level is too close.
 
 ## Sizing
-Position size (lots) = (Capital x risk%) / (premium stop per lot).
-Example: capital Rs 2,00,000, risk 1% = Rs 2,000. Stop of Rs 40/unit on a 75-unit lot = Rs 3,000/lot -> cannot take even one lot at 1%. Tighten the setup or use a cheaper instrument; do not over-risk. (Always verify the current lot size with the exchange/broker.)
+The per-trade model (mirrors `GATE_CONFIG` in `src/lib/agent-brain-gate.ts` and `scripts/capital_model.py`):
+- deployed budget = min(trade budget, capital) = min(Rs 20,000, Rs 25,000) = Rs 20,000 — the rupee amount put into this trade.
+- risk budget = 20% of the deployed amount = Rs 4,000 (the risk is a rupee amount, not a % of a large account).
+- risk per lot = (entry - premium at stop) x lot size; premium outlay per lot = entry x lot size.
+- lots = min(floor(risk budget / (risk per lot + costs)), floor(deployed budget / (premium outlay per lot + costs)), strategy cap) — floor only, never round up.
+Example: NIFTY lot 65, entry Rs 202.52, premium stop Rs 145.38 -> risk Rs 3,714/lot (1 lot fits the Rs 4,000 risk budget) and the premium outlay is Rs 13,164/lot (1 lot fits the Rs 20,000 deployment budget) -> 1 lot. At lot 200 the premium outlay would be Rs 40,504, which does not fit the deployment budget -> 0 lots. Tighten the setup or use a cheaper instrument; do not over-risk. (Always verify the current lot size with the exchange/broker.)
 
 ## Hedge option
 When VIX is elevated, expiry is near, or one naked lot exceeds the risk budget, convert the buy into a debit spread (see `references/hedging-strategies.md`).
 
 ## Management
 - Book 50% at 1R-1.5R, move stop to cost, trail rest by structure (higher lows for calls, lower highs for puts).
-- Daily loss limit: stop after 2-3 losses or 2-3% of capital.
+- Daily loss limit: with 20% risk per trade, one stop = 20% of the account — allow two losses, then stop.
 - Never average down.
 
 ## Worked example (hypothetical)

@@ -68,5 +68,5 @@ Morning: price tends to gravitate to max pain/heavy-OI strike; only S1/S3 with s
 ## Trade management (all strategies)
 - SL is placed on the UNDERLYING level that invalidates the idea, converted to a premium value; if that SL is > 30% of premium, reduce size or skip.
 - TP1 book 50% + SL to cost; trail the rest. Time stop 45 minutes if < +10%.
-- No limit on the number of losing trades per day; each new trade must still pass all gates and confluence checks. Daily loss cap (3% of capital) still applies.
+- No limit on the number of losing trades per day; each new trade must still pass all gates and confluence checks. Daily loss cap (40% of the validated capital, the app's `GATE_CONFIG.maxDailyLossPct`) still applies.
 - Log every trade: strategy, levels, score, entry, SL, TP, exit reason, slippage. Review weekly; disable any strategy with negative expectancy over 30+ trades.

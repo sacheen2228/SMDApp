@@ -57,6 +57,16 @@ import {
 } from './market-session';
 import { getLotSizeStrict } from './symbol-config';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
+// THE house plan + the ONE sizing model (2026-10-20):
+//   option-plan.ts  → the stop is a RUPEE risk (20% of the amount DEPLOYED) and the
+//                     targets are 2R / 3R / 4R of it.
+//   agent-brain-gate.ts → GATE_CONFIG (capital ₹25,000, ₹20,000 deployed per trade,
+//                     20% of the deployed amount at risk) + positionSize().
+// The old code here hardcoded "capital ₹1,00,000 × 1% risk" and a ±15% stop with a
+// 1:1 R:R — it produced 0 lots on every NIFTY contract and taught a dead rule.
+import { buildOptionPlan, PLAN_CONFIG, type OptionPlan } from './option-plan';
+import { GATE_CONFIG, positionSize } from './agent-brain-gate';
+import { RISK_LIMITS } from './risk-management';
 
 // ─── Constants ────────────────────────────────────────────────────
 // Lot sizes now come from src/lib/symbol-config.ts (single source of
@@ -69,11 +79,13 @@ const DEFAULT_RISK_STATE: RiskState = {
   monthlyPnL: 0,
   openPositions: 0,
   canTrade: true,
-  maxDailyLoss: 50000,
-  maxWeeklyLoss: 100000,
-  maxMonthlyLoss: 200000,
+  // The caps are the house caps (₹8,000 / ₹16,000 / ₹25,000 — see RISK_LIMITS):
+  // two stops ends the day, the MONTHLY cap is the account itself (never more).
+  maxDailyLoss: RISK_LIMITS.maxDailyLoss,
+  maxWeeklyLoss: RISK_LIMITS.maxWeeklyLoss,
+  maxMonthlyLoss: RISK_LIMITS.maxMonthlyLoss,
   maxPositionSize: 10,
-  maxConcurrentTrades: 3,
+  maxConcurrentTrades: RISK_LIMITS.maxConcurrentTrades,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -444,14 +456,11 @@ function selectStrike(
       const otmLeg = isCall ? otm.ce : otm.pe;
       if (!otmLeg || otmLeg.ltp <= 0) continue;
       const otmEntry = otmLeg.ltp;
-      const otmSL = otmEntry * 0.85;
-      const otmTP2 = otmEntry * 1.50;
-      const otmRR = otmEntry > otmSL ? (otmTP2 - otmEntry) / (otmEntry - otmSL) : 0;
+      // The house geometry: a rupee-risk stop (20% of the premium) and the 2R target.
+      const otmRR = houseRR(otmEntry, isCall);
       const atmLeg = isCall ? atm.ce : atm.pe;
       const atmEntry = atmLeg?.ltp || 0;
-      const atmSL = atmEntry * 0.85;
-      const atmTP2 = atmEntry * 1.50;
-      const atmRR = atmEntry > atmSL ? (atmTP2 - atmEntry) / (atmEntry - atmSL) : 0;
+      const atmRR = houseRR(atmEntry, isCall);
 
       if (otmRR > atmRR * 1.3 && otmEntry > 5) {
         selectedStrike = otm.strike;
@@ -464,46 +473,71 @@ function selectStrike(
   return { strike: selectedStrike, strikeType };
 }
 
-// ─── Entry / SL / Targets from Premium + ATR ─────────────────────
+// ─── Entry / SL / Targets — THE HOUSE PLAN ────────────────────────
+//
+/** The R:R of the house plan for one premium (TP1 = 2R of the rupee-risk stop). */
+export function houseRR(entry: number, isCall: boolean): number {
+  if (!(entry > 0)) return 0;
+  const stopPct = PLAN_CONFIG.riskPctOfDeployed;
+  const riskPoints = Math.min(
+    entry * PLAN_CONFIG.maxStopPctOfPremium,
+    Math.max(entry * stopPct, PLAN_CONFIG.minStopTicks * PLAN_CONFIG.tickSize),
+  );
+  if (riskPoints >= entry) return 0;
+  if (PLAN_CONFIG.targetMultipliers[0] * riskPoints >= entry) return 0; // no reachable target
+  return PLAN_CONFIG.targetMultipliers[0];
+}
+//
+// ONE plan builder (src/lib/option-plan.ts): the stop is a RUPEE risk (20% of the
+// amount DEPLOYED) and the targets are 2R / 3R / 4R of it.
+//
+// The old levels here were a private model: an ATR stop capped at 25% of the premium
+// with TP1/TP2/TP3 at 1.5R / 2.5R / 4R. Two R ladders in one app is how the ledger
+// ended up with a 21-24% win rate on a 1:1 plan and 64% on a 1:3.2 plan.
 
-function computeTradeLevels(
-  entry: number,
-  atr: number,
-  spot: number,
-  sellerSLResult: SellerSLResult,
-  isCall: boolean,
-  isExpiryDay: boolean,
-  currentWindow: ExpiryWindow,
-  vix: number
-): { sl: number; tp1: number; tp2: number; tp3: number } {
-  if (entry <= 0) return { sl: 0, tp1: 0, tp2: 0, tp3: 0 };
+export interface HouseLevels {
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  plan: OptionPlan | null;
+  /** why there is no trade (the plan could not be built) */
+  error: string;
+}
 
-  // ATR-based SL distance (1.5 ATR for premium)
-  const atrSL = atr > 0 ? atr * 1.5 : entry * 0.15;
-
-  // Seller SL proximity bonus — if seller SL is close, tighter SL
-  let slDist = atrSL;
-  const nearestSL = isCall ? sellerSLResult.nearestCESL : sellerSLResult.nearestPESL;
-  if (nearestSL) {
-    const sellerDist = Math.abs(nearestSL.level - spot);
-    if (sellerDist > 0 && sellerDist < atr * 3) {
-      slDist = Math.min(atrSL, sellerDist * 0.3);
-    }
+/**
+ * The house plan for one option leg.
+ * `lotSize` is the REAL contract lot when it is known; 1 (per-unit math) otherwise —
+ * the geometry (a % of the premium) is identical either way, only the ₹ amounts
+ * need the real lot.
+ */
+export function buildHouseLevels(input: {
+  entry: number;
+  isCall: boolean;
+  symbol: string;
+  lotSize: number;
+  deployedAmount?: number;
+}): HouseLevels {
+  const empty: HouseLevels = { sl: 0, tp1: 0, tp2: 0, tp3: 0, plan: null, error: "" };
+  const entry = Number(input.entry);
+  if (!(entry > 0)) {
+    return { ...empty, error: "no premium for the selected leg" };
   }
-
-  // Floor SL at 5% of premium, cap at 25%
-  const slPctMin = entry * 0.05;
-  const slPctMax = entry * 0.25;
-  slDist = Math.max(slPctMin, Math.min(slPctMax, slDist));
-
-  const sl = entry - slDist;
-
-  // Targets: T1=1.5R, T2=2.5R, T3=4R
-  const tp1 = entry + slDist * 1.5;
-  const tp2 = entry + slDist * 2.5;
-  const tp3 = entry + slDist * 4.0;
-
-  return { sl, tp1, tp2, tp3 };
+  const plan = buildOptionPlan({
+    symbol: input.symbol,
+    optionType: input.isCall ? "CE" : "PE",
+    entryPremium: entry,
+    lotSize: input.lotSize > 0 ? input.lotSize : 1,
+    deployedAmount: input.deployedAmount ?? Math.min(GATE_CONFIG.tradeBudget, GATE_CONFIG.capital),
+  });
+  if (!plan) {
+    return {
+      ...empty,
+      error: `no valid option plan for ₹${entry.toFixed(2)} — the stop or the targets do not fit inside the premium`,
+    };
+  }
+  const [tp1, tp2, tp3] = [plan.targets[0] ?? 0, plan.targets[1] ?? plan.targets[0] ?? 0, plan.targets[2] ?? plan.targets[1] ?? plan.targets[0] ?? 0];
+  return { sl: plan.stopLoss, tp1, tp2, tp3, plan, error: "" };
 }
 
 // ─── SDMScores Bridge (maps V2 module outputs to legacy shape) ────
@@ -866,8 +900,15 @@ export async function generateTradeRecommendation(
   const tempEntry = overrideDirection === 'PUT'
     ? (atmStrikeData?.pe?.ltp || atmStrikeData?.ce?.ltp || 0)
     : (atmStrikeData?.ce?.ltp || atmStrikeData?.pe?.ltp || 0);
-  const tempSL = tempEntry * 0.85;
-  const tempTP1 = tempEntry * 1.15;
+  // The house plan (rupee-risk stop, 2R/3R/4R targets) — never the old ±15% 1:1.
+  const tempLevels = buildHouseLevels({
+    entry: tempEntry,
+    isCall: tempDirection === 'CALL',
+    symbol,
+    lotSize: lot ?? 1,
+  });
+  const tempSL = tempLevels.sl;
+  const tempTP1 = tempLevels.tp1;
 
   const qualityInput = {
     spot,
@@ -935,7 +976,12 @@ export async function generateTradeRecommendation(
   const selectedData = optionChain.find((s) => s.strike === selectedStrike);
   const isCallDir = preliminaryDirection === 'CALL';
   const entryPrice = isCallDir ? (selectedData?.ce?.ltp || 0) : (selectedData?.pe?.ltp || 0);
-  const tradeLevels = computeTradeLevels(entryPrice, atr, spot, sellerSLResult, isCallDir, isExpiryDay, currentWindow, vixNum ?? 0);
+  const tradeLevels = buildHouseLevels({
+    entry: entryPrice,
+    isCall: isCallDir,
+    symbol,
+    lotSize: lot ?? 1,
+  });
 
   const fullQualityInput: QualityScoreInput = {
     spot,
@@ -955,6 +1001,20 @@ export async function generateTradeRecommendation(
     target1: tradeLevels.tp1,
   };
   const qualityScore = computeQualityScore(fullQualityInput);
+
+  // FAIL CLOSED: no house plan → no trade. The old code fell back to a ±15%
+  // stop with a 1:1 target (R:R 1:1 needs >50% win-rate before costs).
+  if (tradeLevels.error) {
+    return buildWAITRecommendation(
+      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
+      currentWindow, timeInMinutes, currentTime, vixNum ?? null, source, lastUpdate,
+      lot, healthReport,
+      tradeLevels.error,
+      'NO_TRADE',
+      qualityScore, sellerSLResult, gexResult, marketStructure, consensus,
+      volumeAnalysis, oiAnalysis, atr
+    );
+  }
 
   if (qualityScore.overall < 50) {
     return buildWAITRecommendation(
@@ -1002,10 +1062,25 @@ export async function generateTradeRecommendation(
     : (finalSelectedData?.pe?.ltp || 0);
 
   // ── Step 8: Entry / SL / Targets ───────────────────────────────
-  const finalLevels = computeTradeLevels(
-    finalEntry, atr, spot, sellerSLResult, finalIsCall,
-    isExpiryDay, currentWindow, vixNum ?? 0
-  );
+  const finalLevels = buildHouseLevels({
+    entry: finalEntry,
+    isCall: finalIsCall,
+    symbol,
+    lotSize: lot ?? 1,
+  });
+
+  // FAIL CLOSED: the final leg has no house plan → no trade (never a ±15% fallback).
+  if (finalLevels.error) {
+    return buildWAITRecommendation(
+      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
+      currentWindow, timeInMinutes, currentTime, vixNum ?? null, source, lastUpdate,
+      lot, healthReport,
+      finalLevels.error,
+      'NO_TRADE',
+      qualityScore, sellerSLResult, gexResult, marketStructure, consensus,
+      volumeAnalysis, oiAnalysis, atr
+    );
+  }
 
   // ── Step 9: Smart Entry ────────────────────────────────────────
   let smartEntryResult: SmartEntryResult;
@@ -1038,38 +1113,49 @@ export async function generateTradeRecommendation(
     status: gexResult.status === 'OK' && marketStructure.status === 'OK' ? 'OK' : 'DEGRADED',
   };
 
-  // ── Step 11: Position Sizing (session-adjusted + vega-aware) ─────
+  // ── Step 11: Position Sizing — THE PER-TRADE MODEL ─────────────
+  //   deployed  = the ₹ committed to THIS trade   (≤ ₹20,000)
+  //   risk      = 20% of the amount DEPLOYED      (₹10,000 deployed → ₹2,000)
+  //   lots      = min(risk-limited, affordable from the deployment cap)
+  //
+  // The old block sized on "₹1,00,000 × 1%" and a "5% of capital" notional cap:
+  // both made every NIFTY contract 0 lots (₹1,000 risk vs a ₹1,656 risk/lot),
+  // so the dashboard said "0 lots" on every single recommendation.
   const session = getCurrentSession();
-  const capital = 100000;  // TODO: make configurable from user settings
-  const riskPercent = 0.01; // 1% risk per trade
-  let riskAmount = capital * riskPercent;
-  const sessionMultiplier = getPositionSizeMultiplier(session);
-  riskAmount *= sessionMultiplier;
+  const capital = GATE_CONFIG.capital;                  // ₹25,000 — the real account
+  const baseBudget = Math.min(GATE_CONFIG.tradeBudget, capital); // ₹20,000 deployed
 
-  // Vega-aware reduction: when VIX > 20 (elevated IV), cut size by 40%
-  // because options are expensive and IV crush risk is higher.
+  // A 0 multiplier means "this session does not allow new positions" — that is a
+  // TIMING gate (isTradeAllowed below), not a size. The model size stays visible.
+  const sessionMultiplier = getPositionSizeMultiplier(session) || 1;
+
+  // Vega-aware reduction: when VIX > 20 (elevated IV), commit less money because
+  // options are expensive and the IV-crush risk is higher.
   // An UNKNOWN VIX (no feed) is NOT "VIX 0" — it gets no vega adjustment.
-  if (vixNum !== null && vixNum > 20) {
-    const vixRatio = Math.min(vixNum / 14, 3); // 14 = long-term VIX median
-    riskAmount *= Math.max(1 - (vixRatio - 1) * 0.4, 0.4);
-  }
+  const vegaFactor = (vixNum !== null && vixNum > 20)
+    ? Math.max(1 - (Math.min(vixNum / 14, 3) - 1) * 0.4, 0.4)
+    : 1;
+  const deployedBudget = Math.floor(baseBudget * sessionMultiplier * vegaFactor);
 
   // The ₹ sizing needs the REAL lot. With an unknown lot size there is NO
   // ₹ risk and NO position size (a per-unit number would be a fiction).
-  const riskPerLot = lot !== null && finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lot : 0;
-  const lots = lot !== null && riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
-
-  // Notional-aware position cap: max 5% of capital in notional exposure
-  const notionalPerLot = lot !== null ? finalEntry * lot : 0;
-  const notionalCapLots = notionalPerLot > 0 ? Math.floor(capital * 0.05 / notionalPerLot) : 0;
-  const clampedLots = lot !== null ? Math.min(lots, notionalCapLots, 10) : 0;
+  const ps = lot !== null
+    ? positionSize({ capital, entry: finalEntry, sl: finalLevels.sl, lotSize: lot })
+    : null;
+  const riskPerLot = ps && ps.riskPerLot > 0 ? ps.riskPerLot : 0;
+  // The deployment cap is the budget (₹20,000), NOT a % of the account.
+  const affordableLots = lot !== null && finalEntry > 0
+    ? Math.floor(deployedBudget / (finalEntry * lot))
+    : 0;
+  const clampedLots = ps ? Math.max(0, Math.min(ps.lots, affordableLots)) : 0;
 
   const positionSizing: PositionSizing = {
     lots: clampedLots,
     quantity: clampedLots * lotSize,
-    riskAmount: riskAmount,
+    // the REAL rupee risk: the premium committed × 20%, capped by the stop distance
+    riskAmount: clampedLots * riskPerLot,
     positionValue: finalEntry * clampedLots * lotSize,
-    maxLoss: riskPerLot * clampedLots,
+    maxLoss: clampedLots * riskPerLot,
   };
 
   // ── Step 12: Build Recommendation ──────────────────────────────
@@ -1590,8 +1676,15 @@ function generateRecommendationSync(
   const tempIsCall = direction === 'CALL' || direction === 'SELL_CALL';
   const tempStrike = findATMStrike(optionChain, spot);
   const tempEntry = tempIsCall ? (tempStrike?.ce?.ltp || 0) : (tempStrike?.pe?.ltp || 0);
-  const tempSL = tempEntry * 0.85;
-  const tempTP1 = tempEntry * 1.15;
+  // The house plan (rupee-risk stop, 2R/3R/4R targets) — never the old ±15% 1:1.
+  const tempLevels = buildHouseLevels({
+    entry: tempEntry,
+    isCall: tempIsCall,
+    symbol,
+    lotSize: lot ?? 1,
+  });
+  const tempSL = tempLevels.sl;
+  const tempTP1 = tempLevels.tp1;
 
   const qualityInput: QualityScoreInput = {
     // 0 = the VIX is UNKNOWN (never a fabricated 15) — the volatility factor
@@ -1625,7 +1718,25 @@ function generateRecommendationSync(
   const finalData = optionChain.find((s) => s.strike === finalStrike);
   const finalEntry = finalIsCall ? (finalData?.ce?.ltp || 0) : (finalData?.pe?.ltp || 0);
 
-  const finalLevels = computeTradeLevels(finalEntry, atr, spot, sellerSLResult, finalIsCall, isExpiryDay, currentWindow, vixNum ?? 0);
+  const finalLevels = buildHouseLevels({
+    entry: finalEntry,
+    isCall: finalIsCall,
+    symbol,
+    lotSize: lot ?? 1,
+  });
+
+  // FAIL CLOSED: no house plan → no trade (never a ±15% / 1:1 fallback).
+  if (finalLevels.error) {
+    return buildWAITRecommendation(
+      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
+      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
+      lot, healthReport,
+      finalLevels.error,
+      'NO_TRADE',
+      qualityScore, sellerSLResult, gexResult, undefined,
+      undefined, undefined, oiAnalysis, atr
+    );
+  }
 
   // Confidence
   const confidence = clamp(Math.round(qualityScore.overall * 0.6 + dirResult.confidence * 0.4), 0, 100);
@@ -1651,18 +1762,31 @@ function generateRecommendationSync(
     );
   }
 
-  // Position sizing
-  const capital = 100000;
-  const riskAmount = capital * 0.01;
+  // Position sizing — THE PER-TRADE MODEL (₹20,000 deployed, 20% of it at risk)
+  const capital = GATE_CONFIG.capital;                     // ₹25,000 — the real account
+  const baseBudget = Math.min(GATE_CONFIG.tradeBudget, capital);
+  const sessionMultiplier = getPositionSizeMultiplier(getCurrentSession()) || 1;
+  const vegaFactor = (vixNum !== null && vixNum > 20)
+    ? Math.max(1 - (Math.min(vixNum / 14, 3) - 1) * 0.4, 0.4)
+    : 1;
+  const deployedBudget = Math.floor(baseBudget * sessionMultiplier * vegaFactor);
+
   // No ₹ sizing without the REAL lot (an unknown lot ⇒ no ₹ amount).
-  const riskPerLot = lot !== null && finalEntry > 0 ? Math.abs(finalEntry - finalLevels.sl) * lot : 0;
-  const lots = lot !== null && riskPerLot > 0 ? Math.floor(riskAmount / riskPerLot) : 0;
-  const clampedLots = lot !== null ? Math.min(lots, 10) : 0;
+  const ps = lot !== null
+    ? positionSize({ capital, entry: finalEntry, sl: finalLevels.sl, lotSize: lot })
+    : null;
+  const riskPerLot = ps && ps.riskPerLot > 0 ? ps.riskPerLot : 0;
+  const affordableLots = lot !== null && finalEntry > 0
+    ? Math.floor(deployedBudget / (finalEntry * lot))
+    : 0;
+  const clampedLots = ps ? Math.max(0, Math.min(ps.lots, affordableLots)) : 0;
 
   const positionSizing: PositionSizing = {
-    lots: clampedLots, quantity: clampedLots * lotSize, riskAmount,
+    lots: clampedLots,
+    quantity: clampedLots * lotSize,
+    riskAmount: clampedLots * riskPerLot,
     positionValue: finalEntry * clampedLots * lotSize,
-    maxLoss: riskPerLot * clampedLots,
+    maxLoss: clampedLots * riskPerLot,
   };
 
   const riskReward = finalEntry > finalLevels.sl && finalEntry > 0

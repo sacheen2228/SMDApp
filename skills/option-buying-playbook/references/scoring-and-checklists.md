@@ -22,7 +22,7 @@
 4. Price at a level with OI support (writing or unwinding)?
 5. Candle confirmation present?
 6. Strike selector passes (option R:R, theta cost, break-even, lots >= 1) and VIX regime acceptable?
-7. Stop on the underlying, reward:risk >= 1:2, risk <= 1%?
+7. Stop on the underlying, reward:risk >= 1:2, risk = 20% of the amount deployed (Rs 20,000-30,000 per trade)?
 8. No major event or expiry distortion nearby?
 
 ## Worked flow example (hypothetical)

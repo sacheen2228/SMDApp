@@ -150,7 +150,9 @@ function formatIndexOptionMessage(opt: IndexOption, rank: number): string {
 // GUARD: the chain premium must be a PREMIUM. A row priced on the strike
 // scale (the underlying price used as a premium) is a contract that does not
 // exist — it would be monitored forever with no LTP.
-function buildIndexOptionPlan(
+//
+// Exported so the 0-lot bail can be asserted offline (no network).
+export function buildIndexOptionPlan(
   symbol: string,
   optionType: "CE" | "PE",
   premium: number,
@@ -167,6 +169,14 @@ function buildIndexOptionPlan(
   });
   if (!plan) {
     console.warn(`[MorningScan] skip ${symbol} ${optionType} strike ${strike} — no valid option plan`);
+    return null;
+  }
+  // 0 lots = the contract does not fit the per-trade deployment budget →
+  // NO TRADE (no alert, no tracker row). Never size it up to 1 lot.
+  if (plan.lots < 1) {
+    console.warn(
+      `[MorningScan] skip ${symbol} ${optionType} strike ${strike} — 0 lots (${plan.notes.join("; ")})`
+    );
     return null;
   }
 

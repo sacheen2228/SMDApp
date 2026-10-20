@@ -48,3 +48,17 @@
 #                    holiday list (data/holidays.json, refreshed by the Sunday job)
 #   * exit codes   - a job is NEVER successful just because the process exited:
 #                    a non-zero exit (or a timeout) is a failure and is logged
+#
+# THE SIZING PARAMETERS (every job that can size a trade)
+#   The per-trade capital model (references/agent-rules.md 7.1):
+#     deployed budget = min(tradeBudget, the validated account equity)
+#     risk budget     = riskPctOfTrade% of the amount deployed in the trade
+#     lots            = min(risk-limited, affordable, strategy cap), never UP
+#   The defaults live in scripts/option_math.py (CFG["trade_budget"] = 20000,
+#   CFG["risk_pct_of_trade"] = 20) and are overridden per run with:
+#     --trade-budget Rs        the Rs that may be DEPLOYED in one trade
+#     --risk-pct %             the rupee risk as a % of the DEPLOYED amount
+#   The account equity is NEVER a flag: it comes from the validated source
+#   (data/account_equity.json or --account-equity-from-api).  The gex-engine job
+#   runs scripts/run_gex.py, which passes both flags straight through to
+#   scripts/gex_engine.py; the orchestrator takes the same flags.

@@ -1,6 +1,14 @@
 // ─── Buy-Only Hedge Builder Engine ──────────────────────────────
 // Decision-support tool — NOT investment advice.
 // All thresholds are tunable constants at the top.
+//
+// The `capital` this engine works with is the ₹ DEPLOYED in the trade (the
+// per-trade budget, GATE_CONFIG.tradeBudget), split between the primary leg
+// and the hedge. It is a DEPLOYMENT budget, not a risk budget — the rupee
+// risk rule (20% of the amount deployed) is enforced by the shared
+// positionSize() in src/lib/agent-brain-gate.ts.
+
+import { GATE_CONFIG } from "./agent-brain-gate";
 
 // ═══════════════════════════════════════════════════════════════════
 // TUNABLE CONSTANTS
@@ -179,7 +187,9 @@ export function buildFullTradePlan(params: {
   const {
     chainData, spot, primaryStrike, primarySide,
     primaryIv, primaryDelta, primaryPremium, primaryOi,
-    symbol, capital = 20000,
+    // `capital` is the ₹ DEPLOYED in this trade (the per-trade budget), split
+    // 75/25 between the primary leg and the hedge — it is NOT a risk base.
+    symbol, capital = GATE_CONFIG.tradeBudget,
     primaryLotsOverride, hedgeLotsOverride,
   } = params;
 

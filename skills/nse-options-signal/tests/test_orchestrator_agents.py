@@ -451,7 +451,8 @@ class TestAgentE(Harness):
                 "blocking_level": F.RESISTANCE,
                 "account_equity": 500_000,
                 "account_equity_source": "test fixture",
-                "risk_pct": 1.0}
+                "risk_pct": option_math.CFG["risk_pct_of_trade"],
+                "trade_budget": option_math.CFG["trade_budget"]}
         task.update(extra)
         return task
 
@@ -508,12 +509,19 @@ class TestAgentE(Harness):
         res = agent_e.run(self.task(gex_snapshot=snap))
         self.assertIn("NO_LIQUID_STRIKE", gates_of(res))
 
-    def test_premium_stop_is_between_25_and_30_percent(self):
+    def test_the_stop_is_the_rupee_risk_stop(self):
+        # the stop is riskPctOfTrade% of the entry premium (the rupee risk on
+        # the deployed amount), floored at the tick noise floor and never
+        # beyond the underlying invalidation
         res = agent_e.run(self.task())
-        stop_pct = (res["trade"]["entry_zone"][0] - res["trade"]["stop_loss_premium"]) / \
-            res["trade"]["entry_zone"][0] * 100
-        self.assertGreaterEqual(stop_pct, 24.0)
-        self.assertLessEqual(stop_pct, 30.5)
+        entry = res["trade"]["entry_premium"]
+        stop_pct = (entry - res["trade"]["stop_loss_premium"]) / entry * 100
+        rupee_pct = option_math.CFG["risk_pct_of_trade"]
+        self.assertLessEqual(stop_pct, rupee_pct + 0.6)
+        self.assertGreaterEqual(stop_pct, rupee_pct - 0.6)
+        self.assertLessEqual(stop_pct, option_math.CFG["stop_pct_max"] * 100 + 0.6)
+        # the rupee risk never grows: the actual risk is <= the risk budget
+        self.assertLessEqual(res["trade"]["risk_inr"], res["trade"]["risk_budget_inr"] + 1e-6)
 
     def test_rr_tp1_is_at_least_two(self):
         res = agent_e.run(self.task())
@@ -522,12 +530,12 @@ class TestAgentE(Harness):
     def test_tp2_outside_the_expected_move_is_rejected(self):
         snap = self.gex_snapshot()
         # a small ATM straddle -> a small expected move; the 3R target then
-        # lands outside it while the premium stop still fits 25-30%
+        # lands outside it while the premium stop still fits the rupee budget
         for row in snap["expiries"][0]["chain"]:
             if row["strike"] == 25_050.0:
-                row["put_ltp"] = 100.0
-                row["put_bid"] = 99.0
-                row["put_ask"] = 101.0
+                row["put_ltp"] = 40.0
+                row["put_bid"] = 39.0
+                row["put_ask"] = 41.0
         res = agent_e.run(self.task(gex_snapshot=snap, underlying_invalidation=24_960.0))
         self.assertIn("TP2_OUTSIDE_1SIGMA", gates_of(res))
 
@@ -557,26 +565,44 @@ class TestAgentE(Harness):
     def test_lots_are_never_rounded_up(self):
         res = agent_e.run(self.task())
         risk = res["trade"]["risk_inr"]
-        equity = 500_000
-        self.assertLessEqual(risk, equity * 0.01 + 1e-6)
+        deployed = res["trade"]["deployed_inr"]
+        # the rupee risk is riskPctOfTrade% of the amount DEPLOYED in the trade
+        # and the lot count is a floor - never rounded up
+        self.assertLessEqual(risk, deployed * option_math.CFG["risk_pct_of_trade"] / 100.0 + 1e-6)
+        self.assertEqual(res["trade"]["suggested_lots"],
+                         int(res["trade"]["suggested_lots"]))
+        self.assertGreaterEqual(res["trade"]["suggested_lots"], 1)
 
     def test_size_position_halves_above_vix_20(self):
-        full = option_math.size_position(50.0, 65, 210.0, 1_000_000, 1.0, vix=14.0)
-        high = option_math.size_position(50.0, 65, 210.0, 1_000_000, 1.0, vix=25.0)
+        # a cheap option so that several lots fit inside the deployment budget
+        full = option_math.size_position(30.0, 65, 150.0, 25_000.0, 20.0, vix=14.0)
+        high = option_math.size_position(30.0, 65, 150.0, 25_000.0, 20.0, vix=25.0)
+        self.assertGreaterEqual(full["lots"], 2)
         self.assertFalse(full["halved"])
         self.assertTrue(high["halved"])
         self.assertEqual(high["lots"], full["lots"] // 2)
 
     def test_vix_above_20_halves_the_size(self):
         snap = self.gex_snapshot()
-        # one eligible strike only, so the VIX cannot change the selection
+        snap["expiries"][0]["days_to_expiry"] = 14.0
+        # one eligible strike only, so the VIX cannot change the selection;
+        # a cheap enough premium that TWO lots fit the deployment budget
         for row in snap["expiries"][0]["chain"]:
-            if row["strike"] not in (25_000.0, 25_300.0):
+            if row["strike"] == 25_050.0:
+                row["call_oi"] = 9_000_000
+                row["call_ltp"] = 150.0
+                row["call_bid"] = 149.0
+                row["call_ask"] = 151.0
+                row["call_volume"] = 5000
+            else:
                 row["call_oi"] = 1
-        full = agent_e.run(self.task(gex_snapshot=snap, account_equity=2_000_000))
+                row["call_volume"] = 0
+        task = self.task(gex_snapshot=snap, underlying_invalidation=24_985.0)
+        full = agent_e.run(task)
         self.assertIsNotNone(full["trade"])
+        self.assertGreaterEqual(full["trade"]["suggested_lots"], 2)
         snap["vix"] = 25.0
-        halved = agent_e.run(self.task(gex_snapshot=snap, account_equity=2_000_000))
+        halved = agent_e.run(self.task(gex_snapshot=snap, underlying_invalidation=24_985.0))
         self.assertIsNotNone(halved["trade"])
         self.assertEqual(halved["trade"]["suggested_lots"], full["trade"]["suggested_lots"] // 2)
         self.assertEqual(halved["trade"]["size_note"], "halved (VIX > 20)")

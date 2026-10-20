@@ -12,6 +12,7 @@ import { logCandidate, calibrationBandFor } from "./candidate-log";
 import { cachedLayers } from "./tech-cache";
 import { structureLayer, triggerLayer } from "./tech-read";
 import { BRAIN_FLAGS } from "./brain-flags";
+import { checkSignalRiskLimits } from "./risk-state.server";
 
 /** Option R:R from the alert's own levels (never from a ledger field). */
 function rrOf(entry?: number, sl?: number, tp?: number, action?: string): number | null {
@@ -201,6 +202,44 @@ export async function sendTradeAlert(params: {
     vetoWarn = BRAIN_FLAGS.tiering
       ? `\n🏷 Tier ${veto.tier}: ${veto.reasons.join("; ")}`
       : `\n⚠ ${veto.reasons.join("; ")} — halve size`;
+  }
+
+  // DAY-LOSS + CONCURRENT-EXPOSURE GATE (2026-10-20).
+  // The scanner / Zero-Hero / master-bot / SDM paths all reach Telegram through
+  // this funnel, so this is where the loss caps and the consecutive-loss rule
+  // are enforced for EVERY producer — the same caps the agent's trade gate uses.
+  // FAIL CLOSED: an unreadable risk state blocks the signal.
+  const riskCheck = await checkSignalRiskLimits({
+    symbol: params.symbol,
+    entry: params.entry ?? null,
+    stopLoss: params.stopLoss ?? null,
+    nowMs: params.nowMs,
+  });
+  if (riskCheck.blocked) {
+    console.log(`[Telegram] RISK BLOCK ${params.symbol}: ${riskCheck.reasons.join("; ")}`);
+    void logCandidate({
+      source: params.source || "unknown",
+      symbol: params.symbol,
+      direction: params.action,
+      strike: params.strike,
+      expiry: params.expiry ?? null,
+      underlyingSpot: params.spot ?? null,
+      entryPremium: params.entry ?? null,
+      stopPremium: params.stopLoss ?? null,
+      targetPremium: params.target1 ?? null,
+      underlyingStop: params.underlyingStop ?? null,
+      underlyingTarget: params.underlyingTarget ?? null,
+      confidence: params.confidence,
+      calibratedConfidence: params.confidence,
+      rr: rrOf(params.entry, params.stopLoss, params.target1, params.action),
+      gateVerdict: "SKIP",
+      tier: "NONE",
+      warnings: riskCheck.reasons,
+      fails: riskCheck.reasons,
+      sent: false,
+      wouldBlock: true,
+    });
+    return false;
   }
 
   const sig = buildSignalSignature({

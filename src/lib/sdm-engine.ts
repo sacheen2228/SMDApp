@@ -1174,10 +1174,20 @@ export function runFullAnalysis(
         lotSize: getLotSizeStrict(chainSymbol) ?? 1,
       })
     : null;
-  const stopLoss = plan?.stopLoss ?? (entryPrice > 0 ? Math.round(entryPrice * 0.85) : 0);
-  const tp1 = plan?.targets[0] ?? (entryPrice > 0 ? Math.round(entryPrice * 1.15) : 0);
-  const tp2 = plan?.targets[1] ?? (entryPrice > 0 ? Math.round(entryPrice * 1.5) : 0);
-  const tp3 = plan?.targets[2] ?? (entryPrice > 0 ? Math.round(entryPrice * 2.0) : 0);
+
+  // FAIL CLOSED: no house plan → NO TRADE. The old code fell back to a ±15% stop
+  // with a 1.15 target (R:R 1:1) — a plan the ledger proves loses money.
+  const planError = entryPrice > 0 && !plan
+    ? `no valid option plan for ₹${entryPrice.toFixed(2)} — the stop or the targets do not fit inside the premium`
+    : "";
+  if (!plan) {
+    action = "WAIT";
+    direction = "NEUTRAL";
+  }
+  const stopLoss = plan?.stopLoss ?? 0;
+  const tp1 = plan?.targets[0] ?? 0;
+  const tp2 = plan?.targets[1] ?? plan?.targets[0] ?? 0;
+  const tp3 = plan?.targets[2] ?? plan?.targets[1] ?? plan?.targets[0] ?? 0;
 
   // Find highest CE/PE OI for gamma walls
   let maxCEOI = 0;
@@ -1252,12 +1262,16 @@ export function runFullAnalysis(
       },
       lateEntryWarning: daysToExpiry <= 1,
       stopLoss,
-      stopLossReason: `15% below entry — invalidate if spot crosses ${maxPain}`,
-      tp1Pct: 15,
+      // The house plan: the stop is a RUPEE risk (20% of the amount deployed) and
+      // the targets are 2R / 3R / 4R of it.
+      stopLossReason: plan
+        ? `rupee-risk stop ${plan.stopPctOfPremium ? (plan.stopPctOfPremium * 100).toFixed(0) : "20"}% below entry (${plan.riskPoints.toFixed(2)} pts = 1R) — invalidate if spot crosses ${maxPain}`
+        : planError || `no plan — invalidate if spot crosses ${maxPain}`,
+      tp1Pct: entryPrice > 0 && tp1 > 0 ? Math.round(((tp1 - entryPrice) / entryPrice) * 100) : 0,
       tp1,
-      tp2Pct: 50,
+      tp2Pct: entryPrice > 0 && tp2 > 0 ? Math.round(((tp2 - entryPrice) / entryPrice) * 100) : 0,
       tp2,
-      tp3Pct: 100,
+      tp3Pct: entryPrice > 0 && tp3 > 0 ? Math.round(((tp3 - entryPrice) / entryPrice) * 100) : 0,
       tp3,
       trailingTarget: confidence >= 65,
       reasons: [
@@ -1266,6 +1280,8 @@ export function runFullAnalysis(
         `Max Pain at ${maxPain}`,
         `ATM Strike: ${atmStrike}`,
         confidence >= 65 ? `High confidence (${confidence.toFixed(0)}%)` : "",
+        plan ? `House plan: stop ${plan.riskPoints.toFixed(2)} pts (1R), targets 2R/3R/4R` : "",
+        planError,
       ].filter(Boolean),
     },
     sdm: {

@@ -12,6 +12,14 @@ validates the record this engine produces - it never re-derives GEX.
 ADAPTATIONS to the original package (documented in references/agent-rules.md):
   * account equity is NEVER hardcoded: the engine takes a validated equity
     value (scripts/account_equity.py). Without it the engine returns NO_TRADE.
+    The equity is the CEILING of the deployment, never the risk base.
+  * the sizing follows the per-trade capital model (2026-10-20, the user's
+    rule "if I spend Rs 10,000 I take Rs 2,000 of risk"):
+      deployed budget = min(tradeBudget, validated equity)
+      risk budget     = riskPctOfTrade% x the deployed amount
+      lots            = min(risk-limited, affordable, strategy cap), never up
+    The engine's lot count is re-validated against the same rule
+    (scripts/option_math.cap_lots_to_budget) and may only be REDUCED.
   * option math (strike/stop/targets/sizing) moved to scripts/option_math.py
     so the GEX engine and Agent E cannot drift apart.
   * extra gates: >= 3 history snapshots, unknown lot size, missing / invalid /
@@ -51,7 +59,6 @@ CFG = {
     "cooldown_min": 30,
     "next_expiry_weight": 0.3,
     "min_history": 3,
-    "risk_pct": 1.0,
 }
 
 
@@ -355,7 +362,8 @@ def global_gates(snap, g, hist, now, out_path):
 
 
 # ---- strike selection & trade building --------------------------------------
-def build_trade(snap, g, cand, hrs, now, account_equity=None, risk_pct=None, max_lots=None):
+def build_trade(snap, g, cand, hrs, now, account_equity=None, risk_pct=None, max_lots=None,
+                trade_budget=None):
     """Build the GEX engine's own trade proposal (Agent E owns the final plan)."""
     S, vix = snap["spot"], float(snap.get("vix") or 0)
     e0 = snap["expiries"][0]
@@ -371,14 +379,34 @@ def build_trade(snap, g, cand, hrs, now, account_equity=None, risk_pct=None, max
         blocking_level=cand.get("blocking_level"),
         hours_to_expiry=hrs,
         max_lots=max_lots if max_lots is not None else option_math.CFG["gex_max_lots"],
+        trade_budget=trade_budget,
         strategy=cand["strategy"])
     if not plan:
         return None, "; ".join(reasons)
+    # The engine's lot count is validated against the SAME sizing rule as Agent
+    # E.  It may only ever be REDUCED, never increased.
+    lots, sizing = option_math.cap_lots_to_budget(
+        plan["lots"], plan.get("stop_points", 0.0), snap["lot_size"], plan["entry"],
+        account_equity, risk_pct,
+        max_lots=max_lots if max_lots is not None else option_math.CFG["gex_max_lots"],
+        cfg=option_math.CFG, trade_budget=trade_budget)
+    if lots < plan["lots"]:
+        reasons.append("lot count capped from %d to %d by the canonical sizing rule" % (
+            plan["lots"], lots))
+        plan["lots"] = lots
+    if lots < 1:
+        return None, "zero lots: %s" % sizing.get("reason", "risk budget too small")
+    plan["risk_inr"] = round(lots * plan.get("stop_points", 0.0) * snap["lot_size"], 2)
+    plan["deployed_inr"] = round(plan["entry"] * snap["lot_size"] * lots, 2)
+    plan["deployed_budget_inr"] = round(sizing.get("deployed_budget", 0.0), 2)
+    plan["risk_budget_inr"] = round(sizing.get("risk_amount", 0.0), 2)
+    plan["risk_pct_of_trade"] = sizing.get("risk_pct_of_trade")
     return plan, "; ".join(reasons + cand.get("reasons", []))
 
 
 # ---- main --------------------------------------------------------------------
-def run(snap, hist, now, out_path, account_equity=None, risk_pct=None, max_lots=None):
+def run(snap, hist, now, out_path, account_equity=None, risk_pct=None, max_lots=None,
+        trade_budget=None):
     g = compute_gex(snap)
     trend, vals = gex_trend(hist, g["net"])
     gates, hrs = global_gates(snap, g, hist, now, out_path)
@@ -407,7 +435,7 @@ def run(snap, hist, now, out_path, account_equity=None, risk_pct=None, max_lots=
                 cand["strategy"], cand["direction"], g["regime"]))
             continue
         trade, why = build_trade(snap, g, cand, hrs, now, account_equity=account_equity,
-                                 risk_pct=risk_pct, max_lots=max_lots)
+                                 risk_pct=risk_pct, max_lots=max_lots, trade_budget=trade_budget)
         if trade:
             tid = "GEX-%s-%s-%s" % (snap["symbol"], now.astimezone(IST).strftime("%Y%m%d-%H%M"),
                                     cand["strategy"].split()[0][-1])
@@ -427,7 +455,12 @@ def main():
     ap.add_argument("--now", default=None)
     ap.add_argument("--account-equity", default=None,
                     help="JSON file with the validated account equity (see scripts/account_equity.py)")
-    ap.add_argument("--risk-pct", type=float, default=None)
+    ap.add_argument("--risk-pct", type=float, default=None,
+                    help="the rupee risk as a %% of the amount DEPLOYED in the trade "
+                         "(default: %s)" % option_math.CFG["risk_pct_of_trade"])
+    ap.add_argument("--trade-budget", type=float, default=None,
+                    help="the Rs that may be DEPLOYED in one trade (default: %s); it is itself "
+                         "capped by the validated account equity" % option_math.CFG["trade_budget"])
     ap.add_argument("--max-lots", type=int, default=None)
     ap.add_argument("--json", action="store_true", help="print JSON only")
     a = ap.parse_args()
@@ -439,7 +472,8 @@ def main():
         import account_equity
         eq = account_equity.load(a.account_equity, now=now)
         equity = eq.get("equity") if eq.get("ok") else None
-    res = run(snap, hist, now, a.out, account_equity=equity, risk_pct=a.risk_pct, max_lots=a.max_lots)
+    res = run(snap, hist, now, a.out, account_equity=equity, risk_pct=a.risk_pct,
+              max_lots=a.max_lots, trade_budget=a.trade_budget)
     with open(a.out, "a") as f: f.write(json.dumps(res) + "\n")
     if a.json:
         print(json.dumps(res, indent=2)); return

@@ -13,6 +13,13 @@ import { analyzeFno } from './fno-engine';
 import { analyzeAllIndices, MarketOpportunityRanking } from './index-comparison';
 import { runMasterSelection, MasterSelectionResult, InstrumentOpportunity } from './master-selection';
 import { getHistoricalCandles } from './historical-data';
+import {
+  RISK_LIMITS,
+  evaluateLossCaps,
+  evaluateConcurrentExposure,
+  type RiskStateSnapshot,
+} from './risk-management';
+import { loadJournalRiskState } from './risk-state.server';
 
 export interface WorkflowInput {
   // Universe selection
@@ -372,6 +379,10 @@ export async function runMasterTradingWorkflow(
 
   // ============ STAGE 10: RISK ENGINE ============
   console.log('[Workflow] Stage 10: Risk Engine...');
+  // The live journal decides whether a new trade may be taken (loss caps,
+  // loss streak, concurrent exposure). Loaded here — the risk engine itself is
+  // synchronous.
+  await refreshRiskState();
   const riskEngine = runRiskEngine(universe);
 
   // ============ STAGE 11: INSTRUMENT SELECTION ============
@@ -388,7 +399,7 @@ export async function runMasterTradingWorkflow(
 
   // ============ STAGE 14: FINAL DECISION ============
   console.log('[Workflow] Stage 14: Final Decision...');
-  const finalDecision = makeFinalDecision(finalSetups, ranking);
+  const finalDecision = makeFinalDecision(finalSetups, ranking, riskEngine);
 
   return {
     universe,
@@ -583,17 +594,86 @@ function analyzeIvGreeks(derivatives: any[]): IvGreeksAnalysis {
   return { byIndex, portfolioSummary: { totalDelta: 0, totalGamma: 0, totalTheta: 0, totalVega: 0 } };
 }
 
-function runRiskEngine(universe: any): RiskEngineOutput {
+/**
+ * THE RISK ENGINE (2026-10-20).
+ *
+ * It used to be a stub that returned `approved: true`, `maxPositionSize: 1000000`
+ * and an empty warning list for EVERY universe — a "fires wrong signals" defect:
+ * the workflow's final decision inherited an unconditional approval and a
+ * ₹10,00,000 position size from a ₹25,000 account.
+ *
+ * It now evaluates the REAL per-trade model:
+ *   - the maximum position is the ₹ DEPLOYED per trade (≤ ₹20,000, ≤ the account)
+ *   - the risk budget is 20% of the deployed amount (₹4,000)
+ *   - the daily loss cap and the loss streak are checked against the live journal
+ *   - it REFUSES to approve when the caps are breached or the state is unreadable
+ */
+export function evaluateWorkflowRisk(state: RiskStateSnapshot | null): RiskEngineOutput {
+  const limits = RISK_LIMITS;
+  const warnings: string[] = [];
+  let approved = true;
+
+  const maxPositionSize = limits.perTradeBudget; // ₹ DEPLOYED in one trade
+  const var95 = limits.maxRiskPerTrade;           // ₹ at risk on one trade (20% of the deployment)
+  const maxDrawdown = limits.capital / 100;        // 1% of the account per unit of drawdown
+
+  // The live journal decides whether a NEW trade may be taken at all.
+  if (!state) {
+    approved = false;
+    warnings.push("risk state unavailable — fail closed (no new trade)");
+  } else {
+    const loss = evaluateLossCaps(state);
+    if (loss.blocked) {
+      approved = false;
+      warnings.push(...loss.reasons);
+    }
+    const exposure = evaluateConcurrentExposure({
+      openDeployed: state.openDeployed,
+      openRisk: state.openRisk,
+    });
+    if (exposure.blocked) {
+      approved = false;
+      warnings.push(...exposure.reasons);
+    }
+    if (state.unpricedOpenPositions > 0) {
+      warnings.push(`${state.unpricedOpenPositions} open position(s) carry no recorded ₹ risk — their exposure is unverified`);
+    }
+  }
+
   return {
-    maxPositionSize: 1000000,
-    maxDrawdown: 0.15,
-    var95: 50000,
-    maxCorrelatedRisk: 0.3,
+    maxPositionSize,
+    maxDrawdown,
+    var95,
+    maxCorrelatedRisk: limits.maxDailyLoss / limits.capital, // 32% of the account at risk
     sectorExposure: new Map(),
     indexExposure: new Map(),
-    approved: true,
-    warnings: [],
+    approved,
+    warnings,
   };
+}
+
+function runRiskEngine(universe: any): RiskEngineOutput {
+  return evaluateWorkflowRisk(riskStateSnapshot());
+}
+
+/** The live journal risk state (loaded by runMasterTradingWorkflow before this stage). */
+function riskStateSnapshot(): RiskStateSnapshot | null {
+  try {
+    // The workflow runs synchronously; the journal state is loaded by the caller
+    // (runMasterTradingWorkflow) before this stage and cached on the module.
+    return cachedRiskState;
+  } catch {
+    return null;
+  }
+}
+
+let cachedRiskState: RiskStateSnapshot | null = null;
+
+/** Load the live journal risk state (async) — call before runRiskEngine. */
+export async function refreshRiskState(): Promise<RiskStateSnapshot | null> {
+  const loaded = await loadJournalRiskState();
+  cachedRiskState = loaded.ok ? loaded.state : null;
+  return cachedRiskState;
 }
 
 async function runInstrumentSelection(universe: any, cfg: any): Promise<InstrumentSelectionOutput> {
@@ -636,8 +716,20 @@ function generateFinalSetups(selection: InstrumentSelectionOutput): FinalTradeSe
 
 function makeFinalDecision(
   setups: FinalTradeSetup[],
-  ranking: MarketOpportunityRanking[]
+  ranking: MarketOpportunityRanking[],
+  riskEngine?: RiskEngineOutput
 ): WorkflowOutput['finalDecision'] {
+  // The risk engine has the last word: a signal that the caps/streak/exposure
+  // forbid is NO TRADE (the old stub approved everything unconditionally).
+  if (riskEngine && !riskEngine.approved) {
+    return {
+      action: 'NO_TRADE',
+      symbol: '',
+      market: '',
+      reasoning: `Risk engine refused the trade: ${riskEngine.warnings.join("; ") || "risk limits breached"}`,
+      confidence: 0,
+    };
+  }
   // Logic: pick the highest-ranked approved setup
   const approved = ranking.filter(r => r.signalStrength >= 70);
   if (approved.length === 0) {

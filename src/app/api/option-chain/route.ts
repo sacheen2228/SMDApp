@@ -1062,6 +1062,12 @@ export async function GET(request: NextRequest) {
         symbol,
         source,
         chainData?.selectedExpiry,
+        // The legs carry the PROVIDER's stamp (the same one the top level uses).
+        // Without it a stale chain used to look REALTIME on every leg.
+        {
+          timestamp: dataTimestamp.toISOString(),
+          freshness: freshness.freshness as any,
+        },
       );
       if (canonical) {
         const quality = assessChainQuality(canonical);

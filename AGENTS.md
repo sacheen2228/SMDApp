@@ -293,6 +293,35 @@ multiples of it.
 - sizing (`lotsForBudget`) uses the live ₹20k-per-trade deployment rule — the user
   replaces lots/amount there; every engine then inherits the same ladder.
 
+**P0 fix — "0 lots" is representable (2026-10-20)**: the sizing used to be
+`Math.max(1, …)`, so a contract that did not fit the ₹20,000 per-trade cap was
+traded as ONE lot anyway (RELIANCE CE ₹90 × lot 500 → ₹45,000 = 2.25× the cap;
+SBIN CE ₹300 × lot 750 → ₹2,25,000 = 11× the cap), and the master bot's
+`if (lots < 1) return null` was dead code. NOW:
+- `lotsForBudget()` returns the **honest floor** (0 when one lot does not fit) and
+  `sizeOptionTrade()` reports the verdict (`lots / units / ₹ deployed / ₹ at risk /
+  tradable / reason`). The "at least 1 lot" rule is a **RECORDING convention**
+  (`PLAN_CONFIG.recordingMinimumLots`) — it lives with the audit recorder, never
+  with the sizing.
+- `buildOptionPlan()` returns a plan with `lots: 0`, `deployed: 0`, `riskAmount: 0`,
+  `tradable: false` and a note ("0 lots — 1 lot costs ₹X — over the ₹20,000
+  per-trade budget"). A plan NEVER reports a deployment above the cap
+  (`PLAN_CONFIG.maxDeployedAmount`). The per-unit levels stay meaningful; the ₹
+  amounts are 0 because nothing is committed.
+- every caller bails on 0 lots (no trade, no alert, no tracker row):
+  `master-bot-engine.ts` (returns null → the plan is skipped, the reason is in
+  `generateTradePlan().skipped`), `morning-scan.ts`, `morningSignalGenerator.ts`
+  (the signal is dropped → never registered), `intraday-scanner.ts` (no monthly
+  option trade → no alert).
+- `signal-veto.ts` gained the **DEPLOYMENT/LOT hard gate**: an option candidate
+  whose `entry × lot size × lots` exceeds `GATE_CONFIG.tradeBudget`, or whose lot
+  count is 0, or whose stated `deployedAmount` is over the cap, is BLOCKED
+  (fail closed). The lot size comes from the caller or from the LOCAL symbol
+  master (`getLotSizeStrict`) — no network, so it is safe in the hot path. Equity
+  (cash) candidates are not sized this way.
+- tests: `tests/zero-lots-sizing.test.ts` (offline: the sizing floor, the cap
+  invariant, the veto gate and every caller's bail).
+
 **Measured counterfactual** on the 156 recorded option trades (using the recorded
 highest/lowest, stop wins ties):
 

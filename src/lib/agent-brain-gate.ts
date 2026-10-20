@@ -13,13 +13,21 @@ export const GATE_CONFIG = {
   maxLayersAgainst: 1,
   minUnderlyingRR: 2,      // chart R:R ≥ 1:2
   minOptionRR: 1.5,        // option R:R after repricing ≥ 1.5
-  defaultRiskPct: 1,
-  maxRiskPct: 2,
+  // PER-TRADE capital model (user-defined, 2026-10-20):
+  //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
+  // → the risk is a RUPEE amount = riskPctOfTrade % of the amount DEPLOYED in the
+  //   trade, NOT 1% of a large account. The old 1%-of-₹2L model made every NIFTY
+  //   lot unaffordable (1 lot risks ₹2.8–3.4k > 1% of ₹2L) → 0 lots → NO TRADE.
+  riskPctOfTrade: 20,      // risk = 20% of the amount deployed (₹10k deployed → ₹2k risk)
+  tradeBudget: 20_000,     // ₹ DEPLOYED per trade (matches AUDIT_TRADE_BUDGET)
+  defaultRiskPct: 20,      // kept for compatibility: now % of the deployed amount
+  maxRiskPct: 20,
   maxOtmSteps: 3,          // OTM ≤ 3 strikes from ATM
   minAbsDelta: 0.35,       // below = lottery ticket
-  capital: 200_000,
-  maxConsecutiveLosses: 3,
-  maxDailyLossPct: 3,
+  capital: 25_000,         // the real trading capital (₹20–30k), NOT ₹2L
+  // With 20% risk per trade, one stop = 20% of the account: allow two losses, then stop.
+  maxConsecutiveLosses: 2,
+  maxDailyLossPct: 40,
   freshnessMaxMin: 10,
   allowExpiryDay: false,
   maxToolResultChars: 6_000,
@@ -249,12 +257,15 @@ export function positionSize(input: {
   ok: boolean; lots: number; qty: number; riskAmount: number; riskPerLot: number;
   maxLoss: number; capitalRequired: number; guidance: string;
 } {
+  // Deployed budget = what we are willing to put into THIS trade (₹20–30k),
+  // capped by the trading capital. The risk budget is a % of THAT amount.
   const capital = Number(input.capital) || GATE_CONFIG.capital;
+  const budget = Math.min(GATE_CONFIG.tradeBudget, capital);
   const riskPct = Math.min(GATE_CONFIG.maxRiskPct, Math.max(0.1, Number(input.riskPct) || GATE_CONFIG.defaultRiskPct));
   const entry = Number(input.entry);
   const sl = Number(input.sl);
   const lotSize = Number(input.lotSize);
-  const riskAmount = (capital * riskPct) / 100;
+  const riskAmount = (budget * riskPct) / 100;
   if (!(entry > 0) || !(lotSize > 0) || !Number.isFinite(entry - sl) || Math.abs(entry - sl) <= 0) {
     return {
       ok: false, lots: 0, qty: 0, riskAmount, riskPerLot: 0, maxLoss: 0, capitalRequired: 0,
@@ -262,12 +273,15 @@ export function positionSize(input: {
     };
   }
   const riskPerLot = Math.abs(entry - sl) * lotSize;
-  const lots = Math.floor(riskAmount / riskPerLot);
+  const riskLimitedLots = Math.floor(riskAmount / riskPerLot);
+  // affordability: the PREMIUM actually committed per lot must fit the budget
+  const affordableLots = Math.floor(budget / (entry * lotSize));
+  const lots = Math.max(0, Math.min(riskLimitedLots, affordableLots));
   const maxLoss = riskPerLot * lots;
   const capitalRequired = entry * lotSize * lots;
   const guidance = lots >= 1
-    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} budget (${riskPct}% of ₹${capital.toLocaleString("en-IN")}).`
-    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more than ${riskPct}%.`;
+    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
+    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
   return { ok: lots >= 1, lots, qty: lots * lotSize, riskAmount, riskPerLot, maxLoss, capitalRequired, guidance };
 }
 

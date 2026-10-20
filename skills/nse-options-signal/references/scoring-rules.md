@@ -39,7 +39,7 @@ Score = sum of components, clipped to [-100, +100]. Positive = bullish (CE), neg
 - Stop-loss (whichever hits first): premium -25% (-30% if Very high); underlying invalidation: CE -> close below nearest put-OI support / last 15-min swing low; PE -> close above nearest call-OI resistance / last 15-min swing high.
 - Targets: TP1 = +40% premium or next OI wall, book 50%, SL to cost. TP2 = +80% or 2x risk, trail rest with 15-min swing / 20% premium trail.
 - Time stop: exit if < +10% after 45 minutes; exit all intraday by 15:15.
-- Size: lots = floor(capital * risk% / ((entry - SL) * lot_size)).
+- Size (the per-trade capital model, `references/agent-rules.md` §7.1): the rupee risk is `riskPctOfTrade%` (20) of the amount DEPLOYED in the trade; the deployment ceiling is `min(tradeBudget Rs 20,000, the validated account equity)`; lots = min(floor(risk budget / (stop x lot + costs)), floor(deployed budget / (entry x lot + costs)), strategy cap), rounded DOWN; zero lots -> NO TRADE. The stop is the rupee-risk stop (20% of the entry premium), tightened by the underlying invalidation, floored at 8 ticks.
 - Convert premium levels to approximate underlying levels using delta.
 
 

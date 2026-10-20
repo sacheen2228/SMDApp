@@ -32,6 +32,7 @@ import {
   type ExitTypePerformance,
   type EntryWindow,
 } from "./cas-time-engine";
+import { GATE_CONFIG } from "./agent-brain-gate";
 
 // ─── Backtest Trade Record ────────────────────────────────────────
 export interface BacktestTrade {
@@ -419,8 +420,14 @@ export async function runBacktestV2(config: StrategyConfig, symbol: string): Pro
     }
 
     // ─── Risk Management ───────────────────────────────────────
+    // THE PER-TRADE MODEL (2026-10-20): the risk is a RUPEE amount = maxRiskPct%
+    // of the amount DEPLOYED in the trade, and the deployment is capped at the
+    // per-trade budget (₹20,000) and at the account capital (₹25,000).
+    // The old "1.5% of a ₹1,00,000 account" priced this strategy at a ₹1,500
+    // risk per trade — a number that belongs to no account the trader has.
     const lotSize = getLotSize(symbol, candle.date);
-    const riskPerTrade = capital * (config.maxRiskPct / 100);
+    const deployedBudget = Math.min(GATE_CONFIG.tradeBudget, capital);
+    const riskPerTrade = deployedBudget * (config.maxRiskPct / 100);
     const entryPremium = signal.combinedPremium;
     const maxRisk = Math.min(riskPerTrade, entryPremium * lotSize * 2); // cap at configured risk
 

@@ -5,6 +5,7 @@
 // (STRAT-SYMBOL-STRIKE-TYPE-YYYYMMDD) so re-scans/polls are idempotent.
 
 import { recordSignal, updatePrice, type SignalInput } from "./trade-audit-client";
+import { GATE_CONFIG } from "./agent-brain-gate";
 
 const istYmd = (when = new Date()): string =>
   new Intl.DateTimeFormat("en-CA", {
@@ -45,6 +46,31 @@ export interface AuditOptionCandidate {
 }
 
 /**
+ * The levels the audit engine records when a candidate does not carry them.
+ *
+ * PER-TRADE MODEL (user rule, 2026-10-20): the deployed amount IS the premium
+ * (premium × units), so "risk = 20% of the amount DEPLOYED" means 1R = 20% of
+ * the premium. The targets are the model's R ladder: 2R / 3R / 4R.
+ *
+ * The old defaults were stop = 22% and TP1 = 22% → R:R 1:1, which needs >50%
+ * win-rate BEFORE costs. That is the exact bug the option plan fixed.
+ */
+export function auditLevels(c: AuditOptionCandidate): {
+  sl: number; tp1: number; tp2: number; tp3?: number; rPoints: number;
+} {
+  const entry = Number(c.entry);
+  const isCE = c.type === "CE";
+  const rPct = GATE_CONFIG.riskPctOfTrade / 100; // 1R = 20% of the premium
+  const rPoints = entry * rPct;
+  const sign = isCE ? 1 : -1;               // CE targets above, PE targets below
+  const sl = c.sl ?? entry - sign * rPoints;
+  const tp1 = c.tp1 ?? entry + sign * rPoints * 2;   // 2R
+  const tp2 = c.tp2 ?? entry + sign * rPoints * 3;   // 3R
+  const tp3 = c.tp3 ?? entry + sign * rPoints * 4;   // 4R
+  return { sl, tp1, tp2, tp3, rPoints };
+}
+
+/**
  * Record option candidates as signals. Levels are made direction-correct
  * (CE bullish / PE bearish) so the audit engine's long/short P&L + R math is
  * accurate for the backtest. Fire-and-forget per candidate.
@@ -55,16 +81,12 @@ export async function recordOptionSignals(
   candidates: AuditOptionCandidate[]
 ): Promise<number> {
   const ymd = istYmd();
-  const slPct = 0.22;
   let recorded = 0;
   for (const c of candidates) {
     const rr = c.rr ?? 2;
     const isCE = c.type === "CE";
     const entry = c.entry;
-    const sl = c.sl ?? (isCE ? entry * (1 - slPct) : entry * (1 + slPct));
-    const tp1 = c.tp1 ?? (isCE ? entry * (1 + slPct) : entry * (1 - slPct));
-    const tp2 = c.tp2 ?? (isCE ? entry * (1 + slPct * rr) : entry * (1 - slPct * rr));
-    const tp3 = c.tp3;
+    const { sl, tp1, tp2, tp3 } = auditLevels(c);
 
     const ok = await recordSignal({
       tradeId: `${strategyId}-${symbol}-${c.strike}-${c.type}-${ymd}`,

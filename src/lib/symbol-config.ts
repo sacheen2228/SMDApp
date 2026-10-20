@@ -21,6 +21,21 @@
 // revises lot sizes with notice; refresh this table from the bhavcopy
 // (TckrSymb → NewBrdLotQty) when the exchange publishes a change, or push a
 // live-resolved lot with setKnownLotSize() (see below).
+//
+// ── LOT SIZE MERGE ORDER (one authority, three rungs) ───────────────────────
+//   1. THE SERVICE'S INSTRUMENT MASTER (the live exchange contract list, fed
+//      in by applyServiceInstruments() — see src/lib/motilal/service.ts).
+//      It is the most authoritative source we have: it is the broker's own
+//      contract master, refreshed continuously.
+//   2. THE STATIC TABLE (SYMBOL_CONFIGS / NSE_FO_LOT_SIZES below) — the
+//      bhavcopy snapshot; used when the service is not running.
+//   3. A LIVE-PUSHED LOT (setKnownLotSize()) — a lot resolved by a server-side
+//      resolver (bhavcopy NewBrdLotQty, the contract master, …).
+//   4. UNKNOWN (0) — fail closed. NEVER NIFTY's 65 for a stock.
+//
+// The service rung only ever ADDS real contract lots: a cash/equity row
+// (MO reports marketlot 1 for every cash scrip) is ignored, and an option
+// row wins over a future row for the same underlying.
 
 export interface SymbolConfig {
   symbol: string;
@@ -277,6 +292,127 @@ export function getKnownLotSizes(): Record<string, number> {
   return Object.fromEntries(liveLotSizes);
 }
 
+/**
+ * The lot sizes from the SERVICE's INSTRUMENT MASTER (the MOAPI service's
+ * live contract list — see src/lib/motilal/service.ts). This is the FIRST
+ * rung of the merge order: the broker's own contract master beats the
+ * static bhavcopy snapshot.
+ */
+const serviceLotSizes = new Map<string, number>();
+/** Which rung won for a symbol — "service" | "static" | "live" | "unknown". */
+const lotSizeSource = new Map<string, "service" | "static" | "live" | "unknown">();
+
+/** Where a symbol's lot size came from (for diagnostics/tests). */
+export function getLotSizeSource(symbol: string): "service" | "static" | "live" | "unknown" {
+  return lotSizeSource.get(normalize(symbol)) || "unknown";
+}
+
+/** The lot sizes the service master contributed. */
+export function getServiceLotSizes(): Record<string, number> {
+  return Object.fromEntries(serviceLotSizes);
+}
+
+/**
+ * Forget every lot the service master contributed (the service was turned
+ * off, or its master went stale). The static table and the live-pushed lots
+ * are untouched — the merge order simply falls back to them.
+ */
+export function clearServiceLotSizes(): void {
+  for (const symbol of serviceLotSizes.keys()) lotSizeSource.delete(symbol);
+  serviceLotSizes.clear();
+}
+
+/**
+ * Register a batch of lot sizes (symbol → lot). Anything that is not a
+ * positive integer is ignored — a broken master must never register a 0 or a
+ * negative lot.
+ * Returns the number of symbols registered.
+ */
+export function setServiceLotSizes(lots: Record<string, number> | Map<string, number>): number {
+  let count = 0;
+  const entries = lots instanceof Map ? lots.entries() : Object.entries(lots || {});
+  for (const [symbol, lot] of entries) {
+    const sym = String(symbol || "").toUpperCase().trim();
+    const value = Number(lot);
+    if (!sym || !Number.isFinite(value) || value <= 0) continue;
+    serviceLotSizes.set(sym, Math.floor(value));
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Feed the SERVICE's instrument master in. Each row is one CONTRACT
+ * (tradingsymbol, symbol, expiry, strike, optionType, lotSize, …); the lot
+ * belongs to the UNDERLYING, so the rows are collapsed to symbol → lot.
+ *
+ * Only real F&O contracts contribute: MO's cash master reports
+ * `marketlot: 1` for every equity, which would silently destroy the real
+ * option lot (SBIN: 1 instead of 750). An option row wins over a future row
+ * for the same underlying — the option lot is the one we size with.
+ *
+ * When the master carries several lots for one symbol (a lot revision: the
+ * old contracts keep the old lot), the MAJORITY lot wins — a single stale
+ * contract can never move a symbol's lot size.
+ *
+ * Returns the number of symbols registered.
+ */
+export function applyServiceInstruments(
+  instruments: Array<{
+    symbol?: string;
+    lotSize?: number;
+    instrumentType?: string;
+    optionType?: string;
+  }>
+): number {
+  const optionLots = new Map<string, Map<number, number>>();
+  const futureLots = new Map<string, Map<number, number>>();
+
+  for (const row of instruments || []) {
+    if (!row || typeof row !== "object") continue;
+    const symbol = String(row.symbol || "").toUpperCase().trim();
+    if (!symbol) continue;
+
+    const lot = Math.floor(Number(row.lotSize));
+    if (!Number.isFinite(lot) || lot <= 0) continue;
+
+    const optionType = String(row.optionType || "").toUpperCase().trim();
+    const instrumentType = String(row.instrumentType || "").toUpperCase().trim();
+    const isOption = optionType === "CE" || optionType === "PE";
+    const isFuture = instrumentType.startsWith("FUT");
+    // A cash/equity/index row (MO reports lot 1 for every cash scrip) is NOT
+    // a contract lot — it must never overwrite the real one.
+    if (!isOption && !isFuture) continue;
+
+    const bucket = isOption ? optionLots : futureLots;
+    const counts = bucket.get(symbol) || new Map<number, number>();
+    counts.set(lot, (counts.get(lot) || 0) + 1);
+    bucket.set(symbol, counts);
+  }
+
+  const lots = new Map<string, number>();
+  const majority = (counts: Map<number, number> | undefined): number | null => {
+    if (!counts || !counts.size) return null;
+    let best = 0;
+    let bestCount = -1;
+    for (const [lot, count] of counts) {
+      if (count > bestCount) {
+        best = lot;
+        bestCount = count;
+      }
+    }
+    return best;
+  };
+
+  for (const symbol of new Set([...optionLots.keys(), ...futureLots.keys()])) {
+    // The option lot wins; the future lot is the fallback.
+    const lot = majority(optionLots.get(symbol)) ?? majority(futureLots.get(symbol));
+    if (lot) lots.set(symbol, lot);
+  }
+
+  return setServiceLotSizes(lots);
+}
+
 function normalize(symbol: string): string {
   return String(symbol || "").toUpperCase().trim();
 }
@@ -285,13 +421,48 @@ function normalize(symbol: string): string {
  * The config for a symbol. NEVER falls back to NIFTY: an unknown symbol gets
  * an explicitly unknown lot size (0) so no consumer can silently size a
  * position with NIFTY's lot.
+ *
+ * THE MERGE ORDER (see the header):
+ *   1. the service's instrument master  2. the static table
+ *   3. a live-pushed lot                4. UNKNOWN (0)
  */
 export function getSymbolConfig(symbol: string): SymbolConfig {
   const key = normalize(symbol);
+  if (!key) {
+    return {
+      symbol: key,
+      label: "UNKNOWN",
+      lotSize: UNKNOWN_LOT_SIZE,
+      tickSize: 0.05,
+      maxLots: 0,
+      typicalPremium: 0,
+      lotSizeKnown: false,
+    };
+  }
+
+  // 1. The service's instrument master — the live contract list.
+  const service = serviceLotSizes.get(key);
+  if (service) {
+    lotSizeSource.set(key, "service");
+    return stockConfig(key, service);
+  }
+
+  // 2. The static table (the bhavcopy snapshot).
   const known = SYMBOL_CONFIGS[key];
-  if (known) return known;
+  if (known) {
+    lotSizeSource.set(key, "static");
+    return known;
+  }
+
+  // 3. A live-pushed lot (setKnownLotSize).
   const live = liveLotSizes.get(key);
-  if (live) return stockConfig(key, live);
+  if (live) {
+    lotSizeSource.set(key, "live");
+    return stockConfig(key, live);
+  }
+
+  // 4. UNKNOWN — fail closed.
+  lotSizeSource.set(key, "unknown");
   return {
     symbol: key,
     label: key || "UNKNOWN",

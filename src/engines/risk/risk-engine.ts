@@ -1,4 +1,5 @@
 import type { EngineScore } from '@/types/engine';
+import { GATE_CONFIG } from '@/lib/agent-brain-gate';
 
 export interface RiskResult {
   maxPosition: number;
@@ -20,10 +21,15 @@ export function evaluateRisk(
   price: number,
   confidence: number,
   side: 'long' | 'short' | 'wait',
-  accountBalance: number = 10000,
+  accountBalance: number = GATE_CONFIG.capital,
 ): { result: RiskResult; score: EngineScore } {
-  const maxRiskPercent = 2; // Max 2% risk per trade
-  const riskAmount = accountBalance * (maxRiskPercent / 100);
+  // THE PER-TRADE MODEL (2026-10-20): the risk is a RUPEE amount = 20% of the
+  // amount DEPLOYED in the trade (≤ ₹20,000), never a % of a large account.
+  // The old "2% of accountBalance" (default ₹10,000) priced every option lot
+  // as unaffordable and printed a dead rule.
+  const deployedBudget = Math.min(GATE_CONFIG.tradeBudget, accountBalance > 0 ? accountBalance : GATE_CONFIG.capital);
+  const maxRiskPercent = GATE_CONFIG.riskPctOfTrade; // 20% of the deployed amount
+  const riskAmount = (deployedBudget * maxRiskPercent) / 100;
 
   // Position sizing based on ATR
   const stopDistance = side === 'wait' ? atr * 2 : atr * 1.5;
@@ -50,7 +56,7 @@ export function evaluateRisk(
 
   const reasons: string[] = [];
   reasons.push(`ATR: $${atr.toFixed(2)} (${atrPercent.toFixed(1)}%)`);
-  reasons.push(`Max risk: ${maxRiskPercent}% ($${riskAmount.toFixed(0)})`);
+  reasons.push(`Max risk: ${maxRiskPercent}% of the amount deployed (₹${Math.round(deployedBudget).toLocaleString("en-IN")} deployed → $${riskAmount.toFixed(0)} at risk)`);
   if (leverage > 5) reasons.push(`High leverage: ${leverage}x`);
   if (atrPercent > 3) reasons.push('Wide stops recommended');
   if (kellyPercent > 20) reasons.push('High conviction — size accordingly');

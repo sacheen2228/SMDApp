@@ -1,0 +1,7 @@
+# Runtime artifacts of the MOAPI service — never committed.
+#   cache/  the instrument-master cache (~42 MB) and the LTP cache
+#   Logs/   the SDK's own log files
+cache/
+Logs/
+__pycache__/
+*.pyc

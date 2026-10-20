@@ -23,13 +23,13 @@ Follow these in order. Layers 1 to 3 give direction and location; 4 to 5 decide 
 2. **Market structure:** daily/1-hr trend, 15-min setup, 5-min entry. HH/HL vs LH/LL, BOS, CHoCH. -> `references/market-structure.md`
 3. **Levels + OI:** previous day H/L/C, weekly levels, swing points, pivots, VWAP, round numbers, plus highest Call/Put OI and fresh change in OI. -> `references/oi-and-levels.md`
 4. **Greeks, VIX and strike math:** classify the VIX regime, compute expected move, then pick the strike by calculation (not feel): delta ~0.45-0.65, option R:R >= 1.5-2 after repricing, theta cost and hold-time break-even within limits, lots >= 1 inside the risk budget. -> `references/greeks.md`, `references/vix-and-strike-selection.md`, `references/math-and-formulas.md`, `scripts/strike_selector.py`
-5. **Trigger, stop, size:** candle confirmation at the level, underlying-based stop, reward:risk >= 1:2, risk <= 1% of capital. -> `references/trade-setups-and-risk.md`
+5. **Trigger, stop, size:** candle confirmation at the level, underlying-based stop, reward:risk >= 1:2, risk = 20% of the amount deployed (Rs 20,000-30,000 per trade, max Rs 20,000 deployed). -> `references/trade-setups-and-risk.md`
 
 Trade only when **at least 3 to 4 layers agree**. If they conflict (for example flow bullish, structure bearish, heavy call writing overhead), output "skip".
 
 ## Strike selection: always calculate
 
-When the user wants a strike (or asks "ATM, ITM or OTM?"), run `python scripts/strike_selector.py` with spot, VIX (or ATM IV), days to expiry, direction, target, stop, expected hold time, capital, risk %, lot size (verify it), and live chain premiums if available (`--chain "strike:premium,..."`; use `--json` for machine-readable output). It re-prices every strike at the target and stop (with theta and IV shift), applies gates, sizes lots and ranks strikes. Report the recommended strike with entry, premium stop, target, option R:R, lots and the gate failures of rejected strikes. If no strike passes, the answer is skip / tighten stop / spread, never loosen the gates. If code cannot run, use the formulas in `references/math-and-formulas.md` by hand and say the numbers are approximate. Never fabricate live premiums or VIX; ask for them or search a current source.
+When the user wants a strike (or asks "ATM, ITM or OTM?"), run `python scripts/strike_selector.py` with spot, VIX (or ATM IV), days to expiry, direction, target, stop, expected hold time, lot size (verify it), and live chain premiums if available (`--chain "strike:premium,..."`; use `--json` for machine-readable output). The capital model is built in: capital Rs 25,000, risk 20% of the amount deployed, max Rs 20,000 deployed per trade (`--capital`, `--risk-pct`, `--trade-budget` override them). It re-prices every strike at the target and stop (with theta and IV shift), applies gates, sizes lots and ranks strikes. Report the recommended strike with entry, premium stop, target, option R:R, lots and the gate failures of rejected strikes. If no strike passes, the answer is skip / tighten stop / spread, never loosen the gates. If code cannot run, use the formulas in `references/math-and-formulas.md` by hand and say the numbers are approximate. Never fabricate live premiums or VIX; ask for them or search a current source.
 
 ## Hedging: reduce loss with defined risk
 
@@ -74,8 +74,8 @@ Use the columns in `assets/trade-journal-template.csv` and help compute win rate
 - Judge every option trade on option R:R after repricing (underlying R:R overstates it), and check target points against the VIX-based expected move.
 - Stop loss is on the underlying structure, converted to premium by `premium risk ~ points risked x delta`. Never widen a stop after entry.
 - Do not place stops exactly at obvious levels; allow a buffer or use a candle close, because stop-hunts/sweeps are common.
-- Position size = (capital x risk %) / (premium stop per lot). If one lot exceeds the risk budget, the answer is "choose a tighter setup or cheaper instrument", never "risk more".
-- Risk 1% per trade (2% maximum); stop trading after 2-3 consecutive losses or 2-3% daily loss. Never average down a losing option.
+- Position size (per trade, capital Rs 20,000-30,000): deployed budget = min(trade budget Rs 20,000, capital); risk budget = 20% of the deployed amount; lots = min(floor(risk budget / (risk per lot + costs)), floor(deployed budget / (premium per lot + costs)), strategy cap) — never rounded up. If one lot does not fit, the answer is "choose a tighter setup or cheaper instrument", never "risk more".
+- Risk is a rupee amount = 20% of what the trade deploys (Rs 20,000 deployed -> Rs 4,000 at risk); stop trading after 2 consecutive losses. Never average down a losing option.
 - Avoid first 10-15 minutes, avoid buying into major events (IV inflated), be wary of expiry-day lottery buying.
 - Time stop: exit if no move within 20-30 minutes (intraday).
 - If a flow-based thesis reverses sharply in the next data release, treat it as an exit signal.

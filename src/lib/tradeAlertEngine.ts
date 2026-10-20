@@ -8,6 +8,8 @@
 // bottom. Everything above them is pure logic and doesn't care where
 // the numbers come from.
 
+import { GATE_CONFIG } from "./agent-brain-gate";
+
 export type OptionSide = "CE" | "PE";
 
 export interface OptionChainRow {
@@ -263,7 +265,7 @@ export function formatAlertMessage(alert: TradeAlert, opts?: { markdown?: boolea
   lines.push(``);
   lines.push(`One thing I've learned in 29 years: the market loves to run stops before it runs in the real direction. If you see price dip just below your entry right after getting in, don't panic — professionals are triggering the weak hands. Stay with your plan unless the thesis breaks.`);
   lines.push(``);
-  lines.push(`Size is everything. Never risk more than 2% of your capital on any single idea.`);
+  lines.push(`Size is everything. Risk ${GATE_CONFIG.riskPctOfTrade}% of the amount you deploy in this trade, and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in a single trade.`);
 
   return lines.join("\n");
 }

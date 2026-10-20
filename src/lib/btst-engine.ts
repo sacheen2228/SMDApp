@@ -4,6 +4,8 @@
 // with a 6-factor score, ATR-based stop, 3 profit targets, gap-risk estimate,
 // and dynamic position sizing. Operates independently of the intraday engine.
 
+import { positionSize } from "./agent-brain-gate";
+
 export type BTSTGrade = "A+" | "A" | "B" | "C" | "SKIP";
 
 export interface BTSTFactorScores {
@@ -279,12 +281,15 @@ export function analyzeBTST(inp: BTSTStockInput): BTSTAnalysis {
   const expectedGapPct = gapRisk === "Low" ? 0.8 : gapRisk === "Medium" ? 0.3 : -0.5;
 
   // ─── Position sizing ─────────────────────────────────────────────
+  // PER-TRADE MODEL (user rule, 2026-10-20): the ₹ committed to this trade is
+  // capped at the ₹20,000 per-trade budget and the ₹ at risk is 20% of the
+  // amount DEPLOYED. The old "1% of a ₹1,00,000 account" model priced a
+  // ₹2,000 risk budget that no swing stop could fit.
   const riskPerShare = entry - sl;
-  const maxCapital = 100000;
-  const riskPct = 1.0; // 1% account risk
-  const qty = riskPerShare > 0 ? Math.floor((maxCapital * riskPct / 100) / riskPerShare) : 0;
-  const capital = qty * entry;
-  const riskPerTrade = qty * riskPerShare;
+  const ps = positionSize({ entry, sl, lotSize: 1 }); // lotSize 1 → qty in shares
+  const qty = ps.qty;
+  const capital = ps.capitalRequired;   // ₹ deployed
+  const riskPerTrade = ps.maxLoss;       // ₹ at risk (≤ 20% of the deployed)
 
   const trendLabel = factors.trend >= 20 ? "Strong Bullish" : factors.trend >= 12 ? "Bullish" : "Weak";
   const sectorLabel = factors.sector >= 8 ? "Strong" : factors.sector >= 5 ? "Neutral" : "Weak";

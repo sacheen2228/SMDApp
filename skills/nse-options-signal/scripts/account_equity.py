@@ -5,7 +5,7 @@ Position sizing must never use a hardcoded number. This module resolves the
 account equity from a VALIDATED source and fails closed when it cannot:
 
   file mode (default)
-      <data>/account_equity.json  ->  {"equity": 250000, "source": "...",
+      <data>/account_equity.json  ->  {"equity": 25000, "source": "...",
                                        "as_of": "2026-10-20T09:15:00+05:30",
                                        "max_deployment_per_trade": 20000}
       `source` and `as_of` are REQUIRED. A missing/!positive equity, a missing
@@ -17,9 +17,24 @@ account equity from a VALIDATED source and fails closed when it cannot:
       (src/lib/icici-breeze/positions.ts -> ICICI Breeze getFunds). This is the
       broker's own allocation - the only trustworthy equity figure in this repo.
 
+WHAT THE EQUITY IS - AND WHAT IT IS NOT
+----------------------------------------
+The validated equity is the CEILING of the deployment, never the risk base:
+
+    deployed budget = min(tradeBudget, validated equity, deployment cap)
+    risk budget     = riskPctOfTrade% x the amount DEPLOYED in the trade
+
+The user's rule (2026-10-20): "if I spend Rs 10,000 I take Rs 2,000 of risk".
+The old model ("1% of a large validated equity") made every NIFTY lot
+unaffordable - 1 lot risks Rs 2.8-3.4k, more than 1% of a Rs 2L account -
+so every run ended in 0 lots and NO TRADE.  The sizing itself lives in
+scripts/option_math.py (the single source of truth for both Agent E and the
+GEX engine); this module only supplies the validated equity.
+
 Usage:
     python3 account_equity.py --file data/account_equity.json
     python3 account_equity.py --from-api
+    python3 account_equity.py --file data/account_equity.json --trade-budget 20000
 """
 import argparse
 import json
@@ -137,8 +152,19 @@ if __name__ == "__main__":
     ap.add_argument("--from-api", action="store_true")
     ap.add_argument("--url", default=DEFAULT_API)
     ap.add_argument("--max-age-hours", type=float, default=MAX_AGE_HOURS)
+    ap.add_argument("--trade-budget", type=float, default=None,
+                    help="the Rs that may be DEPLOYED in one trade (default: the skill's "
+                         "trade budget); it is itself capped by the validated equity")
     a = ap.parse_args()
     res = load_from_api(a.url, max_age_hours=a.max_age_hours) if a.from_api else \
         load(a.file, max_age_hours=a.max_age_hours)
+    if res.get("ok"):
+        import option_math
+        budget = option_math.deployment_budget(res["equity"], a.trade_budget,
+                                               res.get("max_deployment_per_trade"))
+        risk = option_math.risk_budget(budget.get("deployed_budget"))
+        res["deployed_budget_per_trade"] = budget.get("deployed_budget")
+        res["risk_pct_of_trade"] = risk.get("risk_pct_of_trade")
+        res["risk_budget_per_trade"] = risk.get("risk_budget")
     print(json.dumps(res, indent=1))
     raise SystemExit(0 if res.get("ok") else 1)

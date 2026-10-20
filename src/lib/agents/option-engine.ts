@@ -21,6 +21,8 @@ import { deriveUnderlyingLevels } from './underlying-levels';
 import { spotToPremiumLevels } from '../greeks';
 import { getChallenge } from '../challenge/challenge-tracker';
 import { getLotSize } from '../challenge/capital-manager';
+import { getLotSizeStrict } from '../symbol-config';
+import { GATE_CONFIG } from '../agent-brain-gate';
 
 // ─── Option Engine Decision ───────────────────────────────────────────────
 
@@ -145,12 +147,16 @@ if (premium < 5) {
     return { ok: false, reason: `${optionSide} premium too low (₹${premium}) for minimum ₹5 premium` };
   }
 
-  // ₹15,000 capital early gate — check affordability before proceeding
-  const lotSize = getLotSize(symbol);
-  const maxDeployable = 15000 * 75 / 100; // ₹11,250 (75% of ₹15K starting capital)
-  const minLotCost = premium * lotSize; // cost of 1 lot
+  // Per-trade deployment gate — the real budget is ₹20–30k, and the lot size must be
+  // the contract's real lot (never NIFTY's 65 for a stock).
+  const lotSize = getLotSizeStrict(symbol) ?? 0;
+  const maxDeployable = Math.min(GATE_CONFIG.tradeBudget, GATE_CONFIG.capital);
+  const minLotCost = premium * (lotSize || 1); // cost of 1 lot
+  if (!lotSize) {
+    return { ok: false, reason: `Lot size unknown for ${symbol} — cannot size or verify the trade` };
+  }
   if (minLotCost > maxDeployable) {
-    return { ok: false, reason: `Option not affordable within ₹15,000 capital limit (₹${minLotCost} lot cost > ₹${maxDeployable} max deployable)` };
+    return { ok: false, reason: `Option not affordable within the ₹${maxDeployable} per-trade budget (₹${minLotCost} lot cost > ₹${maxDeployable} max deployable)` };
   }
 
   if (!ctx.expiry) {

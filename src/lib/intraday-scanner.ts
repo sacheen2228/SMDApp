@@ -212,7 +212,8 @@ function getStrikeStep(price: number): number {
   return 500;
 }
 
-function generateMonthlyOptionTrade(
+// Exported so the 0-lot bail can be asserted offline (no network, no chain fetch).
+export function generateMonthlyOptionTrade(
   symbol: string,
   price: number,
   direction: "BULLISH" | "BEARISH" | "NEUTRAL",
@@ -243,6 +244,16 @@ function generateMonthlyOptionTrade(
       symbol, optionType, entryPremium: premium, lotSize: knownLot ?? 1,
     });
     if (!plan) return undefined;
+    // 0 lots = the contract does not fit the per-trade deployment budget →
+    // NO TRADE (no monthly option trade → no alert, no tracker row).
+    // The old sizing forced a minimum of 1 lot, so a RELIANCE CE at ₹90
+    // (lot 500 → ₹45,000) was traded at 2.25× the ₹20,000 cap.
+    if (plan.lots < 1) {
+      console.warn(
+        `[IntradayScanner] skip ${symbol} ${optionType} — 0 lots (${plan.notes.join("; ")})`
+      );
+      return undefined;
+    }
     const sl = plan.stopLoss;
     const target1 = plan.targets[0] ?? plan.entry;
     const target2 = plan.targets[1] ?? target1;

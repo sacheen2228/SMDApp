@@ -52,7 +52,7 @@ Call spread: buy K1, sell K2 > K1. Put spread: buy K1, sell K2 < K1. Width W = |
 ### When a spread beats a naked buy
 - VIX high or event-adjacent: the short leg offsets vega, reducing IV-crush damage.
 - Weekly options with 1 to 4 days left: the short leg offsets a large part of theta.
-- Risk budget too small for a naked lot: a spread shrinks the loss per lot (in the calculator example at VIX 22, a naked ATM call fit 0 lots in a 1% budget while the spread fit 4).
+- Risk budget too small for a naked lot: a spread shrinks the loss per lot (in the calculator example at VIX 22, a naked ATM call fits 0 lots in the Rs 4,000 risk budget while the 25,150 spread fits 10 lots inside the Rs 20,000 deployment cap).
 - When a naked buy is better: low VIX, very fast expected move beyond the short strike, or a strong trend where you want uncapped upside.
 
 ## 4. Locking in profit ("free trade")
@@ -94,4 +94,4 @@ Never close the long leg while leaving the short leg open; that creates a naked 
 | Risk budget cannot fit one naked lot | Debit spread or skip |
 
 ## 9. Use the calculator
-`python scripts/hedge_calculator.py spread --spot S --vix V --days D --direction call|put --long-strike K --target T --stop X --hold-days H --capital C --lot-size L` compares the naked option with spreads of increasing width (net debit, hard max loss, R:R at expiry and at exit, net theta/vega, lots) and suggests the cheapest spread whose short strike is at or beyond the target. Pass `--long-premium` and `--short-chain "strike:premium,..."` for live premiums. `python scripts/hedge_calculator.py portfolio --value V --beta B --index S --hedge-ratio R --put-premium P` sizes an index put hedge. Report the naked baseline alongside the spread so the user sees what is given up. Educational, not financial advice.
+`python scripts/hedge_calculator.py spread --spot S --vix V --days D --direction call|put --long-strike K --target T --stop X --hold-days H --lot-size L` compares the naked option with spreads of increasing width (net debit, hard max loss, R:R at expiry and at exit, net theta/vega, lots) and suggests the cheapest spread whose short strike is at or beyond the target. The capital model is built in (capital Rs 25,000, trade budget Rs 20,000, risk 20% of the amount deployed; `--capital`, `--risk-pct`, `--trade-budget` override it) and the lots respect both the risk budget and the affordability cap. Pass `--long-premium` and `--short-chain "strike:premium,..."` for live premiums. `python scripts/hedge_calculator.py portfolio --value V --beta B --index S --hedge-ratio R --put-premium P` sizes an index put hedge. Report the naked baseline alongside the spread so the user sees what is given up. Educational, not financial advice.

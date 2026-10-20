@@ -3,7 +3,8 @@
 // gate (Phase 4.5). Reads existing agent evidence + the engine candidate;
 // NEVER re-scores factors (dedup: cross-confluence owns aggregation, agents
 // own their factors). Any failed item → decision forced to NO_TRADE.
-// Risk threshold: playbook rules (R:R >= 1:2, risk <= 1% capital).
+// Risk threshold: playbook rules (R:R >= 1:2, risk <= 20% of the amount
+// DEPLOYED in the trade — the per-trade model, ≤ ₹20,000 deployed per trade).
 
 import { describe, it, expect } from "bun:test";
 import { evaluatePlaybookCheck, playbookNoTrade } from "@/lib/agents/playbook-check";
@@ -141,15 +142,15 @@ describe("item 6 — strike selector (option R:R >= 1:2, lots >= 1)", () => {
   });
 });
 
-describe("item 7 — stop/RR/risk limits (R:R >= 1:2, risk <= 1%)", () => {
-  it("maxLoss 1500 > 1% of 100000 → item 7 fails", () => {
-    const r = evaluatePlaybookCheck(candidate({ target1: 130, maxLoss: 1500 }), FRESH8, { capital: 100000 } as any);
+describe("item 7 — stop/RR/risk limits (R:R >= 1:2, risk <= 20% of the deployed amount)", () => {
+  it("maxLoss 4500 > the ₹4,000 risk budget (20% of ₹20,000 deployed) → item 7 fails", () => {
+    const r = evaluatePlaybookCheck(candidate({ target1: 130, maxLoss: 4_500 }), FRESH8, { capital: 100_000 } as any);
     expect(r.failedItems).toContain(7);
-    expect(r.items.find(i => i.item === 7)!.note).toMatch(/1%/);
+    expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);
   });
 
-  it("maxLoss 900 <= 1% of 100000 → passes", () => {
-    const r = evaluatePlaybookCheck(candidate({ maxLoss: 900 }), FRESH8, { capital: 100000 } as any);
+  it("maxLoss 1500 <= the ₹4,000 risk budget → passes (the old 1%-of-₹1L budget would have failed it)", () => {
+    const r = evaluatePlaybookCheck(candidate({ maxLoss: 1_500 }), FRESH8, { capital: 100_000 } as any);
     expect(r.pass).toBe(true);
   });
 

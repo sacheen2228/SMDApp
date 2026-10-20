@@ -48,6 +48,14 @@ A_PLUS = {
 
 
 # --------------------------------------------------------------------- helpers
+def _money(value):
+    """Format a rupee amount (never None)."""
+    try:
+        return "{:,.0f}".format(float(value))
+    except (TypeError, ValueError):
+        return "0"
+
+
 def _now(value):
     if not value:
         return datetime.now(IST)
@@ -185,10 +193,13 @@ def three_line_summary(out):
         line3 = out.get("consensus", {}).get("reason") or "no trade"
         return "\n".join([line1, line2, line3])
     trade = out.get("trade") or {}
-    line1 = "%s %s - %s %s %s (%s) entry %.2f-%.2f, %s lot(s)." % (
+    sizing = out.get("sizing") or {}
+    line1 = "%s %s - %s %s %s (%s) entry %.2f-%.2f, %s lot(s), Rs %s deployed, Rs %s at risk." % (
         instrument, stamp, action, trade.get("strike"), trade.get("option_type"),
         trade.get("expiry"), (trade.get("entry_zone") or [0, 0])[0], (trade.get("entry_zone") or [0, 0])[1],
-        trade.get("suggested_lots"))
+        trade.get("suggested_lots"),
+        _money(trade.get("deployed_inr") or sizing.get("deployed")),
+        _money(trade.get("risk_inr") or sizing.get("risk_inr")))
     line2 = ("Stop %.2f (premium), TP1 %.2f (1:%.1f), TP2 %.2f; underlying invalidation %.2f." % (
         trade.get("stop_loss_premium", 0), trade.get("tp1_premium", 0),
         trade.get("risk_reward_tp1", 0), trade.get("tp2_premium", 0),
@@ -224,7 +235,10 @@ def run(args):
         gex_snap = None
         conversion_warnings.append("GEX snapshot conversion failed: %s" % exc)
 
-    # ---- account equity (validated, never hardcoded)
+    # ---- account equity (validated, never hardcoded).  It is the CEILING of
+    # the deployment, never the risk base: the rupee risk is a % of what the
+    # trade actually deploys (the user's rule: "if I spend Rs 10,000 I take
+    # Rs 2,000 of risk").
     equity = None
     equity_source = None
     equity_payload = {}
@@ -235,6 +249,13 @@ def run(args):
     if equity_payload.get("ok"):
         equity = equity_payload["equity"]
         equity_source = equity_payload.get("source")
+    deployment_cap = equity_payload.get("max_deployment_per_trade")
+    trade_budget = getattr(args, "trade_budget", None) or option_math.CFG["trade_budget"]
+    risk_pct_arg = getattr(args, "risk_pct", None) or option_math.CFG["risk_pct_of_trade"]
+    budget = option_math.deployment_budget(equity, trade_budget, deployment_cap)
+    deployed_budget = budget.get("deployed_budget") or 0.0
+    risk_pct = option_math.clamp_risk_pct(risk_pct_arg)
+    risk_rupees = option_math.risk_budget(deployed_budget, risk_pct)["risk_budget"]
 
     # ---- agent A (parent reads the context)
     ctx = agent_a.load_context(args.context, now=now)
@@ -250,7 +271,8 @@ def run(args):
     }
     tasks["D"] = {"now": now.isoformat(), "gex_snapshot": gex_snap, "gex_snapshot_path": gex_path,
                   "gex_history_dir": gex_hist_dir, "gex_out_path": args.gex_out,
-                  "account_equity": equity, "risk_pct": args.risk_pct,
+                  "account_equity": equity, "risk_pct": risk_pct_arg,
+                  "trade_budget": trade_budget,
                   "max_lots": args.max_lots}
     results = run_panel(tasks, timeout=args.timeout)
     results["A"] = result_a
@@ -305,8 +327,9 @@ def run(args):
                 "blocking_level": blocking,
                 "account_equity": equity,
                 "account_equity_source": equity_source,
-                "max_deployment_per_trade": equity_payload.get("max_deployment_per_trade"),
-                "risk_pct": args.risk_pct,
+                "max_deployment_per_trade": deployment_cap,
+                "risk_pct": risk_pct_arg,
+                "trade_budget": trade_budget,
                 "max_lots": args.max_lots,
                 "strategy": args.strategy,
             }
@@ -431,6 +454,17 @@ def run(args):
                        "pcr": (b_data.get("pcr_series") or [None])[-1]},
         "gex": gex_record,
         "gex_alert": gex_alert,
+        "sizing": {
+            "trade_budget": trade_budget,
+            "deployed_budget": round(deployed_budget, 2),
+            "risk_pct_of_trade": risk_pct,
+            "risk_budget": round(risk_rupees, 2),
+            "deployed": (trade or {}).get("deployed_inr"),
+            "risk_inr": (trade or {}).get("risk_inr"),
+            "lots": (trade or {}).get("suggested_lots"),
+            "account_equity": equity,
+            "max_deployment_per_trade": deployment_cap,
+        },
         "data_quality": {"snapshot_age_minutes": age_min,
                          "history_snapshots": b_data.get("history_snapshots", 0),
                          "context_status": ctx.get("status"),
@@ -456,7 +490,13 @@ def main(argv=None):
     ap.add_argument("--strategy", default=None)
     ap.add_argument("--ohlc", default=None, help="JSON file with pdh/pdl/pdc levels")
     ap.add_argument("--timeout", type=float, default=AGENT_TIMEOUT_S)
-    ap.add_argument("--risk-pct", type=float, default=option_math.CFG["risk_pct"])
+    ap.add_argument("--risk-pct", type=float, default=option_math.CFG["risk_pct_of_trade"],
+                    help="the rupee risk as a %% of the amount DEPLOYED in the trade (default: %s)"
+                         % option_math.CFG["risk_pct_of_trade"])
+    ap.add_argument("--trade-budget", type=float, default=option_math.CFG["trade_budget"],
+                    help="the Rs that may be DEPLOYED in one trade (default: %s); it is itself "
+                         "capped by the validated account equity"
+                         % option_math.CFG["trade_budget"])
     ap.add_argument("--max-lots", type=int, default=None)
     ap.add_argument("--account-equity", default=os.path.join(HERE, "data", "account_equity.json"))
     ap.add_argument("--account-equity-from-api", action="store_true")

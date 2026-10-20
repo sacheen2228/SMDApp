@@ -7,7 +7,10 @@ import type { Candle } from "@/lib/tech-read";
 const base = {
   nowMs: Date.parse("2026-07-15T10:05:00+05:30"), // before the 13:00 option-buy cutoff
   symbol: "NIFTY", action: "BUY CE", optionType: "CE" as const, strike: 25200,
-  entry: 350, stopLoss: 320, tp1: 420, confidence: 70,
+  // The premium must be AFFORDABLE under the per-trade deployment cap (the veto
+  // blocks a candidate whose entry × lot size does not fit the ₹20,000 budget):
+  // 1 NIFTY lot (65) at ₹150 = ₹9,750 ✓.
+  entry: 150, stopLoss: 120, tp1: 210, confidence: 70,
 };
 
 describe("veto — fail closed on missing critical fields", () => {
@@ -48,7 +51,7 @@ describe("veto — BTST path stays untouched", () => {
 
 describe("veto — shadow mode never loosens a hard gate", () => {
   test("hard fail suppresses even in shadow mode", () => {
-    const r = evaluateSignalVeto({ ...base, tp1: 380 }); // R:R 1.0
+    const r = evaluateSignalVeto({ ...base, tp1: 180 }); // R:R 1.0
     expect(r.wouldBlock).toBe(true);
     expect(r.suppress).toBe(true);
     expect(r.tier).toBe("NONE");

@@ -10,6 +10,7 @@ import { analyzeOptionChain } from '@/lib/sdm-oianalysis';
 import { detectGammaBlast, getGammaBlastBoost } from '@/lib/gamma-blast';
 import { calculateGreeks } from '@/lib/greeks';
 import { calculatePositionSize } from '@/lib/risk-management';
+import { GATE_CONFIG } from '@/lib/agent-brain-gate';
 import { analyzeMarketStructure } from '@/lib/market-structure';
 import { analyzeVolume } from '@/lib/volume-analysis';
 
@@ -325,6 +326,10 @@ export function evaluateBTST(
 }
 
 // ─── Get Zero Hero Position Sizing ───────────────────────────────
+// PER-TRADE MODEL: the ₹ committed to this trade is capped at the per-trade
+// budget (₹20,000) and the ₹ at risk is 20% of that deployed amount.
+// (The old formula divided the capital by riskPerLot × 2 — i.e. it risked
+// 50% of the deployment.)
 export function getZeroHeroPositionSize(
   entry: number,
   sl: number,
@@ -332,7 +337,14 @@ export function getZeroHeroPositionSize(
   config: ZeroHeroConfig = DEFAULT_ZERO_HERO_CONFIG
 ): { lots: number; quantity: number; maxLoss: number } {
   const riskPerLot = Math.abs(entry - sl) * lotSize;
-  const lots = riskPerLot > 0 ? Math.floor(config.maxCapitalPerTrade / (riskPerLot * 2)) : 0;
+  const deployedBudget = Math.min(config.maxCapitalPerTrade, GATE_CONFIG.tradeBudget);
+  const riskBudget = (deployedBudget * GATE_CONFIG.riskPctOfTrade) / 100;
+  const lots = riskPerLot > 0
+    ? Math.min(
+        Math.floor(riskBudget / riskPerLot),
+        Math.floor(deployedBudget / (entry * lotSize)),
+      )
+    : 0;
   const clampedLots = Math.min(lots, 5); // Max 5 lots for ZH
   return {
     lots: clampedLots,
@@ -391,6 +403,9 @@ export interface ZeroHeroCandidateInput {
   spot: number;
   lotSize: number;
   capital: number;
+  /** @deprecated the risk % is now a global rule — 20% of the amount DEPLOYED
+   *  (GATE_CONFIG.riskPctOfTrade). This field is accepted but NOT used, so the
+   *  legacy "risk = 2% of a ₹1L account" model can never come back. */
   riskPerTradePercent: number;
   maxPositionSize: number;
   context: ZeroHeroChainContext;
@@ -443,7 +458,7 @@ export function analyzeZeroHeroChain(
 // Evaluate a single CE/PE candidate — expiry-aware
 // On expiry day, premium decays to zero for OTM strikes, SL must be tight, TP must be realistic.
 export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHeroCandidateResult {
-  const { strike, type, ltp, delta, iv, oiChg, volume, spot, lotSize, capital, riskPerTradePercent, maxPositionSize, context } = input;
+  const { strike, type, ltp, delta, iv, oiChg, volume, spot, lotSize, capital, maxPositionSize, context } = input;
   const reasons: string[] = [];
 
   // Days to expiry from standardized expiry
@@ -482,13 +497,14 @@ export function evaluateZeroHeroCandidate(input: ZeroHeroCandidateInput): ZeroHe
     }
   }
 
-  // ── Position sizing (reuse risk-management.ts) ──
+  // ── Position sizing (per-trade model: risk = 20% of the amount DEPLOYED) ──
   // Expiry day: tighter SL for buyers
   const slPct = isExpiryDay ? 0.25 : isExpiryEve ? 0.35 : 0.50;
   const slPremium = ltp * slPct;
   const pos = calculatePositionSize({
     capital,
-    riskPerTradePercent,
+    // % of the DEPLOYED amount — the model's single rule (never % of an account)
+    riskPerTradePercent: GATE_CONFIG.riskPctOfTrade,
     entryPremium: ltp,
     stopLossPremium: slPremium,
     lotSize,

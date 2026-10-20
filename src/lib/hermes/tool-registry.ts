@@ -223,8 +223,10 @@ export const HERMES_TOOLS: ToolDefinition[] = [
       entry: { type: "number", required: true },
       sl: { type: "number", required: true },
       lotSize: { type: "number", required: true },
-      capital: { type: "number", required: false, default: 100000 },
-      riskPct: { type: "number", required: false, default: 1 },
+      // THE PER-TRADE MODEL: ₹25,000 capital, risk = 20% of the amount DEPLOYED
+      // (≤ ₹20,000 deployed per trade ⇒ ₹4,000 at risk).
+      capital: { type: "number", required: false, default: 25000 },
+      riskPct: { type: "number", required: false, default: 20 },
     },
     source: "risk-management.ts (calculatePositionSize)",
     freshnessMaxAge: 0,

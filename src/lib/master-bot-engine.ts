@@ -2,19 +2,27 @@
 // Multi-timeframe Nifty/Sensex correlation trading bot
 // Ported from Python — runs in browser/API
 
+import { GATE_CONFIG, positionSize } from "./agent-brain-gate";
+import { buildOptionPlan, lotsForBudget } from "./option-plan";
+
 const NIFTY_TICKER = "^NSEI";
 const SENSEX_TICKER = "^BSESN";
 
 // ═══════ SETTINGS ═══════
 export const BOT_CONFIG = {
-  CAPITAL: 100000,
-  RISK_PER_TRADE_PCT: 2.0,
+  // PER-TRADE MODEL (user rule, 2026-10-20):
+  //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
+  // → CAPITAL is the trading capital (it can only SHRINK the per-trade
+  //   deployment), TRADE_BUDGET is the ₹ DEPLOYED in one trade, and the ₹ at
+  //   risk is RISK_PCT_OF_DEPLOYED % of that deployed amount.
+  // The old "2% of a ₹1,00,000 account" model is gone.
+  CAPITAL: GATE_CONFIG.capital,
+  TRADE_BUDGET: GATE_CONFIG.tradeBudget,
+  RISK_PCT_OF_DEPLOYED: GATE_CONFIG.riskPctOfTrade,
   LOT_SIZE_NIFTY: 65,
   LOT_SIZE_SENSEX: 20,
   STRIKE_STEP_NIFTY: 50,
   STRIKE_STEP_SENSEX: 100,
-  SL_PCT_OF_PREMIUM: 0.35,
-  TP_MIN_RR: 2.0,
   GAP_THRESHOLD: 0.5,
   CORR_BREAKDOWN: 0.94,
   EMA_ZONE_PCT: 0.3,
@@ -124,17 +132,87 @@ function estimatePremium(
   return Math.max(intrinsic + adjustedTimeValue, 10);
 }
 
-function calculatePositionSize(
-  capital: number,
+/**
+ * Size a master-bot trade under the PER-TRADE model.
+ *   deployed = ₹ committed to THIS trade (≤ the ₹20,000 per-trade budget)
+ *   risk     = 20% of that deployed amount
+ *   stop     = 1R (the rupee risk, in premium points), targets = 2R / 3R / 4R
+ * Exported so the model can be asserted in tests without network access.
+ */
+export function calculatePositionSize(
+  deployedBudget: number,
   riskPct: number,
   entryPremium: number,
   slPremium: number,
   lotSize: number
 ): number {
-  const riskPerLot = (entryPremium - slPremium) * lotSize;
-  if (riskPerLot <= 0) return 1;
-  const maxRisk = capital * (riskPct / 100);
-  return Math.max(Math.floor(maxRisk / riskPerLot), 1);
+  const ps = positionSize({
+    entry: entryPremium,
+    sl: slPremium,
+    lotSize,
+    capital: deployedBudget,
+    riskPct,
+  });
+  return ps.lots;
+}
+
+export interface MasterBotPlanInput {
+  symbol: string;            // "NIFTY" | "SENSEX"
+  direction: "CALL" | "PUT";
+  entryPremium: number;
+  lotSize: number;
+  /** Expiry-day overlay: 0.5 = half the deployment, 0.8 = 80% (see getExpiryStatus). */
+  riskMultiplier?: number;
+}
+
+/**
+ * Build the master-bot trade plan under the PER-TRADE model.
+ * Returns null when one lot does not fit the per-trade budget (never oversize).
+ */
+export function buildMasterBotPlan(input: MasterBotPlanInput): {
+  lots: number;
+  slPremium: number;
+  tpPremium: number;
+  targets: number[];
+  totalPremium: number;   // ₹ deployed
+  maxRisk: number;        // ₹ at risk
+  rr: number;             // R:R to TP1 (2R)
+} | null {
+  const premium = Number(input.entryPremium);
+  const lotSize = Number(input.lotSize);
+  if (!(premium > 0) || !(lotSize > 0)) return null;
+
+  // ₹ deployed in this trade: the per-trade budget, scaled by the expiry overlay.
+  const baseBudget = Math.min(BOT_CONFIG.CAPITAL, BOT_CONFIG.TRADE_BUDGET);
+  const deployedBudget = baseBudget * (input.riskMultiplier ?? 1);
+  // The HONEST FLOOR: 0 lots when one lot does not fit the per-trade budget.
+  // (This used to be dead code — lotsForBudget() forced a minimum of 1 — so an
+  //  unaffordable contract was traded as ONE lot at up to 11× the cap.)
+  const lots = lotsForBudget(premium, lotSize, deployedBudget);
+  if (lots < 1) return null;
+
+  // buildOptionPlan owns the stop (1R = 20% of the amount deployed) and the
+  // 2R / 3R / 4R target ladder — the ONE plan builder.
+  const plan = buildOptionPlan({
+    symbol: input.symbol,
+    optionType: input.direction === "CALL" ? "CE" : "PE",
+    entryPremium: premium,
+    lotSize,
+    lots,
+    deployedAmount: deployedBudget,
+  });
+  // 0 lots = NO TRADE (nothing is committed) — never a Telegram-able plan.
+  if (!plan || plan.lots < 1 || !plan.targets.length) return null;
+
+  return {
+    lots: plan.lots,
+    slPremium: plan.stopLoss,
+    tpPremium: plan.targets[0],
+    targets: plan.targets,
+    totalPremium: plan.deployed,
+    maxRisk: plan.riskAmount,
+    rr: plan.rr,
+  };
 }
 
 // ═══════ EXPIRY LOGIC ═══════
@@ -437,6 +515,8 @@ export async function generateTradePlan(): Promise<{
   snapshot: MarketSnapshot;
   signals: Signal[];
   raw: TimeframeData;
+  /** Setups that were DROPPED because 0 lots did not fit the per-trade budget. */
+  skipped?: string[];
 }> {
   const data = await fetchAllTimeframes();
   const daily = data["daily"];
@@ -483,6 +563,7 @@ export async function generateTradePlan(): Promise<{
   const { direction: bestDir, count: agreement } = countAgreement(signals);
 
   const plans: TradePlan[] = [];
+  const skipped: string[] = [];
 
   if (bestDir && agreement >= 2) {
     const niftyExp = getExpiryStatus("NIFTY");
@@ -491,7 +572,6 @@ export async function generateTradePlan(): Promise<{
     const isSensex = bestDir.includes("SENSEX");
     const index = isSensex ? "SENSEX" : "NIFTY";
     const spot = isSensex ? sensex : nifty;
-    const atr = latestDaily?.atr || 50;
     const vol = latestDaily?.vol || 15;
     const lotSize = isSensex
       ? BOT_CONFIG.LOT_SIZE_SENSEX
@@ -509,14 +589,6 @@ export async function generateTradePlan(): Promise<{
         : getAtmStrike(spot, step);
 
     const tfForAtr = agreement >= 3 ? "daily" : "15min";
-    const mult = ATR_MULT[tfForAtr] || ATR_MULT["daily"];
-    let tpMult = mult.tp;
-    let slMult = mult.sl;
-
-    if (expStatus.isExpiry) {
-      tpMult *= 0.5;
-      slMult *= 0.7;
-    }
 
     const premium = estimatePremium(
       strike,
@@ -527,25 +599,25 @@ export async function generateTradePlan(): Promise<{
       expStatus.isExpiry
     );
 
-    const slPremium = premium * (1 - BOT_CONFIG.SL_PCT_OF_PREMIUM);
-    const tpPremium =
-      premium + (premium - slPremium) * BOT_CONFIG.TP_MIN_RR;
+    const sized = buildMasterBotPlan({
+      symbol: index,
+      direction,
+      entryPremium: premium,
+      lotSize,
+      riskMultiplier: expStatus.riskMultiplier,
+    });
+    if (!sized) {
+      // 0 lots: the ₹20,000 per-trade budget cannot buy ONE lot of this
+      // contract. NO TRADE — no plan, no alert, no tracker row. The reason is
+      // reported (the API returns it) instead of a fake "0 lot" plan that the
+      // Telegram route would have sent as a trade.
+      const reason = `${index} ${direction} ${strike}: ₹${Math.round(BOT_CONFIG.TRADE_BUDGET).toLocaleString("en-IN")} per-trade budget cannot buy 1 lot at ₹${premium.toFixed(0)} premium (lot ${lotSize})`;
+      console.warn(`[MasterBot] SKIP — ${reason}`);
+      skipped.push(reason);
+      return { plan: plans, snapshot, signals, raw: data, skipped };
+    }
 
-    const riskPct = BOT_CONFIG.RISK_PER_TRADE_PCT * expStatus.riskMultiplier;
-    const lots = calculatePositionSize(
-      BOT_CONFIG.CAPITAL,
-      riskPct,
-      premium,
-      slPremium,
-      lotSize
-    );
-
-    const totalPremium = premium * lots * lotSize;
-    const maxRisk = (premium - slPremium) * lots * lotSize;
-    const rr =
-      premium - slPremium > 0
-        ? (tpPremium - premium) / (premium - slPremium)
-        : 0;
+    const { lots, slPremium, tpPremium, targets, totalPremium, maxRisk, rr } = sized;
 
     const matchingSignals = signals.filter((s) => s.direction === bestDir);
     const reasons = matchingSignals.map(
@@ -573,5 +645,37 @@ export async function generateTradePlan(): Promise<{
     });
   }
 
-  return { plan: plans, snapshot, signals, raw: data };
+  return { plan: plans, snapshot, signals, raw: data, skipped };
+}
+
+/**
+ * Telegram/dashboard text for a master-bot plan.
+ * The risk line states the PER-TRADE rule (risk = 20% of the amount DEPLOYED,
+ * max ₹20,000 deployed per trade) — never a "% of a ₹1L account" figure.
+ */
+export function formatMasterBotPlanMessage(p: TradePlan): string {
+  const deployed = Math.round(p.totalPremium);
+  const risk = Math.round(p.maxRisk);
+  const riskPctOfDeployed = deployed > 0 ? (risk / deployed) * 100 : 0;
+  return [
+    `🎯 *MASTER BOT TRADE PLAN*`,
+    ``,
+    `*${p.index} ${p.direction} ${p.strike}*`,
+    `Setup: ${p.setup} (${p.confidence})`,
+    `Spot: ${p.spot.toFixed(0)} | Lots: ${p.lots}`,
+    ``,
+    `Entry Premium: ₹${p.entryPremium.toFixed(2)}`,
+    `SL Premium: ₹${p.slPremium.toFixed(2)} (-${((1 - p.slPremium / p.entryPremium) * 100).toFixed(0)}%)`,
+    `TP Premium: ₹${p.tpPremium.toFixed(2)} (R:R ${p.rr.toFixed(1)})`,
+    ``,
+    `Deployed: ₹${deployed.toLocaleString("en-IN")}`,
+    `Max Risk: ₹${risk.toLocaleString("en-IN")} (${riskPctOfDeployed.toFixed(1)}% of the deployed amount)`,
+    `Risk rule: ${GATE_CONFIG.riskPctOfTrade}% of the amount deployed, max ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} deployed per trade`,
+    `Exit: ${p.exitTime}`,
+    ``,
+    `*Reasons:*`,
+    ...p.reasons.map((r) => `• ${r}`),
+    ``,
+    `⚠️ ${p.expiryNote || "No expiry warnings."}`,
+  ].join("\n");
 }

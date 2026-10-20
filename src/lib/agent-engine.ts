@@ -2,6 +2,7 @@
 // Pattern-matching brain that answers questions using live market data + trade history
 
 import { getLotSizeStrict } from './symbol-config';
+import { GATE_CONFIG, positionSize } from './agent-brain-gate';
 
 export interface AgentContext {
   symbol: string;
@@ -395,8 +396,9 @@ const intents: Intent[] = [
         return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** UNKNOWN — ${ctx.symbol} has no contract in the NSE F&O lot table, so NO ₹ risk or position size can be computed (a guessed lot would be wrong by 4-11×).\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n\n💡 Look the contract lot up (NSE F&O bhavcopy) before sizing this position.`;
       }
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
+      const ps = positionSize({ capital: GATE_CONFIG.capital, entry: price, sl, lotSize: lot });
 
-      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule:**\n• Max 2% risk per trade\n• If capital = ₹1,00,000 → Max risk = ₹2,000\n• Max lots = ₹2,000 / ₹${fmt(riskPerLot)} = ${riskPerLot > 0 ? Math.floor(2000 / riskPerLot) : "—"} lots\n\n💡 Never risk more than 2% of capital on a single trade. This ensures you survive 50 consecutive losses.`;
+      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule (per trade):**\n• Deploy at most ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in ONE trade\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the amount DEPLOYED (₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} deployed → ₹${Math.round(GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade / 100).toLocaleString("en-IN")} at risk)\n• Max lots = min( ₹${Math.round(GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade / 100).toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n💡 Never risk more than ${GATE_CONFIG.riskPctOfTrade}% of what you put into a trade, and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in one trade.`;
     },
   },
 
@@ -424,7 +426,7 @@ const intents: Intent[] = [
       } else {
         rec = "• **Iron Condor** — Sell both sides if range-bound\n• **Straddle** — Buy both sides if big move expected\n• Wait for clearer direction before entering";
       }
-      return `🎯 **Strategy Guide — ${ctx.symbol}**\n\n**Current Sentiment:** ${s.toUpperCase()}\n\n**Best strategies for ${s} market:**\n${rec}\n\n**Always remember:**\n• Risk max 2% per trade\n• Set SL before entering\n• Minimum 1:2 risk:reward\n• Close by 3:15 PM on expiry`;
+      return `🎯 **Strategy Guide — ${ctx.symbol}**\n\n**Current Sentiment:** ${s.toUpperCase()}\n\n**Best strategies for ${s} market:**\n${rec}\n\n**Always remember:**\n• Risk ${GATE_CONFIG.riskPctOfTrade}% of the amount you deploy (≤ ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} per trade)\n• Set SL before entering\n• Minimum 1:2 risk:reward\n• Close by 3:15 PM on expiry`;
     },
   },
 
@@ -435,7 +437,7 @@ const intents: Intent[] = [
       const a = ctx.analysis;
       if (!a) return "📊 Loading market data...";
       const r = a.recommendation || {};
-      return `⚡ **Entry Check — ${ctx.symbol}**\n\n**Action:** ${r.action || "WAIT"}\n**Strike:** ₹${r.strike || "—"} ${r.optionType || ""}\n**Entry:** ₹${r.entryPrice || "—"}\n**Stop Loss:** ₹${r.stopLoss || "—"}\n**Target:** ₹${r.target1 || "—"}\n**Confidence:** ${r.confidence || 0}%\n\n**Entry Rules:**\n• Only enter if confidence > 85%\n• SL must be set BEFORE entering\n• Max 2% risk per trade\n• If SL hits on trade #1, NO trade #2\n\n💡 If confidence < 85%, the answer is NO TRADE.`;
+      return `⚡ **Entry Check — ${ctx.symbol}**\n\n**Action:** ${r.action || "WAIT"}\n**Strike:** ₹${r.strike || "—"} ${r.optionType || ""}\n**Entry:** ₹${r.entryPrice || "—"}\n**Stop Loss:** ₹${r.stopLoss || "—"}\n**Target:** ₹${r.target1 || "—"}\n**Confidence:** ${r.confidence || 0}%\n\n**Entry Rules:**\n• Only enter if confidence > 85%\n• SL must be set BEFORE entering\n• Risk ${GATE_CONFIG.riskPctOfTrade}% of the amount you deploy (≤ ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} per trade)\n• Two losses in a row → stop for the day (₹8,000 daily loss cap)\n\n💡 If confidence < 85%, the answer is NO TRADE.`;
     },
   },
 
@@ -461,11 +463,11 @@ const intents: Intent[] = [
         return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** UNKNOWN — ${ctx.symbol} has no contract in the NSE F&O lot table, so NO ₹ risk or position size can be computed (a guessed lot would be wrong by 4-11×).\n**Entry:** ₹${fmt(price)} | **SL:** ₹${fmt(sl)}\n\n💡 Look the contract lot up (NSE F&O bhavcopy) before sizing this position.`;
       }
       const riskPerLot = Math.abs(price - sl) * lot;
-      const capital = 100000;
-      const maxRisk = capital * 0.02;
-      const lots = riskPerLot > 0 ? Math.floor(maxRisk / riskPerLot) : 0;
+      const ps = positionSize({ capital: GATE_CONFIG.capital, entry: price, sl, lotSize: lot });
+      const budget = GATE_CONFIG.tradeBudget;
+      const riskBudget = Math.round((budget * GATE_CONFIG.riskPctOfTrade) / 100);
 
-      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)} | **SL:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing (₹1L capital):**\n• Max risk = ₹1,00,000 × 2% = ₹2,000\n• Lots = ₹2,000 ÷ ₹${fmt(riskPerLot)} = ${lots} lots\n• Max loss = ₹${fmt(riskPerLot * lots)}\n\n**Stop Loss Rule:**\n• SL = Entry × 0.65 (lose 35% max)\n• Or SL = Entry - (1.5 × ATR)\n• ALWAYS set SL before entering\n\n**Take Profit Rule:**\n• TP = Entry + (Risk × 2) → min 1:2 R:R\n• Example: Buy ₹100, SL ₹65 → TP ₹170\n\n💡 Never risk more than 2% of capital per trade.`;
+      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)} | **SL:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing (per trade):**\n• Deployed budget = min(₹${budget.toLocaleString("en-IN")} per-trade cap, ₹${GATE_CONFIG.capital.toLocaleString("en-IN")} account) = ₹${budget.toLocaleString("en-IN")}\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the deployed amount = ₹${riskBudget.toLocaleString("en-IN")}\n• Lots = min( ₹${riskBudget.toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${budget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n**Stop Loss Rule:**\n• 1R = the rupee risk ÷ units = ₹${fmt(riskBudget)} ÷ ${ps.qty} units\n• ALWAYS set SL before entering\n\n**Take Profit Rule:**\n• TP1 = Entry + (1R × 2) → R:R 1:2 | TP2 = 1R × 3 | TP3 = 1R × 4\n\n💡 Never risk more than ${GATE_CONFIG.riskPctOfTrade}% of the amount you deploy, and never deploy more than ₹${budget.toLocaleString("en-IN")} in one trade.`;
     },
   },
 

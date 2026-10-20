@@ -21,6 +21,8 @@ export type StrategyType = "CALL" | "PUT" | "STRADDLE" | "STRANGLE" | "NO_TRADE"
 export type StrikeSelection = "ITM" | "ATM" | "OTM" | "OPTIMIZED" | "AUTO";
 export type ExpiryType = "weekly" | "monthly";
 
+import { GATE_CONFIG } from "./agent-brain-gate";
+
 // ─── Market Regime ────────────────────────────────────────────────
 export type MarketRegime =
   | "LOW_VOL" | "NORMAL_VOL" | "HIGH_VOL" | "EXTREME_VOL"
@@ -157,7 +159,9 @@ export interface StrategyConfig {
   strategy: StrategyType | "AUTO";
   strikeSelection: StrikeSelection;
   expiryType: ExpiryType;
+  /** the account capital used by the backtest (₹25,000 — the real account) */
   initialCapital: number;
+  /** risk as a % of the amount DEPLOYED in the trade (20 → ₹20,000 ⇒ ₹4,000) */
   maxRiskPct: number;
   entryTime: string;
   exitTime: string;
@@ -183,8 +187,10 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   strategy: "AUTO",
   strikeSelection: "AUTO",
   expiryType: "weekly",
-  initialCapital: 100000,
-  maxRiskPct: 1.5,
+  // THE PER-TRADE MODEL (2026-10-20): the real account is ₹25,000 (not ₹1,00,000)
+  // and the risk is 20% of the amount DEPLOYED (not 1.5% of the account).
+  initialCapital: GATE_CONFIG.capital,
+  maxRiskPct: GATE_CONFIG.riskPctOfTrade,
   entryTime: "09:20",
   exitTime: "15:20",
   targetPct: 20,

@@ -157,7 +157,7 @@ contributes at most ONE vote to the consensus.
 | liquidity | the strike must be in the top-5 OI on the traded side |
 | spread | bid-ask <= 2% of the mid |
 | lot size | the AUTHORITATIVE contract master (`scripts/contract_master.py` -> `src/lib/symbol-config.ts` / the NSE bhavcopy `NewBrdLotQty`).  A stock never inherits NIFTY's lot; an unknown lot fails closed. |
-| premium stop | 25%-30% of the premium, sitting on the underlying invalidation (never beyond it) |
+| premium stop | the **rupee-risk stop**: `riskPctOfTrade%` of the entry premium (see §7.1), floored at the 8-tick noise floor, and never beyond the underlying invalidation.  An invalidation that would need more than 30% of the premium is a NO TRADE. |
 | TP1 | reward:risk >= 1:2 (2R) |
 | TP2 | 3R, inside the expected move |
 | expiry | < 3 h to expiry -> NO TRADE |
@@ -171,6 +171,62 @@ contributes at most ONE vote to the consensus.
 (`{equity, source, as_of}` - source and as_of are required) or the app's
 Breeze funds endpoint (`/api/positions` -> `data.funds.allocated_equity`).
 A missing / non-positive / unattributed / stale equity is a NO TRADE.
+
+### 7.1 The per-trade capital model (AUTHORITATIVE)
+
+The user defines the risk (2026-10-20): *"if I spend Rs 10,000 I take Rs 2,000
+of risk"* -> **the rupee risk is a percentage of the amount DEPLOYED IN THAT
+TRADE**, never a percentage of a large account equity.
+
+```
+deployed budget = min(tradeBudget, validated equity, deployment cap)   <- the CEILING
+risk budget     = riskPctOfTrade% (20) x the deployed amount            <- the rupee-risk CEILING
+stop points     = entry x riskPctOfTrade%      (the rupee-risk stop: the CEILING of
+                                                 the stop distance - the structural
+                                                 invalidation may only make it TIGHTER,
+                                                 and the 8-tick floor keeps noise out)
+lots            = min(floor(risk budget / (stop x lot + costs)),      <- risk-limited
+                      floor(deployed budget / (entry x lot + costs)),  <- affordable
+                      strategy cap)                                    <- NEVER rounded UP
+deployed        = lots x entry x lot       (the money actually committed)
+risk            = lots x stop x lot        (the ACTUAL max loss)
+zero lots       -> NO TRADE
+```
+
+* `tradeBudget` (default **Rs 20,000**) and `riskPctOfTrade` (default **20**)
+  are configurable: `--trade-budget` / `--risk-pct` on `scripts/orchestrator.py`,
+  `scripts/gex_engine.py` and `scripts/run_gex.py`; `scripts/option_math.py`
+  holds the defaults (`CFG["trade_budget"]`, `CFG["risk_pct_of_trade"]`).
+* `scripts/option_math.py` is the **single** implementation
+  (`deployment_budget`, `risk_budget`, `rupee_stop_points`, `size_position`,
+  `cap_lots_to_budget`); Agent E and the GEX engine both call it, so they can
+  never disagree about the size of a trade.
+* The GEX engine's own lot count is re-validated against the same rule
+  (`option_math.cap_lots_to_budget`): it may only ever be **reduced**, never
+  increased.
+* The validated equity is the **ceiling of the deployment**, never the risk
+  base.  A 4x bigger account does not quadruple the risk: the deployment is
+  capped by the trade budget and the risk is a % of what is actually deployed.
+
+Worked example (the case that used to end in NO TRADE forever): a NIFTY 25,500
+CE at a Rs 300 premium, lot 65.  The rupee-risk stop is 60 points (20% of the
+premium); one lot risks **Rs 3,900** and deploys **Rs 19,500** - inside the
+Rs 20,000 budget and inside the Rs 4,000 risk budget -> **1 lot, TRADEABLE**.
+
+#### The reconciliation with the vendored spec (what changed and why)
+
+| the vendored spec said | the skill does now | why |
+|---|---|---|
+| "risk = 1% of the validated account equity" | "risk = `riskPctOfTrade%` (20) of the amount DEPLOYED in the trade" | the user's rule supersedes the spec.  1% of a Rs 2L account (Rs 2,000) is less than the risk of a single NIFTY lot (Rs 2,800-3,900), so every plan produced 0 lots and every run ended in NO TRADE.  The validated equity is still mandatory - it is the **ceiling** of the deployment. |
+| "the premium stop is 25-30% of the premium" | "the stop is the rupee-risk stop (`riskPctOfTrade%` of the premium), tightened further by the underlying invalidation, floored at 8 ticks; an invalidation that would need more than 30% of the premium is a NO TRADE" | a 25-30% stop on a Rs 300 premium risks Rs 4,875 a lot - more than the rupee risk the user signed up for, and with the rupee budget (Rs 4,000 on a Rs 20,000 deployment) that lot does not fit at all, so every plan was 0 lots.  The rupee-risk stop is the ceiling of the stop distance (the risk never grows); the invalidation may still pull it in; the 30% cap and the 8-tick floor are kept. |
+| "the account equity sizes the position" | "the trade budget (capped by the equity) sizes the position" | the trading capital is Rs 20-30k, not Rs 2L.  The deployment ceiling is `min(tradeBudget, validated equity)`. |
+| "the daily loss limit is 3% of capital" | "the daily loss limit is 40% of the validated capital" (the app's `GATE_CONFIG.maxDailyLossPct`) | with a Rs 20% per-trade risk, a 3% daily cap (Rs 750 on Rs 25k) would be breached by a single stop-out. |
+
+The **app-side authority** for all of this is `src/lib/agent-brain-gate.ts`
+(`GATE_CONFIG.riskPctOfTrade = 20`, `tradeBudget = 20_000`, `capital = 25_000`,
+`positionSize()`) and `src/lib/option-plan.ts` (the rupee-risk stop, the 35%
+cap, the 8-tick floor, the 2R/3R/4R ladder).  The skill mirrors them.  When
+the two ever disagree, the app wins.
 
 **Expected move:** the GEX record's `expected_move_1sigma` is the one-day
 ATM-IV move (the schema's definition).  The TP2 containment gate uses the
@@ -192,7 +248,7 @@ plain-language summary.  No price, level or confidence is ever fabricated.
 
 | the package's file | where it lives now | note |
 |---|---|---|
-| `scripts/gex_engine.py` | `scripts/gex_engine.py` | adapted: validated equity (no hardcoded capital), the option math moved to `scripts/option_math.py`, extra gates (>= 3 history snapshots, unknown lot, missing/invalid/future timestamp), GEX-2 restricted to TRANSITION |
+| `scripts/gex_engine.py` | `scripts/gex_engine.py` | adapted: validated equity as the deployment CEILING (no hardcoded capital), the per-trade capital model (§7.1), the option math moved to `scripts/option_math.py`, extra gates (>= 3 history snapshots, unknown lot, missing/invalid/future timestamp), GEX-2 restricted to TRANSITION |
 | `scripts/structure.py` | `scripts/structure.py` | unchanged - the skill had no structure module |
 | `scripts/candle_builder.py` | `scripts/candle_builder.py` | unchanged; the live path uses `scripts/nse_fetch.py`'s chart aggregation + the closed-candle filter in `scripts/gex_snapshot.py` |
 | `scripts/eod_fetch.py` | `scripts/eod_fetch.py` | rewritten as a THIN ADAPTER over the skill's existing `scripts/nse_fetch.py` (one NSE client, not two) |

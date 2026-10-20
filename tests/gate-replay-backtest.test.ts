@@ -4,9 +4,12 @@ import {
   replayGate,
   summarize,
   deriveWeeklyExpiry,
+  productionLots,
+  sizingFormula,
   type ReplayTrade,
   type ReplayDeps,
 } from "@/lib/gate-replay-backtest";
+import { GATE_CONFIG, positionSize } from "@/lib/agent-brain-gate";
 import type { Candle } from "@/lib/indicators";
 
 // 2026-07-15 is a Wednesday (not expiry day). Thursday 2026-07-16.
@@ -21,9 +24,11 @@ function mkTrade(over: Partial<ReplayTrade> = {}): ReplayTrade {
     optionType: "CE",
     strikePrice: 25200, // 1 step OTM (NIFTY step 50) → otmSteps = 1
     spotPrice: 25150,
-    entryPrice: 350,
-    stopLoss: 320,
-    tp1: 420,
+    // ₹260 premium × 75 qty = ₹19,500 per lot → fits the ₹20,000 per-trade
+    // deployment budget (a ₹350 premium would NOT — see the affordability test).
+    entryPrice: 260,
+    stopLoss: 235,
+    tp1: 310,
     signalConfidence: 70,
     trendDirection: "BULLISH",
     expiry: "2026-07-30",
@@ -123,7 +128,7 @@ describe("deriveGateInput", () => {
     expect(i.asOfMs).toBe(Date.parse("2026-07-15T10:05:00+05:30"));
     expect(Math.abs(i.delta!)).toBeGreaterThanOrEqual(0.35); // real BS delta from recorded premium
     expect(i.strikeDistanceSteps).toBe(1);
-    expect(i.optionRR!).toBeCloseTo(2.33, 1);
+    expect(i.optionRR!).toBeCloseTo(2.0, 1);
     expect(i.underlyingRR!).toBeGreaterThan(0);
     expect(i.isExpiryDay).toBe(false); // Wednesday
     expect(i.lots!).toBeGreaterThanOrEqual(1);
@@ -133,6 +138,27 @@ describe("deriveGateInput", () => {
     expect(i.layers.flow.state).toBe("unknown");
     expect(i.allLive).toBe(true);
     expect(i.stamps.length).toBe(1);
+  });
+
+  test("the replay's lot count is production-identical (same positionSize call)", async () => {
+    const t = mkTrade();
+    const r = await deriveGateInput(t, fixtureDeps());
+    const expected = positionSize({
+      entry: t.entryPrice, sl: t.stopLoss, lotSize: 75,
+      capital: GATE_CONFIG.capital, riskPct: GATE_CONFIG.defaultRiskPct,
+    }).lots;
+    expect(r.input!.lots).toBe(expected);
+    expect(productionLots(t.entryPrice, t.stopLoss, 75)).toBe(expected);
+  });
+
+  test("a lot that costs more than the per-trade deployment budget books 0 lots", async () => {
+    // ₹350 premium × 75 qty = ₹26,250 > the ₹20,000 per-trade budget.
+    const t = mkTrade({ entryPrice: 350, stopLoss: 320, tp1: 420 });
+    const r = await deriveGateInput(t, fixtureDeps());
+    expect(r.input!.lots).toBe(0);
+    const out = await replayGate([t], fixtureDeps());
+    expect(out[0].verdict).toBe("SKIP");
+    expect(out[0].failedChecks).toContain("risk_budget");
   });
 
   test("excludes equity/no-strike trades (gate is options-only)", async () => {
@@ -187,6 +213,9 @@ describe("replayGate", () => {
     expect(s.coverage.excluded).toBe(1);
     expect(s.assumptions.length).toBeGreaterThan(0);
     expect(s.assumptions.join(" ")).toMatch(/feed/i);
+    // the report must state the per-trade formula, not "X% of a ₹2L account"
+    expect(s.assumptions.join(" ")).toMatch(/deployed/i);
+    expect(s.assumptions.join(" ")).toMatch(/20%/);
     const verdicts = Object.keys(s.byVerdict);
     expect(verdicts.length).toBeGreaterThan(1);
     for (const v of Object.values(s.byVerdict)) {

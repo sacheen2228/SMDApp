@@ -710,7 +710,11 @@ export async function runChallengeScan(
     blockedReasons.push(`Session ${sessionPhase} — market not open`);
   }
 
-  // 8. Capital gate — no FUTURES below ₹2L
+  // 8. Capital gate — no FUTURES below ₹2L.
+  //    This is a genuine ACCOUNT-EQUITY boundary (SEBI requires ₹2L of
+  //    allocated equity to trade F&O futures) — it is NOT the per-trade risk
+  //    base. The per-trade model (risk = 20% of the amount DEPLOYED, ≤
+  //    ₹20,000 deployed per trade) lives in GATE_CONFIG/positionSize().
   const capitalBelow2L = ch.currentCapital < 200000;
 
   // 9. Apply tick rounding to F&O setups + add gate fields to ALL

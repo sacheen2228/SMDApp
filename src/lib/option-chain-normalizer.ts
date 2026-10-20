@@ -2,12 +2,31 @@
 //
 // Every provider (MOAPI, Breeze, NSE, BSE) feeds through this normalizer.
 // No downstream consumer should parse raw provider data directly.
+//
+// FRESHNESS HONESTY (2026-10-20): the legs used to be stamped with
+// `new Date().toISOString()` + freshness "REALTIME" + dataStatus "LIVE" — the
+// BUILD time of the response, not the time the exchange priced the chain. On a
+// 29-hour-old chain every leg claimed to be live, and any consumer that reads a
+// leg's freshness (the dashboard, option-chain-reader, the GEX engine) believed
+// it. The legs now carry the PROVIDER's timestamp and the freshness computed
+// from it — the same stamp the top level of the payload uses.
 
 import type { OptionContract, OptionStrike, OptionChain, DataProvenance } from '@/types/canonical';
-import type { DataFreshness, DataStatus } from '@/lib/data-health';
+import type { DataFreshness, DataStatus } from '@/types/index';
+import { classifyFreshness } from '@/lib/api-freshness';
 import { getLotSize } from '@/lib/symbol-config';
 import { getNearestExpiry, isExpiryDay as checkExpiryDay } from '@/lib/expiry-calculator';
 import { calculateGreeks } from '@/lib/greeks';
+
+/** Where the chain's data came from and WHEN it was priced. */
+export interface ChainProvenance {
+  /** the exchange's own timestamp for this chain (ISO). */
+  timestamp?: string | Date | null;
+  /** the freshness of that timestamp (the top level's own classification). */
+  freshness?: DataFreshness;
+  /** the status of the leg data (AVAILABLE / PARTIAL / STALE / ...). */
+  dataStatus?: DataStatus;
+}
 
 // ─── Normalized Strike Input ───────────────────────────────────────
 
@@ -261,14 +280,53 @@ export function normalizeNSE(
 
 // ─── Build Canonical OptionChain from Normalized Strikes ───────────
 
+/**
+ * Resolve the chain's own stamp.
+ * NEVER invents a timestamp: with no provider stamp the chain is UNAVAILABLE,
+ * not "REALTIME".
+ */
+export function resolveChainProvenance(
+  provenance?: ChainProvenance,
+  nowMs: number = Date.now(),
+): { timestamp: string; freshness: DataFreshness; dataStatus: DataStatus } {
+  const raw = provenance?.timestamp;
+  const parsed = raw ? (raw instanceof Date ? raw : new Date(raw)) : null;
+  const valid = parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+  const ageMs = valid ? Math.max(0, nowMs - valid.getTime()) : null;
+
+  const freshness: DataFreshness =
+    provenance?.freshness ?? (ageMs == null ? "UNAVAILABLE" : (classifyFreshness(ageMs, "optionChain") as DataFreshness));
+
+  const dataStatus: DataStatus =
+    provenance?.dataStatus ??
+    (freshness === "LIVE" || freshness === "FRESH"
+      ? "AVAILABLE"
+      : freshness === "STALE" || freshness === "HISTORICAL"
+        ? "STALE"
+        : freshness === "UNAVAILABLE"
+          ? "UNAVAILABLE"
+          : "PARTIAL");
+
+  return {
+    timestamp: valid ? valid.toISOString() : "",
+    freshness,
+    dataStatus,
+  };
+}
+
 export function buildOptionChain(
   normalizedStrikes: NormalizedStrike[],
   spot: number,
   symbol: string,
   source: string,
-  overrideExpiry?: string
+  overrideExpiry?: string,
+  provenance?: ChainProvenance
 ): OptionChain | null {
   if (normalizedStrikes.length === 0) return null;
+
+  // The provider's stamp — the legs and the chain level carry THIS, never
+  // the build time of this function.
+  const chainStamp = resolveChainProvenance(provenance);
 
   const expiryInfo = getNearestExpiry(symbol);
   const expiry = overrideExpiry || expiryInfo?.date || '';
@@ -358,10 +416,10 @@ export function buildOptionChain(
         gamma: s.ce.gamma,
         theta: s.ce.theta,
         vega: s.ce.vega,
-        timestamp: new Date().toISOString(),
+        timestamp: chainStamp.timestamp,
         dataSource: source,
-        freshness: 'REALTIME' as DataFreshness,
-        dataStatus: 'LIVE' as DataStatus,
+        freshness: chainStamp.freshness,
+        dataStatus: chainStamp.dataStatus,
       } : null,
       pe: s.pe?.hasData ? {
         underlying: symbol,
@@ -382,10 +440,10 @@ export function buildOptionChain(
         gamma: s.pe.gamma,
         theta: s.pe.theta,
         vega: s.pe.vega,
-        timestamp: new Date().toISOString(),
+        timestamp: chainStamp.timestamp,
         dataSource: source,
-        freshness: 'REALTIME' as DataFreshness,
-        dataStatus: 'LIVE' as DataStatus,
+        freshness: chainStamp.freshness,
+        dataStatus: chainStamp.dataStatus,
       } : null,
     } as OptionStrike)),
     atmStrike,
@@ -399,9 +457,11 @@ export function buildOptionChain(
     totalPutVolume,
     callOiChange,
     putOiChange,
-    timestamp: new Date().toISOString(),
+    // The provider's stamp — the same one every leg carries.
+    timestamp: chainStamp.timestamp,
+    providerTimestamp: chainStamp.timestamp || null,
     dataSource: source,
-    freshness: 'REALTIME' as DataFreshness,
+    freshness: chainStamp.freshness,
   };
 }
 

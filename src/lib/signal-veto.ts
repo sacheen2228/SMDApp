@@ -6,8 +6,21 @@
 //
 // HARD SAFETY (never shadowed, never loosened): stop on the wrong side of entry,
 // R:R below GATE_CONFIG.minOptionRR, expiry-day index option, |delta| below
-// GATE_CONFIG.minAbsDelta, OTM beyond GATE_CONFIG.maxOtmSteps, missing critical
-// fields (fail closed), and the BTST path is left untouched.
+// GATE_CONFIG.minAbsDelta, OTM beyond GATE_CONFIG.maxOtmSteps, a deployment that
+// does not fit the per-trade budget (or 0 lots), the DAY-LOSS / LOSS-STREAK
+// caps and the CONCURRENT-EXPOSURE cap, missing critical fields (fail
+// closed), and the BTST path is left untouched.
+//
+// THE DAY-LOSS CAP IS AN ACCOUNT RULE, NOT A STRATEGY RULE (2026-10-20).
+// Until now only the agent path (evaluate_trade_gate) was day-loss limited —
+// the scanner / Zero-Hero / SDMBot / master-bot Telegram paths were not, so a
+// blown day kept producing alerts. The realised P&L, the loss streak and the
+// open-book exposure are read from the trade journal + the in-memory tracker
+// (risk-management.ts) and are enforced HERE, in the funnel every producer
+// passes through. FAIL CLOSED: when the risk state cannot be read the signal
+// is blocked ("cannot verify today's loss") — an unverifiable limit is not a
+// passed limit. The rules stay local (SQLite + memory): no network calls, so
+// the veto stays safe in the hot path.
 //
 // THE SIDE COMES FROM THE LEVEL GEOMETRY, NEVER FROM THE ACTION STRING.
 // A bought PE is not automatically a short: the stock scanner builds a MIRRORED
@@ -33,6 +46,12 @@
 import { GATE_CONFIG, otmSteps, calibrateConfidence } from "./agent-brain-gate";
 import { parseExpiryToYears, impliedVolFromPremium, calculateGreeks } from "./greeks";
 import { BRAIN_FLAGS } from "./brain-flags";
+import { getLotSizeStrict } from "./symbol-config";
+import {
+  evaluateSignalRiskLimits,
+  modelTradeExposure,
+  type RiskStateSnapshot,
+} from "./risk-management";
 
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]);
 
@@ -61,6 +80,26 @@ export interface VetoInput {
    *  When absent, the default haircut (stated × 0.9) applies — the floor is never
    *  lowered to make the old brain pass. */
   calibrationBand?: { realizedHitPct?: number; n?: number };
+  /** Lots being taken. 0 = NOT tradable → hard block. */
+  lots?: number;
+  /** Contract lot size. When absent it is resolved from the LOCAL symbol master
+   *  (getLotSizeStrict) — never from the network. */
+  lotSize?: number;
+  /** ₹ committed to this trade. Over the per-trade budget → hard block. */
+  deployedAmount?: number;
+  /** ₹ at risk on this trade (when the caller knows it). */
+  riskAmount?: number;
+  /**
+   * The realised-P&L + open-exposure snapshot (risk-management.ts). When it
+   * is present the DAY-LOSS cap, the LOSS-STREAK rule and the CONCURRENT
+   * EXPOSURE cap are enforced as hard fails.
+   */
+  riskState?: RiskStateSnapshot;
+  /**
+   * The risk state could NOT be read → the veto fails closed
+   * ("cannot verify today's loss"). An unverifiable limit is not a passed limit.
+   */
+  riskUnavailable?: boolean;
 }
 
 export interface VetoResult {
@@ -133,8 +172,51 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
   const hard = (msg: string) => { hardFail = true; fails.push(msg); reasons.push(msg); };
   const soft = (msg: string) => { qualityFail = true; warnings.push(msg); reasons.push(msg); };
 
-  // 0. BTST path stays untouched (own risk model, no option expiry/spot)
+  // 0. DAY-LOSS CAP + LOSS STREAK + CONCURRENT EXPOSURE — hard safety.
+  //    This is an ACCOUNT rule, so it applies to EVERY path (BTST included —
+  //    a blown day must not produce another trade from any brain). It runs
+  //    BEFORE the BTST exemption because the BTST exemption only covers the
+  //    option-specific gates (expiry / spot / delta / OTM).
+  //
+  //    The numbers come from ONE place (GATE_CONFIG, via RISK_LIMITS):
+  //      daily loss  ≤ ₹8,000 (2 stops) · weekly ≤ ₹16,000 · monthly ≤ ₹25,000
+  //      2 consecutive losses end the session (the binding rule)
+  //      Σ deployed of the OPEN trades ≤ ₹20,000 · Σ risk ≤ ₹8,000
+  //    FAIL CLOSED: an unreadable risk state blocks the signal.
+  if (input.riskUnavailable) {
+    hard("cannot verify today's loss — the risk state is unavailable (fail closed)");
+  } else if (input.riskState) {
+    const lotSize = Number(input.lotSize) > 0
+      ? Number(input.lotSize)
+      : (getLotSizeStrict(String(input.symbol || "")) ?? null);
+    const modelled = modelTradeExposure({
+      entry: Number.isFinite(entry) ? entry : null,
+      stopLoss: Number.isFinite(sl) ? sl : null,
+      lotSize,
+      lots: input.lots ?? null,
+    });
+    const statedDeployed = Number(input.deployedAmount);
+    const statedRisk = Number(input.riskAmount);
+    const newDeployed = Number.isFinite(statedDeployed) && statedDeployed > 0 ? statedDeployed : modelled.deployed;
+    const newRisk = Number.isFinite(statedRisk) && statedRisk > 0 ? statedRisk : modelled.risk;
+    const riskVerdict = evaluateSignalRiskLimits({
+      state: input.riskState,
+      newDeployed,
+      newRisk,
+    });
+    for (const reason of riskVerdict.reasons) hard(reason);
+  }
+
+  // 0b. BTST path stays untouched (own risk model, no option expiry/spot)
+  //     — but the ACCOUNT-level day-loss rule above still applies to it.
   if (/BTST/i.test(String(input.source || ""))) {
+    if (hardFail) {
+      return {
+        verdict: "BLOCK", reasons, fails, warnings: [],
+        sizeFactor: 0, wouldBlock: true, suppress: true, tier: "NONE", hardFail: true,
+        statedConfidence: conf, calibratedConfidence: conf,
+      };
+    }
     return {
       verdict: "PASS", reasons: ["btst path untouched"], fails: [], warnings: [],
       sizeFactor: 1, wouldBlock: false, suppress: false, tier: "A", hardFail: false,
@@ -218,7 +300,42 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
     if (input.tech.trigger === "against") soft("trigger against the signal");
   }
 
-  // 6. Confidence floor on the CALIBRATED number (quality signal — warning, never a
+  // 6. DEPLOYMENT / LOT — hard safety (fail closed).
+  //    The ₹ committed to ONE trade may never exceed the per-trade budget
+  //    (GATE_CONFIG.tradeBudget) and a trade needs at least ONE lot. The lot
+  //    size comes from the caller or from the LOCAL symbol master
+  //    (getLotSizeStrict) — no network, so it is safe in the hot path.
+  //    Without this an over-sized plan (RELIANCE CE ₹90 × lot 500 = ₹45,000, or
+  //    SBIN CE ₹300 × lot 750 = ₹2,25,000) passed every other gate and reached
+  //    Telegram as a "trade" worth 11× the account.
+  if (isOption) {
+    const budget = GATE_CONFIG.tradeBudget;
+    const lotSize = Number(input.lotSize) > 0
+      ? Number(input.lotSize)
+      : (getLotSizeStrict(String(input.symbol || "")) ?? 0);
+    const statedLots = input.lots != null && Number.isFinite(Number(input.lots))
+      ? Math.floor(Number(input.lots))
+      : undefined;
+
+    if (statedLots != null && statedLots < 1) {
+      hard(`0 lots — the contract does not fit the ₹${budget.toLocaleString("en-IN")} per-trade budget (no trade)`);
+    }
+    const statedDeployed = Number(input.deployedAmount);
+    if (Number.isFinite(statedDeployed) && statedDeployed > budget) {
+      hard(`₹${Math.round(statedDeployed).toLocaleString("en-IN")} deployed > the ₹${budget.toLocaleString("en-IN")} per-trade budget`);
+    }
+    if (lotSize > 0 && Number.isFinite(entry) && entry > 0) {
+      const n = statedLots != null && statedLots >= 1 ? statedLots : 1;
+      const deployment = entry * lotSize * n;
+      if (deployment > budget) {
+        hard(
+          `${n} lot × ${lotSize} × ₹${entry} = ₹${Math.round(deployment).toLocaleString("en-IN")} deployed > the ₹${budget.toLocaleString("en-IN")} per-trade budget`
+        );
+      }
+    }
+  }
+
+  // 7. Confidence floor on the CALIBRATED number (quality signal — warning, never a
   //    hard block). The floor stays at GATE_CONFIG.minConfidence.
   const calibrated = calibrateConfidence(conf, input.calibrationBand);
   if (calibrated < GATE_CONFIG.minConfidence) {
@@ -250,4 +367,45 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
     statedConfidence: conf,
     calibratedConfidence: calibrated,
   };
+}
+
+/**
+ * THE FUNNEL ENTRY POINT — the veto WITH the account-level risk rules.
+ *
+ * `evaluateSignalVeto` is pure and offline (no state, no I/O). This wrapper
+ * adds the ONE thing a pure function cannot do: read today's realised P&L,
+ * the loss streak and the open-book exposure, and hand them to the veto.
+ *
+ *   • the state comes from risk-management.ts — the trade journal (SQLite) +
+ *     the in-memory tracker. Local, no network, cached for a few seconds.
+ *   • FAIL CLOSED: if the state cannot be read the verdict is BLOCK with
+ *     "cannot verify today's loss" — an unverifiable limit is not a passed
+ *     limit, and unlimited trades are exactly what that would allow.
+ *
+ * `loader` is the test seam (and the seam for any other source of truth).
+ */
+export async function evaluateSignalVetoWithRisk(
+  input: VetoInput,
+  loader?: () => Promise<
+    { ok: true; state: RiskStateSnapshot } | { ok: false; reason: string }
+  >,
+): Promise<VetoResult> {
+  let state: RiskStateSnapshot | undefined;
+  let unavailable = false;
+  try {
+    const load = loader ?? (async () => {
+      const { loadRiskState } = await import("./risk-state.server");
+      return loadRiskState(input.nowMs ?? Date.now());
+    });
+    const loaded = await load();
+    if (loaded?.ok) state = loaded.state;
+    else unavailable = true;
+  } catch (err: any) {
+    unavailable = true;
+  }
+  return evaluateSignalVeto({
+    ...input,
+    riskState: state,
+    riskUnavailable: unavailable,
+  });
 }

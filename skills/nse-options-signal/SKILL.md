@@ -107,15 +107,31 @@ Trade only if >= 4 of these 8 groups agree on direction.
 - Greeks gates: < 3 hours to expiry, ATM theta > 10% of premium/day, or VIX > 25 -> NO TRADE or half size + ITM only. TP2 must fit inside the 1-sigma expected move.
 - Breakout validation (step 5 of the agent prompt) failed, or any fakeout red flag is present -> NO TRADE.
 - BSE sources unavailable -> treat as 0 and say so; never fabricate values.
-- Daily loss limit hit (default 3% of capital) -> NO TRADE for the day.
+- Daily loss limit hit (default 40% of the validated capital) -> NO TRADE for the day.
 
 ## Risk rules (hard-coded, agents must not override)
 
-- Risk per trade <= 1% of capital (max 2%). Quantity = risk amount / (entry - SL) / lot size, rounded down.
+- **The rupee risk is a percentage of the amount DEPLOYED in the trade** (the
+  user's rule: "if I spend Rs 10,000 I take Rs 2,000 of risk" -> 20%).  It is
+  NOT a percentage of the account equity.
+- Deployment ceiling = `min(tradeBudget Rs 20,000, the validated account
+  equity)`.  The equity comes from a validated source
+  (`scripts/account_equity.py`); it is never hardcoded.
+- Lots = `min(floor(risk budget / (stop x lot + costs)), floor(deployed budget /
+  (entry x lot + costs)), strategy cap)`, always rounded DOWN.  **Zero lots ->
+  NO TRADE.**
+- The stop is the rupee-risk stop (20% of the entry premium), tightened (never
+  widened) by the underlying invalidation, floored at 8 ticks.  Targets are clean
+  R multiples of that risk (TP1 2R, TP2 3R).
 - Only BUY options (CE or PE), or defined-risk debit spreads (S8) where the short leg is fully covered. Never suggest naked selling.
 - SL is mandatory. Every idea must include SL, TP1, TP2, and an invalidation level on the underlying.
 - Minimum reward:risk = 1:1.5 at TP1, 1:2+ at TP2. If not achievable, NO TRADE.
 - Max 2 open trades per index; do not average losing positions.
+
+The full formula, the flags (`--trade-budget`, `--risk-pct`) and the
+reconciliation with the older "1% of the account equity" spec are in
+`references/agent-rules.md` §7.1.  The app-side authority is
+`src/lib/agent-brain-gate.ts` + `src/lib/option-plan.ts`; the skill mirrors it.
 
 ## Strategy & liquidity rules
 - Every idea must name its strategy (S1-S8) and the exact levels used.

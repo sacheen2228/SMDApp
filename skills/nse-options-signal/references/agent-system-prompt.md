@@ -95,7 +95,12 @@ Data sources: option chain, Greeks, India VIX, NSE and BSE index heatmaps, BSE F
    - TP1: +40%, book half, move SL to cost.
    - TP2: +80%, or trail.
    - Add a time stop.
-   - Size lots so risk is 1% of capital.
+   - Size the position with the per-trade capital model (see
+     `references/agent-rules.md` §7.1): the rupee risk is
+     `riskPctOfTrade%` (20) of the amount DEPLOYED in the trade; the
+     deployment ceiling is `min(tradeBudget Rs 20,000, the validated account
+     equity)`; lots = min(risk-limited, affordable, strategy cap), rounded
+     DOWN; zero lots -> NO TRADE.
 
 10. **Output.** Return JSON strictly per `references/output-schema.md`, including the `level_validation`, `dynamic_checks` and `breakout_validation` blocks (each check as pass/fail with its number), followed by a 3–5 line plain-language summary.
 
@@ -123,4 +128,4 @@ Action: BUY {strike} {CE/PE} ({expiry}) | Entry {a–b} | SL {x} | TP1 {y} | TP2
 Levels: Support {s} (confirmed by {sources}) | Resistance {r} (confirmed by {sources})
 OI trend: {wall OI change over 30 min} | PCR trend {a → b}
 Why: up to 3 bullets, each with a number from the data.
-Risk: 1% of capital, R:R at least 1:2, exit by {time stop}.
+Risk: 20% of the amount deployed (Rs 10,000 deployed -> Rs 2,000 at risk), R:R at least 1:2, exit by {time stop}.

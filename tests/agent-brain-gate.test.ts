@@ -146,9 +146,25 @@ describe("positionSize", () => {
     expect(r.lots).toBe(0);
     expect(r.guidance).toMatch(/tighten|cheaper|spread/i);
   });
-  test("fits when stop is tight enough", () => {
+  test("fits when stop is tight enough (per-trade budget model)", () => {
+    // ₹20,000 deployed, risk = 20% of it (₹4,000); 1 NIFTY lot at a ₹60 stop
+    // risks ₹3,900 and commits ₹19,500 → 1 lot fits.
+    const r = positionSize({ entry: 300, sl: 240, lotSize: 65 });
+    expect(r.lots).toBe(1);
+    expect(r.riskAmount).toBe(4000);
+    expect(r.capitalRequired).toBe(19500);
+  });
+
+  test("the per-trade deployment cap binds (a big capital does not buy a bigger position)", () => {
     const r = positionSize({ capital: 200000, riskPct: 1, entry: 150, sl: 145, lotSize: 75 });
-    expect(r.lots).toBeGreaterThanOrEqual(1);
+    // ₹20,000 deployed cap; 1% of it is ₹200 and one lot risks ₹375 → 0 lots
+    expect(r.lots).toBe(0);
+    expect(r.ok).toBe(false);
+  });
+
+  test("a premium that does not fit the deployment budget yields 0 lots", () => {
+    const r = positionSize({ entry: 900, sl: 700, lotSize: 65 });
+    expect(r.lots).toBe(0);
     expect(r.maxLoss).toBeLessThanOrEqual(r.riskAmount + 1e-6);
   });
   test("entry=sl never divides by zero", () => {

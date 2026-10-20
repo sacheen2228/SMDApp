@@ -12,6 +12,7 @@ const SYMBOL = process.argv[2] || "NIFTY";
 
 const { AGENT_TOOLS, executeTool } = await import(`${ROOT}/src/lib/agent-brain.ts`);
 const { collectHermesContext } = await import(`${ROOT}/src/lib/hermes/context.ts`);
+const { GATE_CONFIG } = await import(`${ROOT}/src/lib/agent-brain-gate.ts`);
 
 // Side-effect tools — never invoke in an audit sweep.
 const SKIP = new Set([
@@ -23,7 +24,13 @@ const SKIP = new Set([
 
 const ARGS: Record<string, any> = {
   calculate_position_size: { entry: 150, sl: 100, lotSize: 75 },
-  strike_selector: { direction: "call", target: 22550, stop: 22350, days: 5, lotSize: 75, capital: 200000 },
+  // The PER-TRADE model (user rule, 2026-10-20): risk = 20% of the amount
+  // DEPLOYED, ≤ ₹20,000 deployed per trade. The audit must exercise the real
+  // capital, not a legacy ₹2L account figure.
+  strike_selector: {
+    direction: "call", target: 22550, stop: 22350, days: 5, lotSize: 75,
+    capital: GATE_CONFIG.capital,
+  },
   answer_trading_question: { question: "what is PCR and how do I read it?" },
   get_cas_analysis: { symbol: SYMBOL },
   get_institutional_positioning: { symbol: SYMBOL },

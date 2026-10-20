@@ -12,15 +12,23 @@ What it does
 
 Usage examples
   python strike_selector.py --spot 25100 --vix 14 --days 3 --direction call \
-      --target 25200 --stop 25070 --capital 200000 --risk-pct 1 --lot-size 75 \
-      --step 50 --hold-days 0.25
+      --target 25200 --stop 25070 --lot-size 75 --step 50 --hold-days 0.25
 
   # With live premiums from the option chain (calibrates IV per strike):
   python strike_selector.py --spot 25100 --vix 14 --days 3 --direction call \
-      --target 25200 --stop 25070 --capital 200000 --lot-size 75 \
+      --target 25200 --stop 25070 --lot-size 75 \
       --chain "25000:190,25050:150,25100:120,25150:90,25200:60"
 
   python strike_selector.py ... --json     # machine-readable output for bots
+
+Capital model (per trade, mirrors GATE_CONFIG in src/lib/agent-brain-gate.ts)
+  deployed_budget = min(trade_budget, capital)      # default: min(20000, 25000) = 20000
+  risk_budget     = deployed_budget * risk_pct / 100  # default: 20% of 20000 = 4000
+  lots            = min(floor(risk_budget / (risk_per_lot + cost_per_lot)),
+                         floor(deployed_budget / (premium_per_lot + cost_per_lot)),
+                         max_lots)
+  Defaults: --capital 25000 --risk-pct 20 --trade-budget 20000 --cost-per-lot 0 --max-lots 0
+  (0 lots => the strike does NOT pass; the reason is reported, never "risk more").
 
 Model notes (be honest about limits)
   - Black-Scholes with flat IV per strike; real chains have skew.
@@ -29,7 +37,13 @@ Model notes (be honest about limits)
   - Premium estimates are only as good as the IV input. Prefer --chain premiums.
   - Educational tool, not financial advice. Verify lot size, expiry and margins.
 """
-import argparse, json, math, sys
+import argparse, json, math, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from capital_model import (  # noqa: E402
+    DEFAULT_CAPITAL, DEFAULT_COST_PER_LOT, DEFAULT_MAX_LOTS, DEFAULT_RISK_PCT_OF_TRADE,
+    DEFAULT_TRADE_BUDGET, build_model, size_lots,
+)
 
 SQRT_2PI = math.sqrt(2 * math.pi)
 
@@ -133,7 +147,10 @@ def analyse(a):
             strikes = [atm - i * a.step for i in range(-a.itm_range, a.otm_range + 1)]
             strikes = sorted(strikes)
 
-    risk_budget = a.capital * a.risk_pct / 100.0
+    # Per-trade capital model (capital_model.py): the risk is a RUPEE amount = a %
+    # of the amount DEPLOYED, and the position must also be AFFORDABLE.
+    model = build_model(a.capital, a.risk_pct, a.trade_budget, a.cost_per_lot, a.max_lots)
+    risk_budget = model["risk_budget"]
     rows = []
     for k in strikes:
         iv = iv_atm
@@ -163,7 +180,9 @@ def analyse(a):
         hbe_dist = (hbe - a.spot) * sign
         hbe_pct_em = hbe_dist / em * 100 if em else float("inf")
         risk_lot = loss * a.lot_size
-        lots = int(risk_budget // risk_lot) if risk_lot > 0 else 0
+        premium_lot = entry * a.lot_size
+        size = size_lots(model, risk_lot, premium_lot)
+        lots = size["lots"]
         mny = (a.spot - k) / a.spot * 100 * sign  # + = ITM
         label = "ATM" if abs(a.spot - k) < a.step / 2 else ("ITM" if mny > 0 else "OTM")
         d = abs(g["delta"])
@@ -174,6 +193,7 @@ def analyse(a):
             "rr_ok": rr >= a.min_rr,
             "size_ok": lots >= 1,
         }
+        fails = [k2.replace("_ok", "") for k2, v in gates.items() if not v]
         rows.append({
             "strike": k, "type": label, "iv_pct": round(iv * 100, 2),
             "entry": round(entry, 2), "delta": round(g["delta"], 3),
@@ -189,8 +209,15 @@ def analyse(a):
             "reward_risk": round(rr, 2), "return_on_premium_pct": round(gain / entry * 100, 1) if entry else 0,
             "p_touch_target": round(p_touch_tgt, 2), "p_touch_stop": round(p_touch_stp, 2),
             "risk_per_lot": round(risk_lot, 0), "lots": lots,
-            "capital_per_lot_premium": round(entry * a.lot_size, 0),
+            "lots_by_risk": size["lots_by_risk"],
+            "lots_by_affordability": size["lots_by_affordability"],
+            "deployed_per_lot": round(premium_lot, 0),
+            "total_deployed": round(size["total_deployed"], 0),
+            "total_risk": round(size["total_risk"], 0),
+            "capital_per_lot_premium": round(premium_lot, 0),
             "gates": gates, "passes": all(gates.values()),
+            "reject_reason": size["reason"] if lots < 1 else "",
+            "failed_gates": fails,
         })
 
     passing = [r for r in rows if r["passes"]]
@@ -205,6 +232,10 @@ def analyse(a):
         ranked = near + rest
     else:
         ranked = []
+    rec = ranked[0] if ranked else None
+    capital_model = dict(model)
+    capital_model["deployed"] = rec["deployed_per_lot"] if rec else 0
+    capital_model["risk"] = rec["risk_per_lot"] if rec else 0
     return {
         "inputs": {k: v for k, v in vars(a).items() if k != "chain"},
         "expected_move_points": round(em, 1),
@@ -213,14 +244,22 @@ def analyse(a):
         "target_points": round(target_pts, 1), "stop_points": round(stop_pts, 1),
         "underlying_reward_risk": round(underlying_rr, 2),
         "target_vs_expected_move_pct": round(target_pts / em * 100, 1) if em else None,
-        "risk_budget_rupees": round(risk_budget, 0),
-        "recommendation": ranked[0] if ranked else None,
+        # the per-trade capital model (see capital_model.py)
+        "capital_model": capital_model,
+        "deployed_budget": round(model["deployed_budget"], 0),
+        "risk_budget": round(risk_budget, 0),
+        "risk_pct_of_trade": model["risk_pct_of_trade"],
+        "deployed": capital_model["deployed"],
+        "risk": capital_model["risk"],
+        "risk_budget_rupees": round(risk_budget, 0),  # kept for older callers
+        "recommendation": rec,
         "ranked_passing": ranked,
         "all_candidates": rows,
         "warnings": ([f"Target needs {round(target_pts/em*100)}% of the 1-sigma expected move over the hold; "
                       "treat as a stretch (roughly a coin-flip or worse)."] if em and target_pts / em > 0.8 else []),
         "note": ("No strike passes all gates. Likely answer: SKIP, tighten the stop, "
-                 "wait for a better level, or consider a debit spread.") if not ranked else "",
+                 "wait for a better level, or consider a debit spread."
+                 if not ranked else ""),
     }
 
 
@@ -232,6 +271,10 @@ def print_report(res):
           f"({res['expected_move_pct']}%) | per day: {res['daily_expected_move_points']} pts")
     print(f"Target {res['target_points']} pts ({res['target_vs_expected_move_pct']}% of expected move) | "
           f"Stop {res['stop_points']} pts | underlying R:R {res['underlying_reward_risk']}")
+    m = res.get("capital_model") or {}
+    print(f"Capital model: deployed Rs {res.get('deployed_budget', 0):,.0f} "
+          f"(= min(trade budget Rs {m.get('trade_budget', 0):,.0f}, capital Rs {m.get('capital', 0):,.0f})) | "
+          f"risk {m.get('risk_pct_of_trade', 0):g}% of deployed = Rs {res.get('risk_budget', 0):,.0f}")
     print(f"Risk budget: Rs {res['risk_budget_rupees']:.0f}\n")
     hdr = f"{'Strike':>8} {'Type':<4} {'Prem':>7} {'Delta':>6} {'Th/d':>6} {'Th%':>5} {'BE%EM':>6} {'@Tgt':>7} {'@Stp':>7} {'R:R':>5} {'Lots':>4}  Pass"
     print(hdr)
@@ -249,9 +292,14 @@ def print_report(res):
     if rec:
         print(f"RECOMMENDED: {rec['strike']:.0f} {rec['type']} | entry ~{rec['entry']} | "
               f"premium stop ~{rec['price_at_stop']} | target ~{rec['price_at_target']} | "
-              f"R:R {rec['reward_risk']} | lots {rec['lots']}")
+              f"R:R {rec['reward_risk']} | lots {rec['lots']} "
+              f"(deployed Rs {rec['total_deployed']:,.0f} | risk Rs {rec['total_risk']:,.0f})")
     else:
         print(res["note"])
+        for r in res.get("all_candidates", []):
+            if r.get("reject_reason"):
+                print(f"  {r['strike']:.0f}: {r['reject_reason']}")
+                break
     print("\nEducational model output (flat-IV Black-Scholes). Verify with live chain; not financial advice.")
 
 
@@ -263,8 +311,16 @@ def main():
     p.add_argument("--direction", choices=["call", "put"], required=True)
     p.add_argument("--target", type=float, required=True, help="underlying target price")
     p.add_argument("--stop", type=float, required=True, help="underlying stop price")
-    p.add_argument("--capital", type=float, default=200000)
-    p.add_argument("--risk-pct", type=float, default=1.0)
+    p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL,
+                   help="trading capital in Rs (default 25000 — the real account capital, NOT Rs 2L)")
+    p.add_argument("--risk-pct", type=float, default=DEFAULT_RISK_PCT_OF_TRADE,
+                   help="risk as a %% of the amount DEPLOYED in the trade (default 20 => Rs 20000 deployed => Rs 4000 at risk)")
+    p.add_argument("--trade-budget", type=float, default=DEFAULT_TRADE_BUDGET,
+                   help="max Rs DEPLOYED per trade (default 20000)")
+    p.add_argument("--cost-per-lot", type=float, default=DEFAULT_COST_PER_LOT,
+                   help="round-trip costs per lot in Rs (brokerage/STT/charges); 0 = not modelled")
+    p.add_argument("--max-lots", type=int, default=DEFAULT_MAX_LOTS,
+                   help="strategy lot cap (0 = no cap)")
     p.add_argument("--lot-size", type=int, default=75, help="VERIFY current lot size with exchange/broker")
     p.add_argument("--step", type=float, default=50, help="strike interval")
     p.add_argument("--hold-days", type=float, default=0.25, help="expected holding time in days (0.25 ~ 1.5-2 hrs of session)")

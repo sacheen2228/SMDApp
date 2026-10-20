@@ -11,10 +11,13 @@ import { analyseGreeks } from "./greeks";
 import { buildLevels } from "./levels";
 import { optionChainScore, fiiScore, bseFiiAdjustment, breadthScore, heatmapScore } from "./scoring";
 import { classifyRegime, pickStrategy } from "./strategy";
+import { GATE_CONFIG } from "../agent-brain-gate";
 
 export interface JarvisConfig {
   agentId: string;
-  riskPctPerTrade: number; // e.g. 0.01
+  /** % of the amount DEPLOYED in the trade (0.20 → ₹10k deployed ⇒ ₹2k risk). */
+  riskPctPerTrade: number;
+  /** Trading capital — it can only SHRINK the per-trade deployment budget. */
   capital: number;
   lotSize: Record<Instrument, number>;
   minScoreToTrade: number; // default 40
@@ -25,8 +28,10 @@ export interface JarvisConfig {
 
 export const DEFAULT_CONFIG: JarvisConfig = {
   agentId: "jarvis",
-  riskPctPerTrade: 0.01,
-  capital: 200000,
+  // PER-TRADE MODEL (user rule, 2026-10-20): risk = 20% of the amount DEPLOYED
+  // (≤ ₹20,000 per trade). The old "1% of a ₹2L account" is gone.
+  riskPctPerTrade: GATE_CONFIG.riskPctOfTrade / 100,
+  capital: GATE_CONFIG.capital,
   lotSize: { NIFTY: 65, BANKNIFTY: 30, FINNIFTY: 60 },
   minScoreToTrade: 40,
   minGroupsAgreeing: 4,

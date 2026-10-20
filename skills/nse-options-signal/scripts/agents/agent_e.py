@@ -9,14 +9,22 @@ Agent E never places an order: it produces a plan.  Rules:
   * lot size from the AUTHORITATIVE contract master (scripts/contract_master.py,
     which mirrors src/lib/symbol-config.ts / the NSE bhavcopy NewBrdLotQty).
     A stock never inherits NIFTY's lot; an unknown lot fails closed.
-  * premium stop 25%-30% of the premium, sitting on the underlying invalidation
-    that Agent B validated (never beyond it)
+  * premium stop: the RUPEE-RISK stop (riskPctOfTrade% of the amount deployed
+    in the trade, which for a long option is riskPctOfTrade% of the entry
+    premium), floored at the tick noise floor and never beyond the underlying
+    invalidation that Agent B validated
   * TP1 reward:risk >= 1:2, TP2 inside the 1-sigma expected move
   * < 3 hours to expiry -> NO TRADE
   * theta > 10% of the premium per day -> NO TRADE
   * VIX > 20 -> halve the size
-  * lots = min(risk-limited (1% of a VALIDATED account equity), affordable,
-    strategy cap), always rounded DOWN; zero lots -> NO TRADE
+  * lots = min(risk-limited (the rupee risk budget), affordable (the deployment
+    budget), strategy cap), always rounded DOWN; zero lots -> NO TRADE
+
+THE CAPITAL MODEL (2026-10-20, mirrors src/lib/agent-brain-gate.ts):
+  deployed budget = min(tradeBudget Rs 20,000, the validated account equity)
+  risk budget     = riskPctOfTrade% (20) x the deployed amount
+  The validated equity is the CEILING of the deployment, never the risk base:
+  the old "1% of a large equity" model made every NIFTY lot unaffordable.
 """
 import os
 import sys
@@ -98,6 +106,27 @@ def run(task):
         vetoes.append(protocol.veto("ACCOUNT_EQUITY_UNAVAILABLE", equity_source or "no validated equity",
                                     "a validated account-equity source"))
 
+    # ---------------------------------------------------------------- deployment budget
+    # The validated equity is the CEILING of the deployment; the rupee risk is a
+    # % of what the trade actually deploys (never a % of the equity).
+    risk_pct = task.get("risk_pct")
+    trade_budget = task.get("trade_budget")
+    budget = option_math.deployment_budget(equity, trade_budget,
+                                           task.get("max_deployment_per_trade"))
+    deployed_budget = budget.get("deployed_budget") or 0.0
+    risk_rupees = option_math.risk_budget(deployed_budget, risk_pct)["risk_budget"]
+    checks["deployment_budget"] = protocol.check(
+        bool(budget.get("ok")) and deployed_budget > 0,
+        "Rs %.0f deployable (equity Rs %.0f, trade budget Rs %.0f, cap Rs %.0f)" % (
+            deployed_budget, budget.get("equity") or 0.0,
+            budget.get("trade_budget") or 0.0, budget.get("deployment_cap") or 0.0),
+        "a deployment budget of min(trade budget, validated equity)")
+    checks["risk_budget"] = protocol.check(
+        bool(budget.get("ok")) and risk_rupees > 0,
+        "Rs %.0f at risk (%.0f%% of the Rs %.0f deployed)" % (
+            risk_rupees, option_math.clamp_risk_pct(risk_pct), deployed_budget),
+        "a rupee risk budget of riskPctOfTrade%% of the deployed amount")
+
     # ---------------------------------------------------------------- invalidation geometry
     level = task.get("valid_level")
     invalidation = task.get("underlying_invalidation")
@@ -111,7 +140,10 @@ def run(task):
     invalidation = float(invalidation)
     is_call = direction == "CE"
     wrong_side = (invalidation >= level) if is_call else (invalidation <= level)
-    buffer_ok = abs(invalidation - level) / level * 100.0 >= INVALIDATION_BUFFER_PCT
+    # the buffer is compared with a 1e-9 tolerance: the orchestrator places the
+    # invalidation at exactly INVALIDATION_BUFFER_PCT beyond the level, and the
+    # percentage is a float (a bare >= would be a coin flip on the rounding)
+    buffer_ok = abs(invalidation - level) / level * 100.0 >= INVALIDATION_BUFFER_PCT - 1e-9
     checks["invalidation"] = protocol.check(
         not wrong_side and buffer_ok,
         "level %.2f -> invalidation %.2f (%.2f%% beyond)" % (level, invalidation, abs(invalidation - level) / level * 100),
@@ -131,6 +163,7 @@ def run(task):
         underlying_invalidation=invalidation, blocking_level=task.get("blocking_level"),
         hours_to_expiry=hours_to_expiry, max_lots=task.get("max_lots"),
         deployment_cap=task.get("max_deployment_per_trade"),
+        trade_budget=task.get("trade_budget"),
         strategy=task.get("strategy"))
     if not plan:
         for reason in reasons:
@@ -149,10 +182,15 @@ def run(task):
     elif not (band_lo <= delta <= band_hi):
         notes.append("delta %.2f is outside the preferred %.2f-%.2f band" % (delta, band_lo, band_hi))
     stop_pct = (plan["entry"] - plan["premium_sl"]) / plan["entry"] * 100.0
+    rupee_pct = option_math.clamp_risk_pct(task.get("risk_pct"))
+    floor_pct = (option_math.CFG["min_stop_ticks"] * option_math.CFG["tick_size"]
+                 / plan["entry"]) * 100.0
     checks["premium_stop"] = protocol.check(
-        option_math.CFG["stop_pct_min"] * 100 - 0.51 <= stop_pct <= option_math.CFG["stop_pct_max"] * 100 + 0.51,
-        "%.1f%% of the premium" % stop_pct, "%.0f%%-%.0f%%" % (
-            option_math.CFG["stop_pct_min"] * 100, option_math.CFG["stop_pct_max"] * 100))
+        stop_pct <= rupee_pct + 0.51 and stop_pct <= option_math.CFG["stop_pct_max"] * 100 + 0.51
+        and stop_pct >= floor_pct - 0.51,
+        "%.1f%% of the premium (the rupee-risk stop: %.0f%% of the deployed amount)" % (
+            stop_pct, rupee_pct),
+        "the rupee-risk stop (<= %.0f%% of the premium), never beyond the invalidation" % rupee_pct)
     rr = plan["option_checks"]["rr_tp1"]
     checks["rr_tp1"] = protocol.check(rr["pass"], rr["value"], ">= 1:2")
     tp2 = plan["option_checks"]["tp2_in_1sigma"]
@@ -171,6 +209,7 @@ def run(task):
         "expiry": plan["expiry"],
         "strike": plan["strike"],
         "option_type": plan["type"],
+        "entry_premium": plan["entry"],
         "entry_zone": plan["entry_range"],
         "stop_loss_premium": plan["premium_sl"],
         "tp1_premium": plan["tp1"],
@@ -184,6 +223,11 @@ def run(task):
         "lot_size": lot_size,
         "lot_size_source": lot_source,
         "risk_inr": plan["risk_inr"],
+        "deployed_inr": plan["deployed_inr"],
+        "deployed_budget_inr": plan["deployed_budget_inr"],
+        "risk_budget_inr": plan["risk_budget_inr"],
+        "risk_pct_of_trade": plan["risk_pct_of_trade"],
+        "stop_points": plan["stop_points"],
         "size_note": plan["size_note"],
         "expected_move_1sigma": plan["expected_move_1sigma"],
         "option_checks": plan["option_checks"],
@@ -193,7 +237,10 @@ def run(task):
     }
     data = {"trade": trade, "plan": plan, "reasons": reasons,
             "account_equity": equity, "account_equity_source": equity_source,
-            "risk_pct": task.get("risk_pct") or option_math.CFG["risk_pct"]}
+            "deployed_budget_inr": deployed_budget,
+            "risk_budget_inr": risk_rupees,
+            "risk_pct": option_math.clamp_risk_pct(task.get("risk_pct")),
+            "trade_budget": trade_budget}
     res = protocol.result("E", direction=direction, vetoes=vetoes, checks=checks, data=data, notes=notes)
     res["trade"] = trade
     return res

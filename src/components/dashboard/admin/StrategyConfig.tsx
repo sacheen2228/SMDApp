@@ -268,14 +268,14 @@ function RiskTabContent({ config, update }: { config: StrategyConfig; update: (p
   return (
     <div className="space-y-3">
       <div className="text-[11px] font-bold text-muted-foreground">RISK</div>
-      <Slider label="Stop Loss %" value={config.risk.slPercent} onChange={v => update("risk.slPercent", v)} min={10} max={60} unit="%" desc="SL as % of premium" />
-      <Slider label="Target 1" value={config.risk.tp1Multiplier} onChange={v => update("risk.tp1Multiplier", v)} min={1} max={3} step={0.1} unit="x" />
-      <Slider label="Target 2" value={config.risk.tp2Multiplier} onChange={v => update("risk.tp2Multiplier", v)} min={1.5} max={5} step={0.1} unit="x" />
-      <Slider label="Target 3" value={config.risk.tp3Multiplier} onChange={v => update("risk.tp3Multiplier", v)} min={2} max={10} step={0.1} unit="x" />
+      <Slider label="Stop Loss %" value={config.risk.slPercent} onChange={v => update("risk.slPercent", v)} min={10} max={35} unit="%" desc="SL as % of premium (20% = the rupee-risk stop)" />
+      <Slider label="Target 1" value={config.risk.tp1Multiplier} onChange={v => update("risk.tp1Multiplier", v)} min={1} max={4} step={0.5} unit="R" desc="TP1 in multiples of the stop distance (house plan: 2R)" />
+      <Slider label="Target 2" value={config.risk.tp2Multiplier} onChange={v => update("risk.tp2Multiplier", v)} min={1.5} max={6} step={0.5} unit="R" desc="TP2 in multiples of the stop distance (house plan: 3R)" />
+      <Slider label="Target 3" value={config.risk.tp3Multiplier} onChange={v => update("risk.tp3Multiplier", v)} min={2} max={8} step={0.5} unit="R" desc="TP3 in multiples of the stop distance (house plan: 4R)" />
       <div className="text-[11px] font-bold text-muted-foreground mt-3">POSITION LIMITS</div>
-      <Slider label="Max Risk Per Trade" value={config.risk.maxRiskPerTrade} onChange={v => update("risk.maxRiskPerTrade", v)} min={0.25} max={5} step={0.25} unit="%" desc="% of capital" />
+      <Slider label="Max Risk Per Trade" value={config.risk.maxRiskPerTrade} onChange={v => update("risk.maxRiskPerTrade", v)} min={5} max={40} step={5} unit="%" desc="% of the amount DEPLOYED (₹20,000 deployed ⇒ ₹4,000 at risk)" />
       <NumInput label="Max Positions" value={config.risk.maxPositions} onChange={v => update("risk.maxPositions", v)} min={1} max={10} />
-      <Slider label="Max Daily Loss" value={config.risk.maxDailyLoss} onChange={v => update("risk.maxDailyLoss", v)} min={1} max={10} unit="%" desc="% of capital" />
+      <Slider label="Max Daily Loss" value={config.risk.maxDailyLoss} onChange={v => update("risk.maxDailyLoss", v)} min={10} max={60} step={5} unit="%" desc="% of the ₹25,000 account (32% = ₹8,000 = two stops)" />
       <div className="text-[11px] font-bold text-muted-foreground mt-3">PROFIT PROTECTION</div>
       <Slider label="Move SL to Cost After" value={config.risk.moveToCostAfter} onChange={v => update("risk.moveToCostAfter", v)} min={10} max={50} unit="%" desc="Profit % to move SL to entry" />
       <Slider label="Trailing Stop Activation" value={config.risk.trailingStopActivation} onChange={v => update("risk.trailingStopActivation", v)} min={20} max={80} unit="%" />

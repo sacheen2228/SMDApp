@@ -451,8 +451,8 @@ export async function handleSDMMessage(message: string, ctx: SDMContext): Promis
           : `Keep your size in check and respect your stops. That's what I'm seeing in ${target} right now.`
         )
         : (language === "hi"
-          ? `ये मेरे टॉप पिक्स हैं। हर ट्रेड में 2% से ज़्यादा रिस्क मत लीजिये। मार्केट आपका इंतज़ार करेगा — धैर्य रखिये।`
-          : `Those are my top picks across the board. Remember: risk per trade stays under 2% of capital. The market will wait for you — patience is what separates the professionals from the rest.`
+          ? `ये मेरे टॉप पिक्स हैं। हर ट्रेड में जितना पैसा लगाओगे, उसका 20% से ज़्यादा रिस्क मत लीजिये (₹20,000 से ज़्यादा एक ट्रेड में मत लगाओ)। मार्केट आपका इंतज़ार करेगा — धैर्य रखिये।`
+          : `Those are my top picks across the board. Remember: risk 20% of the amount you deploy, never more than ₹20,000 in one trade. The market will wait for you — patience is what separates the professionals from the rest.`
         )
       );
 

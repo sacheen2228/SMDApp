@@ -53,6 +53,41 @@ export interface ReplayDeps {
   lotSize: (symbol: string, dateStr: string) => Promise<number | null>;
 }
 
+/**
+ * Production-parity sizing for the replay.
+ *
+ * The replay MUST size trades exactly the way production does, otherwise its
+ * verdicts are measured against a lot count that never happened. Production
+ * calls positionSize() (src/lib/agent-brain-gate.ts) with the account capital
+ * and the model's default risk %, which resolves to the PER-TRADE model:
+ *
+ *   deployed budget = min(₹20,000 per-trade cap, account capital ₹25,000)
+ *   risk budget     = 20% of that deployed budget  (₹4,000)
+ *   lots            = min( floor(riskBudget / riskPerLot),
+ *                         floor(deployedBudget / (premium × lotSize)) )
+ *
+ * The second term is the AFFORDABILITY cap: a ₹350-premium NIFTY option at
+ * 75 qty costs ₹26,250 per lot — more than the ₹20,000 per-trade budget — so
+ * production correctly books 0 lots there.
+ */
+export function productionLots(entry: number, sl: number, lotSize: number): number {
+  return G.positionSize({
+    entry,
+    sl,
+    lotSize,
+    capital: G.GATE_CONFIG.capital,
+    riskPct: G.GATE_CONFIG.defaultRiskPct,
+  }).lots;
+}
+
+/** The formula, in one sentence — used by the report and asserted in tests. */
+export function sizingFormula(): string {
+  const c = G.GATE_CONFIG;
+  const budget = Math.min(c.tradeBudget, c.capital);
+  const risk = (budget * c.riskPctOfTrade) / 100;
+  return `lots = min(floor(₹${Math.round(risk).toLocaleString("en-IN")} risk ÷ risk-per-lot), floor(₹${budget.toLocaleString("en-IN")} deployed ÷ (premium × lot size))) — risk = ${c.riskPctOfTrade}% of the amount DEPLOYED, max ₹${c.tradeBudget.toLocaleString("en-IN")} deployed per trade`;
+}
+
 export interface DeriveResult {
   input?: G.GateInput;
   exclude?: string;
@@ -171,9 +206,16 @@ export async function deriveGateInput(trade: ReplayTrade, deps: ReplayDeps): Pro
   const trigger = triggerLayer(read, dir);
   const lv = suggestLevels(read, read, dir);
 
-  // Lots under production config (capital × max risk% — the gate's own ceiling)
+  // Lots under production config — the SAME positionSize() call the agent
+  // makes (per-trade deployment budget + 20% of the deployed amount at risk).
   const lot = (await deps.lotSize(trade.symbol, istDateStr)) || 75;
-  const ps = G.positionSize({ entry: Number(trade.entryPrice), sl: Number(trade.stopLoss), lotSize: lot, capital: G.GATE_CONFIG.capital, riskPct: G.GATE_CONFIG.maxRiskPct });
+  const ps = G.positionSize({
+    entry: Number(trade.entryPrice),
+    sl: Number(trade.stopLoss),
+    lotSize: lot,
+    capital: G.GATE_CONFIG.capital,
+    riskPct: G.GATE_CONFIG.defaultRiskPct,
+  });
 
   const optionRR = trade.tp1 && trade.entryPrice > (trade.stopLoss as number)
     ? (Number(trade.tp1) - Number(trade.entryPrice)) / (Number(trade.entryPrice) - Number(trade.stopLoss))
@@ -282,7 +324,7 @@ export function summarize(out: ReplayOutcome[]): ReplaySummary {
       "flow + greeksVix layers left UNKNOWN (no historical snapshot recorded per signal) — gate needs 3 of 5 from the other three",
       "delta = Black-Scholes IV solved from the recorded entry premium/spot/expiry (real math, r=7%)",
       "underlying R:R/targetPts = the NEW brain's own 1d structural levels (suggestLevels), not the original trade's plan",
-      `lots computed at GATE max risk ${G.GATE_CONFIG.maxRiskPct}% of ₹${G.GATE_CONFIG.capital} capital (production config)`,
+      `lots computed with the SAME positionSize() call production makes — ${sizingFormula()}`,
       "equity/no-strike trades (BTST etc.) are OUT OF SCOPE — the gate is an options-premium gate",
     ],
   };

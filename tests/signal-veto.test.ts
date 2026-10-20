@@ -10,9 +10,14 @@ const base: VetoInput = {
   action: "BUY CE",
   optionType: "CE",
   strike: 25200,
-  entry: 350,
-  stopLoss: 320,
-  tp1: 420,
+  // The premium must be AFFORDABLE under the per-trade deployment cap: the
+  // veto now blocks a candidate whose ₹ deployment (entry × lot size × lots)
+  // does not fit GATE_CONFIG.tradeBudget. 1 NIFTY lot (65) at ₹150 = ₹9,750 ✓.
+  // (₹350 × 65 = ₹22,750 was over the ₹20,000 cap → the candidate could not
+  //  be traded at all, so the deployment gate blocks it.)
+  entry: 150,
+  stopLoss: 120,
+  tp1: 210,
   confidence: 75, // 75 stated → 68 calibrated (×0.9 haircut) → above the 65 floor
 };
 
@@ -41,14 +46,14 @@ describe("signal-veto (hybrid overlay — old brain generates, new brain only bl
   });
 
   test("blocks option R:R below 1.5", () => {
-    const r = evaluateSignalVeto({ ...base, tp1: 380 }); // (380-350)/30 = 1.0
+    const r = evaluateSignalVeto({ ...base, tp1: 180 }); // (180-150)/30 = 1.0
     expect(r.verdict).toBe("BLOCK");
     expect(r.reasons.join(" ")).toMatch(/R:R/);
     expect(r.sizeFactor).toBe(0);
   });
 
   test("blocks stop at or above entry", () => {
-    const r = evaluateSignalVeto({ ...base, stopLoss: 350 });
+    const r = evaluateSignalVeto({ ...base, stopLoss: 150 });
     expect(r.verdict).toBe("BLOCK");
     expect(r.sizeFactor).toBe(0);
   });

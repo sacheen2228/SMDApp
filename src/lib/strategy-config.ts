@@ -92,19 +92,22 @@ export interface SmartMoneyConfig {
 
 // ─── Risk Management ────────────────────────────────────────────
 export interface RiskConfig {
-  /** Stop loss as % of premium */
+  /** Stop loss as % of the premium (20% = the rupee-risk stop of the house plan) */
   slPercent: number;
-  /** Target 1 as multiplier of premium */
+  /** Target 1 as a multiple of the stop distance (1R) — the house plan uses 2 */
   tp1Multiplier: number;
-  /** Target 2 as multiplier of premium */
+  /** Target 2 as a multiple of the stop distance (1R) — the house plan uses 3 */
   tp2Multiplier: number;
-  /** Target 3 as multiplier of premium */
+  /** Target 3 as a multiple of the stop distance (1R) — the house plan uses 4 */
   tp3Multiplier: number;
-  /** Maximum risk per trade (% of capital) */
+  /**
+   * Maximum risk per trade — a % of the amount DEPLOYED in that trade
+   * (NOT a % of the account). 20 → deploy ₹20,000 ⇒ ₹4,000 at risk.
+   */
   maxRiskPerTrade: number;
   /** Maximum concurrent positions */
   maxPositions: number;
-  /** Maximum daily loss (% of capital) */
+  /** Maximum daily loss (% of the ₹25,000 account — 32% = ₹8,000 = two stops) */
   maxDailyLoss: number;
   /** Trailing stop activation (% profit) */
   trailingStopActivation: number;
@@ -253,13 +256,17 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
     stopHuntSensitivity: 0.5,
   },
   risk: {
-    slPercent: 35,
-    tp1Multiplier: 1.5,
-    tp2Multiplier: 2.2,
-    tp3Multiplier: 3.5,
-    maxRiskPerTrade: 1,
+    // THE HOUSE PLAN (2026-10-20): the stop is a rupee risk (20% of the amount
+    // deployed) and the targets are 2R / 3R / 4R of it.
+    slPercent: 20,
+    tp1Multiplier: 2,
+    tp2Multiplier: 3,
+    tp3Multiplier: 4,
+    // 20% of the amount DEPLOYED (₹20,000 deployed ⇒ ₹4,000 at risk)
+    maxRiskPerTrade: 20,
     maxPositions: 3,
-    maxDailyLoss: 3,
+    // 32% of the ₹25,000 account = ₹8,000 = two stops
+    maxDailyLoss: 32,
     trailingStopActivation: 40,
     moveToCostAfter: 20,
     bookPartialAt1: 50,

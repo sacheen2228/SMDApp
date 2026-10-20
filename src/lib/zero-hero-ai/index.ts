@@ -6,6 +6,7 @@
 // Orchestrates all sub-engines into a complete trade decision pipeline
 
 import { getExpiryData } from '../expiry-engine';
+import { GATE_CONFIG } from '../agent-brain-gate';
 import { marketRegimeEngine, MarketRegimeInput } from './market-regime-engine';
 import { optionChainEngine, OptionChainInput } from './option-chain-engine';
 import { smartMoneyEngine, SmartMoneyInput } from './smart-money-engine';
@@ -118,10 +119,11 @@ export function runZeroHeroEngine(input: ZeroHeroInput): ZeroHeroOutput {
     entryPremium: atmPremium,
   });
 
-  // 9. Position Size Calculator
+  // 9. Position Size Calculator — PER-TRADE MODEL: risk = 20% of the amount
+  //    DEPLOYED in the trade (≤ ₹20,000), never a % of an account.
   const positionSize = positionSizeCalculator({
-    capital: input.capital || 100000,
-    riskPercent: input.riskPercent || 2,
+    capital: input.capital || GATE_CONFIG.capital,
+    riskPercent: input.riskPercent || GATE_CONFIG.riskPctOfTrade,
     entryPremium: atmPremium,
     stopLossPremium: atmPremium * 0.5,
     lotSize: expiry?.lot_size || 75,
@@ -129,7 +131,7 @@ export function runZeroHeroEngine(input: ZeroHeroInput): ZeroHeroOutput {
     probProfit: probability.prob_profit,
   });
 
-  // 10. Entry/TP/SL Engine
+  // 10. Entry/TP/SL Engine — stop = rupee risk, targets = 2R/3R/4R
   const entryTPSL = entryTPSLEngine({
     entryPremium: atmPremium,
     spot,
@@ -144,6 +146,8 @@ export function runZeroHeroEngine(input: ZeroHeroInput): ZeroHeroOutput {
     expected_move: marketRegime.expected_range,
     instrument,
     expiry_mode: expiry?.expiry_mode || 'STANDARD',
+    lotSize: expiry?.lot_size || 75,
+    deployedAmount: GATE_CONFIG.tradeBudget,
   });
 
   // 11. Trade Execution

@@ -1,6 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Capital Manager — ₹15K → ₹1L Challenge
 // FIXED: lot sizes, drawdown, position sizing for small accounts
+//
+// NOTE — this is a SEPARATE, SELF-CONTAINED paper-challenge account (its own
+// starting capital, its own drawdown stops). It is NOT the live trading
+// capital and it is NOT the per-trade risk base of the option engines:
+//   • the per-trade model (risk = 20% of the amount DEPLOYED, ≤ ₹20,000
+//     deployed per trade) lives in GATE_CONFIG + positionSize()
+//     (src/lib/agent-brain-gate.ts) and is what every live engine uses;
+//   • the challenge below risks at most 10% of its own ₹15,000 account
+//     (₹1,500) while deploying at most 75% of it (₹11,250) — i.e. ~10% of
+//     the amount deployed, always INSIDE the 20%-of-deployed ceiling.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface CapitalConfig {

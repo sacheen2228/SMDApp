@@ -6,6 +6,7 @@ import type { TradeRecord, TradeGrade } from "@/types/sdm";
 import { db } from "@/lib/db";
 import { validateCandidateTrade } from "@/lib/trade-validator-gate";
 import { acquireTradeLock, releaseTradeLock } from "@/lib/active-trade-lock";
+import { GATE_CONFIG, positionSize } from "@/lib/agent-brain-gate";
 
 // ─── State (module-level) ────────────────────────────────────────
 let trades: TradeRecord[] = [];
@@ -181,6 +182,17 @@ export async function addTrade(
 
   trades.push(trade);
 
+  // PER-TRADE MODEL: record the LOTS the trade is actually booked with and
+  // the ₹ at risk (20% of the amount deployed, ≤ ₹20,000 deployed).
+  // It used to write the CONTRACT lot size as the position size and 0 risk,
+  // which made the backtest replay the wrong lot count.
+  const ps = positionSize({
+    entry,
+    sl,
+    lotSize,
+    capital: GATE_CONFIG.capital,
+  });
+
   // Persist to DB (fire-and-forget)
   db.trade
     .create({
@@ -196,8 +208,8 @@ export async function addTrade(
         qualityGrade: grade,
         aiReasonSnapshot: reason,
         status: "OPEN",
-        riskPerTrade: 0,
-        positionSize: lotSize,
+        riskPerTrade: ps.maxLoss,
+        positionSize: ps.lots,
         stopLoss: sl,
         target1: tp1,
         target2: tp2,

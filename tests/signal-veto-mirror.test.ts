@@ -179,9 +179,10 @@ describe("veto — the other hard gates did not move", () => {
   test("the minimum R:R gate is still the configured one", () => {
     expect(GATE_CONFIG.minOptionRR).toBe(1.5);
     // R:R exactly 1.5 → allowed (the gate is "below 1.5 blocks")
-    const r = evaluateSignalVeto({ ...MIRRORED_PE, entry: 100, stopLoss: 110, tp1: 85 });
+    // NIFTY (lot 65) at ₹100 = ₹6,500 → inside the ₹20,000 per-trade budget.
+    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 85 });
     expect(r.verdict).toBe("PASS");
-    const bad = evaluateSignalVeto({ ...MIRRORED_PE, entry: 100, stopLoss: 110, tp1: 85.01 });
+    const bad = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 85.01 });
     expect(bad.verdict).toBe("BLOCK");
   });
 });
