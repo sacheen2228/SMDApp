@@ -94,7 +94,7 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
   const [optionLoading, setOptionLoading] = useState(false);
 
   useEffect(() => {
-    if (!optionPlan && !optionLoading) {
+    if (expanded && !optionPlan && !optionLoading) {
       setOptionLoading(true);
       fetch(`/api/scanner?symbol=${c.symbol}&live=true`, { signal: AbortSignal.timeout(20000) })
         .then(r => r.json())
@@ -105,7 +105,7 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
         .catch(() => setOptionPlan(null))
         .finally(() => setOptionLoading(false));
     }
-  }, [c.symbol, optionPlan, optionLoading]);
+  }, [expanded, c.symbol, optionPlan, optionLoading]);
 
   const checkDepth = async (symbol: string) => {
     setDepthLoading(true);
@@ -193,10 +193,10 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
           )}
         </TableCell>
         <TableCell className="text-center text-[10px]">
-          {optionLoading ? '...' : optionPlan ? (
+          {optionLoading ? '...' : expanded && optionPlan ? (
             <span className="text-emerald-600 font-semibold">{optionPlan.optionType} {optionPlan.strike}</span>
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <span className="text-muted-foreground">Expand</span>
           )}
         </TableCell>
       </TableRow>
