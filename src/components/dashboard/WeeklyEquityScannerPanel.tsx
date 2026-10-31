@@ -176,10 +176,13 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
             <span className="text-muted-foreground text-[10px]">—</span>
           )}
         </TableCell>
+        <TableCell className="text-center text-[10px]">
+          <span className="text-muted-foreground">—</span>
+        </TableCell>
       </TableRow>
       {expanded && (
         <TableRow className="bg-muted/20">
-          <TableCell colSpan={20} className="p-3">
+          <TableCell colSpan={21} className="p-3">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px]">
               <div className="space-y-1">
                 <div className="flex items-center gap-1 font-bold text-emerald-500">
@@ -517,6 +520,7 @@ export const WeeklyEquityScannerPanel = memo(function WeeklyEquityScannerPanel()
                   <TableHead className="text-center" title="Stage 3 — anchored VWAP position">Anch.</TableHead>
                   <TableHead className="text-center" title="Stage 3 — volume profile value area">Val. Area</TableHead>
                   <TableHead className="text-center" title="Stage 4 — rocket move stage">Rocket</TableHead>
+                  <TableHead className="text-center" title="Option plan for the swing setup">Option</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
