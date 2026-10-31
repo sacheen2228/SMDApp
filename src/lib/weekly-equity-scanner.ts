@@ -413,8 +413,9 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     const entryLow = Math.max(price * 0.985, support);
     const entryHigh = price * 1.015;
     const stopLoss = Math.max(support * 0.98, price - 1.6 * atr);
-    const target1 = resistance > price ? resistance : price + 2.2 * atr;
-    const target2 = price + 3.5 * atr;
+    const minTarget1 = price + 2.2 * atr;
+    const target1 = Math.max(resistance, minTarget1);
+    const target2 = Math.max(price + 3.5 * atr, target1 + 1.5 * atr);
     const risk = price - stopLoss;
     const rr = risk > 0 ? (target1 - price) / risk : 0;
 

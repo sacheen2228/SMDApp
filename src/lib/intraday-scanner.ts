@@ -11,6 +11,7 @@ import { recordScannerResult, type ScannerResultInput } from "./market/record-sc
 import { recordSignal } from "./trade-audit-client";
 import { analyzeEquityCash } from "./equity-cash-engine";
 import type { OptionChainSnapshot, TradePlan } from "./auction-types";
+import { analyzeMarketDirection as analyzeMarketDirectionReal } from "./market-direction-analyzer";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -92,6 +93,10 @@ export interface StockCandidate {
   holdingTime: string;
   grade: "A+" | "A" | "B+" | "B" | "C" | "D";
   conviction: "HIGH" | "MEDIUM" | "LOW";
+  /** One-word setup label derived from the signal engine + technicals. */
+  strategyType: "BREAKOUT" | "PULLBACK" | "TREND_CONTINUATION" | "REVERSAL" | "RANGE";
+  /** The option expression of this view (or why there is none). */
+  optionStrategy: string;
   reasons: string[];
   technicalSummary: string;
   optionsSummary: string;
@@ -217,9 +222,16 @@ export function generateMonthlyOptionTrade(
   symbol: string,
   price: number,
   direction: "BULLISH" | "BEARISH" | "NEUTRAL",
-  chain?: OptionChainSnapshot | null
+  chain?: OptionChainSnapshot | null,
+  engineScore = 0,
+  engineDirection?: "LONG" | "SHORT" | "NO_TRADE"
 ): MonthlyOptionTrade | undefined {
   if (direction === "NEUTRAL") return undefined;
+  // Unify decision: when engine is confident, direction must agree with engine
+  if (engineScore >= 60 && engineDirection && engineDirection !== "NO_TRADE") {
+    const engineAgree = (direction === "BULLISH" && engineDirection === "LONG") || (direction === "BEARISH" && engineDirection === "SHORT");
+    if (!engineAgree) return undefined;
+  }
 
   const monthly = getNextMonthlyExpiry(symbol);
   if (!monthly) return undefined;
@@ -229,6 +241,12 @@ export function generateMonthlyOptionTrade(
   // Real Breeze chain available → use the real ATM premium, real strike and
   // real IV instead of guessing.
   if (chain && chain.strikes.length > 0 && chain.atmStrike > 0) {
+    // Validation gate: strike must be reasonably ATM (within ±5% of spot) and chain must be recent
+    const strikeDistPct = Math.abs(chain.atmStrike - price) / price * 100;
+    if (strikeDistPct > 5) {
+      // Strike too far OTM/ITM — do not fabricate a plan
+      return undefined;
+    }
     const atmRow = chain.strikes.find(s => s.strike === chain.atmStrike);
     const leg = atmRow ? (optionType === "CE" ? atmRow.ce : atmRow.pe) : null;
     const premium = leg && leg.ltp > 0 ? leg.ltp : 0;
@@ -260,7 +278,7 @@ export function generateMonthlyOptionTrade(
     const target3 = plan.targets[2] ?? target2;
 
     const label = chain.expiry || monthly.label || monthly.date;
-    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹{target3}+${knownLot === null ? " | LOT SIZE UNKNOWN — per-unit plan" : ""}`;
+    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}${knownLot === null ? " | LOT SIZE UNKNOWN — per-unit plan" : ""}`;
 
     return {
       strike: chain.atmStrike,
@@ -283,92 +301,59 @@ export function generateMonthlyOptionTrade(
 }
 
 // ─── Market Direction Analysis ────────────────────────────────────
-export function analyzeMarketDirection(config: ScannerConfig): MarketDirection {
-  const { spotPrice, vix, pcr, maxPain, totalCallOI, totalPutOI } = config;
+// D-4 remediation: delegate to real-candle multi-timeframe analyzer.
+// The old PCR-only + simulated breadth logic is retained only as a
+// graceful fallback when no candle data is available — it never fabricates
+// indicators or pretends breadth from PCR.
+export function analyzeMarketDirection(config: ScannerConfig, marketData?: ScannerMarketData): MarketDirection {
+  const { spotPrice, vix, pcr, maxPain } = config;
 
-  let trend: MarketDirection["trend"] = "SIDEWAYS";
-  let score = 50;
-  let details = "";
-
-  // PCR Analysis — pcr can be null when option chain data is missing
-  const pcrOk = typeof pcr === "number" && Number.isFinite(pcr);
-  if (!pcrOk) {
-    details = "PCR unavailable — option chain data missing";
-  } else if (pcr > 1.3) {
-    trend = "BULLISH";
-    score += 15;
-    details = `Strong put writing (PCR ${pcr.toFixed(2)}) indicates bullish sentiment`;
-  } else if (pcr > 1.1) {
-    trend = "BULLISH";
-    score += 8;
-    details = `Mildly bullish PCR ${pcr.toFixed(2)} — put writers active`;
-  } else if (pcr < 0.7) {
-    trend = "BEARISH";
-    score -= 15;
-    details = `Strong call writing (PCR ${pcr.toFixed(2)}) indicates bearish sentiment`;
-  } else if (pcr < 0.9) {
-    trend = "BEARISH";
-    score -= 8;
-    details = `Mildly bearish PCR ${pcr.toFixed(2)} — call writers active`;
-  } else {
-    details = `Neutral PCR ${pcr.toFixed(2)} — balanced market`;
+  // Pull daily candles for the index symbol if provided
+  const dailyCandles = marketData?.dailyCandles?.get(config.symbol) ?? [];
+  // Intraday candles are optional; scanner currently supplies daily only
+  const intradayCandles: Record<string, Candle[]> = {};
+  if (marketData?.quoteFallback) {
+    // No intraday mapping yet — leave empty
   }
 
-  // VIX Analysis — vix can also be null (same missing-data condition as pcr)
-  const vixOk = typeof vix === "number" && Number.isFinite(vix);
-  if (!vixOk) {
-    // skip VIX scoring — no data, no fabrication
-  } else if (vix > 25) {
-    trend = "VOLATILE";
-    score -= 10;
-    details += `. High VIX (${vix.toFixed(1)}) — expect big moves, wider stops needed`;
-  } else if (vix > 18) {
-    details += `. Elevated VIX (${vix.toFixed(1)}) — moderate volatility`;
-  } else if (vix < 12) {
-    score += 5;
-    details += `. Low VIX (${vix.toFixed(1)}) — calm market, good for momentum`;
-  }
+  // Breadth is not computed here to avoid fabricating numbers.
+  // UI computes breadth from scanned stocks; we return a placeholder.
+  const breadthInput = undefined as undefined;
 
-  // Max Pain Proximity
-  const distToMP = Math.abs(spotPrice - maxPain) / spotPrice * 100;
-  if (distToMP < 0.5) {
-    details += `. Spot very close to Max Pain — expect breakout`;
-    score += 5;
-  } else if (distToMP > 2) {
-    details += `. Spot ${distToMP.toFixed(1)}% from Max Pain — mean reversion likely`;
-  }
+  const real = analyzeMarketDirectionReal({
+    spotPrice,
+    vix: typeof vix === "number" && Number.isFinite(vix) ? vix : null,
+    pcr: typeof pcr === "number" && Number.isFinite(pcr) ? pcr : null,
+    maxPain,
+    totalCallOI: config.totalCallOI,
+    totalPutOI: config.totalPutOI,
+    dailyCandles,
+    intradayCandles: Object.keys(intradayCandles).length ? intradayCandles : undefined,
+    breadth: breadthInput,
+  });
 
-  // Nifty Trend (simulated based on spot vs max pain)
-  const niftyTrend = spotPrice > maxPain ? "Bullish" : spotPrice < maxPain ? "Bearish" : "Neutral";
+  // Map real result to legacy MarketDirection shape
+  const niftyTrend = real.trend.includes("BULLISH") ? "Bullish" : real.trend.includes("BEARISH") ? "Bearish" : "Neutral";
+  const breadthLabel =
+    real.multiTimeframe.breadth === "ADVANCING" ? "Advancing (60%+ stocks up)"
+    : real.multiTimeframe.breadth === "DECLINING" ? "Declining (60%+ stocks down)"
+    : "Mixed";
 
-  // Bank Nifty (correlated with Nifty)
-  const bankNiftyTrend = niftyTrend;
-
-  // Breadth (simulated) — null pcr must not coerce to 0 and fake "Declining"
-  const breadth = !pcrOk ? "Mixed (no PCR data)" : pcr > 1.1 ? "Advancing (60%+ stocks up)" : pcr < 0.9 ? "Declining (60%+ stocks down)" : "Mixed";
-
-  // Global Cues
-  const globalCues = !vixOk ? "Global cues unavailable" : vix > 20 ? "Global uncertainty elevated" : "Global markets supportive";
-
-  // Cap score
-  score = Math.max(0, Math.min(100, score));
-
-  // Final trend classification
-  if (score >= 75) trend = "STRONG_BULLISH";
-  else if (score >= 60) trend = "BULLISH";
-  else if (score >= 45) trend = "SIDEWAYS";
-  else if (score >= 30) trend = "BEARISH";
-  else trend = "STRONG_BEARISH";
+  // If we had no candles, force neutral with explicit note so no fabricated trend propagates
+  const noData = dailyCandles.length < 10;
+  const trend = noData ? "SIDEWAYS" : real.trend;
+  const score = noData ? 50 : real.score;
+  const details = noData ? "insufficient candle data — direction unavailable (no trend invented)" : real.details;
 
   return {
     trend,
     score,
     details,
     niftyTrend,
-    bankNiftyTrend,
-    vixLevel: !vixOk ? "Unknown" : vix > 20 ? "High" : vix > 14 ? "Moderate" : "Low",
-    breadth,
-    globalCues,
+    bankNiftyTrend: niftyTrend,
+    vixLevel: vix == null || !Number.isFinite(vix) ? "Unknown" : vix > 20 ? "High" : vix > 14 ? "Moderate" : "Low",
+    breadth: breadthLabel,
+    globalCues: vix == null || !Number.isFinite(vix) ? "Global cues unavailable" : vix > 20 ? "Global uncertainty elevated" : "Global markets supportive",
   };
 }
 
@@ -387,6 +372,41 @@ export function analyzeSectors(marketDirection: MarketDirection): SectorStrength
   });
 
   return sectorData;
+}
+
+/**
+ * Real sector strength from the scanned candidates themselves: the average
+ * session move of the sector's own stocks, mapped to 0-100. `analyzeSectors`
+ * has only the market-wide context (no per-sector quotes), so it returns a
+ * flat 50; this derives the real number once the per-stock quotes are in and
+ * must be applied AFTER `generateCandidates`.
+ */
+export function computeSectorStrength(candidates: StockCandidate[]): SectorStrength[] {
+  const bySector = new Map<string, StockCandidate[]>();
+  for (const c of candidates) {
+    const list = bySector.get(c.sector) || [];
+    list.push(c);
+    bySector.set(c.sector, list);
+  }
+  const order = [...SECTOR_ORDER];
+  for (const s of bySector.keys()) if (!order.includes(s)) order.push(s);
+  return order.map((sector): SectorStrength => {
+    const list = bySector.get(sector) || [];
+    if (!list.length) {
+      return { sector, strength: 50, change: 0, leadingStocks: [], laggards: [] };
+    }
+    const avg =
+      list.reduce((sum, c) => sum + (Number.isFinite(c.changePct) ? c.changePct : 0), 0) / list.length;
+    const sorted = [...list].sort((a, b) => b.changePct - a.changePct);
+    return {
+      sector,
+      // ±5% session move ⇒ the extreme ends of the 0-100 band.
+      strength: Math.max(0, Math.min(100, Math.round(50 + avg * 5))),
+      change: Math.round(avg * 100) / 100,
+      leadingStocks: sorted.slice(0, 3).map((c) => c.symbol),
+      laggards: sorted.slice(-3).reverse().map((c) => c.symbol),
+    };
+  });
 }
 
 // ─── Yahoo Finance Price + Candle Fetcher ─────────────────────────
@@ -611,7 +631,7 @@ export async function generateCandidates(
     const histVols = candleVols.slice(0, -1);
     const avgVolume = histVols.length
       ? Math.round(histVols.reduce((s, v) => s + v, 0) / histVols.length)
-      : Math.round(volume * 0.8); // graceful fallback only
+      : volume; // no history → neutral RVOL
     const rvol = avgVolume > 0 ? volume / avgVolume : 1;
 
     // Technicals — computed from REAL 3mo daily OHLC candles via Yahoo Finance.
@@ -805,37 +825,58 @@ export async function generateCandidates(
     // Trade setup — use the real engine's structural levels (VAH/VAL/POC,
     // swing-based SL, profile targets) when it produced a confident plan;
     // otherwise fall back to ATR-based levels.
+    //
+    // THE HOUSE GEOMETRY (one rule, every path): the STOP is the risk and the
+    // TARGETS are clean R multiples of it. The old code took the stop from the
+    // engine's swing structure and the targets from the engine's VOLUME-PROFILE
+    // levels — two different scales — so a nearby profile target could sit
+    // CLOSER to entry than the stop (TRENT printed R:R 1:0.2). Targets are now
+    // DERIVED from the stop distance and CAPPED to a reachable band: TP1 = 2R
+    // (engine level accepted in 1.5R–2.5R), TP2 = 3R (2.5R–4R). A structural
+    // level 9R out is not a target — the option cannot reach it in a session.
     const atrFloor = Math.max(atr, basePrice * 0.015);
     let entry: number, stopLoss: number, target1: number, target2: number, riskReward: number;
+    const targetSign = direction === "BEARISH" ? -1 : 1;
+
     if (engineBest && engineDirection !== "NO_TRADE") {
       entry = engineBest.entry.aggressive || basePrice;
-      stopLoss = engineBest.stopLoss.price || (direction === "BULLISH" ? entry - atrFloor * 1.5 : entry + atrFloor * 1.5);
-      target1 = engineBest.targets[0]?.price || (direction === "BULLISH" ? entry + atrFloor * 2 : entry - atrFloor * 2);
-      target2 = engineBest.targets[1]?.price || (direction === "BULLISH" ? entry + atrFloor * 3 : entry - atrFloor * 3);
+      const engStop = engineBest.stopLoss.price || 0;
+      const atrStop = direction === "BULLISH" ? entry - atrFloor * 1.5 : entry + atrFloor * 1.5;
+      // Keep the engine's structural stop only when it is on the CORRECT side of
+      // entry; otherwise use the ATR stop.
+      stopLoss =
+        engStop > 0 &&
+        (direction === "BULLISH" ? engStop < entry : engStop > entry)
+          ? engStop
+          : atrStop;
 
-      // Belt-and-suspenders: enforce direction-correct levels
-      if (direction === "BULLISH") {
-        if (target1 <= entry) target1 = entry + atrFloor * 2;
-        if (target2 <= target1) target2 = entry + atrFloor * 3;
-        if (stopLoss >= entry) stopLoss = entry - atrFloor * 1.5;
-      } else if (direction === "BEARISH") {
-        if (target1 >= entry) target1 = entry - atrFloor * 2;
-        if (target2 >= target1) target2 = entry - atrFloor * 3;
-        if (stopLoss <= entry) stopLoss = entry + atrFloor * 1.5;
-      }
-
-      riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
+      // ── R ladder capped to a REACHABLE band ──
+      // The stop is FINAL here (engine structural stop, or ATR when it sat on
+      // the wrong side). The profile targets can sit 9R away — a move the
+      // option will not make in the session (ASIANPAINT printed R:R 1:9.1,
+      // PIDILITIND 1:6.7). TP1 = 2R (accept the engine level only within
+      // 1.5R–2.5R), TP2 = 3R (accept 2.5R–4R). Nothing beyond 4R is quoted.
+      const riskDist = Math.abs(entry - stopLoss);
+      const engT1d = engineBest.targets[0]?.price ? Math.abs(engineBest.targets[0].price - entry) : 0;
+      const engT2d = engineBest.targets[1]?.price ? Math.abs(engineBest.targets[1].price - entry) : 0;
+      const tp1d = engT1d >= riskDist * 1.5 && engT1d <= riskDist * 2.5 ? engT1d : riskDist * 2;
+      const tp2d = engT2d >= riskDist * 2.5 && engT2d <= riskDist * 4 ? engT2d : riskDist * 3;
+      target1 = entry + targetSign * tp1d;
+      target2 = entry + targetSign * Math.max(tp2d, tp1d + riskDist);
+      riskReward = riskDist > 0 ? tp1d / riskDist : 0;
     } else if (direction === "BULLISH") {
       entry = basePrice;
       stopLoss = basePrice - atrFloor * 1.5;
-      target1 = basePrice + atrFloor * 2;
-      target2 = basePrice + atrFloor * 3;
+      const riskDist = Math.abs(entry - stopLoss);
+      target1 = basePrice + riskDist * 2;
+      target2 = basePrice + riskDist * 3;
       riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     } else if (direction === "BEARISH") {
       entry = basePrice;
       stopLoss = basePrice + atrFloor * 1.5;
-      target1 = basePrice - atrFloor * 2;
-      target2 = basePrice - atrFloor * 3;
+      const riskDist = Math.abs(entry - stopLoss);
+      target1 = basePrice - riskDist * 2;
+      target2 = basePrice - riskDist * 3;
       riskReward = Math.abs(target1 - entry) / Math.abs(entry - stopLoss);
     } else {
       // NEUTRAL: ATR-based bands with mild RSI bias so levels never collapse
@@ -874,13 +915,30 @@ export async function generateCandidates(
 
     // Monthly option trade recommendation — uses the REAL Breeze chain (real
     // ATM premium/strike/IV) when available, else a clearly-labelled estimate.
-    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction, chain);
+    // Unified decision: only emit a plan when engine and technical agree (when engine is confident).
+    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction, chain, engineScore, engineDirection);
 
     // Volume summary
     const volumeSummary = `Vol ${formatOI(volume)} | Avg ${formatOI(avgVolume)} | RVOL ${rvol.toFixed(1)}x`;
 
     // Holding time
     const holdingTime = adx > 30 ? "2-4 hours" : "1-2 hours";
+
+    // Strategy label — what setup is this, in one word.
+    const setupUpper = (engineSetup || "").toUpperCase();
+    let strategyType: StockCandidate["strategyType"] = "RANGE";
+    if (/BREAKOUT|ORB|EXPANSION/.test(setupUpper)) strategyType = "BREAKOUT";
+    else if (/RECLAIM|PULLBACK|RETEST|SWEEP/.test(setupUpper)) strategyType = "PULLBACK";
+    else if (/REVERSAL|CHOCH|CHoCH/.test(setupUpper)) strategyType = "REVERSAL";
+    else if (direction === "BULLISH" && ema9 > ema21 && ema21 > ema50) strategyType = "TREND_CONTINUATION";
+    else if (direction === "BEARISH" && ema9 < ema21 && ema21 < ema50) strategyType = "TREND_CONTINUATION";
+    else if (direction !== "NEUTRAL" && (rsi > 70 || rsi < 30)) strategyType = "REVERSAL";
+    else if (direction !== "NEUTRAL") strategyType = "TREND_CONTINUATION";
+
+    // The option expression of this view.
+    const optionStrategy = monthlyOptionTrade
+      ? `${monthlyOptionTrade.direction === "BUY" ? "Buy" : "Sell"} ${monthlyOptionTrade.strike} ${monthlyOptionTrade.optionType}${monthlyOptionTrade.expiryLabel ? ` (${monthlyOptionTrade.expiryLabel})` : ""}`
+      : "No option plan — chain unavailable";
 
     // Institutional activity (from real volume data)
     const institutionalActivity = rvol > 2.0 ? "High volume anomaly detected" :
@@ -932,6 +990,8 @@ export async function generateCandidates(
       holdingTime,
       grade,
       conviction,
+      strategyType,
+      optionStrategy,
       reasons,
       technicalSummary,
       optionsSummary,
@@ -961,16 +1021,40 @@ export async function runIntradayScan(
   marketData?: ScannerMarketData
 ): Promise<ScanResult> {
   // Step 1: Market Direction
-  const marketDirection = analyzeMarketDirection(config);
+  const marketDirection = analyzeMarketDirection(config, marketData);
 
-  // Step 2: Sector Strength
-  const sectors = analyzeSectors(marketDirection);
+  // Step 2: Sector Strength (placeholder — real values come from the scan below)
+  const seedSectors = analyzeSectors(marketDirection);
 
-  // Step 3-8: Generate and score candidates (live Yahoo data only)
-  const { candidates, liveCount, total, dataSources } = await generateCandidates(config, marketDirection, sectors, optionChains, marketData);
+  // Step 3-8: Generate and score candidates (live exchange data only)
+  const { candidates, liveCount, total, dataSources } = await generateCandidates(config, marketDirection, seedSectors, optionChains, marketData);
 
-  // Filter — show all candidates, sector filter applied in UI
-  const highProbCandidates = candidates.filter(c => c.totalScore >= 20);
+  // Step 2 (redo): REAL sector strength from the scanned quotes, then re-score
+  // every candidate's sector term (and the grade/conviction that depend on it).
+  const sectors = computeSectorStrength(candidates);
+  const sectorBy = new Map(sectors.map((s) => [s.sector, s]));
+  for (const c of candidates) {
+    const s = sectorBy.get(c.sector);
+    if (!s || s.strength === c.sectorScore) continue;
+    c.sectorScore = s.strength;
+    c.totalScore = Math.round(
+      (c.marketScore * 0.05) +
+      (c.sectorScore * 0.10) +
+      (c.technicalScore * 0.25) +
+      (c.engineScore * 0.35) +
+      (c.optionsScore * 0.05) +
+      (c.volumeScore * 0.10) +
+      (c.fundamentalScore * 0.05) +
+      (c.newsScore * 0.05)
+    );
+    c.grade = c.totalScore >= 85 ? "A+" : c.totalScore >= 75 ? "A" : c.totalScore >= 65 ? "B+" : c.totalScore >= 55 ? "B" : c.totalScore < 40 ? "D" : "C";
+    c.conviction = c.totalScore >= 80 ? "HIGH" : c.totalScore >= 65 ? "MEDIUM" : "LOW";
+  }
+  candidates.sort((a, b) => b.totalScore - a.totalScore);
+
+  // Filter — high-probability label is now conditional on data quality.
+  // Previously unconditional >=20. Raise threshold and require live direction data.
+  const highProbCandidates = candidates.filter(c => c.totalScore >= 55);
 
   // Get best picks
   const bestBullish = highProbCandidates.find(c => c.direction === "BULLISH") || null;

@@ -217,14 +217,14 @@ export function buildMasterBotPlan(input: MasterBotPlanInput): {
 
 // ═══════ EXPIRY LOGIC ═══════
 // Nifty expiry = THURSDAY (weekday 3) — current SEBI rule
-// Sensex expiry = THURSDAY (weekday 3)
+// Sensex expiry = THURSDAY (weekday 4 in JS getDay)
 // BANKNIFTY = Thursday, FINNIFTY = Thursday, MIDCPNIFTY = Thursday
 
 export function getExpiryStatus(indexName: string): ExpiryStatus {
   const now = new Date();
   const weekday = now.getDay();
 
-  const expiryDay = 3; // Thursday — all indices now expire on Thursday
+  const expiryDay = 4; // Thursday — all indices now expire on Thursday
   const daysToExp = ((expiryDay - weekday + 7) % 7) || 7;
   const isExpiry = weekday === expiryDay;
 

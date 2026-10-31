@@ -31,6 +31,7 @@ import { fetchLiveOptionChain } from "@/lib/live-option-chain";
 import { getNSEIndiaVIX, getNSEIndexQuote } from "@/lib/nse-api";
 import { getStockQuoteProvenance } from "@/lib/nse-stock-data";
 import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
+import { classifyScannerDataQuality, type DataQuality, type SourceStatus } from "@/lib/scanner-data-quality";
 
 // NIFTY 50 stock symbols for scanning
 const NIFTY50_SYMBOLS = [
@@ -137,7 +138,7 @@ async function buildScannerMarketData(symbols: string[]): Promise<{
 }
 
 export async function GET(request: NextRequest) {
-  const TIMEOUT = 30_000;
+  const TIMEOUT = 60_000;
   const deadline = Date.now() + TIMEOUT;
 
   try {
@@ -255,15 +256,17 @@ export async function GET(request: NextRequest) {
     // premium/IV/PCR. 16s = worst probe (12s, per-provider caps 6s/10s)
     // plus early batch work; fetchAllOptionChains has its own 12s batch
     // deadline; empty map when both providers are down.
+    // Filter to F&O eligible symbols only to avoid wasting time on non-derivative names
+    const fnoSymbols = NIFTY50_SYMBOLS.filter(isPlausibleOptionSymbol);
     const optionChains = await Promise.race([
-      fetchAllOptionChains(NIFTY50_SYMBOLS, new Map()),
+      fetchAllOptionChains(fnoSymbols, new Map()),
       // A REAL timeout — the old `new Promise(executor, 16_000)` passed the
       // timeout as a second constructor argument, which Promise ignores
       // (the promise never settled on its own).
       new Promise<Map<string, any>>((resolve) => {
         setTimeout(() => {
           const empty = new Map<string, null>();
-          NIFTY50_SYMBOLS.forEach((s) => empty.set(s, null));
+          fnoSymbols.forEach((s) => empty.set(s, null));
           resolve(empty);
         }, 16_000);
       }),
@@ -275,6 +278,7 @@ export async function GET(request: NextRequest) {
     // Free NSE daily history + free NSE quotes are fetched here and handed over.
     const marketDataBundle = await buildScannerMarketData(NIFTY50_SYMBOLS);
     const marketData = marketDataBundle.marketData;
+    const quoteStamp = marketDataBundle.quoteSourceStamp;
 
     // Run the scan
     const result = await runIntradayScan(config, optionChains, marketData);
@@ -291,15 +295,20 @@ export async function GET(request: NextRequest) {
           const avgSentiment = stockNews.reduce((sum: number, a: any) => sum + a.sentiment, 0) / stockNews.length;
           const newsScore = Math.round((avgSentiment + 1) * 50);
 
-          // Recalculate total score with real news weight (10%)
+          // SAME weights as the engine's totalScore (intraday-scanner.ts). The
+          // dominant term is the real signal engine (engineScore × 0.35) and
+          // news is folded in at 5%. A different formula here made the score —
+          // and therefore the ranking and the alerts — change between runs
+          // depending on whether news happened to load.
           const newTotalScore = Math.round(
-            (candidate.marketScore * 0.15) +
+            (candidate.marketScore * 0.05) +
             (candidate.sectorScore * 0.10) +
-            (candidate.technicalScore * 0.35) +
-            (candidate.optionsScore * 0.15) +
+            (candidate.technicalScore * 0.25) +
+            (candidate.engineScore * 0.35) +
+            (candidate.optionsScore * 0.05) +
             (candidate.volumeScore * 0.10) +
             (candidate.fundamentalScore * 0.05) +
-            (newsScore * 0.10)
+            (newsScore * 0.05)
           );
 
           return {
@@ -354,6 +363,7 @@ export async function GET(request: NextRequest) {
             unifiedScore: decision.score,
             unifiedGrade: decision.grade,
             unifiedDecision: decision.decision,
+            unifiedReasons: decision.reasons,
             hardGatesPassed: decision.hardGateStatus.passed,
           };
         } catch {
@@ -362,25 +372,43 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // ─── Honest data quality ──────────────────────────────────────────
-    // Derived from the ACTUAL source + age of each input — not from a quote
-    // count. "SIMULATED" is never emitted: nothing in this path simulates.
+    // ─── Honest 6-state data quality ────────────────────────────────────
+    // Derived from provider freshness + market session + source availability.
+    // ERROR | CLOSED | STALE | DELAYED | PARTIAL | LIVE
+    const quoteOk = marketData.quoteFallback?.size > 0;
+    const dailyOk = marketData.dailyCandles?.size > 0;
+    const chainStatus: SourceStatus = {
+      ok: chainOk,
+      ageMs: chainAgeMs,
+      source: chainSource,
+    };
+    const quotesStatus: SourceStatus = {
+      ok: quoteOk,
+      ageMs: quoteStamp ? Date.now() - Date.parse(quoteStamp) : null,
+      source: marketDataBundle.quoteSource || "none",
+    };
+    const dailyStatus = {
+      ok: dailyOk,
+      count: marketData.dailyCandles?.size ?? 0,
+    };
     const clock = await getMarketClock();
-    const prov = getStockQuoteProvenance();
-    const quoteStamp = marketDataBundle.quoteSourceStamp ?? prov.providerTimestamp ?? clock.tradeDate ?? null;
-    const dailyOk = (marketData.dailyCandles?.size ?? 0) > 0;
-    const quoteOk = (marketData.quoteFallback?.size ?? 0) > 0;
+    const errors: string[] = [];
+    if (!chainOk && !quoteOk && !dailyOk) errors.push("All data sources unavailable");
 
-    const chainFresh = chainOk && chainAgeMs != null && chainAgeMs <= 120_000;
-    const quotesFresh =
-      quoteOk && quoteStamp != null && Date.now() - Date.parse(quoteStamp) <= 120_000;
+    let dataQuality: DataQuality = classifyScannerDataQuality({
+      chain: chainStatus,
+      quotes: quotesStatus,
+      daily: dailyStatus,
+      clock: {
+        isOpen: clock.isOpen,
+        marketState: clock.marketState,
+        tradeDate: clock.tradeDate,
+        tradeAgeMs: clock.tradeAgeMs,
+      },
+      errors,
+    });
 
-    let dataQuality: "LIVE" | "PARTIAL" | "UNAVAILABLE" = "UNAVAILABLE";
-    if (chainOk || quoteOk || dailyOk) {
-      const allFresh = chainFresh && quotesFresh && dailyOk && clock.isOpen;
-      dataQuality = allFresh ? "LIVE" : "PARTIAL";
-    }
-    if (dataQuality === "PARTIAL" && !clock.isOpen) {
+    if (dataQuality === "CLOSED") {
       warnings.push(
         `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}. Quotes are the last close, not a live print.`,
       );

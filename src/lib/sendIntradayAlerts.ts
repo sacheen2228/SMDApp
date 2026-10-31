@@ -408,9 +408,27 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       const scannerJson = await scannerRes.json();
       const scanData = scannerJson?.data;
       if (scanData?.candidates) {
-        const highConfStocks = scanData.candidates.filter(
-          (s: any) => s.monthlyOptionTrade && s.totalScore >= 60
-        );
+        // A tradeable scanner alert needs: a real option plan, a strong score,
+        // a sane plan, AND the unified gate to pass (TRADE decision or gates passed).
+        // The old gate was totalScore ≥ 60 with no R:R or unified check.
+        const dataQualityOk = scanData.dataQuality === "LIVE";
+        const highConfStocks = scanData.candidates.filter((s: any) => {
+          const opt = s.monthlyOptionTrade;
+          if (!opt || !(opt.premium > 0)) return false;
+          if ((s.totalScore ?? 0) < 65) return false;
+          if (!dataQualityOk) return false;
+          // Unified gate: only alert when the unified scorer approves.
+          const unifiedOk = s.unifiedDecision === "TRADE" || s.hardGatesPassed === true;
+          if (!unifiedOk) return false;
+          // SIGNED R:R (R1): risk = premium − stop (>0 for valid long plans),
+          // reward = target1 − premium (>0 for valid long plans). A wrong-side
+          // stop or target yields rr 0 instead of being Math.abs'd into a
+          // plausible value that passes the gate.
+          const risk = opt.premium - opt.stopLoss;
+          const reward = (opt.targets?.[0] ?? 0) - opt.premium;
+          const rr = risk > 0 && reward > 0 ? reward / risk : 0;
+          return rr >= 1.5;
+        });
 
         for (const stock of highConfStocks) {
           const opt = stock.monthlyOptionTrade;
@@ -535,8 +553,10 @@ export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?:
   // R:R must come from the OPTION's own plan (entry / stop / TP1) — the
   // underlying stock's riskReward is a different instrument's number and
   // produced values like "1:39.4" and "1:0.8" for the same 1:2 option plan.
-  // The side comes from the plan GEOMETRY (a bought PE has its stop BELOW the
-  // entry, a mirrored bearish PE has it ABOVE) — the option letter lies.
+  // The side comes from the plan GEOMETRY — the option letter lies. Since R1
+  // every generated plan is long-geometry for BOTH letters (a bought PE has
+  // its stop BELOW the entry); the SHORT branch stays for LEGACY mirrored
+  // rows so their signed risk is still measured correctly.
   const premium = Number(opt.premium);
   const stopLoss = Number(opt.stopLoss);
   const tp1 = Number(opt.targets?.[0] ?? premium);
