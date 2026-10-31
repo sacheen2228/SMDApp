@@ -96,14 +96,23 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
   useEffect(() => {
     if (expanded && !optionPlan && !optionLoading) {
       setOptionLoading(true);
-      fetch(`/api/scanner?symbol=${c.symbol}&live=true`, { signal: AbortSignal.timeout(20000) })
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 8000);
+      fetch(`/api/scanner?symbol=${c.symbol}&live=true`, { signal: controller.signal })
         .then(r => r.json())
         .then(j => {
           const cand = j?.data?.candidates?.find((x: any) => x.symbol === c.symbol);
           setOptionPlan(cand?.monthlyOptionTrade || null);
         })
         .catch(() => setOptionPlan(null))
-        .finally(() => setOptionLoading(false));
+        .finally(() => {
+          clearTimeout(t);
+          setOptionLoading(false);
+        });
+      return () => {
+        clearTimeout(t);
+        controller.abort();
+      };
     }
   }, [expanded, c.symbol, optionPlan, optionLoading]);
 
