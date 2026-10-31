@@ -90,6 +90,22 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
   const [expanded, setExpanded] = useState(false);
   const [depth, setDepth] = useState<any>(null);
   const [depthLoading, setDepthLoading] = useState(false);
+  const [optionPlan, setOptionPlan] = useState<any>(null);
+  const [optionLoading, setOptionLoading] = useState(false);
+
+  useEffect(() => {
+    if (expanded && !optionPlan && !optionLoading) {
+      setOptionLoading(true);
+      fetch(`/api/scanner?symbol=${c.symbol}&live=true`, { signal: AbortSignal.timeout(20000) })
+        .then(r => r.json())
+        .then(j => {
+          const cand = j?.data?.candidates?.find((x: any) => x.symbol === c.symbol);
+          setOptionPlan(cand?.monthlyOptionTrade || null);
+        })
+        .catch(() => setOptionPlan(null))
+        .finally(() => setOptionLoading(false));
+    }
+  }, [expanded, c.symbol, optionPlan, optionLoading]);
 
   const checkDepth = async (symbol: string) => {
     setDepthLoading(true);
@@ -294,6 +310,21 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
                 <p className="mt-0.5">Catalyst: <span className={c.rocket.catalyst.startsWith("N") ? "text-amber-500" : "text-emerald-500"}>{c.rocket.catalyst}</span></p>
               </div>
             )}
+            {/* Option Plan */}
+            <div className="mt-3 pt-2 border-t text-[10px]">
+              <div className="flex items-center gap-1 font-bold mb-1 text-violet-500">
+                <Target className="h-3 w-3" /> Option Plan
+              </div>
+              {optionLoading ? (
+                <p className="text-muted-foreground">Loading option plan…</p>
+              ) : optionPlan ? (
+                <p className="leading-relaxed text-foreground">
+                  Buy {c.symbol} {optionPlan.strike} {optionPlan.optionType} @ ₹{optionPlan.premium.toFixed(2)} | SL ₹{optionPlan.stopLoss.toFixed(2)} | T1 ₹{optionPlan.targets?.[0]?.toFixed(2)} | T2 ₹{optionPlan.targets?.[1]?.toFixed(2)} | {optionPlan.expiryLabel}
+                </p>
+              ) : (
+                <p className="text-muted-foreground">No monthly option plan – chain unavailable / engine disagree / not F&O.</p>
+              )}
+            </div>
           </TableCell>
         </TableRow>
       )}
