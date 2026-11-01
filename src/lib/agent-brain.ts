@@ -25,7 +25,7 @@ function resolvePlaybookScript(scriptName: string): string | null {
   const candidates = [
     path.join(process.cwd(), rel),
     path.join(process.cwd(), "..", "..", rel),
-    path.join("/home/sachin/Desktop/SMDApp", rel),
+    path.join("/home/sachin/Desktop/SDMApp", rel),
   ];
   for (const c of candidates) {
     try { if (fs.existsSync(c)) return c; } catch { /* keep looking */ }
@@ -39,7 +39,7 @@ function resolvePlaybookRoot(): string | null {
   const candidates = [
     path.join(process.cwd(), rel),
     path.join(process.cwd(), "..", "..", rel),
-    path.join("/home/sachin/Desktop/SMDApp", rel),
+    path.join("/home/sachin/Desktop/SDMApp", rel),
   ];
   for (const c of candidates) {
     try { if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return c; } catch { /* keep looking */ }

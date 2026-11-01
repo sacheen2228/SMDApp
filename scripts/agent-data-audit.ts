@@ -6,7 +6,7 @@
 //
 // Usage: bun scripts/agent-data-audit.ts [symbol]   (default NIFTY)
 
-const ROOT = "/home/sachin/Desktop/SMDApp";
+const ROOT = "/home/sachin/Desktop/SDMApp";
 const API = "http://localhost:3000";
 const SYMBOL = process.argv[2] || "NIFTY";
 

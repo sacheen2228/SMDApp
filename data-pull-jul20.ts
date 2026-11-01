@@ -91,7 +91,7 @@ async function main() {
 
   // Save
   const report = { ts: new Date().toISOString(), for: "21-Jul-2026 Mon", nifty, sensex, fii, accel };
-  const path = "/home/sachin/Desktop/SMDApp/data/nifty-sensex-jul20.json";
+  const path = "/home/sachin/Desktop/SDMApp/data/nifty-sensex-jul20.json";
   writeFileSync(path, JSON.stringify(report, null, 2));
 
   // ─── Print ────────────────────────────────────────────────────────
