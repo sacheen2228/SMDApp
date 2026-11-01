@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { DataFreshnessBadge } from "./DataFreshnessBadge";
 import {
   Target, TrendingUp, TrendingDown, AlertTriangle, Clock,
   Shield, BarChart3, Zap, ArrowUp, ArrowDown, Info,
@@ -341,11 +342,14 @@ export default function ExpiryPlanPanel({
                 {instFilter.toUpperCase()}
               </Badge>
             )}
-            {fii?.latest?.date && (
-              <span className="ml-auto text-[8px] text-[#7d8ba0] font-mono">
-                {fii.latest.source?.toUpperCase() || 'NSE'} • {fii.latest.date}
-              </span>
-            )}
+            <div className="ml-auto flex items-center gap-2">
+              {fii?.latest?.date && (
+                <span className="text-[8px] text-[#7d8ba0] font-mono">
+                  {fii.latest.source?.toUpperCase() || 'NSE'} • {fii.latest.date}
+                </span>
+              )}
+              <DataFreshnessBadge meta={{ source: fii?.latest?.source, providerTimestamp: fii?.latest?.date ? new Date(fii.latest.date) : undefined }} showReason />
+            </div>
           </div>
 
           {/* Row 1: Cash market FII/DII */}
