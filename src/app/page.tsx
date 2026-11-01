@@ -43,7 +43,6 @@ import { MobileNav } from '@/components/dashboard/MobileNav';
 import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
-import DailyDerivativesPanel from '@/components/daily/DailyDerivativesPanel';
 import ExpiryPlanPanel from '@/components/dashboard/ExpiryPlanPanel';
 import SignalStrip from '@/components/dashboard/SignalStrip';
 import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
@@ -1037,11 +1036,6 @@ export default function TradingDashboard() {
         /* ═══════ BACKTEST AUDIT ENGINE ═══════ */
         <div className="flex-1 overflow-auto p-2">
           <BacktestDashboard />
-        </div>
-        ) : viewMode === 'daily' ? (
-        /* ═══════ DAILY DERIVATIVES RECOMMENDATION ═══════ */
-        <div className="flex-1 overflow-auto">
-          <DailyDerivativesPanel symbol={symbol} />
         </div>
         ) : viewMode === 'challenge' ? (
         /* ═══════ ₹15K → ₹1L CHALLENGE ═══════ */

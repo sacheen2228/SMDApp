@@ -87,13 +87,68 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
     expect(p.notes.join(" ")).toMatch(/below the gate/);
   });
 
-  test("PE plans mirror the geometry (stop above the entry)", () => {
+  // CORRECTED 2026-10-31 (audit defect D-1): this test used to assert the
+  // MIRRORED geometry (stop ABOVE entry for a PE) — the "mirror" intuition is
+  // wrong for a long option. A bought PE loses when the premium FALLS, so the
+  // stop must sit BELOW the premium paid and the targets ABOVE it — the same
+  // long-option risk convention as a CE (user spec, remediation R1 approval).
+  // The old assertion enshrined a plan where the displayed "stop" was a +20%
+  // profit exit and the "targets" were −40%/−60%/−80% losses.
+  test("PE plans use the long-option geometry (stop BELOW the entry, targets above)", () => {
     const p = buildOptionPlan({
       symbol: "NIFTY", optionType: "PE", entryPremium: 100, lotSize: 65, lots: 1,
       deployedAmount: 6_500, riskAmount: 1_300,
     })!;
-    expect(p.stopLoss).toBeGreaterThan(100);
-    expect(p.targets[0]).toBeLessThan(100);
+    expect(p.stopLoss).toBeLessThan(100);
+    expect(p.targets[0]).toBeGreaterThan(100);
+    expect(p.targets[1]).toBeGreaterThan(p.targets[0]);
+    expect(p.targets[2]).toBeGreaterThan(p.targets[1]);
+    // the ₹ P&L at each target must be a GAIN (the old mirrored plan
+    // reported a NEGATIVE rupee.tp1 while calling it a target)
+    expect(p.rupee.tp1).toBeGreaterThan(0);
+    expect(p.rupee.tp2).toBeGreaterThan(0);
+    expect(p.rupee.tp3).toBeGreaterThan(0);
+    // signed R:R — risk = entry − stop (positive only for a correct stop)
+    expect(p.rr).toBeGreaterThan(0);
+    expect(p.rr).toBeCloseTo(2, 1);
+  });
+
+  test("PE and CE of the same premium produce the SAME geometry (audit regression: ADANIPORTS 1840 PE)", () => {
+    // The reported defect: "Buy ADANIPORTS 1840 PE @ ₹39.1 | SL ₹46.9 |
+    // T1 ₹23.45 | T2 ₹15.65 | T3 ₹7.8" — SL above entry, targets below.
+    // risk = 20% of the premium = ₹7.82 → correct: SL 31.30, T1 54.75…
+    const pe = buildOptionPlan({
+      symbol: "ADANIPORTS", optionType: "PE", entryPremium: 39.1, lotSize: 500, lots: 1,
+    })!;
+    const ce = buildOptionPlan({
+      symbol: "ADANIPORTS", optionType: "CE", entryPremium: 39.1, lotSize: 500, lots: 1,
+    })!;
+    expect(pe.stopLoss).toBeLessThan(39.1);
+    expect(pe.stopLoss).toBeCloseTo(39.1 - 39.1 * 0.2, 0); // ≈ 31.28 (±tick)
+    expect(pe.targets[0]).toBeGreaterThan(39.1);
+    // identical levels for CE and PE of the same premium
+    expect(pe.stopLoss).toBe(ce.stopLoss);
+    expect(pe.targets).toEqual(ce.targets);
+    expect(pe.rr).toBeCloseTo(2, 1);
+    expect(pe.rupee.tp1).toBeGreaterThan(0);
+    // the OLD (wrong) numbers must never come back
+    expect(pe.stopLoss).not.toBe(46.9);
+    expect(pe.targets).not.toContain(23.45);
+    expect(pe.targets).not.toContain(15.65);
+    expect(pe.targets).not.toContain(7.8);
+  });
+
+  test("a stop ABOVE the entry can never be reported as a valid R:R (signed risk)", () => {
+    // The signed check: risk = entry − stopLoss. A wrong-side stop yields a
+    // non-positive risk → rr 0 → the gate note fires. The old Math.abs formula
+    // reported rr 2.0 for exactly that broken plan.
+    const p = buildOptionPlan({
+      symbol: "NIFTY", optionType: "PE", entryPremium: 100, lotSize: 65, lots: 1,
+      deployedAmount: 6_500, riskAmount: 1_300,
+    })!;
+    const risk = p.entry - p.stopLoss;
+    expect(risk).toBeGreaterThan(0);
+    expect(p.rr).toBe((p.targets[0] - p.entry) / risk);
   });
 
   test("no plan when the premium is unknown or the risk exceeds the premium", () => {

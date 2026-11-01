@@ -90,10 +90,14 @@ export function entryTPSLEngine(input: EntryTPSLInput): EntryTPSLOutput {
 
   if (!plan) {
     // Honest fallback: no valid stop inside the option's value at this size.
+    // LONG-OPTION GEOMETRY FOR BOTH LETTERS (R1/R2): a bought option — CE or
+    // PE — loses when the premium falls, so the structural stop sits BELOW the
+    // entry for both. The old `optionType === 'PE'` branch put a PE's stop
+    // ABOVE the entry while leaving the targets above it: stop and targets on
+    // the same side (incoherent), which every side-aware monitor reads as a
+    // SHORT plan paying out as long.
     const slPct = 0.5;
-    const stopLoss = optionType === 'CE'
-      ? entryPremium * (1 - slPct)
-      : entryPremium * (1 + slPct);
+    const stopLoss = entryPremium * (1 - slPct);
     const riskPoints = Math.abs(entryPremium - stopLoss);
     const targets = [entryPremium + riskPoints * 2, entryPremium + riskPoints * 3, entryPremium + riskPoints * 4]
       .filter(t => t > 0);

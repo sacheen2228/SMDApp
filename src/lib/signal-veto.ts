@@ -23,19 +23,21 @@
 // the veto stays safe in the hot path.
 //
 // THE SIDE COMES FROM THE LEVEL GEOMETRY, NEVER FROM THE ACTION STRING.
-// A bought PE is not automatically a short: the stock scanner builds a MIRRORED
-// bearish plan (stop ABOVE the entry, targets BELOW) while the SDM engine builds
-// a LONG one for a PE (stop BELOW the entry, targets ABOVE). The old veto
+// A bought PE is not automatically a short. Since remediation R1 (2026-10-31,
+// option-plan.ts) EVERY plan builder — stock scanner, SDM engine, morning
+// scan, hermes — produces the LONG-option geometry for both letters (stop
+// BELOW the entry, targets ABOVE: a bought option loses when the premium
+// falls). A SHORT-side plan can still arrive here — a LEGACY trade recorded
+// under the old mirrored convention (stop above the entry, targets below) or
+// a cash SELL — so the side must still be read from the LEVELS. The old veto
 // assumed the long shape for every BUY and the short shape for every SELL, so
 // it hard-blocked every legitimate bearish option plan ("stop 49.25 not above
-// entry 41.05") and measured the R:R on the wrong side. The rule is now the
+// entry 41.05") and measured the R:R on the wrong side. The rule is the
 // GEOMETRY the live monitors read (activeTradeTracker.planSide /
-// paper-worker.detectPaperHit) — but here the STOP decides (the monitors read
-// the target first and the stop as the tie-breaker): the stop is the risk
-// side, so the R:R is measured against the very level the monitor would fill
-// at and a stop-out is always a loss. The two rules only differ for an
-// INCOHERENT plan (stop and target on the same side), which this veto blocks
-// outright because its R:R comes out negative.
+// paper-worker.detectPaperHit — both stop-first): the stop is the risk side,
+// so the R:R is measured against the very level the monitor would fill at and
+// a stop-out is always a loss. An INCOHERENT plan (stop and target on the
+// same side) has a negative R:R here and is blocked outright.
 //
 // SHADOW MODE (BRAIN_FLAGS.shadowVeto): the verdict is always computed and always
 // logged (would_block) — a QUALITY block does not suppress the alert, but every hard
@@ -134,15 +136,15 @@ export type PlanSide = "LONG" | "SHORT";
  *   stop ABOVE the entry → a MIRRORED/SHORT plan (its targets sit below)
  *
  * This is the GEOMETRY the live monitors read (activeTradeTracker.planSide,
- * hermes/paper-worker.detectPaperHit). The option letter lies — the stock
- * scanner builds a mirrored bearish plan for a bought PE while the SDM engine
- * builds a long one — so only the levels can tell the two apart.
+ * hermes/paper-worker.detectPaperHit — both stop-first). The option letter
+ * lies: every plan builder has produced long-geometry for BOTH letters since
+ * R1, while a LEGACY mirrored plan or a cash SELL still arrives as SHORT —
+ * so only the levels can tell the two apart.
  *
- * The STOP decides here (the monitors read the target first and the stop as the
- * tie-breaker): the stop is the risk side, so the R:R is measured against the
- * very level the monitor would fill at, and a stop-out is always a loss. A plan
- * whose stop and target disagree is incoherent: the R:R comes out negative and
- * the veto blocks it.
+ * The STOP decides here, matching the monitors: the stop is the risk side,
+ * so the R:R is measured against the very level the monitor would fill at,
+ * and a stop-out is always a loss. A plan whose stop and target disagree is
+ * incoherent: the R:R comes out negative and the veto blocks it.
  *
  * Returns null when the geometry cannot decide (missing or degenerate stop) —
  * the caller then fails closed.

@@ -184,8 +184,9 @@ export function buildIndexOptionPlan(
   const sl = plan.stopLoss;
   const tp1 = plan.targets[0] ?? entry;
   const tp2 = plan.targets[1] ?? tp1;
-  // A PE plan is mirrored (stop above the entry, targets below) → both
-  // differences are negative, so the ratio stays positive.
+  // SIGNED R:R (R1 geometry, both letters): risk = entry − sl > 0 and
+  // reward = tp1 − entry > 0 for every current plan — a wrong-side stop
+  // yields a negative ratio (blocked by the gate) instead of a masked 2.0.
   const rr = (tp1 - entry) / (entry - sl);
   return { entry, sl, tp1, tp2, rr };
 }

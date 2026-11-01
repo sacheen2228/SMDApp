@@ -11,8 +11,19 @@
 //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"  →
 //   riskAmount  = deployedAmount × riskPctOfDeployed   (default 20% → ₹10k → ₹2k)
 //   riskPoints  = riskAmount / units
-//   stopLoss    = entry ∓ riskPoints
-//   targets     = entry ± {2R, 3R, 4R}   (R:R 1:2 / 1:3 / 1:4)
+//   stopLoss    = entry − riskPoints   (LONG-option geometry for BOTH CE and PE)
+//   targets     = entry + {2R, 3R, 4R} (R:R 1:2 / 1:3 / 1:4)
+//
+// LONG-OPTION GEOMETRY (remediation R1, 2026-10-31 — audit defect D-1):
+//   A bought option — CE or PE — LOSES when the premium falls below what you
+//   paid and WINS when it rises. The stop therefore sits BELOW the premium
+//   paid and the targets ABOVE it, for both letters. The old
+//   `sign = isCall ? -1 : 1` "mirror" put a PE's stop above its entry and its
+//   targets below (SL ₹46.9 on a ₹39.1 entry), which is short-premium
+//   geometry mislabelled "BUY PE": the displayed stop was a +20% profit exit
+//   and the "targets" were −40%/−60%/−80% losses. R:R is now SIGNED
+//   (risk = entry − stop), so a wrong-side stop reports rr 0 and trips the
+//   gate note instead of being Math.abs'd into a plausible 2.0.
 //
 // Guardrails (they never widen the risk beyond what the user signed up for):
 //   - the stop is capped at maxStopPctOfPremium of the premium; when the cap binds,
@@ -243,9 +254,9 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
     return null;
   }
 
-  const isCall = input.optionType === "CE";
-  const sign = isCall ? -1 : 1;
-  const stopLoss = roundTick(entry + sign * riskPoints);
+  // Long-option geometry for BOTH CE and PE (R1): a bought option loses when
+  // the premium falls — the stop is always BELOW the entry, targets ABOVE.
+  const stopLoss = roundTick(entry - riskPoints);
 
   // Targets: 2R / 3R / 4R, dropping the unreachable ones.
   const mults = input.targetMultipliers ?? [...PLAN_CONFIG.targetMultipliers];
@@ -254,7 +265,7 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   for (const k of mults) {
     const pts = riskPoints * k;
     if (pts >= entry) { notes.push(`${k}R target unreachable (${(pts).toFixed(2)} pts ≥ premium ${entry}) — dropped`); continue; }
-    const px = roundTick(entry - sign * pts);
+    const px = roundTick(entry + pts);
     targets.push(px);
     const gain = tradable ? (px - entry) * units : 0;
     if (targets.length === 1) rupee.tp1 = gain;
@@ -264,7 +275,12 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   if (!targets.length) return null;
 
   const riskAmount = tradable ? riskPoints * units : 0;
-  const rr = targets.length ? Math.abs(targets[0] - entry) / Math.abs(entry - stopLoss) : 0;
+  // SIGNED R:R (R1): risk = entry − stop, reward = target1 − entry. A stop on
+  // the wrong side of the entry makes risk ≤ 0 → rr 0 → the gate note below
+  // fires. The old Math.abs formula reported rr 2.0 for a mirrored PE plan.
+  const risk = entry - stopLoss;
+  const reward = targets.length ? targets[0] - entry : 0;
+  const rr = risk > 0 && reward > 0 ? reward / risk : 0;
   if (rr < PLAN_CONFIG.minOptionRR) {
     notes.push(`R:R ${rr.toFixed(2)} is below the gate's ${PLAN_CONFIG.minOptionRR} — this plan will be blocked`);
   }
@@ -295,5 +311,8 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
 }
 
 function roundTick(x: number): number {
-  return Math.round(x / PLAN_CONFIG.tickSize) * PLAN_CONFIG.tickSize;
+  // `Math.round(x / tick) * tick` leaves float noise behind (938 * 0.05 =
+  // 46.900000000000006), which then leaks into every displayed SL/TP.
+  // The final toFixed(2) snaps it back to the tick grid.
+  return Number((Math.round(x / PLAN_CONFIG.tickSize) * PLAN_CONFIG.tickSize).toFixed(2));
 }

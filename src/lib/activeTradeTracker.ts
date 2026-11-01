@@ -71,12 +71,15 @@ const activeTrades = new Map<string, ActiveTrade>();
 // THE LETTER LIES, THE GEOMETRY DOES NOT:
 //   • a CE plan         → stop BELOW the entry, targets ABOVE   (LONG)
 //   • a bought PE plan  → stop BELOW the entry, targets ABOVE   (LONG)
-//   • a mirrored PE plan→ stop ABOVE the entry, targets BELOW   (SHORT)
-// The stock scanner builds the MIRRORED plan (a short-premium bearish trade)
-// while the SDM engine builds the LONG one for a PE. Both are internally
-// consistent, so the side must be read from the LEVELS — never from "PE" —
-// or the P&L sign, the stop side and the TP ladder can disagree with each
-// other (that is how a stop-out was reported as a ₹533 profit).
+//   • a legacy mirrored plan → stop ABOVE the entry, targets BELOW (SHORT)
+// Since remediation R1 (2026-10-31, option-plan.ts) EVERY plan builder —
+// stock scanner, SDM engine, morning scan, hermes — produces the LONG-option
+// geometry for BOTH letters (a bought option loses when the premium falls).
+// A SHORT-side plan can still exist in the app: a LEGACY trade recorded under
+// the old mirrored convention, or a cash SELL (stop above the entry). The side
+// must therefore still be read from the LEVELS — never from "PE" — or the P&L
+// sign, the stop side and the TP ladder can disagree with each other (that is
+// how a stop-out was reported as a ₹533 profit).
 // ═══════════════════════════════════════════════════════════════════════
 
 export type PlanSide = "LONG" | "SHORT";

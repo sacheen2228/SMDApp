@@ -22,6 +22,8 @@ import { detectAndResolveConflicts, type EngineSignal } from "@/lib/signal-confl
 import { registerAgent, getAgentByName, createSignal, emitEvent } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
 import { maybeRecordJevShadow } from "@/lib/jev/shadow";
+import { buildOptionPlan } from "@/lib/option-plan";
+import { getLotSizeStrict } from "@/lib/symbol-config";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -407,22 +409,50 @@ function buildAnalysisDecision(
 
 // ── Helper Functions ───────────────────────────────────────────────────
 
+/**
+ * THE HOUSE GEOMETRY (one rule, every path).
+ *
+ * The old code here was:
+ *   SL  = max(premium * 0.5, premium - 20)
+ *   TP1 = premium * 1.5, TP2 = premium * 2.0, TP3 = premium * 3.0
+ * which is broken in TWO ways:
+ *   1. For a BEARISH (PE) trade the stop sat BELOW entry and the targets ABOVE
+ *      it — the wrong side of the position.
+ *   2. The R:R was ~1:1 (risk 20, reward 0.5 × premium) — below break-even
+ *      after costs. The ledger showed these engines running at 21-24% WR.
+ *
+ * NOW the stop is a rupee risk (20% of the amount deployed, capped at 35% of
+ * the premium, floored at an 8-tick noise floor) and the targets are clean
+ * R multiples of it (2R / 3R / 4R) — the SAME builder every other engine uses
+ * (src/lib/option-plan.ts → buildOptionPlan).
+ */
 function calculateStopLoss(strike: any, direction: Direction, ctx: HermesContext): number {
-  const premium = strike.premium;
-  if (direction === "BULLISH") {
-    return Math.max(premium * 0.5, premium - 20);
-  } else {
-    return Math.max(premium * 0.5, premium - 20);
-  }
+  const plan = buildHousePlan(strike, direction, ctx);
+  return plan?.stopLoss ?? 0;
 }
 
 function calculateTargets(strike: any, direction: Direction, ctx: HermesContext): { tp1: number; tp2: number; tp3: number } {
-  const premium = strike.premium;
+  const plan = buildHousePlan(strike, direction, ctx);
+  if (!plan) return { tp1: 0, tp2: 0, tp3: 0 };
   return {
-    tp1: premium * 1.5,
-    tp2: premium * 2.0,
-    tp3: premium * 3.0,
+    tp1: plan.targets[0] ?? plan.entry,
+    tp2: plan.targets[1] ?? plan.targets[0] ?? plan.entry,
+    tp3: plan.targets[2] ?? plan.targets[1] ?? plan.targets[0] ?? plan.entry,
   };
+}
+
+/** The single plan builder, wrapped so the hermes path cannot drift from it. */
+function buildHousePlan(strike: any, direction: Direction, ctx: HermesContext) {
+  const premium = Number(strike?.premium || 0);
+  if (!(premium > 0)) return null;
+  const optionType: "CE" | "PE" = direction === "BEARISH" ? "PE" : "CE";
+  const lot = getLotSizeStrict(ctx.symbol) ?? 1;
+  return buildOptionPlan({
+    symbol: ctx.symbol,
+    optionType,
+    entryPremium: premium,
+    lotSize: lot,
+  });
 }
 
 interface BuildDecisionInput {

@@ -256,6 +256,41 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
           <div className="space-y-3 text-[10px]">
             <Separator />
 
+            {/* Unified Decision */}
+            {stock.unifiedDecision && (
+              <div className="p-2 rounded bg-muted/50 border">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-muted-foreground">Unified Decision:</span>
+                  <Badge
+                    className={
+                      stock.unifiedDecision === "TRADE"
+                        ? "bg-emerald-600"
+                        : stock.unifiedDecision === "WAIT"
+                        ? "bg-blue-600"
+                        : "bg-zinc-600"
+                    }
+                  >
+                    {stock.unifiedDecision}
+                  </Badge>
+                  {stock.hardGatesPassed != null && (
+                    <Badge className={stock.hardGatesPassed ? "bg-emerald-600" : "bg-red-600"}>
+                      {stock.hardGatesPassed ? "Gates Passed" : "Gates Failed"}
+                    </Badge>
+                  )}
+                </div>
+                {stock.unifiedReasons && stock.unifiedReasons.length > 0 && (
+                  <ul className="mt-1 space-y-0.5 text-[9px] text-muted-foreground">
+                    {stock.unifiedReasons.map((r: string, i: number) => (
+                      <li key={i} className="flex items-start gap-1">
+                        <AlertTriangle className="h-2 w-2 mt-0.5 shrink-0" />
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             {/* Reasons */}
             <div>
               <span className="font-semibold text-muted-foreground">Reasons for Selection:</span>
@@ -425,19 +460,31 @@ export const ScannerPanel = memo(function ScannerPanel({
             </div>
             <div>
               <h2 className="text-sm font-bold">Intraday Scanner</h2>
-              <p className="text-[10px] text-muted-foreground">
-                {(result.candidates || []).length} high-probability setups found
-                {result.dataQuality === "LIVE" && (
-                  <Badge className="ml-1 bg-emerald-600 text-[8px]">LIVE</Badge>
-                )}
-                {result.dataQuality === "PARTIAL" && (
-                  <Badge className="ml-1 bg-yellow-600 text-[8px]">PARTIAL</Badge>
-                )}
-                {String(result.dataQuality) === "UNAVAILABLE" && (
-                  <Badge className="ml-1 bg-red-600 text-[8px]">NO DATA</Badge>
-                )}
-                <DataFreshnessBadge meta={meta} className="ml-1" showReason />
-              </p>
+<p className="text-[10px] text-muted-foreground">
+          {(() => {
+            const approved = (result.candidates || []).filter(
+              (c: any) => c.unifiedDecision === "TRADE" || c.hardGatesPassed === true
+            ).length;
+            const total = (result.candidates || []).length;
+            if (total === 0) return "No candidates found";
+            if (approved > 0) return `${approved} qualified / ${total} scanned`;
+            return `${total} scanned — none qualified`;
+          })()}
+          {(() => {
+            const dq = result.dataQuality;
+            const badges: Record<string, { bg: string; label: string }> = {
+              LIVE: { bg: "bg-emerald-600", label: "LIVE" },
+              DELAYED: { bg: "bg-blue-600", label: "DELAYED" },
+              STALE: { bg: "bg-amber-600", label: "STALE" },
+              PARTIAL: { bg: "bg-yellow-600", label: "PARTIAL" },
+              CLOSED: { bg: "bg-zinc-600", label: "CLOSED" },
+              ERROR: { bg: "bg-red-600", label: "ERROR" },
+            };
+            const b = badges[dq] || badges.UNAVAILABLE || { bg: "bg-red-600", label: "NO DATA" };
+            return <Badge className={`ml-1 ${b.bg} text-[8px]`}>{b.label}</Badge>;
+          })()}
+          <DataFreshnessBadge meta={meta} className="ml-1" showReason />
+        </p>
             </div>
           </div>
           <div className="flex items-center gap-2">

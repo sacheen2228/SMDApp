@@ -180,7 +180,23 @@ export async function GET(req: NextRequest) {
       if (changePct != null && changePct < -2) signals.push("Weakness");
       if (ivPercentile != null && ivPercentile > 70) signals.push("High IV");
 
-      candidates.push({
+      // Rupee-risk stop & targets: 20% of LTP risk → 2R / 3R ladder.
+      // The stop sits on the OPPOSITE side of the trade from the targets:
+      //   PUT  (bearish): stop above, targets below
+      //   CALL (bullish): stop below, targets above
+      // (The old code used 3.9R for TP1 and 2.0R for TP2 — an INVERTED ladder
+      // where the first target sat further away than the second.)
+      const riskPct = 0.20;
+      const riskAmount = ltp * riskPct;
+      const isBullish = changePct != null && changePct > 0;
+      const isPut = !isBullish;
+      const stopSide = isPut ? 1 : -1;   // +1 = stop above entry
+      const targetSide = -stopSide;      // targets on the other side
+      const stopMove = riskAmount * stopSide;
+      const tp1Move = riskAmount * 2 * targetSide;   // 2R
+      const tp2Move = riskAmount * 3 * targetSide;   // 3R
+
+candidates.push({
         symbol,
         name: stock?.name || symbol,
         sector: stock?.sector || "Other",
@@ -188,6 +204,10 @@ export async function GET(req: NextRequest) {
         changePct,
         volume,
         score,
+        stopLoss: Number(Math.max(ltp + stopMove, 0.05).toFixed(2)),
+        tp1: Number((ltp + tp1Move).toFixed(2)),
+        tp2: Number((ltp + tp2Move).toFixed(2)),
+        rr: 2,
         signals,
         metrics: {
           oiSignal: oiAnalysis.signal,

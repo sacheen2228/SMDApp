@@ -88,7 +88,7 @@ export function ZeroHeroScanner() {
           .map((c: any, i: number) => {
             const techScore = c.technicalScore ?? c.score ?? 0;
             const confidence = Math.min(95, Math.round(techScore * 0.7 + (c.volumeScore ?? 0) * 0.3));
-            const price = c.price ?? c.last ?? c.ltp ?? 0;
+            const price = c.currentPrice ?? c.price ?? c.last ?? c.ltp ?? 0;
             return {
               rank: 0,
               strike: price,

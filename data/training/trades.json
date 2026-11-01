@@ -24186,5 +24186,239 @@
       "mostActiveSentiment": "Neutral"
     },
     "createdAt": "2026-10-10T17:32:38.794Z"
+  },
+  {
+    "id": "api-1793332823713",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 23000,
+    "entryPrice": 110.6,
+    "sl": 88.5,
+    "tp1": 154.85000000000002,
+    "tp2": 176.95000000000002,
+    "source": "option-chain-api",
+    "confidence": 0,
+    "strategy": "option-chain-api",
+    "snapshot": {
+      "spot": 22975.15,
+      "spotChange": 38.400000000001455,
+      "spotChangePct": 0.16741691826436378,
+      "prevClose": 22936.75,
+      "marketStatus": "OPENING",
+      "sessionTime": "9:30 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news"
+      ],
+      "dataFreshness": "2026-10-30T04:00:31.727Z",
+      "atmStrike": 23000,
+      "maxPain": 22800,
+      "pcr": 1.41,
+      "totalCallOI": 2486663,
+      "totalPutOI": 3506936,
+      "callOiChange": 449433,
+      "putOiChange": 571009,
+      "vix": 15.55,
+      "futuresPrice": 22975.25,
+      "futuresBasis": 0.09999999999854481,
+      "strikeData": {
+        "strike": 23000,
+        "ceOi": 194409,
+        "ceOiChg": 70818,
+        "ceVolume": 463008,
+        "ceLtp": 110.6,
+        "ceIV": 13.09,
+        "ceDelta": 0.49,
+        "ceGamma": 0.0013,
+        "ceTheta": -17.85,
+        "peOi": 123706,
+        "peOiChg": 51661,
+        "peVolume": 369797,
+        "peLtp": 172.95,
+        "peIV": 16.65,
+        "peDelta": -0.5,
+        "peGamma": 0.001,
+        "peTheta": -17.72
+      },
+      "supportLevels": [
+        {
+          "strike": 22800,
+          "peOi": 183314
+        },
+        {
+          "strike": 22900,
+          "peOi": 181513
+        },
+        {
+          "strike": 22700,
+          "peOi": 168898
+        },
+        {
+          "strike": 21500,
+          "peOi": 162213
+        },
+        {
+          "strike": 22000,
+          "peOi": 160077
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 23000,
+          "ceOi": 194409
+        },
+        {
+          "strike": 23500,
+          "ceOi": 186191
+        },
+        {
+          "strike": 24000,
+          "ceOi": 150842
+        },
+        {
+          "strike": 23400,
+          "ceOi": 140470
+        },
+        {
+          "strike": 23300,
+          "ceOi": 128393
+        }
+      ],
+      "fiiNet": -943.6,
+      "diiNet": 1924.41,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 825247,
+        "fiiShort": 651177,
+        "diiLong": 565,
+        "diiShort": 565,
+        "clientLong": 2649861,
+        "clientShort": 3591028
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0
+    },
+    "createdAt": "2026-10-30T04:00:23.713Z"
+  },
+  {
+    "id": "api-1793332823877",
+    "symbol": "SENSEX",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 74200,
+    "entryPrice": 650.75,
+    "sl": 520.6,
+    "tp1": 911.0500000000001,
+    "tp2": 1041.2,
+    "source": "option-chain-api",
+    "confidence": 0,
+    "strategy": "option-chain-api",
+    "snapshot": {
+      "spot": 74249.6,
+      "spotChange": 51312.850000000006,
+      "spotChangePct": 223.71456287399045,
+      "prevClose": 22936.75,
+      "marketStatus": "OPENING",
+      "sessionTime": "9:30 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "fii-dii",
+        "news"
+      ],
+      "dataFreshness": "2026-10-30T04:00:31.926Z",
+      "atmStrike": 74200,
+      "maxPain": 73700,
+      "pcr": 1.66,
+      "totalCallOI": 293080,
+      "totalPutOI": 487264,
+      "callOiChange": 116323,
+      "putOiChange": 179780,
+      "vix": 15.57,
+      "futuresPrice": 22975.25,
+      "futuresBasis": -51274.350000000006,
+      "strikeData": {
+        "strike": 74200,
+        "ceOi": 16153,
+        "ceOiChg": 11159,
+        "ceVolume": 61609,
+        "ceLtp": 650.75,
+        "ceIV": 15.54,
+        "ceDelta": 0.54,
+        "ceGamma": 0.0003,
+        "ceTheta": -56.5,
+        "peOi": 23294,
+        "peOiChg": 18946,
+        "peVolume": 71161,
+        "peLtp": 610,
+        "peIV": 17.68,
+        "peDelta": -0.46,
+        "peGamma": 0.0002,
+        "peTheta": -49
+      },
+      "supportLevels": [
+        {
+          "strike": 72000,
+          "peOi": 30522
+        },
+        {
+          "strike": 74000,
+          "peOi": 27245
+        },
+        {
+          "strike": 73000,
+          "peOi": 24791
+        },
+        {
+          "strike": 74200,
+          "peOi": 23294
+        },
+        {
+          "strike": 73500,
+          "peOi": 23281
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 76000,
+          "ceOi": 24228
+        },
+        {
+          "strike": 77000,
+          "ceOi": 21489
+        },
+        {
+          "strike": 74000,
+          "ceOi": 17827
+        },
+        {
+          "strike": 78000,
+          "ceOi": 16224
+        },
+        {
+          "strike": 74200,
+          "ceOi": 16153
+        }
+      ],
+      "fiiNet": -943.6,
+      "diiNet": 1924.41,
+      "fiiBias": "SELLING",
+      "participantOI": {
+        "fiiLong": 825247,
+        "fiiShort": 651177,
+        "diiLong": 565,
+        "diiShort": 565,
+        "clientLong": 2649861,
+        "clientShort": 3591028
+      },
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0
+    },
+    "createdAt": "2026-10-30T04:00:23.877Z"
   }
 ]

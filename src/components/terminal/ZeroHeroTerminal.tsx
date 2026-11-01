@@ -111,13 +111,12 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "ide" | "daily" | "top5" | "mostactive";
+type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "ide" | "top5" | "mostactive";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
   { id: "options", icon: <Link2 size={19} />, label: "Option Chain" },
   { id: "optionsedge", icon: <Target size={19} />, label: "Options Edge" },
-  { id: "daily", icon: <CalendarClock size={19} />, label: "Daily Derivatives" },
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
@@ -450,123 +449,6 @@ function ProbBar({ v, color }: { v: number; color: string }) {
     <div className="mt-1">
       <div className={`text-2xl font-extrabold`} style={{ color }}>{v}%</div>
       <div className="h-2 rounded-full bg-[#1f2733] overflow-hidden mt-1"><div className="h-full" style={{ width: `${v}%`, background: color }} /></div>
-    </div>
-  );
-}
-
-// ─── Daily Derivatives Recommendation Tab (NIFTY / SENSEX only) ──────────
-function DailyDerivativesView() {
-  const [sym, setSym] = useState<"NIFTY" | "SENSEX">("NIFTY");
-  const [rec, setRec] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [updatedAt, setUpdatedAt] = useState(0);
-
-  const fetchRec = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/daily-ide?symbol=${encodeURIComponent(sym)}&record=true`, { cache: "no-store" });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error || "no data");
-      setRec(json.recommendation);
-      setError(null);
-      setUpdatedAt(Date.now());
-    } catch (e: any) {
-      setError(e?.message || "failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [sym]);
-
-  useEffect(() => {
-    setLoading(true);
-    fetchRec();
-    const id = setInterval(fetchRec, 900000);
-    return () => clearInterval(id);
-  }, [fetchRec]);
-
-  const fmt = (n: number) => (typeof n === "number" && !isNaN(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString("en-IN", { maximumFractionDigits: 1 }) : n.toFixed(1)) : "--");
-  const actColor = (a: string) =>
-    a === "BUY_CALL" ? "text-[#1fbf75]" : a === "BUY_PUT" ? "text-[#f2495c]" : "text-[#7d8ba0]";
-  const actBg = (a: string) =>
-    a === "BUY_CALL" ? "bg-[#1fbf75]/15 border-[#1fbf75]/40" : a === "BUY_PUT" ? "bg-[#f2495c]/15 border-[#f2495c]/40" : "bg-[#1f2733] border-[#1f2733]";
-
-  return (
-    <div className="flex flex-col gap-2 h-full">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <CalendarClock className="h-4 w-4 text-emerald-400" />
-          <span className="text-sm font-bold">Daily Trade Recommendation</span>
-          <span className="text-[10px] text-[#7d8ba0]">Derivatives Engine · {sym}</span>
-        </div>
-        <div className="flex items-center gap-2 text-[10px] text-[#7d8ba0]">
-          <span>Index:</span>
-          {(["NIFTY", "SENSEX"] as const).map((s) => (
-            <button key={s} onClick={() => setSym(s)}
-              className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
-          ))}
-          {loading && <Activity className="h-3 w-3 animate-spin" />}
-          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
-          <button onClick={fetchRec} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
-        </div>
-      </div>
-
-      {error && <div className="text-[11px] text-[#f2495c] bg-[#f2495c]/10 border border-[#f2495c]/30 rounded p-2">{error}</div>}
-
-      {rec && (
-        <>
-          {/* Decision banner */}
-          <div className={`rounded-lg border p-3 ${actBg(rec.action)}`}>
-            <div className="flex items-center justify-between">
-              <span className={`text-xl font-extrabold ${actColor(rec.action)}`}>
-                {rec.action.replace("_", " ")}
-                {rec.type && rec.strike ? ` · ${rec.type} ${fmt(rec.strike)}` : ""}
-              </span>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/30">
-                Confidence {rec.confidence}%
-              </span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-center">
-              <DStat label="Entry" value={fmt(rec.entry)} />
-              <DStat label="Stop Loss" value={fmt(rec.stopLoss)} tone="text-[#f2495c]" />
-              <DStat label="TP1" value={fmt(rec.tp1)} tone="text-[#1fbf75]" />
-              <DStat label="TP2" value={fmt(rec.tp2)} tone="text-[#1fbf75]" />
-            </div>
-            {rec.action !== "NO_TRADE" && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-1 text-center">
-                <DStat label="Strike" value={fmt(rec.strike)} />
-                <DStat label="TP3" value={fmt(rec.tp3)} tone="text-[#1fbf75]" />
-                <DStat label="Exp. Move" value={fmt(rec.expectedMove)} />
-                <DStat label="Exp. Move %" value={`${rec.expectedMovePct}%`} />
-              </div>
-            )}
-          </div>
-
-          {/* S/R + probabilities */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
-            <IdeCard title="Support / Resistance">
-              <div className="text-[13px] font-bold text-[#1fbf75]">S {fmt(rec.support)}</div>
-              <div className="text-[13px] font-bold text-[#f2495c]">R {fmt(rec.resistance)}</div>
-              <div className="text-[10px] text-[#7d8ba0] mt-0.5">Sup str {rec.supportStrength} · Res str {rec.resistanceStrength}</div>
-            </IdeCard>
-            <IdeCard title="CE (Call) Probability">
-              <ProbBar v={rec.callProbability} color="#1fbf75" />
-            </IdeCard>
-            <IdeCard title="PE (Put) Probability">
-              <ProbBar v={rec.putProbability} color="#f2495c" />
-            </IdeCard>
-          </div>
-
-          {/* Full reasoning */}
-          <div className="rounded-lg border border-[#1f2733] bg-[#10151d] p-3 flex-1 overflow-auto">
-            <div className="text-[11px] font-bold mb-1.5">Complete Reasoning (Option Chain + Derivatives only)</div>
-            <ul className="text-[10px] text-[#9fb0c3] space-y-1">
-              {rec.reasoning.map((r: string, i: number) => (
-                <li key={i} className="flex gap-1.5"><span className="text-[#2dd4a7]">▸</span><span>{r}</span></li>
-              ))}
-            </ul>
-          </div>
-        </>
-      )}
     </div>
   );
 }
@@ -1271,9 +1153,6 @@ export function ZeroHeroTerminal() {
           {activeTab === "ide" && (
             <InstitutionalDerivativesView />
           )}
-          {activeTab === "daily" && (
-            <DailyDerivativesView />
-          )}
           {activeTab === "top5" && (
             <TodaysTradeView />
           )}
@@ -1805,6 +1684,10 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           target2: row.ce ? row.ce.ltp * 2.0 : 0,
           historicalWinRate: 0.65,
           historicalRR: 2.0,
+          // TODO: migrate to option-plan rupee-risk (20% deployed → 2R/3R/4R targets)
+          // TODO: the old 0.7/1.5/2.0 hardcodes will be replaced when the scanner
+          //      integrates buildOptionPlan() from option-plan.ts — currently kept for
+          //      backwards compat but producing incorrect R:R values.
         };
         const ceDecision = scoreTrade(withCandleContext(ceInput, candles));
         if (ceDecision.entry >= 5 && ceDecision.stopLoss > 0 && ceDecision.stopLoss < ceDecision.entry &&
@@ -1840,24 +1723,28 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           row.strike >= peMinStrike &&
           row.strike <= peMaxStrike
         ) {
-          const peInput: MarketDataInput = {
-            symbol: activeSymbol,
-            strategy: "FO" as StrategyProfile,
-            direction: "BEARISH",
-            spot,
-            optionChain,
-            pcr: pcr || undefined,
-            maxPain: maxPain || undefined,
-            vix: vix || undefined,
-            candles: candles as any[] | undefined,
-            lotSize,
-            entryPrice: row.pe?.ltp || 0,
-            stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
-            target1: row.pe ? row.pe.ltp * 1.5 : 0,
-            target2: row.pe ? row.pe.ltp * 2.0 : 0,
-            historicalWinRate: 0.65,
-            historicalRR: 2.0,
-          };
+const peInput: MarketDataInput = {
+          symbol: activeSymbol,
+          strategy: "FO" as StrategyProfile,
+          direction: "BEARISH",
+          spot,
+          optionChain,
+          pcr: pcr || undefined,
+          maxPain: maxPain || undefined,
+          vix: vix || undefined,
+          candles: candles as any[] | undefined,
+          lotSize,
+          entryPrice: row.pe?.ltp || 0,
+          stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
+          target1: row.pe ? row.pe.ltp * 1.5 : 0,
+          target2: row.pe ? row.pe.ltp * 2.0 : 0,
+          historicalWinRate: 0.65,
+          historicalRR: 2.0,
+          // TODO: migrate to option-plan rupee-risk (20% deployed → 2R/3R/4R targets)
+          // TODO: the old 0.7/1.5/2.0 hardcodes will be replaced when the scanner
+          //      integrates buildOptionPlan() from option-plan.ts — currently kept for
+          //      backwards compat but producing incorrect R:R values.
+        };
           const peDecision = scoreTrade(withCandleContext(peInput, candles));
           if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
               (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {

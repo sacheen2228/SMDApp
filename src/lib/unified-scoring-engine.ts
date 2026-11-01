@@ -989,13 +989,16 @@ export function scoreTrade(input: MarketDataInput): TradeDecision {
   let expectedReward = 0;
 
   if (entry > 0 && stopLoss > 0 && target1 > 0) {
-    const risk = Math.abs(entry - stopLoss);
-    const reward = Math.abs(target1 - entry);
-    riskReward = risk > 0 ? reward / risk : 0;
+    // SIGNED R:R (R1): risk = entry − stop, reward = target1 − entry.
+    // A stop on the wrong side makes risk ≤ 0 → rr 0.
+    // A target on the wrong side makes reward ≤ 0 → rr 0.
+    const risk = entry - stopLoss;
+    const reward = target1 - entry;
+    riskReward = risk > 0 && reward > 0 ? reward / risk : 0;
     const lotSize = input.lotSize ?? 1;
     const qty = input.maxPositionSize ?? 1;
-    maxLoss = risk * qty;
-    expectedReward = reward * qty;
+    maxLoss = Math.max(0, risk) * qty;
+    expectedReward = Math.max(0, reward) * qty;
   }
 
   // 7. Build trade decision

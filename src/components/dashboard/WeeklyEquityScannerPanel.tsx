@@ -86,15 +86,22 @@ function actionColor(action: string): string {
   return "text-muted-foreground";
 }
 
+const optionCache = new Map<string, any>();
+
 function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch: (symbol: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [depth, setDepth] = useState<any>(null);
   const [depthLoading, setDepthLoading] = useState(false);
-  const [optionPlan, setOptionPlan] = useState<any>(null);
+  const [optionPlan, setOptionPlan] = useState<any>(optionCache.get(c.symbol) || null);
   const [optionLoading, setOptionLoading] = useState(false);
 
   useEffect(() => {
     if (expanded && !optionPlan && !optionLoading) {
+      const cached = optionCache.get(c.symbol);
+      if (cached) {
+        setOptionPlan(cached);
+        return;
+      }
       setOptionLoading(true);
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 8000);
@@ -102,9 +109,14 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
         .then(r => r.json())
         .then(j => {
           const cand = j?.data?.candidates?.find((x: any) => x.symbol === c.symbol);
-          setOptionPlan(cand?.monthlyOptionTrade || null);
+          const plan = cand?.monthlyOptionTrade || null;
+          optionCache.set(c.symbol, plan);
+          setOptionPlan(plan);
         })
-        .catch(() => setOptionPlan(null))
+        .catch(() => {
+          optionCache.set(c.symbol, null);
+          setOptionPlan(null);
+        })
         .finally(() => {
           clearTimeout(t);
           setOptionLoading(false);

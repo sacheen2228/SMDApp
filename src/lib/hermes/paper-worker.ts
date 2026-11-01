@@ -21,12 +21,15 @@ import { GATE_CONFIG } from "../agent-brain-gate";
 
 // ── Paper hit detection (side-aware) ─────────────────────────────────────
 //
-// A bearish (PE) plan is MIRRORED: the stop sits ABOVE the entry and the
-// targets BELOW it, so the premium must FALL for the trade to win. The old
-// long-only test (price <= stop) fired a false SL the moment a PE was opened
-// (entry 41.05, stop 49.25) and the long-only TP2/TP3 ladder could never be
-// reached by a mirrored plan. The side comes from the plan GEOMETRY (the same
-// rule the live monitors use) — never from the option letter.
+// The side comes from the plan GEOMETRY (the same rule the live monitors
+// use) — never from the option letter. A LONG plan (stop below the entry,
+// targets above — every plan built since R1, for BOTH CE and PE) wins when
+// the premium RISES; a SHORT plan (a legacy mirrored PE recorded under the
+// old convention, or a cash SELL — stop above the entry) wins when it FALLS.
+// The old long-only test (price <= stop) fired a false SL the moment a
+// legacy mirrored PE was opened (entry 41.05, stop 49.25) and the long-only
+// TP2/TP3 ladder could never be reached by that plan. Keeping the SHORT
+// branch is what lets those legacy rows finish their lifecycle correctly.
 
 export type PaperHit = "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT";
 

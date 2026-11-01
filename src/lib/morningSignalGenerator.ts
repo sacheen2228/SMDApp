@@ -7,11 +7,11 @@
 // ── TYPE INTEGRITY (2026-10-20) ─────────────────────────────────────────────
 // The live Telegram alert "📊 BHARTIARTL — PE / BUY PUT / Strike 1875.2 /
 // Entry ₹1875.20" was a CASH trade registered as an OPTION: the stock price
-// was used as an option premium. Downstream, `optionType` decides whether a
-// plan is MIRRORED (PE → stop above the entry, targets below) or LONG (CE →
-// stop below the entry, targets above) and the tracker resolves an OPTION LTP
-// for CE/PE — so the trade was monitored on the wrong side and its LTP could
-// never be found ("LTP feed unavailable after 10 consecutive attempts",
+// was used as an option premium. Downstream, `optionType` used to decide
+// whether a plan was MIRRORED (PE → stop above the entry, targets below) or
+// LONG (CE → stop below the entry, above) and the tracker resolves an OPTION
+// LTP for CE/PE — so the trade was monitored on the wrong side and its LTP
+// could never be found ("LTP feed unavailable after 10 consecutive attempts",
 // forever, with the trade open and the lock held).
 //
 // Rules enforced in this file:
@@ -21,7 +21,8 @@
 //   3. Futures / index-underlying signals are "FUT" (underlying price space) —
 //      never CE/PE.
 //   4. Option levels are built by the house plan (option-plan.ts) because the
-//      TP/SL monitor implements THAT convention (CE long, PE mirrored).
+//      TP/SL monitor implements THAT convention (long-option geometry for BOTH
+//      letters — stop below the entry, targets above, CE and PE alike).
 //   5. Only trades the TP/SL monitor can actually price are registered.
 
 import { buildMarketIntelligenceContext } from "@/lib/trade-intelligence/market-context";
@@ -53,9 +54,9 @@ export interface MorningSignal {
   /** The instrument TYPE. CE/PE only for a real option contract; cash equity
    *  is "EQ"; futures / index-underlying is "FUT". */
   type: MorningSignalType;
-  /** BUY/SELL of the instrument. An option buy is always BUY (the PE mirror
-   *  lives in the levels); a cash/futures short is SELL — its stop sits ABOVE
-   *  the entry. */
+  /** BUY/SELL of the instrument. An option buy is always BUY (its levels are
+   *  long-geometry for both letters since R1); a cash/futures short is SELL —
+   *  its stop sits ABOVE the entry. */
   side: MorningSignalSide;
   direction: string;
   entry: number;
