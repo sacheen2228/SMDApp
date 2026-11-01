@@ -25,6 +25,7 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 // cache instead of hammering NSE/BSE/broker endpoints.
 const CACHE_MS = 60_000;
 let cached: { at: number; report: Awaited<ReturnType<typeof evaluatePremarketReadiness>> } | null = null;
+let lastNotifiedState: { date: string; gate: string } | null = null;
 
 async function getReport(force: boolean) {
   if (!force && cached && Date.now() - cached.at < CACHE_MS) return cached.report;
@@ -60,15 +61,21 @@ export async function GET(req: NextRequest) {
     let notified = false;
     let notifyNote = "not requested";
     if (shouldNotify) {
-      const ids = digestChatIds();
-      if (ids.length === 0) {
-        notifyNote = "TELEGRAM_DIGEST_CHAT_IDS not configured";
+      const today = new Date().toISOString().slice(0,10);
+      if (lastNotifiedState && lastNotifiedState.date === today && lastNotifiedState.gate === report.gate) {
+        notifyNote = "already notified today for this gate";
       } else {
-        const text = formatReadinessMessage(report);
-        const { sendTelegramMessage } = await import("@/lib/telegramSend");
-        const results = await Promise.all(ids.map((id) => sendTelegramMessage(id, text)));
-        notified = results.some(Boolean);
-        notifyNote = notified ? `sent to ${ids.length} chat(s)` : "suppressed by Telegram send window";
+        const ids = digestChatIds();
+        if (ids.length === 0) {
+          notifyNote = "TELEGRAM_DIGEST_CHAT_IDS not configured";
+        } else {
+          const text = formatReadinessMessage(report);
+          const { sendTelegramMessage } = await import("@/lib/telegramSend");
+          const results = await Promise.all(ids.map((id) => sendTelegramMessage(id, text)));
+          notified = results.some(Boolean);
+          if (notified) lastNotifiedState = { date: today, gate: report.gate };
+          notifyNote = notified ? `sent to ${ids.length} chat(s)` : "suppressed by Telegram send window";
+        }
       }
     }
 
