@@ -62,6 +62,10 @@ export async function verifyTelegramBot(): Promise<{ ok: boolean; username?: str
   }
 }
 
+function escapeHtml(s: string) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
   // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
   // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.

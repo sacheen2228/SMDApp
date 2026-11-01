@@ -26,17 +26,27 @@ export function isMarketOpen(date: Date = new Date()): boolean {
 const SEND_OPEN_HOUR = 9, SEND_OPEN_MIN = 10;
 const SEND_CLOSE_HOUR = 15, SEND_CLOSE_MIN = 30;
 
+function istParts(date: Date) {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(date);
+  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  const weekday = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay();
+  return { weekday, hour: parseInt(map.hour, 10), minute: parseInt(map.minute, 10) };
+}
+
 export function isTelegramSendWindow(date: Date = new Date()): boolean {
   if (process.env.TELEGRAM_ALLOW_OFFHOURS === "1") return true;
-
-  const ist = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const day = ist.getDay(); // 0 = Sunday, 6 = Saturday
-  if (day === 0 || day === 6) return false;
-
-  const minutesNow = ist.getHours() * 60 + ist.getMinutes();
+  const { weekday, hour, minute } = istParts(date);
+  if (weekday === 0 || weekday === 6) return false;
+  const minutesNow = hour * 60 + minute;
   const openMinutes = SEND_OPEN_HOUR * 60 + SEND_OPEN_MIN;
   const closeMinutes = SEND_CLOSE_HOUR * 60 + SEND_CLOSE_MIN;
-
   return minutesNow >= openMinutes && minutesNow <= closeMinutes;
 }
 
