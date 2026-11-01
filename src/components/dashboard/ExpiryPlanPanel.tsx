@@ -341,6 +341,11 @@ export default function ExpiryPlanPanel({
                 {instFilter.toUpperCase()}
               </Badge>
             )}
+            {fii?.latest?.date && (
+              <span className="ml-auto text-[8px] text-[#7d8ba0] font-mono">
+                {fii.latest.source?.toUpperCase() || 'NSE'} • {fii.latest.date}
+              </span>
+            )}
           </div>
 
           {/* Row 1: Cash market FII/DII */}
