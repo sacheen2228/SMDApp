@@ -9,6 +9,7 @@ import {
   Flame, Trophy, Layers, CalendarClock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTerminalStore, INDEX_INSTRUMENTS, EQUITY_INSTRUMENTS, ALL_INSTRUMENTS } from "@/stores/useTerminalStore";
 import { InstitutionalGreeksPanel } from "@/components/terminal/InstitutionalGreeksPanel";
 import GreekFlowHeatmap from "@/components/terminal/GreekFlowHeatmap";
