@@ -22,6 +22,9 @@ import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engin
 import { FO_STOCKS } from "@/lib/fo-universe";
 import { analyzeVolumeStructure, VolumeStructure } from "@/lib/volume-structure";
 import { detectRocket, RocketDetection } from "@/lib/rocket-detect";
+import { buildOptionPlan } from "@/lib/option-plan";
+import { getLotSizeStrict } from "@/lib/symbol-config";
+import type { OptionPlan } from "@/lib/option-plan";
 
 // ─── Scan universe ────────────────────────────────────────────────
 // NSE F&O universe (208 liquid, options-tradable stocks) — far broader than
@@ -66,6 +69,12 @@ export interface WeeklyCandidate {
   volumeStructure: VolumeStructure;
   // Stage 4 — rocket move detection (null unless detected)
   rocket: RocketDetection | null;
+  // Option plan — computed from equity levels using buildOptionPlan (rupee risk
+  // 20% of deployed, 2R/3R/4R targets). null when the contract does not fit
+  // the per-trade budget or lot size is unknown.
+  optionPlan: OptionPlan | null;
+  optionStrike: number | null;
+  optionType: "CE" | "PE" | null;
 }
 
 export interface RocketMoveRow {
@@ -484,6 +493,28 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
       hasEventRisk: events.length > 0,
       volumeStructure: analyzeVolumeStructure(daily),
       rocket: detectRocket(daily, sd.symbol, sd.name, sd.sector),
+      // ── Option plan — computed from equity levels using buildOptionPlan ──
+      // Rupee risk 20% of deployed, 2R/3R/4R targets (1:2 / 1:3 / 1:4).
+      ...(() => {
+        const optionType: "CE" | "PE" = weeklyTrend === "DOWN" ? "PE" : "CE";
+        // ATM strike: round to nearest 50 (price < 1000) or 100 (price >= 1000)
+        const step = price < 1000 ? 50 : 100;
+        const optionStrike = Math.round(price / step) * step;
+        // Estimated ATM premium ≈ 3% of underlying price (typical for liquid F&O).
+        const estimatedPremium = Math.max(price * 0.03, step * 0.1);
+        const lotSize = getLotSizeStrict(sd.symbol) ?? 50;
+        const plan = buildOptionPlan({
+          symbol: sd.symbol,
+          optionType,
+          entryPremium: estimatedPremium,
+          lotSize,
+        });
+        return {
+          optionPlan: plan && plan.tradable ? plan : null,
+          optionStrike: plan && plan.tradable ? optionStrike : null,
+          optionType: plan && plan.tradable ? optionType : null,
+        };
+      })(),
     });
   }
 

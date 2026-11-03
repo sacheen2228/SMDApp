@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect, memo } from "react";
+import { useState, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -86,47 +86,10 @@ function actionColor(action: string): string {
   return "text-muted-foreground";
 }
 
-const optionCache = new Map<string, any>();
-
 function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch: (symbol: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [depth, setDepth] = useState<any>(null);
   const [depthLoading, setDepthLoading] = useState(false);
-  const [optionPlan, setOptionPlan] = useState<any>(optionCache.get(c.symbol) || null);
-  const [optionLoading, setOptionLoading] = useState(false);
-
-  useEffect(() => {
-    if (expanded && !optionPlan && !optionLoading) {
-      const cached = optionCache.get(c.symbol);
-      if (cached) {
-        setOptionPlan(cached);
-        return;
-      }
-      setOptionLoading(true);
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 8000);
-      fetch(`/api/scanner?symbol=${c.symbol}&live=true`, { signal: controller.signal })
-        .then(r => r.json())
-        .then(j => {
-          const cand = j?.data?.candidates?.find((x: any) => x.symbol === c.symbol);
-          const plan = cand?.monthlyOptionTrade || null;
-          optionCache.set(c.symbol, plan);
-          setOptionPlan(plan);
-        })
-        .catch(() => {
-          optionCache.set(c.symbol, null);
-          setOptionPlan(null);
-        })
-        .finally(() => {
-          clearTimeout(t);
-          setOptionLoading(false);
-        });
-      return () => {
-        clearTimeout(t);
-        controller.abort();
-      };
-    }
-  }, [expanded, c.symbol, optionPlan, optionLoading]);
 
   const checkDepth = async (symbol: string) => {
     setDepthLoading(true);
@@ -214,8 +177,8 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
           )}
         </TableCell>
         <TableCell className="text-center text-[10px]">
-          {optionLoading ? '...' : expanded && optionPlan ? (
-            <span className="text-emerald-600 font-semibold">{optionPlan.optionType} {optionPlan.strike}</span>
+          {c.optionPlan ? (
+            <span className="text-emerald-600 font-semibold">{c.optionType} {c.optionStrike}</span>
           ) : (
             <span className="text-muted-foreground">Expand</span>
           )}
@@ -340,14 +303,12 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
               <div className="flex items-center gap-1 font-bold mb-1 text-violet-500">
                 <Target className="h-3 w-3" /> Option Plan
               </div>
-              {optionLoading ? (
-                <p className="text-muted-foreground">Loading option plan…</p>
-              ) : optionPlan ? (
+              {c.optionPlan ? (
                 <p className="leading-relaxed text-foreground">
-                  Buy {c.symbol} {optionPlan.strike} {optionPlan.optionType} @ ₹{optionPlan.premium.toFixed(2)} | SL ₹{optionPlan.stopLoss.toFixed(2)} | T1 ₹{optionPlan.targets?.[0]?.toFixed(2)} | T2 ₹{optionPlan.targets?.[1]?.toFixed(2)} | {optionPlan.expiryLabel}
+                  Buy {c.symbol} {c.optionStrike} {c.optionType} @ ₹{c.optionPlan.entry.toFixed(2)} | SL ₹{c.optionPlan.stopLoss.toFixed(2)} | T1 ₹{c.optionPlan.targets?.[0]?.toFixed(2)} | T2 ₹{c.optionPlan.targets?.[1]?.toFixed(2)} | R:R 1:{c.optionPlan.rr.toFixed(2)}
                 </p>
               ) : (
-                <p className="text-muted-foreground">No monthly option plan – chain unavailable / engine disagree / not F&O.</p>
+                <p className="text-muted-foreground">No option plan — contract does not fit the per-trade budget or lot size unknown.</p>
               )}
             </div>
           </TableCell>
@@ -601,7 +562,7 @@ export const WeeklyEquityScannerPanel = memo(function WeeklyEquityScannerPanel()
         <div className="text-center text-[9px] text-muted-foreground pb-4">
           Scan completed at: {new Date(result.timestamp).toLocaleString("en-IN")}
           <br />
-          Data source: {dataSource || "Yahoo Finance"} · Data quality: {result.dataQuality}
+          Data source: {dataSource || "NSE daily history"} · Data quality: {result.dataQuality}
         </div>
       </div>
 
