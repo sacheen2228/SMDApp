@@ -2023,6 +2023,13 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   // Break-even
   const breakEven = isCall ? strike + entryPremium : strike - entryPremium;
 
+  // Stop Loss and Targets (rupee risk model: 20% risk, 2R/3R/4R targets)
+  const riskPoints = entryPremium * 0.20;
+  const stopLoss = long ? entryPremium - riskPoints : entryPremium + riskPoints;
+  const targets = long
+    ? [entryPremium + riskPoints * 2, entryPremium + riskPoints * 3, entryPremium + riskPoints * 4]
+    : [entryPremium - riskPoints * 2, entryPremium - riskPoints * 3, entryPremium - riskPoints * 4];
+
   // Distance to strike
   const distanceToStrike = spot - strike;
   const distanceToStrikePct = (distanceToStrike / spot) * 100;
@@ -2131,6 +2138,9 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
     costTrapWarning,
     riskMeter,
     scenarioTable,
+    stopLoss,
+    tp1: targets[0],
+    tp2: targets[1],
   };
 }
 
@@ -2454,6 +2464,30 @@ function ExpiryCalculator({
         <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
           <div className="text-[9px] text-[#7d8ba0] mb-1">Max Loss (Seller)</div>
           <div className={`font-bold ${pctColor(-Math.abs(Number(result.maxLossSeller)))}`}>{result.maxLossSeller}</div>
+        </Card>
+      </div>
+
+      {/* Trade Plan Card - Prominent Entry/SL/TP */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Entry</div>
+          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.entryPremium)}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">Lots: {inputs.lots} × Lot {inputs.lotSize}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Stop Loss</div>
+          <div className="font-bold text-red-500 text-lg">₹{fmt(result.stopLoss)}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">Risk: ₹{fmt(result.riskPoints * inputs.lotSize * inputs.lots)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Target 1</div>
+          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.tp1)}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">1:2 R:R</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Target 2</div>
+          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.tp2)}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">1:3 R:R</div>
         </Card>
       </div>
 
