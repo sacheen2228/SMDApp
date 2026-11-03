@@ -2060,7 +2060,6 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   const maxLossSeller = long ? "unlimited" : (entryPremium * lotSize * lots).toFixed(0);
 
   // Charges
-  // STT: on sell side (intraday square-off) or on intrinsic value (ITM settlement)
   const sttOnSell = currentLTP * sttPct / 100;
   const sttOnIntrinsic = expiryValue * sttPct / 100;
   const exchangeCharges = entryPremium * exchangeChargesPct / 100;
@@ -2230,7 +2229,7 @@ function ExpiryCalculator({
   lotSize: number;
 }) {
   const [inputs, setInputs] = useState<ExpCalcInputs>({
-    index: symbol.includes("NIFTY") ? "NIFTY" : symbol.includes("BANKNIFTY") ? "BANKNIFTY" : symbol.includes("FINNIFTY") ? "FINNIFTY" : "MIDCPNIFTY",
+    index: symbol.includes("NIFTY") ? "NIFTY" : symbol.includes("BANKNIFTY") ? "BANKNIFTY" : symbol.includes("FINNIFTY") ? "FINNIFTY" : symbol.includes("SENSEX") ? "SENSEX" : "MIDCPNIFTY",
     optionType: "CE",
     position: "BUY",
     strike: spot > 0 ? Math.round(spot / 50) * 50 : 24000,
@@ -2252,37 +2251,7 @@ function ExpiryCalculator({
   });
   const [result, setResult] = useState<ExpCalcResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      setError(null);
-      const r = calculate(inputs);
-      setResult(r);
-    } catch (e: any) {
-      setResult(null);
-      setError(e?.message || "Calculation error");
-    }
-  }, [
-    inputs.index,
-    inputs.optionType,
-    inputs.position,
-    inputs.strike,
-    inputs.entryPremium,
-    inputs.currentLTP,
-    inputs.lots,
-    inputs.lotSize,
-    inputs.spot,
-    inputs.iv,
-    inputs.timeHours,
-    inputs.settlementPrice,
-    inputs.settlementMode,
-    inputs.brokeragePerOrder,
-    inputs.sttPct,
-    inputs.exchangeChargesPct,
-    inputs.gstPct,
-    inputs.sebiPct,
-    inputs.stampDutyPct,
-  ]);
+  const [isCalculating, setIsCalculating] = useState(true);
 
   const fmt = (n: number | null | undefined): string => {
     if (n == null || isNaN(n)) return "—";
@@ -2303,6 +2272,77 @@ function ExpiryCalculator({
       default: return "text-red-500 bg-red-500/10 border-red-500/30";
     }
   };
+
+  // Auto-calculate trade from live chain data on mount and when spot changes
+  useEffect(() => {
+    setIsCalculating(true);
+    let cancelled = false;
+
+    async function runCalculation() {
+      try {
+        // Fetch live option chain to get real premium and Greeks for ATM strike
+        let chainData: any = null;
+        try {
+          const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(inputs.index)}`, { signal: AbortSignal.timeout(10000) });
+          if (res.ok) {
+            const json = await res.json();
+            chainData = json;
+          }
+        } catch {
+          // chain fetch failed, will use estimated premium
+        }
+
+        const spotPrice = inputs.spot;
+        const strike = Math.round(spotPrice / 50) * 50;
+
+        // Find real premium from chain data
+        let realPremium = 0;
+        let realIV = inputs.iv;
+        let realDelta = 0;
+        if (chainData?.data) {
+          const strikes: any[] = chainData.data;
+          const atmRow = strikes.find((r: any) => r.strike === strike);
+          if (atmRow) {
+            const leg = inputs.optionType === "CE" ? atmRow.ce : atmRow.pe;
+            if (leg && leg.ltp > 0) {
+              realPremium = leg.ltp;
+              realIV = leg.iv || inputs.iv;
+              realDelta = leg.delta || 0;
+            }
+          }
+        }
+
+        const finalPremium = realPremium > 0 ? realPremium : Math.max(spotPrice * 0.03, 25);
+        const finalIV = realIV > 0 ? realIV : inputs.iv;
+
+        setInputs((prev) => ({
+          ...prev,
+          strike,
+          entryPremium: finalPremium,
+          currentLTP: finalPremium,
+          spot: spotPrice,
+          iv: finalIV,
+        }));
+
+        const r = calculate({
+          ...inputs,
+          strike,
+          entryPremium: finalPremium,
+          currentLTP: finalPremium,
+          spot: spotPrice,
+          iv: finalIV,
+        });
+        if (!cancelled) setResult(r);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Calculation error");
+      } finally {
+        if (!cancelled) setIsCalculating(false);
+      }
+    }
+
+    runCalculation();
+    return () => { cancelled = true; };
+  }, [inputs.spot, inputs.index, inputs.optionType]);
 
   if (error) {
     return (
