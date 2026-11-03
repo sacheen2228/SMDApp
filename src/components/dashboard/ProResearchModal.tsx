@@ -217,6 +217,44 @@ export const ProResearchModal = memo(function ProResearchModal({
                 <p className="text-[10px] text-muted-foreground">{dossier.institutional.note}</p>
               </Section>
 
+              {/* Option Plan */}
+              {dossier.optionPlan && dossier.optionStrike && dossier.optionType ? (
+                <Section title="Option Plan" icon={<Target className="h-3.5 w-3.5 text-violet-500" />} score={Math.min(95, 50 + dossier.optionPlan.rr * 10)}>
+                  <div className="grid grid-cols-4 gap-2 text-[10px]">
+                    <div className="text-center">
+                      <div className="text-muted-foreground">Strike</div>
+                      <div className="font-bold text-violet-500">{dossier.optionStrike}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">Type</div>
+                      <div className="font-bold">{dossier.optionType}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">Entry</div>
+                      <div className="font-bold text-emerald-500">₹{dossier.optionPlan.entry.toFixed(2)}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">SL</div>
+                      <div className="font-bold text-red-500">₹{dossier.optionPlan.stopLoss.toFixed(2)}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[10px] mt-2 pt-2 border-t">
+                    <div className="text-center">
+                      <div className="text-muted-foreground">T1</div>
+                      <div className="font-bold text-emerald-500">₹{dossier.optionPlan.targets?.[0]?.toFixed(2)}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">T2</div>
+                      <div className="font-bold text-emerald-500">₹{dossier.optionPlan.targets?.[1]?.toFixed(2)}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">R:R</div>
+                      <div className="font-bold text-emerald-500">1:{dossier.optionPlan.rr.toFixed(1)}</div>
+                    </div>
+                  </div>
+                </Section>
+              ) : null}
+
               {/* Risk */}
               <Section title="Risk Assessment" icon={<Shield className="h-3.5 w-3.5 text-amber-500" />} score={dossier.risk.score}>
                 {dossier.risk.reasons.length > 0 ? (

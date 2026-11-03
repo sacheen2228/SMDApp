@@ -10,6 +10,9 @@
 import type { WeeklyCandidate } from "@/lib/weekly-equity-scanner";
 import { getNewsScore, fetchStockNews } from "@/lib/news-engine";
 import { fetchFiiDiiData } from "@/lib/fii-dii";
+import { buildOptionPlan } from "@/lib/option-plan";
+import { getLotSizeStrict } from "@/lib/symbol-config";
+import type { OptionPlan } from "@/lib/option-plan";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface FundamentalSnapshot {
@@ -72,6 +75,12 @@ export interface ProResearchDossier {
     riskReward: number;
     note: string;
   };
+  // Option plan — computed from equity levels via buildOptionPlan (rupee risk
+  // 20% of deployed, 2R/3R/4R targets). null when the contract does not fit
+  // the per-trade budget.
+  optionPlan: OptionPlan | null;
+  optionStrike: number | null;
+  optionType: "CE" | "PE" | null;
   fundamental: FundamentalSnapshot;
   news: NewsSentimentSection;
   institutional: InstitutionalSection;
@@ -331,11 +340,40 @@ export async function runProResearch(candidate: WeeklyCandidate): Promise<ProRes
     note: candidate.confidenceNote || candidate.bullCase,
   };
 
+  // ── Option plan from equity levels ──
+  // Rupee risk 20% of deployed, 2R/3R/4R targets (1:2 / 1:3 / 1:4).
+  // ATM strike rounded to nearest 50 (price < 1000) or 100 (price >= 1000).
+  // Estimated ATM premium ≈ 3% of underlying price.
+  let optionPlan: OptionPlan | null = null;
+  let optionStrike: number | null = null;
+  let optionType: "CE" | "PE" | null = null;
+  if (candidate.weeklyTrend !== "DOWN" || candidate.riskReward >= 1.5) {
+    const optType: "CE" | "PE" = candidate.weeklyTrend === "DOWN" ? "PE" : "CE";
+    const step = candidate.price < 1000 ? 50 : 100;
+    const optStrike = Math.round(candidate.price / step) * step;
+    const estimatedPremium = Math.max(candidate.price * 0.03, step * 0.1);
+    const lotSize = getLotSizeStrict(candidate.symbol) ?? 50;
+    const plan = buildOptionPlan({
+      symbol: candidate.symbol,
+      optionType: optType,
+      entryPremium: estimatedPremium,
+      lotSize,
+    });
+    if (plan && plan.tradable) {
+      optionPlan = plan;
+      optionStrike = optStrike;
+      optionType = optType;
+    }
+  }
+
   const base = {
     symbol: candidate.symbol,
     name: candidate.name,
     sector: candidate.sector,
     technical,
+    optionPlan,
+    optionStrike,
+    optionType,
     fundamental,
     news,
     institutional,
