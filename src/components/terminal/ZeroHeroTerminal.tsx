@@ -1390,8 +1390,14 @@ function FIIFlowPanel({ flowData }: { flowData: any }) {
           {totalPutOIChg >= 0 ? "+" : ""}{fmt(totalPutOIChg)}
         </div>
         <div className="flex gap-3 mt-3 text-[11px] text-[#7d8ba0]">
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#f2495c] inline-block" /> Selling</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#1fbf75] inline-block" /> Buying</span>
+          <span className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full inline-block ${totalCallOIChg >= 0 ? "bg-[#f2495c]" : "bg-[#1fbf75]"}`} />
+            {totalCallOIChg >= 0 ? "Call Writing" : "Call Unwinding"}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full inline-block ${totalPutOIChg >= 0 ? "bg-[#1fbf75]" : "bg-[#f2495c]"}`} />
+            {totalPutOIChg >= 0 ? "Put Writing" : "Put Unwinding"}
+          </span>
         </div>
       </div>
     </div>
@@ -2229,7 +2235,7 @@ function ExpiryCalculator({
     index: symbol.includes("NIFTY") ? "NIFTY" : symbol.includes("BANKNIFTY") ? "BANKNIFTY" : symbol.includes("FINNIFTY") ? "FINNIFTY" : "MIDCPNIFTY",
     optionType: "CE",
     position: "BUY",
-    strike: Math.round(spot / 50) * 50,
+    strike: spot > 0 ? Math.round(spot / 50) * 50 : 24000,
     entryPremium: 0,
     currentLTP: 0,
     lots: 1,
