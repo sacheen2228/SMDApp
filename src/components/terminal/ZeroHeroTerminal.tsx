@@ -2286,7 +2286,7 @@ function ExpiryCalculator({
           const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(inputs.index)}`, { signal: AbortSignal.timeout(10000) });
           if (res.ok) {
             const json = await res.json();
-            chainData = json;
+            chainData = json?.data || json?.records?.data || null;
           }
         } catch {
           // chain fetch failed, will use estimated premium
@@ -2299,9 +2299,8 @@ function ExpiryCalculator({
         let realPremium = 0;
         let realIV = inputs.iv;
         let realDelta = 0;
-        if (chainData?.data) {
-          const strikes: any[] = chainData.data;
-          const atmRow = strikes.find((r: any) => r.strike === strike);
+        if (Array.isArray(chainData)) {
+          const atmRow = chainData.find((r: any) => r.strike === strike);
           if (atmRow) {
             const leg = inputs.optionType === "CE" ? atmRow.ce : atmRow.pe;
             if (leg && leg.ltp > 0) {
