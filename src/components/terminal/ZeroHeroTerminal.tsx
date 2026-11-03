@@ -2236,8 +2236,8 @@ function ExpiryCalculator({
     optionType: "CE",
     position: "BUY",
     strike: spot > 0 ? Math.round(spot / 50) * 50 : 24000,
-    entryPremium: 0,
-    currentLTP: 0,
+    entryPremium: spot > 0 ? Math.max(spot * 0.03, 25) : 30,
+    currentLTP: spot > 0 ? Math.max(spot * 0.03, 25) : 30,
     lots: 1,
     lotSize: defaultLotSize > 0 ? defaultLotSize : 50,
     spot: spot > 0 ? spot : 24000,
@@ -2246,7 +2246,7 @@ function ExpiryCalculator({
     settlementPrice: undefined,
     settlementMode: "provisional",
     brokeragePerOrder: 20,
-    sttPct: 0.0625,      // 0.0625% on sell side (intraday) / 0.125% on ITM sell-to-close
+    sttPct: 0.0625,
     exchangeChargesPct: 0.003,
     gstPct: 18,
     sebiPct: 0.001,
@@ -2254,20 +2254,8 @@ function ExpiryCalculator({
   });
   const [result, setResult] = useState<ExpCalcResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [hasUserInput, setHasUserInput] = useState(false);
-
-  const handleInput = (k: keyof ExpCalcInputs, v: any) => {
-    setInputs((prev) => ({ ...prev, [k]: v }));
-    setHasUserInput(true);
-  };
 
   useEffect(() => {
-    // Only calculate when user has interacted AND required fields are valid
-    if (!hasUserInput || !inputs.spot || inputs.spot <= 0 || !inputs.entryPremium || inputs.entryPremium <= 0) {
-      setResult(null);
-      setError(null);
-      return;
-    }
     try {
       setError(null);
       const r = calculate(inputs);
@@ -2326,14 +2314,6 @@ function ExpiryCalculator({
       </div>
     );
   }
-  if (!result && !hasUserInput) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
-        <Target className="h-8 w-8 mb-3" />
-        <p>Enter Entry Premium to calculate</p>
-      </div>
-    );
-  }
   if (!result) return null;
 
   const atmStrike = Math.round(result.settlementUsed / 50) * 50;
@@ -2358,29 +2338,29 @@ function ExpiryCalculator({
 
       {/* Inputs Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
-        <InputRow label="Index" type="select" value={inputs.index} options={["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]} onChange={(v) => handleInput("index", v)} />
-        <InputRow label="Option Type" type="select" value={inputs.optionType} options={["CE", "PE"]} onChange={(v) => handleInput("optionType", v)} />
-        <InputRow label="Position" type="select" value={inputs.position} options={["BUY", "SELL"]} onChange={(v) => handleInput("position", v)} />
-        <InputRow label="Strike" type="number" value={inputs.strike} step={50} onChange={(v) => handleInput("strike", Number(v))} />
-        <InputRow label="Entry Premium" type="number" value={inputs.entryPremium} step={0.05} onChange={(v) => handleInput("entryPremium", Number(v))} />
-        <InputRow label="Current LTP" type="number" value={inputs.currentLTP} step={0.05} onChange={(v) => handleInput("currentLTP", Number(v))} />
-        <InputRow label="Lots" type="number" value={inputs.lots} step={1} onChange={(v) => handleInput("lots", Number(v))} />
-        <InputRow label="Lot Size" type="number" value={inputs.lotSize} step={1} onChange={(v) => handleInput("lotSize", Number(v))} />
-        <InputRow label="Spot Price" type="number" value={inputs.spot} step={0.05} onChange={(v) => handleInput("spot", Number(v))} />
-        <InputRow label="IV / VIX (%)" type="number" value={inputs.iv} step={0.1} onChange={(v) => handleInput("iv", Number(v))} />
-        <InputRow label="Hours to Expiry" type="number" value={inputs.timeHours} step={0.5} onChange={(v) => handleInput("timeHours", Number(v))} />
-        <InputRow label="Settlement Price" type="number" value={inputs.settlementPrice ?? ""} step={0.05} onChange={(v) => handleInput("settlementPrice", v === "" ? undefined : Number(v))} />
-        <InputRow label="Settlement Mode" type="select" value={inputs.settlementMode} options={["provisional", "final"]} onChange={(v) => handleInput("settlementMode", v)} />
+        <InputRow label="Index" type="select" value={inputs.index} options={["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]} onChange={(v) => setInputs((prev) => ({ ...prev, index: v }))} />
+        <InputRow label="Option Type" type="select" value={inputs.optionType} options={["CE", "PE"]} onChange={(v) => setInputs((prev) => ({ ...prev, optionType: v }))} />
+        <InputRow label="Position" type="select" value={inputs.position} options={["BUY", "SELL"]} onChange={(v) => setInputs((prev) => ({ ...prev, position: v }))} />
+        <InputRow label="Strike" type="number" value={inputs.strike} step={50} onChange={(v) => setInputs((prev) => ({ ...prev, strike: Number(v) }))} />
+        <InputRow label="Entry Premium" type="number" value={inputs.entryPremium} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, entryPremium: Number(v) }))} />
+        <InputRow label="Current LTP" type="number" value={inputs.currentLTP} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, currentLTP: Number(v) }))} />
+        <InputRow label="Lots" type="number" value={inputs.lots} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lots: Number(v) }))} />
+        <InputRow label="Lot Size" type="number" value={inputs.lotSize} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lotSize: Number(v) }))} />
+        <InputRow label="Spot Price" type="number" value={inputs.spot} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, spot: Number(v) }))} />
+        <InputRow label="IV / VIX (%)" type="number" value={inputs.iv} step={0.1} onChange={(v) => setInputs((prev) => ({ ...prev, iv: Number(v) }))} />
+        <InputRow label="Hours to Expiry" type="number" value={inputs.timeHours} step={0.5} onChange={(v) => setInputs((prev) => ({ ...prev, timeHours: Number(v) }))} />
+        <InputRow label="Settlement Price" type="number" value={inputs.settlementPrice ?? ""} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, settlementPrice: v === "" ? undefined : Number(v) }))} />
+        <InputRow label="Settlement Mode" type="select" value={inputs.settlementMode} options={["provisional", "final"]} onChange={(v) => setInputs((prev) => ({ ...prev, settlementMode: v }))} />
       </div>
 
       {/* Charges */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
-        <InputRow label="Brokerage/Order (₹)" type="number" value={inputs.brokeragePerOrder} step={1} onChange={(v) => handleInput("brokeragePerOrder", Number(v))} />
-        <InputRow label="STT (%)" type="number" value={inputs.sttPct} step={0.001} onChange={(v) => handleInput("sttPct", Number(v))} />
-        <InputRow label="Exchange (%)" type="number" value={inputs.exchangeChargesPct} step={0.001} onChange={(v) => handleInput("exchangeChargesPct", Number(v))} />
-        <InputRow label="GST (%)" type="number" value={inputs.gstPct} step={0.1} onChange={(v) => handleInput("gstPct", Number(v))} />
-        <InputRow label="SEBI (%)" type="number" value={inputs.sebiPct} step={0.001} onChange={(v) => handleInput("sebiPct", Number(v))} />
-        <InputRow label="Stamp Duty (%)" type="number" value={inputs.stampDutyPct} step={0.001} onChange={(v) => handleInput("stampDutyPct", Number(v))} />
+        <InputRow label="Brokerage/Order (₹)" type="number" value={inputs.brokeragePerOrder} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, brokeragePerOrder: Number(v) }))} />
+        <InputRow label="STT (%)" type="number" value={inputs.sttPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sttPct: Number(v) }))} />
+        <InputRow label="Exchange (%)" type="number" value={inputs.exchangeChargesPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, exchangeChargesPct: Number(v) }))} />
+        <InputRow label="GST (%)" type="number" value={inputs.gstPct} step={0.1} onChange={(v) => setInputs((prev) => ({ ...prev, gstPct: Number(v) }))} />
+        <InputRow label="SEBI (%)" type="number" value={inputs.sebiPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sebiPct: Number(v) }))} />
+        <InputRow label="Stamp Duty (%)" type="number" value={inputs.stampDutyPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, stampDutyPct: Number(v) }))} />
       </div>
 
       {/* Summary Cards */}
