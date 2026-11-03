@@ -1167,9 +1167,6 @@ export function ZeroHeroTerminal() {
         </div>
       </div>
 
-      {/* ─── Expiry-Day Option Survival / Zero-Hero Risk Calculator ─── */}
-      <ExpiryCalculator spot={spot} vix={vix} symbol={symbol} lotSize={lotSize} />
-
       {/* ─── Trade Modal ─── */}
       {showModal && pendingTrade && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[1000]" onClick={() => setShowModal(false)}>
