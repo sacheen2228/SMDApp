@@ -1,22 +1,23 @@
 import { NextResponse } from 'next/server';
-import { fetchFiiDiiData } from '@/lib/fii-dii';
+import { fetchFIIDII } from '@/lib/market-data-service';
 import { buildFreshnessMeta } from '@/lib/api-freshness';
 import { buildCardMeta, getMarketClock } from '@/lib/data-freshness';
 
 export async function GET() {
   try {
-    const data = await fetchFiiDiiData();
-    const clock = await getMarketClock();
+    const envelope = await fetchFIIDII({
+      symbol: "NIFTY",
+      nowMs: Date.now(),
+    });
 
-    if (!data.available) {
-      // Neither NSE nor MrChartist answered — say so instead of rendering
-      // the zero-filled placeholder as "FII net 0".
+    if (!envelope.available) {
+      const clock = await getMarketClock();
       const meta = buildCardMeta({
         source: 'none',
         providerTimestamp: null,
         ttlMs: 24 * 3600_000,
         live: false,
-        reason: 'FII/DII feed unavailable (neither NSE nor MrChartist answered)',
+        reason: 'FII/DII feed unavailable (all providers failed)',
       });
       return NextResponse.json(
         {
@@ -42,19 +43,20 @@ export async function GET() {
       );
     }
 
-    const dataDate = data.latest.date;
-    // An undated feed is not LIVE — it is an undated snapshot. Fall back to
-    // epoch 0 so classifyFreshness() honestly reports STALE/UNAVAILABLE
-    // rather than fabricating "collected right now".
+    const clock = await getMarketClock();
+    const data = envelope.data as any;
+    const dataDate = data.date;
+    const providerStamp = dataDate ? new Date(dataDate) : null;
     const freshness = buildFreshnessMeta({
-      provider: data.latest.source || "nse",
+      provider: envelope.provider,
       dataTimestamp: dataDate ? new Date(dataDate) : new Date(0),
       dataType: "fiiDii",
+      fallbackUsed: envelope.fallbackUsed,
+      fallbackReason: envelope.fallbackReason,
     });
 
-    const providerStamp = dataDate ? new Date(dataDate) : null;
     const meta = buildCardMeta({
-      source: data.latest.source || "nse",
+      source: envelope.provider,
       providerTimestamp: providerStamp,
       ttlMs: 24 * 3600_000,
       live: clock.isOpen,
@@ -65,24 +67,20 @@ export async function GET() {
       success: true,
       status: meta.status,
       data: meta,
-      fiiNet: data.latest.fiiNet,
-      diiNet: data.latest.diiNet,
-      fiiBuy: data.latest.fiiBuy,
-      fiiSell: data.latest.fiiSell,
-      diiBuy: data.latest.diiBuy,
-      diiSell: data.latest.diiSell,
-      date: data.latest.date,
-      source: data.latest.source,
+      fiiNet: data.fiiNet,
+      diiNet: data.diiNet,
+      fiiBuy: data.fiiBuy,
+      fiiSell: data.fiiSell,
+      diiBuy: data.diiBuy,
+      diiSell: data.diiSell,
+      date: data.date,
+      source: envelope.provider,
       freshness,
-      // null when the feed had no history / no participant OI — never a 0
-      // that reads like "FII was flat".
       fiiNet5dAvg: data.fiiNet5dAvg ?? null,
       diiNet5dAvg: data.diiNet5dAvg ?? null,
       fiiFutLongRatio: data.fiiFutLongRatio ?? null,
       provenance: {
-        source: data.latest.source || 'NSE',
-        // The provider's own trade date (the FII/DII file is published for a
-        // session, not "now").
+        source: envelope.provider,
         retrievedAt: providerStamp ? providerStamp.toISOString() : null,
         collectedAt: new Date().toISOString(),
         freshness: freshness.freshness,

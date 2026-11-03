@@ -508,6 +508,10 @@ export async function reloadActiveTrades(): Promise<number> {
       if (!resumable.has(t.status)) continue;
       // Skip synthetic test IDs that would never have real LTP
       if (/^(e2e|persist|chain|sell|prod)-/.test(tradeId)) continue;
+      // Skip equity trades — no live LTP source for equity ETFs (SETFNIF50,
+      // NIFTYBEES etc.) and the user has opted out of equity BTST monitoring.
+      // Option trades flow through the scanner's monthlyOptionTrade path instead.
+      if (t.type === "EQUITY") continue;
       const trade: ActiveTrade = {
         id: tradeId,
         symbol: t.symbol,

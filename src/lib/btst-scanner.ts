@@ -9,7 +9,7 @@ import { runIntradayScan } from "./intraday-scanner";
 import { analyzeBTST, type BTSTAnalysis } from "./btst-engine";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
-import { createTrade, updateTrade } from "./tradeStore";
+import { updateTrade } from "./tradeStore";
 import { recordScannerResult } from "./market/record-scanner";
 import { validateCandidateTrade } from "@/lib/trade-validator-gate";
 import { acquireTradeLock, releaseTradeLock } from "@/lib/active-trade-lock";
@@ -400,22 +400,11 @@ export async function recordBTSTSignals(candidates: BTSTAnalysis[]): Promise<num
     });
       if (ok) recorded++;
 
-    // Mirror into the Prisma trade journal (the dashboard/Telegram/Agent source
-    // of truth) so BTST exits also show up in the unified lifecycle. Upsert is
-    // idempotent on tradeId.
-    await createTrade({
-      tradeId: `${a.symbol}-BTST-${ymd}`,
-      symbol: a.symbol,
-      strike: 0,
-      type: "EQUITY",
-      side: "BUY",
-      entryPrice: a.entry,
-      stopLoss: a.sl,
-      target1: a.tp1,
-      target2: a.tp2,
-      confidence: a.confidence,
-      strategy: "BTST",
-    }).catch(() => {});
+    // NOTE: Equity BTST trades intentionally NOT registered into the Prisma
+    // trade journal / active-trade monitor. Equity ETFs (SETFNIF50 / NIFTYBEES)
+    // have no live LTP source and would produce permanent "LTP feed unavailable"
+    // monitoring errors. Option trades flow through the scanner's monthlyOptionTrade
+    // path (/api/scanner?live=true) instead.
   }
   return recorded;
 }

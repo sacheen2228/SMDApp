@@ -409,8 +409,8 @@ export function computeSectorStrength(candidates: StockCandidate[]): SectorStren
   });
 }
 
-// ─── Yahoo Finance Price + Candle Fetcher ─────────────────────────
-interface YahooData {
+// ─── Market Data Fetcher (NSE + Moneycontrol + Motilal — no Yahoo) ─────────
+interface ScannerData {
   quotes: Map<string, any>;
   candles: Map<string, Candle[]>;        // 3mo daily bars (trend + prev levels)
   intradayCandles: Map<string, Candle[]>; // last trading day's 5m bars (engine input)
@@ -423,8 +423,8 @@ interface YahooData {
 // Fetched in bounded-concurrency batches to keep latency reasonable.
 // Results are cached 30s so re-visiting the Scanner tab is instant.
 
-const yahooCache = new Map<string, { data: YahooData; ts: number }>();
-const YAHOO_CACHE_TTL = 30_000;
+const scannerCache = new Map<string, { data: ScannerData; ts: number }>();
+const SCANNER_CACHE_TTL = 30_000;
 
 // Real per-stock Breeze option chains are fetched by the server-only API
 // route (see /api/scanner/route.ts) and passed in — this module is also
@@ -441,10 +441,10 @@ export interface ScannerMarketData {
   sources?: { daily: string; intraday: string; quotes: string };
 }
 
-async function fetchYahooData(symbols: string[], provided?: ScannerMarketData): Promise<YahooData> {
+async function fetchScannerMarketData(symbols: string[], provided?: ScannerMarketData): Promise<ScannerData> {
   const cacheKey = symbols.join(",");
-  const cached = yahooCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < YAHOO_CACHE_TTL) return cached.data;
+  const cached = scannerCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < SCANNER_CACHE_TTL) return cached.data;
 
   const quotes = new Map<string, any>();
   const candles = new Map<string, Candle[]>();
@@ -524,50 +524,18 @@ async function fetchYahooData(symbols: string[], provided?: ScannerMarketData): 
     for (const [sym, bars] of provided.dailyCandles) candles.set(sym, bars);
   }
 
-  // ─── INTRADAY 5m: free sources only by default (NSE has no free equity
-  //     intraday; Breeze is the live one and is auth-gated). Yahoo stays behind
-  //     SCANNER_INTRADAY_YAHOO=1 for anyone who wants the extra setups. ───
-  // Skip if deadline approaching or Yahoo is rate-limited
-  const useYahooIntraday = process.env.SCANNER_INTRADAY_YAHOO === "1";
-  let intradaySource = "none";
-  if (useYahooIntraday && Date.now() < DEADLINE - 5000) {
-    const stocksWithQuotes = symbols.filter(s => quotes.has(s));
-    for (let i = 0; i < stocksWithQuotes.length; i += CONCURRENCY) {
-      if (Date.now() >= DEADLINE) break;
-      const batch = stocksWithQuotes.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(batch.map(async (sym) => {
-        const yahooSym = `${sym}.NS`;
-        try {
-          const intradayRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=5d&interval=5m`, { signal: AbortSignal.timeout(4000) });
-          if (intradayRes.ok) {
-            const intraData = await intradayRes.json();
-            const intraResult = intraData?.chart?.result?.[0];
-            const intraTs = intraResult?.timestamp || [];
-            const intraOhlc = intraResult?.indicators?.quote?.[0] || {};
-            const intraCandles: Candle[] = [];
-            for (let j = 0; j < intraTs.length; j++) {
-              if (intraOhlc.open?.[j] != null) {
-                intraCandles.push({
-                  time: intraTs[j],
-                  open: intraOhlc.open[j], high: intraOhlc.high[j], low: intraOhlc.low[j],
-                  close: intraOhlc.close[j], volume: intraOhlc.volume?.[j] || 0,
-                });
-              }
-            }
-            if (intraCandles.length > 0) intradayCandles.set(sym, intraCandles);
-          }
-        } catch {}
-      }));
-    }
-  }
+  // No Yahoo intraday fetch — intraday 5m candles are unavailable from free
+  // sources; Breeze is the live one and is auth-gated (passed in by the
+  // server route, or null → engine falls back to daily bars).
+  const intradaySource = "none";
 
-  const data: YahooData = {
+  const data: ScannerData = {
     quotes, candles, intradayCandles,
     sources: provided?.sources
-      ? { ...provided.sources, intraday: intradaySource !== "none" ? intradaySource : (provided.sources.intraday || "none") }
+      ? { ...provided.sources, intraday: intradaySource }
       : { daily: dailySource, intraday: intradaySource, quotes: "nse" },
   };
-  yahooCache.set(cacheKey, { data, ts: Date.now() });
+  scannerCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
 
@@ -609,13 +577,13 @@ export async function generateCandidates(
   // candles from Yahoo Finance (free, no auth). Daily bars drive the trend
   // context; the real 5m bars drive the signal engine's session profile.
   const { quotes: realQuotes, candles: realCandles, intradayCandles: realIntraday, sources: dataSources } =
-    await fetchYahooData(NIFTY50_STOCKS.map(s => s.symbol), marketData);
+    await fetchScannerMarketData(NIFTY50_STOCKS.map(s => s.symbol), marketData);
 
   // Scan ALL stocks (sector filter applied in UI)
   const universe = NIFTY50_STOCKS;
 
   for (const stock of universe) {
-    // Use real Yahoo Finance data only — never fabricate a price.
+    // Use real NSE/Moneycontrol data only — never fabricate a price.
     const quote = realQuotes.get(stock.symbol);
     if (!quote) continue;
     liveCount++;
@@ -634,7 +602,7 @@ export async function generateCandidates(
       : volume; // no history → neutral RVOL
     const rvol = avgVolume > 0 ? volume / avgVolume : 1;
 
-    // Technicals — computed from REAL 3mo daily OHLC candles via Yahoo Finance.
+    // Technicals — computed from REAL 3mo daily OHLC candles via NSE / Motilal.
     // Neutral defaults only apply if candle history is unavailable for a symbol.
     let ema9 = basePrice * 1.001;
     let ema21 = basePrice * 0.999;
@@ -1052,9 +1020,11 @@ export async function runIntradayScan(
   }
   candidates.sort((a, b) => b.totalScore - a.totalScore);
 
-  // Filter — high-probability label is now conditional on data quality.
-  // Previously unconditional >=20. Raise threshold and require live direction data.
-  const highProbCandidates = candidates.filter(c => c.totalScore >= 55);
+  // Filter — high-probability label is conditional on data quality.
+  // Lowered from 55 to 25 so candidates still show when only quote data is
+  // available (no live candles due to NSE 403). Grades C/D reflect low
+  // confidence honestly rather than hiding everything.
+  const highProbCandidates = candidates.filter(c => c.totalScore >= 25);
 
   // Get best picks
   const bestBullish = highProbCandidates.find(c => c.direction === "BULLISH") || null;

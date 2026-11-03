@@ -173,12 +173,15 @@ function sdmSignalToAlert(symbol: string, signal: any): any {
     entry: signal.entry,
     sl: signal.sl,
     tp1: signal.tp1,
-    tp2: signal.tp2 || signal.tp1,
+    tp2: signal.tp2 || 0,
     rr,
     rrGate,
     confidence: Math.round(signal.confidence || 50),
     rationale: reasons + extra || "SDM V2 engine recommendation",
     expiry: expiryLabel,
+    // Real calendar expiry for the journal/gate (label is display-only above)
+    expiryDate: signal.expiryDate || signal.selectedExpiry || undefined,
+    spot: spot || undefined,
     generatedAt: new Date().toISOString(),
     greeks: signal.greeks || null,
     dataSource: signal?.dataHealth?.source || signal?.source || "unknown",
@@ -338,6 +341,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
           status: "ACTIVE",
           sentAt: new Date().toISOString(),
           source: "sdm-v2-engine",
+          confidence: c.alert.confidence,
+          expiry: c.alert.expiryDate || undefined,
+          spotPrice: c.alert.spot || undefined,
         }, true); // skipAlert=true — SDM message already sent above
         // Migration: also record executed intraday trades to Trade Audit sidecar.
         await recordIntradayTrade({
@@ -401,7 +407,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   // 5. Stock scanner alerts — monthly expiry, confidence ≥ 80%
   try {
     const scannerRes = await fetch(
-      `${BASE}/api/scanner?symbol=NIFTY&live=true`,
+      `${BASE}/api/scanner?symbol=NIFTY`,
       { cache: "no-store", signal: AbortSignal.timeout(120000) }
     );
     if (scannerRes.ok) {
@@ -480,6 +486,8 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               sentAt: new Date().toISOString(),
               source: "stock-scanner",
               expiry: expiryKey(opt.expiry) || undefined,
+              confidence: stock.totalScore,
+              spotPrice: Number(stock.spot || stock.ltp || 0) || undefined,
             }, true); // skipAlert=true — stock alert already sent above
             // Migration: also record executed intraday trades to Trade Audit sidecar.
             await recordIntradayTrade({

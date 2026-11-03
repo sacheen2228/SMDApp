@@ -30,7 +30,8 @@ import {
   type TechnicalIndicators,
 } from "@/lib/technical-analysis";
 import { getNSEEquityOptionChain } from "@/lib/nse-api";
-import { spotToPremiumLevels } from "@/lib/greeks";
+import { buildOptionPlan } from "@/lib/option-plan";
+import { getLotSizeStrict } from "@/lib/symbol-config";
 import { isTradingDay } from "@/lib/expiry-liquidity/market-session-config";
 import { getDailyBars, buildIndicators } from "@/lib/daily-bars";
 import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
@@ -251,23 +252,18 @@ export async function GET(request: Request) {
           // = skill-faithful conversion — the Rule Set C 10% cap (Today's
           // Trade) exits before the underlying stop and inflates R:R.
           // Absent on failure → card shows strike only, never fake levels.
-          if (opp.entry != null && opp.sl != null && opp.tp1 != null && opp.tp2 != null) {
-            const levels = spotToPremiumLevels({
-              spotEntry: opp.entry,
-              spotStopLoss: opp.sl,
-              spotT1: opp.tp1,
-              spotT2: opp.tp2,
-              premium: leg.premium,
-              strike: leg.strike,
-              expiry: chain?.expiry || "",
-              isCall: leg.side === "CE",
-              applyStopFloor: false,
+          if (opp.entry != null && opp.sl != null && opp.tp1 != null && opp.tp2 != null && leg.premium > 0) {
+            const plan = buildOptionPlan({
+              symbol: opp.symbol,
+              optionType: leg.side === "CE" ? "CE" : "PE",
+              entryPremium: leg.premium,
+              lotSize: getLotSizeStrict(opp.symbol) ?? 50,
             });
-            if (levels.ok) {
-              opp.option.sl = levels.stopLoss;
-              opp.option.tp1 = levels.target1;
-              opp.option.tp2 = levels.target2;
-              opp.option.rr = levels.riskReward;
+            if (plan && plan.tradable && plan.targets.length >= 2) {
+              opp.option.sl = plan.stopLoss;
+              opp.option.tp1 = plan.targets[0];
+              opp.option.tp2 = plan.targets[1];
+              opp.option.rr = plan.rr;
             }
           }
         }

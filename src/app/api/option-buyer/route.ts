@@ -5,6 +5,9 @@ import { NextResponse } from 'next/server';
 import { fetchLiveOptionChain } from '@/lib/live-option-chain';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from '@/lib/buyer-confluence-engine';
 import { getCurrentSession } from '@/lib/market-session';
+import { parseExpiryDateLoose } from '@/lib/greeks';
+import { buildOptionPlan } from '@/lib/option-plan';
+import { getLotSizeStrict } from '@/lib/symbol-config';
 
 // Try fetching cached option chain from market-history sidecar (port 4002)
 async function fetchCachedOptionChain(symbol: string): Promise<any | null> {
@@ -50,26 +53,18 @@ interface OptionBuyerTrade {
   timestamp: string;
 }
 
-function computeSLTP(entry: number, spotPrice: number, strike: number, direction: 'CE' | 'PE', daysToExpiry: number): { sl: number; tp1: number; tp2: number; tp3: number } {
-  const moneyness = Math.abs(strike - spotPrice) / spotPrice;
-  const isATM = moneyness < 0.01;
-  const isITM = direction === 'CE' ? strike < spotPrice : strike > spotPrice;
-
-  // Risk = premium * multiplier based on type
-  const riskPct = isATM ? 0.20 : isITM ? 0.15 : 0.25;
-  const rewardPct1 = isATM ? 0.30 : 0.40;
-  const rewardPct2 = isATM ? 0.60 : 0.80;
-  const rewardPct3 = isATM ? 1.00 : 1.50;
-
-  // Reduce targets if close to expiry (gamma explosion risk)
-  const expiryFactor = daysToExpiry <= 1 ? 0.6 : daysToExpiry <= 3 ? 0.8 : 1.0;
-
-  const sl = Math.round((entry * (1 - riskPct)) * 100) / 100;
-  const tp1 = Math.round((entry * (1 + rewardPct1 * expiryFactor)) * 100) / 100;
-  const tp2 = Math.round((entry * (1 + rewardPct2 * expiryFactor)) * 100) / 100;
-  const tp3 = Math.round((entry * (1 + rewardPct3 * expiryFactor)) * 100) / 100;
-
-  return { sl, tp1, tp2, tp3 };
+function computeOptionPlan(entry: number, optionType: 'CE' | 'PE', symbol: string): { sl: number; tp1: number; tp2: number; tp3: number; rr: number } | null {
+  const lotSize = getLotSizeStrict(symbol) ?? 50;
+  const plan = buildOptionPlan({ symbol, optionType, entryPremium: entry, lotSize });
+  if (!plan || !plan.tradable) return null;
+  // Targets are 2R / 3R / 4R → R:R 1:2 / 1:3 / 1:4 (never below 1.5, gated by minOptionRR).
+  return {
+    sl: plan.stopLoss,
+    tp1: plan.targets[0] ?? 0,
+    tp2: plan.targets[1] ?? 0,
+    tp3: plan.targets[2] ?? 0,
+    rr: plan.rr,
+  };
 }
 
 async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade[]; source: string }> {
@@ -108,7 +103,7 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
   const isMarketOpen = session?.isMarketOpen ?? false;
 
   const trades: OptionBuyerTrade[] = [];
-  const expiryDate = new Date(data.selectedExpiry);
+  const expiryDate = parseExpiryDateLoose(data.selectedExpiry, now) ?? new Date(data.selectedExpiry);
   const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
 
   // Score each strike near ATM (±5 strikes)
@@ -141,12 +136,12 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
       // When market is closed, lower threshold to show planning setups
       const minScore = isMarketOpen ? 50 : 40;
       if (score.totalScore >= minScore) {
-        const { sl, tp1, tp2, tp3 } = computeSLTP(strike.ce.ltp, spotPrice, strike.strike, 'CE', daysToExpiry);
-        const rr = (tp2 - strike.ce.ltp) / (strike.ce.ltp - sl);
+        const plan = computeOptionPlan(strike.ce.ltp, 'CE', symbol);
+        if (!plan) continue;
         trades.push({
           symbol, direction: 'CE', action: 'BUY', strike: strike.strike, spotPrice,
-          entry: strike.ce.ltp, stopLoss: sl, tp1, tp2, tp3,
-          riskReward: Math.round(rr * 10) / 10,
+          entry: strike.ce.ltp, stopLoss: plan.sl, tp1: plan.tp1, tp2: plan.tp2, tp3: plan.tp3,
+          riskReward: plan.rr,
           confidence: score.totalScore, score: score.totalScore, expiry: data.selectedExpiry,
           daysToExpiry,
           greeks: { delta: strike.ce.delta || 0, gamma: strike.ce.gamma || 0, theta: strike.ce.theta || 0, vega: strike.ce.vega || 0 },
@@ -180,12 +175,12 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
       // When market is closed, lower threshold to show planning setups
       const peMinScore = isMarketOpen ? 50 : 40;
       if (score.totalScore >= peMinScore) {
-        const { sl, tp1, tp2, tp3 } = computeSLTP(strike.pe.ltp, spotPrice, strike.strike, 'PE', daysToExpiry);
-        const rr = (tp2 - strike.pe.ltp) / (strike.pe.ltp - sl);
+        const plan = computeOptionPlan(strike.pe.ltp, 'PE', symbol);
+        if (!plan) continue;
         trades.push({
           symbol, direction: 'PE', action: 'BUY', strike: strike.strike, spotPrice,
-          entry: strike.pe.ltp, stopLoss: sl, tp1, tp2, tp3,
-          riskReward: Math.round(rr * 10) / 10,
+          entry: strike.pe.ltp, stopLoss: plan.sl, tp1: plan.tp1, tp2: plan.tp2, tp3: plan.tp3,
+          riskReward: plan.rr,
           confidence: score.totalScore, score: score.totalScore, expiry: data.selectedExpiry,
           daysToExpiry,
           greeks: { delta: strike.pe.delta || 0, gamma: strike.pe.gamma || 0, theta: strike.pe.theta || 0, vega: strike.pe.vega || 0 },

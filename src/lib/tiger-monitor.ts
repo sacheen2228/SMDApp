@@ -242,7 +242,7 @@ function buildAlert(t: ActiveTrade, alertType: TPSLAlertType, ltp: number): TPSL
     alertType === "SL_HIT"
       ? `📉 Exit: ₹${tickPx(hitPrice)} (stop${hitPrice > t.sl ? " — gapped" : ""})`
       : `🎯 TP Level: ₹${tickPx(hitPrice)} (${alertType.replace("_HIT", "")})`,
-    t.tp1 ? `TP1: ₹${tickPx(t.tp1)} | TP2: ₹${tickPx(t.tp2)}${t.tp3 ? ` | TP3: ₹${tickPx(t.tp3)}` : ""}` : "",
+    t.tp1 ? `TP1: ₹${tickPx(t.tp1)}${t.tp2 && t.tp2 !== t.tp1 ? ` | TP2: ₹${tickPx(t.tp2)}` : ""}${t.tp3 ? ` | TP3: ₹${tickPx(t.tp3)}` : ""}` : "",
     pnlStr(t, hitPrice),
     `🕐 Hit time: ${hitTime}`,
     `📌 Final status: ${finalStatus}`,
@@ -282,7 +282,7 @@ async function alertNewTrade(t: ActiveTrade): Promise<void> {
     card(t),
     `🛑 Stop Loss: ₹${t.sl.toFixed(2)}`,
     `🎯 Target 1: ₹${t.tp1.toFixed(2)}`,
-    `🎯 Target 2: ₹${t.tp2.toFixed(2)}`,
+    ...(t.tp2 && t.tp2 !== t.tp1 ? [`🎯 Target 2: ₹${t.tp2.toFixed(2)}`] : []),
     t.tp3 ? `🎯 Target 3: ₹${t.tp3.toFixed(2)}` : "",
     `\n⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
   ].filter(Boolean).join("\n");

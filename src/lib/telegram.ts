@@ -276,11 +276,11 @@ ${emoji} <b>${sourceLabel}</b>
 📊 <b>${params.symbol}</b> — ${params.type}
 ⚡ Action: <b>${params.action}</b>
 🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>
-💪 Confidence: <b>${params.confidence}%</b>${mtfLine}
+💪 Confidence: <b>${veto.calibratedConfidence}%</b>${veto.calibratedConfidence !== params.confidence ? ` <i>(stated ${params.confidence}%)</i>` : ""}${mtfLine}
 ${params.entry ? `💰 Entry: ₹${params.entry}` : ""}
 ${params.stopLoss ? `🛑 Stop Loss: ₹${params.stopLoss}` : ""}
 ${params.target1 ? `🎯 Target 1: ₹${params.target1}` : ""}
-${params.target2 ? `🎯 Target 2: ₹${params.target2}` : ""}
+${params.target2 && params.target2 !== params.target1 ? `🎯 Target 2: ₹${params.target2}` : ""}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();
