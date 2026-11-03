@@ -23,6 +23,8 @@ import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 import MostActiveContracts from "@/components/terminal/MostActiveContracts";
+import { fetchStockQuotes } from "@/lib/nse-stock-data";
+import { getNSEIndices } from "@/lib/nse-api";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -2170,6 +2172,24 @@ interface ExpCalcInputs {
   stampDutyPct: number;
 }
 
+interface LiveOptionRow {
+  symbol: string;
+  name: string;
+  ltp: number;
+  change: number;
+  changePct: number;
+  ceLtp: number;
+  ceOi: number;
+  ceOiChg: number;
+  ceIv: number;
+  ceDelta: number;
+  peLtp: number;
+  peOi: number;
+  peOiChg: number;
+  peIv: number;
+  peDelta: number;
+}
+
 interface ExpCalcResult {
   expiryValue: number;
   pnlPerUnit: number;
@@ -2225,6 +2245,76 @@ function normalCDF(x: number): number {
 // Round half up to 2 decimals
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
+}
+
+// ─── Expiry-Day Option Survival / Zero-Hero Risk Calculator ─────────────────────
+interface ExpCalcInputs {
+  index: string;
+  optionType: "CE" | "PE";
+  position: "BUY" | "SELL";
+  strike: number;
+  entryPremium: number;
+  currentLTP: number;
+  lots: number;
+  lotSize: number;
+  spot: number;
+  iv: number;
+  timeHours: number;
+  settlementPrice?: number;
+  settlementMode: "provisional" | "final";
+  brokeragePerOrder: number;
+  sttPct: number;
+  exchangeChargesPct: number;
+  gstPct: number;
+  sebiPct: number;
+  stampDutyPct: number;
+}
+
+interface ExpCalcResult {
+  entryPremium: number;
+  stopLoss: number;
+  tp1: number;
+  tp2: number;
+  expiryValue: number;
+  pnlPerUnit: number;
+  breakEven: number;
+  distanceToStrike: number;
+  distanceToStrikePct: number;
+  expectedMove: number;
+  probITM: number;
+  expectedValuePerUnit: number;
+  expectedValuePerLot: number;
+  zeroHeroFlag: boolean;
+  zeroHeroReason: string;
+  maxLossBuyer: number;
+  maxLossSeller: string;
+  netPnLAfterCharges: number;
+  totalCharges: number;
+  status: "ITM" | "OTM" | "ATM";
+  settlementUsed: number;
+  settlementLabel: string;
+  squareOffPnL: number;
+  holdToSettlementPnL: number;
+  costTrapWarning: boolean;
+  riskMeter: "Low" | "Medium" | "High" | "Extreme";
+  scenarioTable: ScenarioRow[];
+}
+
+// Normal CDF (Abramowitz-Stegun approximation)
+function normalCDF(x: number): number {
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x) / Math.sqrt(2);
+  const t = 1 / (1 + p * x);
+  const y =
+    1 -
+    ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return 0.5 * (1 + sign * y);
 }
 
 function ExpiryCalculator({
@@ -2283,14 +2373,13 @@ function ExpiryCalculator({
     }
   };
 
-  // Auto-calculate trade from live chain data on mount and when spot changes
+  // Auto-calculate trade from live chain data on mount
   useEffect(() => {
     setIsCalculating(true);
     let cancelled = false;
 
     async function runCalculation() {
       try {
-        // Fetch live option chain to get real premium and Greeks for ATM strike
         let chainData: any = null;
         try {
           const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(inputs.index)}`, { signal: AbortSignal.timeout(10000) });
@@ -2305,10 +2394,8 @@ function ExpiryCalculator({
         const spotPrice = inputs.spot;
         const strike = Math.round(spotPrice / 50) * 50;
 
-        // Find real premium from chain data
         let realPremium = 0;
         let realIV = inputs.iv;
-        let realDelta = 0;
         if (Array.isArray(chainData)) {
           const atmRow = chainData.find((r: any) => r.strike === strike);
           if (atmRow) {
@@ -2316,7 +2403,6 @@ function ExpiryCalculator({
             if (leg && leg.ltp > 0) {
               realPremium = leg.ltp;
               realIV = leg.iv || inputs.iv;
-              realDelta = leg.delta || 0;
             }
           }
         }
@@ -2361,210 +2447,17 @@ function ExpiryCalculator({
       </div>
     );
   }
-  if (!result) return null;
+  if (!result) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
+        <Target className="h-8 w-8 animate-pulse mb-2" />
+        <p>Calculating option plan from live chain data…</p>
+      </div>
+    );
+  }
 
   const atmStrike = Math.round(result.settlementUsed / 50) * 50;
 
-  return (
-    <div className="flex flex-col h-full overflow-y-auto p-3 bg-[#0a0e14] text-[#dfe6ee]">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Target className="h-4 w-4 text-violet-500" />
-          <span className="font-bold text-sm">Expiry-Day Option Survival / Zero-Hero Calculator</span>
-        </div>
-        <Badge variant="outline" className="text-[9px] px-2 py-1">
-          {inputs.settlementMode === "final" ? "FINAL SETTLEMENT" : "PROVISIONAL SETTLEMENT"}
-        </Badge>
-      </div>
-
-      {/* Disclaimer */}
-      <div className="bg-red-500/5 border border-red-500/20 rounded p-2 mb-3 text-[9px] text-red-400/90">
-        Educational tool. Probabilities are model estimates, not predictions. Options trading involves substantial risk. Not investment advice.
-      </div>
-
-      {/* Inputs Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
-        <InputRow label="Index" type="select" value={inputs.index} options={["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]} onChange={(v) => setInputs((prev) => ({ ...prev, index: v }))} />
-        <InputRow label="Option Type" type="select" value={inputs.optionType} options={["CE", "PE"]} onChange={(v) => setInputs((prev) => ({ ...prev, optionType: v }))} />
-        <InputRow label="Position" type="select" value={inputs.position} options={["BUY", "SELL"]} onChange={(v) => setInputs((prev) => ({ ...prev, position: v }))} />
-        <InputRow label="Strike" type="number" value={inputs.strike} step={50} onChange={(v) => setInputs((prev) => ({ ...prev, strike: Number(v) }))} />
-        <InputRow label="Entry Premium" type="number" value={inputs.entryPremium} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, entryPremium: Number(v) }))} />
-        <InputRow label="Current LTP" type="number" value={inputs.currentLTP} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, currentLTP: Number(v) }))} />
-        <InputRow label="Lots" type="number" value={inputs.lots} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lots: Number(v) }))} />
-        <InputRow label="Lot Size" type="number" value={inputs.lotSize} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lotSize: Number(v) }))} />
-        <InputRow label="Spot Price" type="number" value={inputs.spot} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, spot: Number(v) }))} />
-        <InputRow label="IV / VIX (%)" type="number" value={inputs.iv} step={0.1} onChange={(v) => setInputs((prev) => ({ ...prev, iv: Number(v) }))} />
-        <InputRow label="Hours to Expiry" type="number" value={inputs.timeHours} step={0.5} onChange={(v) => setInputs((prev) => ({ ...prev, timeHours: Number(v) }))} />
-        <InputRow label="Settlement Price" type="number" value={inputs.settlementPrice ?? ""} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, settlementPrice: v === "" ? undefined : Number(v) }))} />
-        <InputRow label="Settlement Mode" type="select" value={inputs.settlementMode} options={["provisional", "final"]} onChange={(v) => setInputs((prev) => ({ ...prev, settlementMode: v }))} />
-      </div>
-
-      {/* Charges */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
-        <InputRow label="Brokerage/Order (₹)" type="number" value={inputs.brokeragePerOrder} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, brokeragePerOrder: Number(v) }))} />
-        <InputRow label="STT (%)" type="number" value={inputs.sttPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sttPct: Number(v) }))} />
-        <InputRow label="Exchange (%)" type="number" value={inputs.exchangeChargesPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, exchangeChargesPct: Number(v) }))} />
-        <InputRow label="GST (%)" type="number" value={inputs.gstPct} step={0.1} onChange={(v) => setInputs((prev) => ({ ...prev, gstPct: Number(v) }))} />
-        <InputRow label="SEBI (%)" type="number" value={inputs.sebiPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sebiPct: Number(v) }))} />
-        <InputRow label="Stamp Duty (%)" type="number" value={inputs.stampDutyPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, stampDutyPct: Number(v) }))} />
-      </div>
-
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Status</div>
-          <div className={`font-bold ${result.status === "ITM" ? "text-emerald-500" : result.status === "OTM" ? "text-red-500" : "text-yellow-500"}`}>
-            {result.status}
-          </div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Expiry Value</div>
-          <div className="font-bold text-emerald-500">₹{fmt(result.expiryValue)}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Break-Even</div>
-          <div className="font-bold text-blue-500">₹{fmt(result.breakEven)}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">ITM Probability</div>
-          <div className={`font-bold ${pctColor(result.probITM)}`}>{result.probITM.toFixed(1)}%</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Max Loss (Buyer)</div>
-          <div className={`font-bold ${pctColor(-result.maxLossBuyer)}`}>₹{-result.maxLossBuyer}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Net P&L After Charges</div>
-          <div className={`font-bold ${pctColor(result.netPnLAfterCharges)}`}>₹{fmt(result.netPnLAfterCharges)}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Risk Meter</div>
-          <div className={`font-bold ${meterColor(result.riskMeter)}`}>{result.riskMeter}</div>
-        </Card>
-      </div>
-
-      {/* Metrics Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Distance to Strike</div>
-          <div className="font-bold">{fmt(result.distanceToStrike)} pts ({fmt(result.distanceToStrikePct)}%)</div>
-          <div className="text-[9px] text-muted-foreground mt-1">Expected Move: ₹{fmt(result.expectedMove)}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Expected Value</div>
-          <div className="font-bold text-emerald-500">₹{fmt(result.expectedValuePerUnit)} / unit</div>
-          <div className="text-[9px] text-muted-foreground mt-1">₹{fmt(result.expectedValuePerLot)} / lot</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Settlement</div>
-          <div className="font-bold text-blue-500">₹{fmt(result.settlementUsed)}</div>
-          <div className="text-[9px] text-muted-foreground mt-1">{result.settlementLabel}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Max Loss (Seller)</div>
-          <div className={`font-bold ${pctColor(-Math.abs(Number(result.maxLossSeller)))}`}>{result.maxLossSeller}</div>
-        </Card>
-      </div>
-
-      {/* Trade Plan Card - Prominent Entry/SL/TP */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Entry</div>
-          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.entryPremium)}</div>
-          <div className="text-[9px] text-muted-foreground mt-1">Lots: {inputs.lots} × Lot {inputs.lotSize}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Stop Loss</div>
-          <div className="font-bold text-red-500 text-lg">₹{fmt(result.stopLoss)}</div>
-          <div className="text-[9px] text-muted-foreground mt-1">Risk: ₹{fmt(result.riskPoints * inputs.lotSize * inputs.lots)}</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Target 1</div>
-          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.tp1)}</div>
-          <div className="text-[9px] text-muted-foreground mt-1">1:2 R:R</div>
-        </Card>
-        <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
-          <div className="text-[9px] text-[#7d8ba0] mb-1">Target 2</div>
-          <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.tp2)}</div>
-          <div className="text-[9px] text-muted-foreground mt-1">1:3 R:R</div>
-        </Card>
-      </div>
-
-      {/* Zero-Hero Flag */}
-      {result.zeroHeroFlag && (
-        <div className="bg-orange-500/10 border border-orange-500/40 rounded p-2 mb-3">
-          <div className="flex items-center gap-2 mb-1">
-            <AlertTriangle className="h-4 w-4 text-orange-500" />
-            <span className="font-bold text-orange-500 text-xs">🚫 ZERO-HERO FLAG — NO TRADE</span>
-          </div>
-          <p className="text-[10px] text-orange-400">{result.zeroHeroReason}</p>
-        </div>
-      )}
-
-      {/* Cost-Trap Warning */}
-      {result.costTrapWarning && (
-        <div className="bg-amber-500/10 border border-amber-500/40 rounded p-2 mb-3">
-          <div className="flex items-center gap-2 mb-1">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-            <span className="font-bold text-amber-500 text-xs">⚠️ COST TRAP — Charges eat a large share of profit</span>
-          </div>
-          <p className="text-[10px] text-amber-400">Square-off before expiry may be better than holding to settlement.</p>
-        </div>
-      )}
-
-      {/* Payoff Diagram (SVG) */}
-      <div className="border border-[#1f2733] bg-[#0f1117] rounded p-2 mb-3">
-        <div className="text-[9px] text-[#7d8ba0] font-bold mb-2">Payoff Diagram at Expiry</div>
-        <PayoffChart result={result} spot={inputs.spot} />
-      </div>
-
-      {/* Scenario Table */}
-      <div className="border border-[#1f2733] bg-[#0f1117] rounded overflow-hidden">
-        <div className="px-3 py-2 border-b border-[#1f2733] bg-[#10151d]/50">
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] font-bold text-[#dfe6ee]">Settlement Scenario Table (₹{inputs.strike} − 300 to +300 in 50-pt steps)</span>
-            <span className="text-[9px] text-muted-foreground">Highlighted: Break-Even</span>
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[9px]">
-            <thead>
-              <tr className="bg-[#10151d] border-b border-[#1f2733]">
-                <th className="px-2 py-1 text-left text-[#7d8ba0]">Settlement</th>
-                <th className="px-2 py-1 text-right text-[#7d8ba0]">Expiry Value</th>
-                <th className="px-2 py-1 text-right text-[#7d8ba0]">P&L / Lot</th>
-                <th className="px-2 py-1 text-right text-[#7d8ba0]">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.scenarioTable.map((row) => (
-                <tr
-                  key={row.settlement}
-                  className={`border-b border-[#1f2733] ${row.isBreakEven ? "bg-emerald-500/20" : row.isSpot ? "bg-blue-500/10" : ""}`}
-                >
-                  <td className="px-2 py-1">{row.settlement}</td>
-                  <td className="px-2 py-1 text-right font-mono">{fmt(row.expiryValue)}</td>
-                  <td className={`px-2 py-1 text-right font-mono ${row.pnlPerLot >= 0 ? "text-emerald-500" : "text-red-500"}`}>{fmt(row.pnlPerLot)}</td>
-                  <td className="px-2 py-1 text-right">
-                    <span className={`text-[9px] ${row.status === "ITM" ? "text-emerald-500" : row.status === "OTM" ? "text-red-500" : "text-yellow-500"} font-bold`}>
-                      {row.status}
-                    </span>
-                    {row.isBreakEven && <span className="ml-1 text-[8px] text-emerald-500">BE</span>}
-                    {row.isSpot && <span className="ml-1 text-[8px] text-blue-500">SPOT</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Payoff Chart (SVG) ──────────────────────────────────────────────────────
-function PayoffChart({ result, spot }: { result: ExpCalcResult; spot: number }) {
   const width = 420;
   const height = 180;
   const margin = { top: 20, right: 30, bottom: 30, left: 50 };
