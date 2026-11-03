@@ -2254,8 +2254,20 @@ function ExpiryCalculator({
   });
   const [result, setResult] = useState<ExpCalcResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasUserInput, setHasUserInput] = useState(false);
+
+  const handleInput = (k: keyof ExpCalcInputs, v: any) => {
+    setInputs((prev) => ({ ...prev, [k]: v }));
+    setHasUserInput(true);
+  };
 
   useEffect(() => {
+    // Only calculate when user has interacted AND required fields are valid
+    if (!hasUserInput || !inputs.spot || inputs.spot <= 0 || !inputs.entryPremium || inputs.entryPremium <= 0) {
+      setResult(null);
+      setError(null);
+      return;
+    }
     try {
       setError(null);
       const r = calculate(inputs);
@@ -2286,10 +2298,6 @@ function ExpiryCalculator({
     inputs.stampDutyPct,
   ]);
 
-  const handleInput = (k: keyof ExpCalcInputs, v: any) => {
-    setInputs((prev) => ({ ...prev, [k]: v }));
-  };
-
   const fmt = (n: number | null | undefined): string => {
     if (n == null || isNaN(n)) return "—";
     return n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -2315,6 +2323,14 @@ function ExpiryCalculator({
       <div className="flex flex-col items-center justify-center py-20 text-red-500 text-xs">
         <AlertTriangle className="h-8 w-8 mb-3" />
         <p>Calculator error: {error}</p>
+      </div>
+    );
+  }
+  if (!result && !hasUserInput) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
+        <Target className="h-8 w-8 mb-3" />
+        <p>Enter Entry Premium to calculate</p>
       </div>
     );
   }
