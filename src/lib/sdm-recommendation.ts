@@ -56,6 +56,7 @@ import {
   type SessionInfo,
 } from './market-session';
 import { getLotSizeStrict } from './symbol-config';
+import { isExpiryToday, parseExpiryDateLoose } from './greeks';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
 // THE house plan + the ONE sizing model (2026-10-20):
 //   option-plan.ts  → the stop is a RUPEE risk (20% of the amount DEPLOYED) and the
@@ -131,7 +132,7 @@ function computeATR(candles: CandleData[], period: number = 14): number {
 
 function computeDaysToExpiry(expiryDate: string): number {
   const today = new Date();
-  const expiry = new Date(expiryDate);
+  const expiry = parseExpiryDateLoose(expiryDate, today) ?? new Date(expiryDate);
   return Math.max(1, Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
 }
 
@@ -848,12 +849,7 @@ export async function generateTradeRecommendation(
   // The VIX is either REAL or UNKNOWN — never defaulted to 15.
   const vixNum = knownVix(vix);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
-  const today = new Date();
-  const expiry = new Date(expiryDate);
-  const isExpiryDay =
-    today.getFullYear() === expiry.getFullYear() &&
-    today.getMonth() === expiry.getMonth() &&
-    today.getDate() === expiry.getDate();
+  const isExpiryDay = isExpiryToday(expiryDate, new Date());
   const mode: DayMode = isExpiryDay ? 'SCALPER' : 'SWING';
   const currentTime = new Date();
   const timeInMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
@@ -1609,12 +1605,7 @@ function generateRecommendationSync(
   const lotSize = lot ?? 1; // the honest per-unit amount
   const vixNum = knownVix(vix);
   const daysToExpiry = computeDaysToExpiry(expiryDate);
-  const today = new Date();
-  const expiry = new Date(expiryDate);
-  const isExpiryDay =
-    today.getFullYear() === expiry.getFullYear() &&
-    today.getMonth() === expiry.getMonth() &&
-    today.getDate() === expiry.getDate();
+  const isExpiryDay = isExpiryToday(expiryDate, currentTime instanceof Date ? currentTime : new Date());
   const mode: DayMode = isExpiryDay ? 'SCALPER' : 'SWING';
   const timeInMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
   const currentWindow = computeExpiryWindow(isExpiryDay, timeInMinutes);

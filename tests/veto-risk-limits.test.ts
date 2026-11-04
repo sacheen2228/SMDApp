@@ -197,6 +197,29 @@ describe("the veto enforces the CONCURRENT EXPOSURE", () => {
     expect(r.reasons.join(" ")).toMatch(/deployed/i);
   });
 
+  test("remaining headroom: a partial open book does NOT permanent-block a smaller new trade", () => {
+    // Open ₹4,000 + a candidate sized into the remaining ₹16,000 must PASS
+    // the exposure check (the old code sized the candidate against the FULL
+    // ₹20k budget → open+new always exceeded the cap → every alert blocked).
+    const r = evaluateSignalVeto({
+      ...base,
+      deployedAmount: 8_000, // fits in the ₹16,000 headroom
+      riskAmount: 1_600,
+      riskState: { ...cleanBook, openDeployed: 4_000, openRisk: 800, openPositions: 1 },
+    });
+    expect(r.verdict).toBe("PASS");
+    expect(r.reasons.join(" ")).not.toMatch(/headroom|exceeds the/i);
+  });
+
+  test("remaining headroom 0 → explicit block (the book is full)", () => {
+    const r = evaluateSignalVeto({
+      ...base,
+      riskState: { ...cleanBook, openDeployed: 20_000, openRisk: 4_000, openPositions: 1 },
+    });
+    expect(r.verdict).toBe("BLOCK");
+    expect(r.reasons.join(" ")).toMatch(/headroom|deployed/i);
+  });
+
   test("3 × ₹20,000 concurrent deployments are impossible (the account is ₹25,000)", () => {
     const v = evaluateConcurrentExposure({
       openDeployed: 40_000,
@@ -311,10 +334,15 @@ describe("the EXISTING veto gates still behave (no regression)", () => {
     expect(evaluateSignalVeto({ ...base, tp1: undefined }).verdict).toBe("BLOCK");
   });
 
-  test("the expiry-day index option still blocks", () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const r = evaluateSignalVeto({ ...base, expiry: today });
+  test("the expiry-day index option still blocks (ISO)", () => {
+    const r = evaluateSignalVeto({ ...base, expiry: "2026-07-15" });
     expect(r.verdict).toBe("BLOCK");
+  });
+
+  test("the expiry-day index option still blocks (Breeze DD-MMM-YYYY)", () => {
+    const r = evaluateSignalVeto({ ...base, expiry: "15-Jul-2026" });
+    expect(r.verdict).toBe("BLOCK");
+    expect(r.reasons.join(" ")).toMatch(/expiry-day/);
   });
 
   test("the deep-OTM delta lottery ticket still blocks", () => {

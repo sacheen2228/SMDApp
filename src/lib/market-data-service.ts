@@ -46,11 +46,14 @@ import type { TradingSessionLabel } from "./api-freshness";
 
 // Map our ProviderName → provider-health ProviderType for circuit-breaker lookups.
 function toProviderHealthType(p: ProviderName): import("./provider-health").ProviderType {
-  const map: Record<ProviderName, import("./provider-health").ProviderType> = {
+  const map: Partial<Record<ProviderName, import("./provider-health").ProviderType>> = {
     "motilal-api": "moapi",
     "icici-breeze": "breeze",
     "nse-api": "nse",
     "bse-api": "bse",
+    // The FII/DII adapter is NSE + MrChartist. It is deliberately NOT "nse":
+    // a MrChartist bot-challenge must not trip the NSE session circuit.
+    "fii-dii": "website",
     moneycontrol: "website",
     cache: "website",
     unavailable: "website",
@@ -60,7 +63,7 @@ function toProviderHealthType(p: ProviderName): import("./provider-health").Prov
 
 // Map provider-health FailureKind → our FailureKind.
 function toSessionSource(p: ProviderName): SessionSource | null {
-  const map: Record<ProviderName, SessionSource> = {
+  const map: Partial<Record<ProviderName, SessionSource | null>> = {
     "motilal-api": "mo",
     "icici-breeze": "breeze",
     "nse-api": "nse",
@@ -68,15 +71,26 @@ function toSessionSource(p: ProviderName): SessionSource | null {
     moneycontrol: "nse",
     cache: "nse",
     unavailable: "nse",
+    // No session source: this adapter's failures are bot-challenges / provider
+    // downtime, never a broker or exchange token expiring. Emitting a
+    // [SYSTEM][SESSION_EXPIRED] alert here would be a false page.
+    "fii-dii": null,
   };
   return map[p] ?? null;
 }
 
 // ── Registry & cache ────────────────────────────────────────────────────────
 
-const providers = new Map<ProviderName, MarketDataProvider>();
-const cache = new Map<string, CacheEntry>();
-const inFlight = new Map<string, Promise<MarketDataEnvelope<any>>>();
+// Process-wide on globalThis: every route is its own module graph, so these
+// Maps must be shared — otherwise a provider registered in one route is
+// invisible in another (and each route keeps its own cache).
+const g = globalThis as any;
+const providers: Map<ProviderName, MarketDataProvider> =
+  (g.__SMD_MD_PROVIDERS__ ??= new Map<ProviderName, MarketDataProvider>());
+const cache: Map<string, CacheEntry> =
+  (g.__SMD_MD_CACHE__ ??= new Map<string, CacheEntry>());
+const inFlight: Map<string, Promise<MarketDataEnvelope<any>>> =
+  (g.__SMD_MD_INFLIGHT__ ??= new Map<string, Promise<MarketDataEnvelope<any>>>());
 
 const DEFAULT_TTL = 60_000;
 
@@ -118,6 +132,8 @@ export async function fetchMarketData<T = any>(
     bypassCache?: boolean;
   },
 ): Promise<MarketDataEnvelope<T>> {
+  await ensureProvidersRegistered();
+
   const nowMs = opts.nowMs ?? Date.now();
   const config: MarketDataServiceConfig = { ...DEFAULT_CONFIG, ...opts.config };
   const key = cacheKey(opts);
@@ -392,6 +408,25 @@ async function doFetchMarketData<T = any>(
 }
 
 // ── Provider registration ───────────────────────────────────────────────────
+
+/**
+ * Load the adapter registry on first use.
+ *
+ * `market-data-providers.ts` registers by SIDE EFFECT, and nothing in the app
+ * imported it — so the registry stayed empty and every category answered
+ * "no valid provider" (the FII/DII card 503'd on every poll). The import is
+ * dynamic because that module imports `registerProvider` from here: loading it
+ * statically creates a cycle, while a deferred import runs after this module's
+ * bindings are initialised.
+ */
+async function ensureProvidersRegistered(): Promise<void> {
+  if (providers.size > 0) return;
+  try {
+    await import("./market-data-providers");
+  } catch (err) {
+    console.error("[MarketData] provider registration failed:", err);
+  }
+}
 
 export function registerProvider(provider: MarketDataProvider): void {
   providers.set(provider.name, provider);

@@ -559,8 +559,14 @@ class ExpiryLiquidityEngine {
 
   // ─── Helper: Is Expiry Day ──────────────────────────────────────────
   private isExpiryDay(symbol: string): boolean {
-    // Would integrate with expiry-calculator.ts
-    return false;
+    // Real SEBI weekday check via expiry-calculator (the old stub always
+    // returned false — every expiry gate in this engine was dead).
+    try {
+      const { isExpiryDay: check } = require("@/lib/expiry-calculator") as typeof import("@/lib/expiry-calculator");
+      return check(symbol, new Date());
+    } catch {
+      return false;
+    }
   }
 
   // ─── Helper: Get Minutes to Expiry ──────────────────────────────────

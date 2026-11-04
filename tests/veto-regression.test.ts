@@ -44,8 +44,8 @@ const FIXTURE: FixtureRow[] = [
   { source: "morning-signal", symbol: "NIFTY", side: "other", direction: "SELL", entry: 10.25, stop: 9.25, target: 11.5, confidence: 60, expiry: null, spot: null },
   // deep OTM (4 steps) → hard block
   { source: "SMART_MONEY", symbol: "NIFTY", side: "call", direction: "BUY", entry: 100, stop: 90, target: 130, confidence: 75, expiry: "2026-07-30", spot: 22600 - 4 * 50 },
-  // expiry day → hard block
-  { source: "SMART_MONEY", symbol: "NIFTY", side: "call", direction: "BUY", entry: 100, stop: 90, target: 130, confidence: 75, expiry: new Date().toISOString().slice(0, 10), spot: 22600 },
+  // expiry day → hard block (pinned to the fixture clock AT = 2026-07-15, not real today)
+  { source: "SMART_MONEY", symbol: "NIFTY", side: "call", direction: "BUY", entry: 100, stop: 90, target: 130, confidence: 75, expiry: "2026-07-15", spot: 22600 },
   // unknown direction → warning (never a false block)
   { source: "option-chain-api", symbol: "NIFTY", side: "other", direction: "UNKNOWN", entry: 100, stop: 90, target: 130, confidence: 75, expiry: null, spot: null },
   // equity with a good R:R → PASS

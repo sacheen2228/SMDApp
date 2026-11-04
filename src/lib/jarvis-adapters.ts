@@ -299,6 +299,10 @@ export const smdAlerts: AlertSink = {
         target1: t?.tp1Premium,
         target2: t?.tp2Premium,
         source: "Jarvis",
+        // Expiry-day gate + delta/OTM need these — omitting them made the
+        // hard expiry-day check unreachable on this path.
+        expiry: t?.expiry || undefined,
+        spot: signal.spot || undefined,
       });
       if (sent) {
         recordAlert({

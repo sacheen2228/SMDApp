@@ -127,6 +127,18 @@ export async function sendTradeAlert(params: {
   requireSpot?: boolean;   // caller can supply spot → absence fails closed
   underlyingStop?: number;
   underlyingTarget?: number;
+  /** Cash-equity entry ZONE (weekly scanner) — shown instead of a single price. */
+  entryZone?: { low: number; high: number };
+  /**
+   * The caller's REAL exposure. Cash-equity producers state their share
+   * count (lotSize 1 = one share, lots = shares) so the risk check prices the
+   * candidate as cash — without it the check falls back to the symbol master's
+   * F&O lot size and sizes a ₹2,700 share as a ₹27,000 futures lot.
+   */
+  lots?: number;
+  lotSize?: number;
+  deployedAmount?: number;
+  riskAmount?: number;
   nowMs?: number;            // clock seam for session rules (replay/tests pin it)
   mtf?: {
     direction: string;
@@ -217,6 +229,10 @@ export async function sendTradeAlert(params: {
     symbol: params.symbol,
     entry: params.entry ?? null,
     stopLoss: params.stopLoss ?? null,
+    lots: params.lots ?? null,
+    lotSize: params.lotSize ?? null,
+    deployedAmount: params.deployedAmount ?? null,
+    riskAmount: params.riskAmount ?? null,
     nowMs: params.nowMs,
   });
   if (riskCheck.blocked) {
@@ -267,20 +283,31 @@ export async function sendTradeAlert(params: {
 
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
   const sourceLabel = params.source || "SDM Engine";
+  const isCashEquity = params.instrument === "EQUITY";
+  // Cash prices read as rupees (₹2,709.20); option premiums keep the raw
+  // premium format the option path has always used.
+  const cashPx = (v?: number) =>
+    v == null ? "" : `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const px = (v?: number) => (isCashEquity ? cashPx(v) : v == null ? "" : `₹${v}`);
   const mtfLine = (params.mtf
     ? `\n📐 MTF: ${params.mtf.direction} (${params.mtf.trendDirection} trend, score ${params.mtf.compositeScore})`
     : '') + vetoWarn;
   const msg = `
 ${emoji} <b>${sourceLabel}</b>
 
-📊 <b>${params.symbol}</b> — ${params.type}
+📊 <b>${params.symbol}</b> — ${isCashEquity ? "EQUITY" : params.type}
 ⚡ Action: <b>${params.action}</b>
-🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>
+${params.strike > 0 ? `🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>` : ""}
 💪 Confidence: <b>${veto.calibratedConfidence}%</b>${veto.calibratedConfidence !== params.confidence ? ` <i>(stated ${params.confidence}%)</i>` : ""}${mtfLine}
-${params.entry ? `💰 Entry: ₹${params.entry}` : ""}
-${params.stopLoss ? `🛑 Stop Loss: ₹${params.stopLoss}` : ""}
-${params.target1 ? `🎯 Target 1: ₹${params.target1}` : ""}
-${params.target2 && params.target2 !== params.target1 ? `🎯 Target 2: ₹${params.target2}` : ""}
+${params.entryZone
+  ? `💰 Entry: ${px(params.entry)} <i>(zone ₹${params.entryZone.low.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}–₹${params.entryZone.high.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</i>`
+  : params.entry ? `💰 Entry: ${px(params.entry)}` : ""}
+${params.stopLoss ? `🛑 Stop Loss: ${px(params.stopLoss)}` : ""}
+${params.target1 ? `🎯 Target 1: ${px(params.target1)}` : ""}
+${params.target2 && params.target2 !== params.target1 ? `🎯 Target 2: ${px(params.target2)}` : ""}
+${isCashEquity && params.lots && params.deployedAmount
+  ? `\n📦 Size: <b>${params.lots} shares</b> — ${cashPx(params.deployedAmount)} deployed, ${cashPx(params.riskAmount)} at risk`
+  : ""}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();

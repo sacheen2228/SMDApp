@@ -106,29 +106,47 @@ class InstrumentMaster(object):
 
     # ── loading ──
     def load(self, force=False):
-        """Load the master (memory → disk cache → MO). Returns the contracts."""
+        """Load the master (memory → disk cache → MO). Returns the contracts.
+
+        The cache is only treated as complete when it covers EVERY configured
+        exchange. A partial cache (e.g. BSEFO-only after an NSEFO timeout)
+        triggers a fetch of just the missing exchanges, then merges.
+        """
         with self._lock:
             fresh = self.fetched_at and (_now() - self.fetched_at) < self.config.instrument_ttl
             if fresh and not force:
                 return self.contracts
+
+            contracts = []
+            exchanges = {}
+            cached_at = 0.0
             if not force:
                 cached = self._read_cache()
                 if cached:
-                    self.exchanges = dict(cached.get("exchanges") or {})
-                    self._apply(cached["contracts"], cached.get("fetchedAt"))
-                    if self.log:
-                        self.log.info("mo.master.cache_hit", contracts=len(self.contracts),
-                                      ageS=int(_now() - self.fetched_at))
-                    return self.contracts
+                    contracts = list(cached.get("contracts") or [])
+                    exchanges = dict(cached.get("exchanges") or {})
+                    cached_at = cached.get("fetchedAt") or 0.0
 
-            contracts = []
+            missing = [e for e in self.config.exchanges if e not in exchanges]
+            if contracts and not missing:
+                self.exchanges = exchanges
+                self._apply(contracts, cached_at)
+                if self.log:
+                    self.log.info("mo.master.cache_hit", contracts=len(self.contracts),
+                                  ageS=int(_now() - self.fetched_at))
+                return self.contracts
+            if contracts and missing and not force:
+                if self.log:
+                    self.log.info("mo.master.cache_partial", exchanges=list(exchanges),
+                                  missing=missing, contracts=len(contracts))
+
             errors = {}
-            for exchange in self.config.exchanges:
+            for exchange in (missing if contracts else list(self.config.exchanges)):
                 try:
                     rows = self.client.get_instrument_file(exchange)
                     parsed = instruments.parse_master(rows, exchange)
                     contracts.extend(parsed)
-                    self.exchanges[exchange] = len(parsed)
+                    exchanges[exchange] = len(parsed)
                     if self.log:
                         self.log.info("mo.master.exchange_loaded", exchange=exchange, contracts=len(parsed))
                 except MoError as exc:
@@ -141,9 +159,14 @@ class InstrumentMaster(object):
                 raise MoError(SOURCE_UNAVAILABLE,
                               "MO instrument master unavailable: %s" % json.dumps(errors),
                               {"errors": errors})
+            # Serve what we have (partial beats nothing), but only rewrite the
+            # cache when every configured exchange is present so a later start
+            # retries the gap instead of trusting a poisoned partial file.
+            self.exchanges = exchanges
             self._apply(contracts, _now())
-            self.fetch_error = None
-            self._write_cache()
+            self.fetch_error = errors or None
+            if not errors:
+                self._write_cache()
             return self.contracts
 
     def _apply(self, contracts, fetched_at):
@@ -153,10 +176,28 @@ class InstrumentMaster(object):
         self.by_tradingsymbol = instruments.index_by_tradingsymbol(contracts)
         self.by_key = instruments.index_by_contract_key(contracts)
         self._array_bytes = None
+        self._symbol_array_bytes = {}
+        self._symbol_array_bytes = {}
 
-    def array_bytes(self):
-        """The pre-serialized `instruments` array (built once per master load)."""
+    def array_bytes(self, symbol=None):
+        """The pre-serialized `instruments` array (built once per master load).
+
+        `symbol` (e.g. "NIFTY") returns ONLY that underlying's contracts —
+        the full master is ~126k rows / ~23 MB, which the app must not parse
+        when it only needs one chain.
+        """
         with self._lock:
+            if symbol:
+                key = str(symbol).strip().upper()
+                cached = self._symbol_array_bytes.get(key)
+                if cached is None:
+                    subset = [
+                        c for c in self.contracts
+                        if str(c.get("symbol") or "").upper() == key
+                    ]
+                    cached = contract.instrument_array_bytes(subset)
+                    self._symbol_array_bytes[key] = cached
+                return cached
             if self._array_bytes is None:
                 self._array_bytes = contract.instrument_array_bytes(self.contracts)
             return self._array_bytes
@@ -570,6 +611,48 @@ class MoapiService(object):
         })
         return result
 
+    def ltps(self, tradingsymbols):
+        """Bulk LTP for many tradingsymbols (parallel; per-symbol failures
+        are reported inline so one dead contract never fails the batch).
+
+        Used by the option-chain fallback, which needs ~80 strikes inside a
+        hard 6s budget — sequential REST calls blew that budget.
+        """
+        symbols = [str(s or "").strip().upper() for s in (tradingsymbols or []) if s]
+        # De-dupe, preserve order.
+        seen = set()
+        unique = []
+        for ts in symbols:
+            if ts and ts not in seen:
+                seen.add(ts)
+                unique.append(ts)
+        if not unique:
+            raise MoError(NO_DATA, "no tradingsymbols supplied")
+        if len(unique) > 400:
+            raise MoError(NO_DATA, "too many tradingsymbols (max 400)")
+
+        results = {}
+
+        def one(ts):
+            try:
+                return ts, {"ok": True, "ltp": self.ltp(tradingsymbol=ts)}
+            except MoError as exc:
+                return ts, {"ok": False, "error": exc.message, "kind": exc.kind,
+                            "tradingsymbol": ts}
+            except Exception as exc:  # noqa: BLE001 - one bad contract must not kill the batch
+                return ts, {"ok": False, "error": str(exc), "kind": SOURCE_UNAVAILABLE,
+                            "tradingsymbol": ts}
+
+        # Threaded: each ltp() may hit REST (~20ms) or the in-memory feed.
+        # The client serialises SDK calls with its own lock, so workers only
+        # overlap on network wait — safe and much faster than sequential.
+        from concurrent.futures import ThreadPoolExecutor
+        workers = min(16, max(4, len(unique) // 4))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for ts, entry in pool.map(one, unique):
+                results[ts] = entry
+        return results
+
     def _scaled(self, raw, scale):
         if raw is None or not scale:
             return None
@@ -674,13 +757,17 @@ class MoapiService(object):
             "contracts": contracts,
         }
 
-    def instrument_response_bytes(self, force=False):
+    def instrument_response_bytes(self, force=False, symbol=None):
         """The /instrument body, pre-serialized.
 
         The MO master is ~126k contracts (~30 MB of JSON). The heavy array is
         serialized once and cached; only the envelope's `ts` is fresh per
         request. The body is byte-for-byte the same shape as
         `contract.instrument()`.
+
+        Pass `symbol="NIFTY"` to get only that underlying's rows (a few
+        thousand instead of 126k) — the option-chain fallback uses this so
+        the Node side never parses the full master.
         """
         self.master.load(force=force)
-        return contract.instrument_envelope_bytes(self.master.array_bytes())
+        return contract.instrument_envelope_bytes(self.master.array_bytes(symbol=symbol))

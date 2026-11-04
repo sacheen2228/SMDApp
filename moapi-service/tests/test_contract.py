@@ -80,9 +80,14 @@ class FakeService(object):
             },
         ]}
 
-    def instrument_response_bytes(self, force=False):
+    def instrument_response_bytes(self, force=False, symbol=None):
         self._maybe_fail("instrument")
-        payload = contract.instrument_array_bytes(self.instrument(force=force)["contracts"])
+        contracts = self.instrument(force=force)["contracts"]
+        if symbol:
+            want = str(symbol).strip().upper()
+            contracts = [c for c in contracts
+                         if str(c.get("symbol") or "").upper() == want]
+        payload = contract.instrument_array_bytes(contracts)
         return contract.instrument_envelope_bytes(payload)
 
     def ltp(self, **query):

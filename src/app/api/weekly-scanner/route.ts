@@ -14,6 +14,54 @@ import { NextRequest, NextResponse } from "next/server";
 import { runWeeklyScan } from "@/lib/weekly-equity-scanner";
 import { runProResearch } from "@/lib/weekly-pro-mode";
 import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
+import { alertScannerStock, scannerTradeId } from "@/lib/scanner-stock-alerts";
+
+// How many weekly setups one scan may alert.
+const MAX_WEEKLY_ALERTS = 3;
+// Confidence floor for a weekly alert (the shortlist is long — only the
+// strongest setups are worth a phone notification).
+const MIN_WEEKLY_CONFIDENCE = 70;
+
+/** IST calendar day — one weekly trade per symbol per day. */
+const ymd = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+/**
+ * Push the strongest weekly setups to Telegram (entry price, entry zone,
+ * stop loss, targets) and register them so a TP/SL hit is reported.
+ *
+ * Gated behind ?live=true — the same convention as /api/scanner: the tab
+ * asks for it explicitly, a background fetch does not.
+ */
+async function alertWeeklySetups(candidates: any[]): Promise<number> {
+  let sent = 0;
+  for (const c of candidates || []) {
+    if (sent >= MAX_WEEKLY_ALERTS) break;
+    if (!c?.symbol) continue;
+    if (c.weeklyTrend !== "UP") continue;
+    if (c.hasEventRisk) continue;
+    if ((c.confidence ?? 0) < MIN_WEEKLY_CONFIDENCE) continue;
+    if (!(c.riskReward >= 1.5)) continue;
+    const entry = (c.entryZone?.low + c.entryZone?.high) / 2;
+    if (!(entry > 0)) continue;
+    const ok = await alertScannerStock({
+      symbol: c.symbol,
+      name: c.name,
+      side: "BUY",
+      entry,
+      entryZone: c.entryZone,
+      stopLoss: c.stopLoss,
+      target1: c.target1,
+      target2: c.target2,
+      spot: c.price,
+      confidence: c.confidence,
+      source: "weekly-equity-scanner",
+      tradeId: scannerTradeId("weekly-equity-scanner", c.symbol, ymd),
+      reason: c.confidenceNote,
+    }).catch(() => false);
+    if (ok) sent++;
+  }
+  return sent;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -54,6 +102,13 @@ export async function GET(request: NextRequest) {
     // Stage 1 — full shortlist
     const result = await runWeeklyScan();
 
+    // Telegram alerts for the strongest setups — only when the caller asks
+    // for them (?live=true, the Scanner tab does; background fetches do not).
+    let alerted = 0;
+    if (searchParams.get("live") === "true") {
+      alerted = await alertWeeklySetups(result?.candidates || []).catch(() => 0);
+    }
+
     if (!result || result.totalScanned === 0) {
       return NextResponse.json({
         success: false,
@@ -85,6 +140,7 @@ export async function GET(request: NextRequest) {
       mode,
       data: result,
       dataSource: "NSE daily history + NSE corporate actions",
+      alerted,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

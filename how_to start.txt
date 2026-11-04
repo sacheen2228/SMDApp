@@ -42,3 +42,24 @@ Example:
 /besttrade
 
 should automatically scan the permitted markets and return the highest-quality
+
+how to start 
+/home/sacheen/Desktop/SMDAppi 
+cd ~/Desktop/SMDApp
+npm install
+npm run dev
+
+To start again after closing the folder:
+cd /home/sachin/Desktop/SDMApp
+Option A – Default dev server used by the project
+npm run dev
+or
+bun run server.ts
+This runs server.ts which boots Next.js on http://localhost:3000 and logs to dev.log.
+Option B – Start script
+chmod +x start.sh
+./start.sh
+start.sh now cd’s to /home/sachin/Desktop/SDMApp, removes the lock and runs npx next dev -p 3000.
+Quick check
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/
+# should return 200

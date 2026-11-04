@@ -138,9 +138,22 @@ export function planPnlPoints(t: PlanLevels, price: number): number {
 }
 
 /** Signed P&L in ₹ for the whole position (lot size applied). */
-export function planPnlRupees(t: PlanLevels & { symbol?: string }, price: number): number {
+export function planPnlRupees(
+  t: PlanLevels & { symbol?: string; instrument?: string; positionSize?: number },
+  price: number
+): number {
+  const points = planPnlPoints(t, price);
+  // A CASH EQUITY position is whole shares, not a derivative lot. Multiplying
+  // a stock trade by the F&O lot size (RELIANCE = 500) inflated the P&L by
+  // 500×. Cash trades carry their share count in positionSize.
+  const isCashEquity =
+    t.optionType === "EQ" || t.instrument === "EQUITY";
+  if (isCashEquity) {
+    const shares = Number(t.positionSize);
+    return points * (Number.isFinite(shares) && shares > 0 ? shares : 1);
+  }
   const lot = getLotSize(String(t.symbol || "")) ?? 65;
-  return planPnlPoints(t, price) * lot;
+  return points * lot;
 }
 
 /**
@@ -532,6 +545,9 @@ export async function reloadActiveTrades(): Promise<number> {
         qualityScore: t.qualityScore ?? undefined,
         qualityGrade: t.qualityGrade ?? undefined,
         exchange: t.exchange || "NFO",
+        // Cash-equity trades carry their share count here — without it the
+        // TP/SL card would price the whole position as ONE share.
+        positionSize: t.positionSize ?? undefined,
       };
       // Invalid levels (entry/SL/TP missing or SL on wrong side) — do not monitor
       if (!(trade.entry > 0) || !(trade.sl > 0) || !(trade.tp1 > 0)) continue;

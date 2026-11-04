@@ -167,6 +167,7 @@ export function getTradingSession(date: Date = new Date()): TradingSessionLabel 
   const ist = getISTDate(date);
   const timeNum = ist.getUTCHours() * 100 + ist.getUTCMinutes();
 
+  if (timeNum < 900) return "CLOSED";
   if (timeNum < 915) return "PRE_OPEN";
   if (timeNum < 930) return "OPEN";
   if (timeNum < 1530) return "REGULAR";
@@ -216,7 +217,22 @@ export function getCurrentSession(instrumentType: 'INDEX' | 'FNO_STOCK' | 'CASH_
   // Helper to compute remaining minutes in current phase
   const remaining = (end: number) => Math.max(0, end - minutes);
 
-  // Before 09:15
+  // Before 09:00
+  if (minutes < 9 * 60) {
+    return {
+      phase: 'CLOSED',
+      label: 'Market Closed',
+      description: 'Market not open yet. No live data available.',
+      minutesRemaining: (9 * 60 + 15) - minutes,
+      isCasActive: false,
+      isDerivativesOpen: false,
+      confidenceMultiplier: 0,
+      allowedActions: ['WAIT'],
+      notes: ['Market opens at 09:15 IST', 'Pre-open auction runs 09:00-09:15'],
+    };
+  }
+
+  // 09:00 - 09:15 Pre-Open
   if (minutes < 9 * 60 + 15) {
     return {
       phase: 'PRE_OPEN',
@@ -471,9 +487,16 @@ export function isExpiryDayForSymbol(
   symbol: string,
   date: Date = new Date()
 ): boolean {
-  // This should integrate with expiry-calculator.ts
-  // For now, return false - will integrate with existing expiry-calculator
-  return false;
+  // Real calendar check via the canonical expiry calculator (SEBI weekday rules).
+  // The old stub always returned false — every expiry gate in this config was dead.
+  try {
+    // Lazy require keeps this config file free of a hard import cycle at load time.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { isExpiryDay } = require("@/lib/expiry-calculator") as typeof import("@/lib/expiry-calculator");
+    return isExpiryDay(symbol, date);
+  } catch {
+    return false;
+  }
 }
 
 // ─── Get Config ─────────────────────────────────────────────────────

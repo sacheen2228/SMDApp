@@ -622,6 +622,8 @@ export async function sendIndividualSignals(
       source: "morning-signal",
       confidence: s.confidence,
       expiry: isOptionType(s.type) ? s.expiry : undefined,
+      // spot from the signal context when the mapper carried it
+      spotPrice: (s as any).spot || undefined,
       exchange,
     }); // skipAlert=true — already sent above
 

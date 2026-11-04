@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { DataFreshnessBadge } from "./DataFreshnessBadge";
+import { parseExpiryDateLoose } from "@/lib/greeks";
 import {
   Target, TrendingUp, TrendingDown, AlertTriangle, Clock,
   Shield, BarChart3, Zap, ArrowUp, ArrowDown, Info,
@@ -107,9 +108,9 @@ export default function ExpiryPlanPanel({
   const now = new Date();
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const expiryDate = selectedExpiry
-    ? new Date(selectedExpiry)
+    ? (parseExpiryDateLoose(selectedExpiry) ?? new Date(selectedExpiry))
     : expiries?.length
-    ? new Date(expiries[0].date)
+    ? (parseExpiryDateLoose(expiries[0].date) ?? new Date(expiries[0].date))
     : new Date(now.getTime() + (7 - now.getDay()) * 86400000);
   const daysToExpiry = Math.max(0, Math.ceil((expiryDate.getTime() - now.getTime()) / 86400000));
 

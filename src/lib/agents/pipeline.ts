@@ -368,6 +368,9 @@ export async function runFullPipeline(
               source: 'AGENT_SYSTEM',
               exchange: candidate.exchange || 'NSE',
               confidence: decision.consensusConfidence,
+              expiry: candidate.expiry || undefined,
+              riskPerTrade: (candidate as any).riskAmount || undefined,
+              positionSize: (candidate as any).quantity || undefined,
             }, true); // skipAlert — pipeline handles Telegram separately
           } catch (err: any) {
             console.warn(`[Pipeline] activeTradeTracker addTrade failed: ${err.message}`);

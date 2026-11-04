@@ -782,12 +782,30 @@ export async function runChallengeScan(
     }
   }
 
+  // 13a. Size equity setups for fallback when options don't fit ₹15K
+  for (const opp of ranked) {
+    if (opp.instrument !== "EQUITY") continue;
+    sizeOpportunity(opp, ch.currentCapital, config);
+  }
+
   // 13b. CE/PE BUY only, fitted to capital + risk — top list is options-only
   // (equity/futures setups never surface; sized-out options counted unfit).
   const { fit, unfitCount } = selectFitOptionBuys(ranked);
 
+  // 13b-fallback: if no option fits ₹15K, allow top equity swing setups
+  let finalFit = fit;
+  if (fit.length === 0) {
+    const equityFit = ranked
+      .filter(o => o.instrument === "EQUITY" && o.position?.canTrade && o.score >= 60)
+      .slice(0, 10)
+      .map((o, i) => ({ ...o, rank: i + 1 }));
+    if (equityFit.length > 0) {
+      finalFit = equityFit as any;
+    }
+  }
+
   // 13c. Take top 10 fit options and assign ranks
-  const top10 = fit.slice(0, 10).map((opp, i) => ({ ...opp, rank: i + 1 }));
+  const top10 = finalFit.slice(0, 10).map((opp, i) => ({ ...opp, rank: i + 1 }));
 
   // 14b. Best trade = highest-score among tradeable + sizeable setups
   const candidates = top10

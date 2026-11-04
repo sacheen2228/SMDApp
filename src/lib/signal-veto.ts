@@ -46,12 +46,13 @@
 // Every rule below uses fields already present at sendTradeAlert time — no
 // candle/bhavcopy network calls, so it is fast and safe in the hot path.
 import { GATE_CONFIG, otmSteps, calibrateConfidence } from "./agent-brain-gate";
-import { parseExpiryToYears, impliedVolFromPremium, calculateGreeks } from "./greeks";
+import { parseExpiryToYears, impliedVolFromPremium, calculateGreeks, isExpiryToday } from "./greeks";
 import { BRAIN_FLAGS } from "./brain-flags";
 import { getLotSizeStrict } from "./symbol-config";
 import {
   evaluateSignalRiskLimits,
   modelTradeExposure,
+  RISK_LIMITS,
   type RiskStateSnapshot,
 } from "./risk-management";
 
@@ -191,22 +192,34 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
     const lotSize = Number(input.lotSize) > 0
       ? Number(input.lotSize)
       : (getLotSizeStrict(String(input.symbol || "")) ?? null);
-    const modelled = modelTradeExposure({
-      entry: Number.isFinite(entry) ? entry : null,
-      stopLoss: Number.isFinite(sl) ? sl : null,
-      lotSize,
-      lots: input.lots ?? null,
-    });
-    const statedDeployed = Number(input.deployedAmount);
-    const statedRisk = Number(input.riskAmount);
-    const newDeployed = Number.isFinite(statedDeployed) && statedDeployed > 0 ? statedDeployed : modelled.deployed;
-    const newRisk = Number.isFinite(statedRisk) && statedRisk > 0 ? statedRisk : modelled.risk;
-    const riskVerdict = evaluateSignalRiskLimits({
-      state: input.riskState,
-      newDeployed,
-      newRisk,
-    });
-    for (const reason of riskVerdict.reasons) hard(reason);
+    // Size against REMAINING headroom — an open book must not permanent-block
+    // every new alert by forcing the candidate to the full ₹20k budget.
+    const openDeployed = Math.max(0, Number(input.riskState.openDeployed) || 0);
+    const remainingHeadroom = Math.max(
+      0,
+      Math.min(RISK_LIMITS.maxOpenDeployed, RISK_LIMITS.capital) - openDeployed,
+    );
+    if (remainingHeadroom <= 0) {
+      hard(`no deployment headroom — open deployed ₹${Math.round(openDeployed)} already at the ₹${RISK_LIMITS.maxOpenDeployed} cap`);
+    } else {
+      const modelled = modelTradeExposure({
+        entry: Number.isFinite(entry) ? entry : null,
+        stopLoss: Number.isFinite(sl) ? sl : null,
+        lotSize,
+        lots: input.lots ?? null,
+        remainingHeadroom,
+      });
+      const statedDeployed = Number(input.deployedAmount);
+      const statedRisk = Number(input.riskAmount);
+      const newDeployed = Number.isFinite(statedDeployed) && statedDeployed > 0 ? statedDeployed : modelled.deployed;
+      const newRisk = Number.isFinite(statedRisk) && statedRisk > 0 ? statedRisk : modelled.risk;
+      const riskVerdict = evaluateSignalRiskLimits({
+        state: input.riskState,
+        newDeployed,
+        newRisk,
+      });
+      for (const reason of riskVerdict.reasons) hard(reason);
+    }
   }
 
   // 0b. BTST path stays untouched (own risk model, no option expiry/spot)
@@ -265,9 +278,11 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
   }
 
   // 3. Expiry-day index option — hard safety
+  //    Parse Breeze/DD-MMM-YYYY AND ISO (isExpiryToday) and compare IST days.
+  //    The old `slice(0,10) === todayISO` never matched "03-Nov-2026".
   if (isOption && input.expiry && INDEX_SYMBOLS.has(input.symbol)) {
-    const today = new Date().toISOString().slice(0, 10);
-    if (String(input.expiry).slice(0, 10) === today && !GATE_CONFIG.allowExpiryDay) {
+    const nowForGate = new Date(input.nowMs ?? Date.now());
+    if (isExpiryToday(input.expiry, nowForGate) && !GATE_CONFIG.allowExpiryDay) {
       hard("expiry-day gamma lottery — blocked");
     }
   }

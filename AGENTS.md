@@ -135,7 +135,22 @@ bun run dev        # starts on :3000
 - `auto-bot/` — removed (was a Breakout/Desk Python equity screener sidecar on port 8000; not aligned with the Indian F&O focus and unused by the data flow)
 
 ### Expiry day
-All indices expire on **Thursday** (weekday 3) per current SEBI rules. Fixed in master-bot-engine.ts and icici-breeze/option-chain.ts.
+**The exchange's own contract list is the authority** — a hardcoded weekday rule drifts. Live-verified against NSE `option-chain-contract-info` and the BSE chain on 2026-11-04:
+
+| Symbol | Weekly | Monthly |
+|---|---|---|
+| NIFTY, NIFTYNXT50 | **Tuesday** | last Tuesday |
+| BANKNIFTY, FINNIFTY, MIDCPNIFTY | none (discontinued Sep-2025) | last Tuesday |
+| SENSEX | **Thursday** | last Thursday |
+| BANKEX | none | last Thursday |
+| NSE F&O stocks (RELIANCE, …) | none | last Tuesday |
+| BSE F&O stocks | none | last Thursday |
+
+Two facts that break a weekday rule:
+1. **Holiday shift** — an expiry on an exchange holiday moves to the PREVIOUS trading day. NSE publishes `23-Nov-2026` (not 24-Nov) and `25-Jan-2027` (not 26-Jan, Republic Day).
+2. **The published list is partial** — it carries the nearest weeklies + the monthlies. A date outside it is NOT a tradable contract (`EXPIRY_UNAVAILABLE`).
+
+**Single source of truth: `src/lib/expiry-calculator.ts`** (`getNearestExpiry`, `getAllExpiries`, `setExchangeExpiries`). The option-chain route pushes the exchange list into it (`src/app/api/option-chain/route.ts`); `refreshNSEExpiryList()` in `src/lib/nse-api.ts` refreshes it server-side (never from the calculator — it is imported by client components). `src/lib/expiry-engine.ts` (deprecated) and `master-bot-engine.getExpiryStatus()` delegate to it. **Never format an expiry date with `toISOString()`** — it is UTC, so a local midnight date comes out a day EARLY on an IST server; use local date parts.
 
 ## Trade Audit — Backtest Verification Sidecar
 

@@ -431,9 +431,10 @@ export const moneycontrolProvider: MarketDataProvider = {
 // ────────────────────────────────────────────────────────────────────────────
 
 export const fiiDiiProvider: MarketDataProvider = {
-  name: "nse-api",
+  name: "fii-dii",
   categories: ["fii-dii"],
   async fetch(opts) {
+    if (opts.category !== "fii-dii") return null;
     const { fetchFiiDiiData } = await import("@/lib/fii-dii");
     const result = await fetchFiiDiiData();
     if (!result?.available || !result.latest) return null;
@@ -456,7 +457,7 @@ export const fiiDiiProvider: MarketDataProvider = {
       providerTimestamp: result.latest.date,
       validation: validateEnvelope({
         symbol: opts.symbol,
-        provider: "nse-api",
+        provider: "fii-dii",
         source: result.latest.source === "mrchartist" ? "FALLBACK" : "PRIMARY",
         data: { fiiNet: result.latest.fiiNet },
         providerTimestamp: result.latest.date,

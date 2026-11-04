@@ -431,18 +431,32 @@ export function modelTradeExposure(input: {
   lotSize?: number | null;
   lots?: number | null;
   capital?: number;
+  /** ₹ still free under maxOpenDeployed — sizes against the REMAINING headroom */
+  remainingHeadroom?: number;
 }): { deployed: number; risk: number; lots: number; unknown: boolean } {
   const entry = Number(input.entry);
   const sl = Number(input.stopLoss);
   const lotSize = Number(input.lotSize);
   const stopDist = Math.abs(entry - sl);
   const statedLots = Number(input.lots);
+  // Remaining headroom shrinks the sizing budget (open book already holds ₹X).
+  // Explicit 0 = no room → 0 lots (never falls back to the full capital).
+  const headroom = input.remainingHeadroom != null && Number.isFinite(Number(input.remainingHeadroom))
+    ? Math.max(0, Number(input.remainingHeadroom))
+    : undefined;
+  const sizingCapital = headroom != null
+    ? headroom
+    : (input.capital != null && Number.isFinite(Number(input.capital)) ? Number(input.capital) : undefined);
   if (!(entry > 0) || !(sl > 0) || !(lotSize > 0) || !(stopDist > 0)) {
     // Unknown size → assume the WORST case (the whole per-trade budget) so the
     // exposure check fails closed instead of pretending the trade is free.
+    // When headroom is known and smaller, the worst case is the headroom.
+    const worst = headroom != null
+      ? Math.min(RISK_LIMITS.perTradeBudget, headroom)
+      : RISK_LIMITS.perTradeBudget;
     return {
-      deployed: RISK_LIMITS.perTradeBudget,
-      risk: RISK_LIMITS.maxRiskPerTrade,
+      deployed: worst,
+      risk: Math.min(RISK_LIMITS.maxRiskPerTrade, worst * (GATE_CONFIG.riskPctOfTrade / 100)),
       lots: 0,
       unknown: true,
     };
@@ -457,7 +471,7 @@ export function modelTradeExposure(input: {
     };
   }
   const ps = positionSize({
-    capital: input.capital ?? RISK_LIMITS.capital,
+    capital: sizingCapital ?? RISK_LIMITS.capital,
     entry,
     sl,
     lotSize,

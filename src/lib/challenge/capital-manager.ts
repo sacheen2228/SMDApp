@@ -26,21 +26,17 @@ export interface CapitalConfig {
 }
 
 export const DEFAULT_CAPITAL_CONFIG: CapitalConfig = {
-  startingCapital: 15000,
+  startingCapital: 25000,
   targetCapital: 100000,
-  // 10% risk/trade — one full loss stays inside the 10% daily stop. At 5%
-  // (₹750) almost no option lot could ever fit the budget and the challenge
-  // would sit NO_TRADE forever.
-  maxRiskPerTradePct: 10,
+  // Increased to allow more option lots to fit challenge capital
+  maxRiskPerTradePct: 15,
   maxDailyDrawdownPct: 10,
   maxTotalDrawdownPct: 20,
   maxConcurrentTrades: 3,
-  // 75% (rule set C): option buyers' deployed premium is bounded by the
-  // position cap, actual loss is bounded by the 10% premium stop; 50% left
-  // most lot-granular options unsizable at ₹15K (cost > ₹7,500)
-  maxPositionPct: 75,
-  lotSizeBuffer: 5,   // Reduced from 10% — was inflating costs
-  minTradeValue: 500, // Reduced from 1000 — ₹15K needs smaller trades
+  // Raised from 75% to 90% to allow cheaper lots to be sized
+  maxPositionPct: 90,
+  lotSizeBuffer: 2,   // Reduced buffer to lower effective lot cost
+  minTradeValue: 500,
 };
 
 export interface PositionSizing {

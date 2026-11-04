@@ -259,7 +259,10 @@ export function positionSize(input: {
 } {
   // Deployed budget = what we are willing to put into THIS trade (₹20–30k),
   // capped by the trading capital. The risk budget is a % of THAT amount.
-  const capital = Number(input.capital) || GATE_CONFIG.capital;
+  // NOTE: capital=0 is MEANINGFUL (no remaining headroom) — never `0 || default`.
+  const capital = input.capital != null && Number.isFinite(Number(input.capital))
+    ? Number(input.capital)
+    : GATE_CONFIG.capital;
   const budget = Math.min(GATE_CONFIG.tradeBudget, capital);
   const riskPct = Math.min(GATE_CONFIG.maxRiskPct, Math.max(0.1, Number(input.riskPct) || GATE_CONFIG.defaultRiskPct));
   const entry = Number(input.entry);

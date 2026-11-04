@@ -33,6 +33,10 @@ export function dataSourceBadge(ds: string | null | undefined): DataSourceBadge 
   if (key === "no_data" || key === "none" || key === "unavailable") {
     return { label: "NO DATA", display: "NO DATA", isLive: false };
   }
+  // Daily FII/DII feed — a real source, but T-1 by construction, never "LIVE".
+  if (key === "fii-dii") {
+    return { label: "FII/DII", display: "FII/DII", isLive: false };
+  }
   const live = LIVE_DISPLAY[key];
   if (live) return { label: "LIVE", display: live, isLive: true };
   // Unknown/future provider — show as-is, never a hardcoded "Yahoo"

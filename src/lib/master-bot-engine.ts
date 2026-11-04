@@ -4,6 +4,7 @@
 
 import { GATE_CONFIG, positionSize } from "./agent-brain-gate";
 import { buildOptionPlan, lotsForBudget } from "./option-plan";
+import { getNearestExpiry } from "./expiry-calculator";
 
 const NIFTY_TICKER = "^NSEI";
 const SENSEX_TICKER = "^BSESN";
@@ -216,17 +217,20 @@ export function buildMasterBotPlan(input: MasterBotPlanInput): {
 }
 
 // ═══════ EXPIRY LOGIC ═══════
-// Nifty expiry = THURSDAY (weekday 3) — current SEBI rule
-// Sensex expiry = THURSDAY (weekday 4 in JS getDay)
-// BANKNIFTY = Thursday, FINNIFTY = Thursday, MIDCPNIFTY = Thursday
+// The expiry calendar lives in expiry-calculator (ONE source of truth):
+//   NIFTY / NIFTYNXT50 → weekly Tuesday, monthly last Tuesday
+//   BANKNIFTY / FINNIFTY / MIDCPNIFTY → monthly only, last Tuesday
+//   SENSEX → weekly Thursday, monthly last Thursday
+//   BANKEX → monthly only, last Thursday
+// A hardcoded "Thursday for every index" is wrong for the NSE indices (they
+// expire Tuesday) and it ignored the holiday shift (NSE publishes e.g.
+// 23-Nov-2026, not 24-Nov). The calculator returns the NEXT CONTRACT, so
+// "days to expiry" is the distance to the contract the exchange serves.
 
 export function getExpiryStatus(indexName: string): ExpiryStatus {
-  const now = new Date();
-  const weekday = now.getDay();
-
-  const expiryDay = 4; // Thursday — all indices now expire on Thursday
-  const daysToExp = ((expiryDay - weekday + 7) % 7) || 7;
-  const isExpiry = weekday === expiryDay;
+  const nearest = getNearestExpiry(indexName);
+  const daysToExp = nearest ? nearest.daysToExpiry : 7;
+  const isExpiry = daysToExp === 0;
 
   if (isExpiry) {
     return {

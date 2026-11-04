@@ -30,39 +30,34 @@ export interface ExpiryCalendar {
   [instrument: string]: ExpiryData[];
 }
 
-// NSE Weekly expiries: Thursdays (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
-// NSE Monthly expiries: Last Thursday of month
-// BSE SENSEX/BANKEX: Thursdays (weekly), Last Thursday (monthly)
-
-const MONTHLY_EXPIRY_DAYS = ['THURSDAY']; // NSE monthly expiry day
-const WEEKLY_EXPIRY_DAYS = ['THURSDAY'];  // NSE/BSE weekly expiry day
+// The expiry CALENDAR lives in expiry-calculator (ONE source of truth):
+// the exchange's own contract list when it is known, otherwise the SEBI
+// weekday rules (NSE indices Tuesday / BSE Thursday, monthlies last of that
+// weekday, holiday-shifted back to the previous trading day).
+// This module keeps the terminal metadata (exchange, lot size, liquidity)
+// and only reads the DATES from the calculator — it must never re-derive
+// them (the old copy here assumed "Thursday for everything" and formatted
+// the date with toISOString(), which is a day EARLY on an IST server).
+import {
+  getAllExpiries as getCalculatorExpiries,
+  getNearestExpiry,
+  type ExpiryType as CalculatorExpiryType,
+} from './expiry-calculator';
 
 const HIGH_LIQUIDITY_INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY'];
 const HIGH_LIQUIDITY_STOCKS = ['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'HINDUNILVR', 'MARUTI', 'BAJFINANCE', 'ASIANPAINT'];
 
-function getDayOfWeek(date: Date): string {
-  const days = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
-  return days[date.getDay()];
-}
-
-function isMonthlyExpiry(date: Date): boolean {
-  const day = getDayOfWeek(date);
-  if (!MONTHLY_EXPIRY_DAYS.includes(day)) return false;
-  
-  // Last Thursday of month
-  const nextWeek = new Date(date);
-  nextWeek.setDate(date.getDate() + 7);
-  return nextWeek.getMonth() !== date.getMonth();
-}
-
-function isWeeklyExpiry(date: Date): boolean {
-  const day = getDayOfWeek(date);
-  return WEEKLY_EXPIRY_DAYS.includes(day);
+/** LOCAL calendar date as YYYY-MM-DD (toISOString() is UTC — a day early). */
+function toLocalIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
 }
 
 function isQuarterlyExpiry(date: Date): boolean {
   const month = date.getMonth() + 1;
-  return [3, 6, 9, 12].includes(month) && isMonthlyExpiry(date);
+  return [3, 6, 9, 12].includes(month);
 }
 
 function getLotSize(instrument: string): number {
@@ -82,11 +77,9 @@ function getOptionLiquidity(instrument: string): 'HIGH' | 'MEDIUM' | 'LOW' {
   return 'MEDIUM';
 }
 
-function getExpiryType(date: Date): ExpiryType {
-  if (isQuarterlyExpiry(date)) return 'QUARTERLY';
-  if (isMonthlyExpiry(date)) return 'MONTHLY';
-  if (isWeeklyExpiry(date)) return 'WEEKLY';
-  return 'NON_EXPIRY';
+function getExpiryType(type: CalculatorExpiryType, date: Date): ExpiryType {
+  if (type === 'monthly') return isQuarterlyExpiry(date) ? 'QUARTERLY' : 'MONTHLY';
+  return 'WEEKLY';
 }
 
 function getStrategyProfile(expiryType: ExpiryType): 'EXPIRY' | 'NORMAL' {
@@ -118,18 +111,19 @@ export function getExpiryData(instrument: string, referenceDate: Date = new Date
   const lotSize = inst.lotSize;
   const tickSize = getTickSize(instrument);
 
-  // Find next expiry date for this instrument
-  const expiryDate = findNextExpiry(instrument, referenceDate);
-  if (!expiryDate) return null;
+  // The next contract the exchange serves for this instrument.
+  const nearest = getNearestExpiry(instrument);
+  if (!nearest) return null;
 
-  const daysToExpiry = Math.max(0, Math.ceil((expiryDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
-  const expiryType = getExpiryType(expiryDate);
+  const expiryDate = nearest.dateObj;
+  const daysToExpiry = nearest.daysToExpiry;
+  const expiryType = getExpiryType(nearest.type, expiryDate);
   const isExpiryToday = daysToExpiry === 0;
 
   return {
     instrument,
     exchange,
-    expiry_date: expiryDate.toISOString().split('T')[0],
+    expiry_date: toLocalIsoDate(expiryDate),
     expiry_type: expiryType,
     days_to_expiry: daysToExpiry,
     is_expiry_today: isExpiryToday,
@@ -143,43 +137,6 @@ export function getExpiryData(instrument: string, referenceDate: Date = new Date
     lot_size: lotSize,
     tick_size: tickSize,
   };
-}
-
-function findNextExpiry(instrument: string, fromDate: Date): Date | null {
-  const inst = getInstrument(instrument);
-  if (!inst) return null;
-
-  // For indices: weekly on Thursday, monthly last Thursday
-  // For stocks: monthly last Thursday
-  const isIndex = inst.type === 'INDEX';
-  
-  let checkDate = new Date(fromDate);
-  checkDate.setHours(0, 0, 0, 0);
-
-  // Check up to 60 days ahead
-  for (let i = 0; i < 60; i++) {
-    const day = getDayOfWeek(checkDate);
-    
-    if (isIndex) {
-      // Index has weekly (Thursday) and monthly (last Thursday)
-      if (day === 'THURSDAY') {
-        if (isMonthlyExpiry(checkDate)) {
-          return new Date(checkDate);
-        }
-        // Weekly expiry
-        return new Date(checkDate);
-      }
-    } else {
-      // Stock options: monthly expiry (last Thursday)
-      if (day === 'THURSDAY' && isMonthlyExpiry(checkDate)) {
-        return new Date(checkDate);
-      }
-    }
-    
-    checkDate.setDate(checkDate.getDate() + 1);
-  }
-
-  return null;
 }
 
 export function getExpiryCalendar(instruments: string[], referenceDate: Date = new Date()): ExpiryCalendar {
@@ -199,65 +156,27 @@ export function getAllExpiriesForInstrument(instrument: string, referenceDate: D
   const inst = getInstrument(instrument);
   if (!inst) return [];
 
-  const isIndex = inst.type === 'INDEX';
-  const expiries: ExpiryData[] = [];
-  
-  let checkDate = new Date(referenceDate);
-  checkDate.setHours(0, 0, 0, 0);
-
-  for (let i = 0; i < 90; i++) {
-    const day = getDayOfWeek(checkDate);
-    
-    if (isIndex) {
-      if (day === 'THURSDAY') {
-        const expiryType = getExpiryType(checkDate);
-        const daysToExpiry = Math.max(0, Math.ceil((checkDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
-        
-        expiries.push({
-          instrument,
-          exchange: inst.exchange,
-          expiry_date: checkDate.toISOString().split('T')[0],
-          expiry_type: expiryType,
-          days_to_expiry: daysToExpiry,
-          is_expiry_today: daysToExpiry === 0,
-          is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
-          is_weekly_expiry: expiryType === 'WEEKLY',
-          is_quarterly_expiry: expiryType === 'QUARTERLY',
-          expiry_mode: getExpiryMode(expiryType),
-          option_liquidity: getOptionLiquidity(instrument),
-          strategy_profile: getStrategyProfile(expiryType),
-          session_type: getSessionType(expiryType, daysToExpiry),
-          lot_size: inst.lotSize,
-          tick_size: getTickSize(instrument),
-        });
-      }
-    } else {
-      if (day === 'THURSDAY' && isMonthlyExpiry(checkDate)) {
-        const expiryType = getExpiryType(checkDate);
-        const daysToExpiry = Math.max(0, Math.ceil((checkDate.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)));
-        
-        expiries.push({
-          instrument,
-          exchange: inst.exchange,
-          expiry_date: checkDate.toISOString().split('T')[0],
-          expiry_type: expiryType,
-          days_to_expiry: daysToExpiry,
-          is_expiry_today: daysToExpiry === 0,
-          is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
-          is_weekly_expiry: expiryType === 'WEEKLY',
-          is_quarterly_expiry: expiryType === 'QUARTERLY',
-          expiry_mode: getExpiryMode(expiryType),
-          option_liquidity: getOptionLiquidity(instrument),
-          strategy_profile: getStrategyProfile(expiryType),
-          session_type: getSessionType(expiryType, daysToExpiry),
-          lot_size: inst.lotSize,
-          tick_size: getTickSize(instrument),
-        });
-      }
-    }
-    
-    checkDate.setDate(checkDate.getDate() + 1);
-  }
-
-  return expiries;
+  // The dates come from the calculator (exchange list / SEBI rules) — this
+  // module only adds the terminal metadata.
+  return getCalculatorExpiries(instrument).map((e) => {
+    const expiryType = getExpiryType(e.type, e.dateObj);
+    const daysToExpiry = e.daysToExpiry;
+    return {
+      instrument,
+      exchange: inst.exchange,
+      expiry_date: toLocalIsoDate(e.dateObj),
+      expiry_type: expiryType,
+      days_to_expiry: daysToExpiry,
+      is_expiry_today: daysToExpiry === 0,
+      is_monthly_expiry: expiryType === 'MONTHLY' || expiryType === 'QUARTERLY',
+      is_weekly_expiry: expiryType === 'WEEKLY',
+      is_quarterly_expiry: expiryType === 'QUARTERLY',
+      expiry_mode: getExpiryMode(expiryType),
+      option_liquidity: getOptionLiquidity(instrument),
+      strategy_profile: getStrategyProfile(expiryType),
+      session_type: getSessionType(expiryType, daysToExpiry),
+      lot_size: inst.lotSize,
+      tick_size: getTickSize(instrument),
+    };
+  });
 }

@@ -3,7 +3,7 @@
 
 import { getBreezeClient, getConfig, withAuthRetry } from './auth';
 import type { OptionChainData, OptionQuote } from '@/types';
-import { calculateGreeks } from '@/lib/greeks';
+import { calculateGreeks, parseExpiryDateLoose } from '@/lib/greeks';
 import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
 
 // BSE symbols that need BFO exchange code (BSE F&O segment)
@@ -276,9 +276,11 @@ function formatExpiryForSDK(dateStr: string): string {
 
 // ─── Calculate Time to Expiry ─────────────────────────────────────
 function calculateTimeToExpiry(expiryDate: string): number {
-  const expiry = new Date(expiryDate);
+  // Breeze/DD-MMM-YYYY/ISO — never new Date() alone
+  const expiry = parseExpiryDateLoose(expiryDate) ?? new Date(expiryDate);
   const now = new Date();
-  expiry.setHours(15, 30, 0, 0);
+  // parseExpiryDateLoose already lands at 15:30 IST; native fallback needs the set.
+  if (!(parseExpiryDateLoose(expiryDate))) expiry.setHours(15, 30, 0, 0);
   const diffMs = expiry.getTime() - now.getTime();
   const diffDays = diffMs / (1000 * 60 * 60 * 24);
   return Math.max(diffDays / 365, 1 / 365);

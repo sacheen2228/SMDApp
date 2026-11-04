@@ -131,6 +131,38 @@ def ltp(service, **query):
     }
 
 
+def ltps(service, tradingsymbols):
+    """GET /ltps — bulk live prices (one entry per requested tradingsymbol).
+
+    `results[TS]` is `{ok, ltp, source}` on success or `{ok:false, error}`
+    when that one contract could not be priced. The envelope stays `ok:true`
+    as long as the batch itself ran — partial data is the normal case.
+    """
+    results = service.ltps(tradingsymbols)
+    shaped = {}
+    for ts, entry in results.items():
+        if entry.get("ok") and entry.get("ltp") is not None:
+            quote = entry.get("ltp") or {}
+            shaped[ts] = {
+                "ok": True,
+                "tradingsymbol": quote.get("tradingsymbol") or ts,
+                "ltp": quote.get("ltp"),
+                "source": quote.get("source") or PROVIDER,
+            }
+        else:
+            shaped[ts] = {
+                "ok": False,
+                "tradingsymbol": ts,
+                "error": entry.get("error") or "unavailable",
+                "kind": entry.get("kind"),
+            }
+    return {
+        "ok": True,
+        "ts": iso_now(),
+        "results": shaped,
+    }
+
+
 def oi(service, **query):
     """GET /oi — the open interest of one contract."""
     result = service.open_interest(**query)

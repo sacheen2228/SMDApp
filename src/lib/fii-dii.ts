@@ -62,6 +62,17 @@ const NSE_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
+// MrChartist's API sits behind bot protection: a bare `fetch()` (no headers)
+// gets 403, while the same URL with a browser UA + Origin/Referer returns 200.
+// Verified live 2026-11-04 — both /api/data and /api/history.
+const MC_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Origin': 'https://www.mrchartist.com',
+  'Referer': 'https://www.mrchartist.com/',
+};
+
 let nseCookieCache: string | null = null;
 let nseCookieTime = 0;
 const COOKIE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -146,6 +157,7 @@ async function fetchNSEFiiDii(): Promise<FiiDiiSnapshot | null> {
 async function fetchMrChartistLatest(): Promise<FiiDiiSnapshot | null> {
   try {
     const res = await fetch('https://fii-diidata.mrchartist.com/api/data', {
+      headers: MC_HEADERS,
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
@@ -168,6 +180,7 @@ async function fetchMrChartistLatest(): Promise<FiiDiiSnapshot | null> {
 async function fetchMrChartistHistory(): Promise<FiiDiiDay[]> {
   try {
     const res = await fetch('https://fii-diidata.mrchartist.com/api/history', {
+      headers: MC_HEADERS,
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];
@@ -199,6 +212,8 @@ async function fetchMrChartistHistory(): Promise<FiiDiiDay[]> {
 // Cache
 let cache: { data: FiiDiiResult; timestamp: number } | null = null;
 const CACHE_TTL = 5 * 60 * 1000; // 5 min
+/** How long a FAILED fetch may be served before the next call retries. */
+const FAILURE_TTL = 30 * 1000;
 
 async function fetchNSEParticipantOI(): Promise<ParticipantOI | null> {
   try {
@@ -318,6 +333,15 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
     ...(diiNet5dAvg != null ? { diiNet5dAvg: Math.round(diiNet5dAvg) } : {}),
     ...(fiiFutLongRatio != null ? { fiiFutLongRatio: Math.round(fiiFutLongRatio * 100) / 100 } : {}),
   };
-  cache = { data: result, timestamp: Date.now() };
+  // Only a REAL answer earns the 5-minute TTL. Caching a failure for the same
+  // window meant one bad minute (blocked IP, bot challenge) pinned the card on
+  // "unavailable" long after the provider recovered — the next call has to be
+  // able to retry.
+  if (available) {
+    cache = { data: result, timestamp: Date.now() };
+  } else {
+    // Brief negative cache so a hard-down provider isn't re-hit on every poll.
+    cache = { data: result, timestamp: Date.now() - CACHE_TTL + FAILURE_TTL };
+  }
   return result;
 }

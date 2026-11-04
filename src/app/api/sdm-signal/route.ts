@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generateTradeRecommendation } from "@/lib/sdm-recommendation";
-import { calculateGreeks } from "@/lib/greeks";
+import { calculateGreeks, parseExpiryDateLoose } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
 import { sendTradeAlert } from "@/lib/telegram";
 import { getOptionChain, getOptionChainExpiries } from "@/lib/icici-breeze/option-chain";
@@ -206,10 +206,10 @@ export async function GET(request: NextRequest) {
       } : null,
     }));
 
-    // Calculate Greeks if missing
+    // Calculate Greeks if missing — Breeze/NSE format, never new Date() alone
     const selectedExpiry = expiry || chainData.selectedExpiry || chainData.expiries?.[0]?.date || "";
-    const expiryDate = new Date(selectedExpiry);
     const now = new Date();
+    const expiryDate = parseExpiryDateLoose(selectedExpiry, now) ?? new Date(selectedExpiry);
     const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
     const tte = daysToExpiry / 365;
 
@@ -352,6 +352,9 @@ export async function GET(request: NextRequest) {
         target2: rec.target2 || signal.target2,
         source: `SDM Engine (${source})`,
         instrument: optionType === 'PE' ? 'PUT' : 'CALL',
+        // Expiry-day gate + delta/OTM — was omitted, so the hard check never ran.
+        expiry: selectedExpiry || undefined,
+        spot: spotPrice || undefined,
         mtf: mtf ? {
           direction: mtf.direction,
           compositeScore: mtf.compositeScore,

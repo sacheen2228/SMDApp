@@ -239,12 +239,17 @@ class MoClient(object):
 
     # ── report endpoints ──
     def _call(self, name, *args, **kwargs):
-        """Call an SDK method with a timeout + error classification."""
+        """Call an SDK method with a timeout + error classification.
+
+        Pass `_timeout=<seconds>` to override the default request timeout
+        (used by the large instrument-master download).
+        """
+        timeout = kwargs.pop("_timeout", None) or self.config.request_timeout
         self.ensure_authenticated()
         sdk = self._ensure_sdk()
         method = getattr(sdk, name)
         try:
-            return call_with_timeout(method, self.config.request_timeout, *args, **kwargs)
+            return call_with_timeout(method, timeout, *args, **kwargs)
         except MoError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -264,8 +269,9 @@ class MoClient(object):
         return data
 
     def get_instrument_file(self, exchange):
-        """Raw MO instrument master for one exchange."""
-        response = self._call("GetInstrumentFile", exchange)
+        """Raw MO instrument master for one exchange (large payload — long timeout)."""
+        response = self._call("GetInstrumentFile", exchange,
+                              _timeout=self.config.instrument_timeout)
         status = str(response.get("status", "")).upper()
         if status != "SUCCESS":
             message = response.get("message") or "MO instrument file failed"

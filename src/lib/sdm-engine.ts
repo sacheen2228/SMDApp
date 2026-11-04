@@ -4,7 +4,7 @@
 import type { SDMOptionStrike, ScoreObject } from "@/types/sdm";
 import { buildOptionPlan } from "./option-plan";
 import { getLotSizeStrict } from "./symbol-config";
-import { getRiskFreeRate } from "./greeks";
+import { getRiskFreeRate, isExpiryToday, parseExpiryDateLoose } from "./greeks";
 
 // ─── 1. PCR Score ────────────────────────────────────────────────
 // Put-Call Ratio: total PE OI / total CE OI
@@ -548,13 +548,9 @@ export function scoreExpiryGammaTheta(
   expiryDate: string,
   vix?: number
 ): ScoreObject {
-  // A) Detect expiry day
+  // A) Detect expiry day — parse Breeze/DD-MMM-YYYY AND ISO (never new Date alone)
   const today = new Date();
-  const expiry = new Date(expiryDate);
-  const isExpiryDay =
-    today.getFullYear() === expiry.getFullYear() &&
-    today.getMonth() === expiry.getMonth() &&
-    today.getDate() === expiry.getDate();
+  const isExpiryDay = isExpiryToday(expiryDate, today);
 
   if (!isExpiryDay) {
     return {
@@ -1130,9 +1126,9 @@ export function runFullAnalysis(
     : pcrVal < 0.75 ? 45 + (0.75 - pcrVal) * 40
     : 40));
 
-  // Calculate days to expiry
+  // Calculate days to expiry — loose parse (Breeze/DD-MMM-YYYY/ISO)
   const today = new Date();
-  const expiry = new Date(expiryDate);
+  const expiry = parseExpiryDateLoose(expiryDate, today) ?? new Date(expiryDate);
   const daysToExpiry = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
   // Determine action based on sentiment
@@ -1302,7 +1298,7 @@ export function runFullAnalysis(
     },
     spot: { spot: spotPrice, atmStrike, change: 0, changePct: 0 },
     expiry: {
-      label: new Date(expiryDate).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+      label: (parseExpiryDateLoose(expiryDate, new Date()) ?? new Date(expiryDate)).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
       daysToExpiry,
       date: expiryDate,
     },

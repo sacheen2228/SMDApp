@@ -16,6 +16,8 @@
 //                                 expiry, lotSize, instrumentType, symbol, strike,
 //                                 optionType}]}
 //   GET  /ltp?tradingsymbol=X   → {ok, ts, tradingsymbol, ltp, source}
+//   GET  /ltps?tradingsymbols=A,B,C
+//                               → {ok, ts, results:{A:{ok,ltp,source}, B:{ok:false,error}, …}}
 //   GET  /oi?tradingsymbol=X    → {ok, ts, tradingsymbol, oi, oiChange, source}
 //   GET  /depth?tradingsymbol=X → {ok, ts, tradingsymbol, bids:[[p,q]], asks:[[p,q]]}
 //   Errors: {ok:false, error:"…"} with HTTP 503.
@@ -29,6 +31,8 @@ import { applyServiceInstruments } from "../symbol-config";
 // ── Config ───────────────────────────────────────────────────────────────────
 /** The service must never hold a caller hostage — 2.5s then fall through. */
 export const SERVICE_TIMEOUT_MS = 2500;
+/** Bulk `/ltps` may hit REST for ~40 contracts — give it a longer budget. */
+export const BULK_LTP_TIMEOUT_MS = 8000;
 /** The instrument master changes once a day — 30 minutes is generous. */
 export const INSTRUMENTS_CACHE_TTL_MS = 30 * 60 * 1000;
 /** /health is a cheap probe; do not hammer it. */
@@ -93,7 +97,7 @@ export interface ServiceDepth {
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
-type CacheEntry<T> = { data: T; ts: number };
+type CacheEntry<T> = { data: T; ts: number; key?: string };
 
 let instrumentsCache: CacheEntry<ServiceInstrument[]> | null = null;
 let healthCache: CacheEntry<ServiceHealth> | null = null;
@@ -110,10 +114,14 @@ export function resetServiceCache(): void {
  * the service is not configured, the connection was refused, the call timed
  * out, the status was not 2xx, the body was not JSON, or the body said
  * `{ok:false}` (the service's own error shape). It never throws.
+ *
+ * `timeoutMs` overrides the default 2.5s budget — bulk endpoints (`/ltps`)
+ * legitimately take longer when they must hit REST for ~40 contracts.
  */
 async function serviceGet<T = any>(
   path: string,
-  query?: Record<string, string | number | undefined>
+  query?: Record<string, string | number | undefined>,
+  timeoutMs?: number
 ): Promise<T | null> {
   const base = getServiceUrl();
   if (!base) return null;
@@ -130,7 +138,7 @@ async function serviceGet<T = any>(
     const res = await fetch(url, {
       method: "GET",
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs ?? SERVICE_TIMEOUT_MS),
     });
     if (!res.ok) return null; // 503 / 404 / 500 → this rung produced nothing
     const json: any = await res.json().catch(() => null);
@@ -197,15 +205,21 @@ function normalizeInstrument(row: any): ServiceInstrument | null {
  * contract list), so a successful fetch feeds the lot sizes into
  * symbol-config — see applyServiceInstruments() there.
  */
-export async function fetchServiceInstruments(force = false): Promise<ServiceInstrument[] | null> {
+export async function fetchServiceInstruments(force = false, symbol?: string): Promise<ServiceInstrument[] | null> {
   if (!isServiceConfigured()) return null;
 
+  const cacheKey = (symbol || "").trim().toUpperCase();
   const cached = instrumentsCache;
-  if (!force && cached && Date.now() - cached.ts < INSTRUMENTS_CACHE_TTL_MS) {
+  if (
+    !force &&
+    cached &&
+    cached.key === cacheKey &&
+    Date.now() - cached.ts < INSTRUMENTS_CACHE_TTL_MS
+  ) {
     return cached.data;
   }
 
-  const json = await serviceGet<any>("/instrument");
+  const json = await serviceGet<any>("/instrument", symbol ? { symbol } : undefined);
   if (!json) return null;
 
   const rows = Array.isArray(json.instruments) ? json.instruments : [];
@@ -214,8 +228,11 @@ export async function fetchServiceInstruments(force = false): Promise<ServiceIns
     .filter((r: ServiceInstrument | null): r is ServiceInstrument => r !== null);
   if (!data.length) return null; // an empty master is not a usable master
 
-  instrumentsCache = { data, ts: Date.now() };
-  applyServiceInstruments(data);
+  instrumentsCache = { data, ts: Date.now(), key: cacheKey };
+  // Lot sizes are only meaningful when we have the full master — a
+  // symbol-filtered fetch must not overwrite the global lot-size map
+  // with a single-underlying subset.
+  if (!symbol) applyServiceInstruments(data);
   return data;
 }
 
@@ -242,6 +259,40 @@ export async function fetchServiceLTP(tradingsymbol: string): Promise<ServiceLTP
     ltp,
     source: String(json.source || "moapi-service"),
   };
+}
+
+// ── /ltps (bulk) ────────────────────────────────────────────────────────────
+/**
+ * Live prices for many tradingsymbols in one round-trip. Keys of the returned
+ * map are the UPPER-CASED tradingsymbols that resolved to a positive price —
+ * contracts the service could not price are simply absent (never faked).
+ *
+ * The URL has a practical length cap; callers should batch (~100 per call).
+ */
+export async function fetchServiceLTPs(
+  tradingsymbols: string[]
+): Promise<Record<string, number>> {
+  const list = [...new Set(tradingsymbols.map((t) => String(t || "").trim().toUpperCase()).filter(Boolean))];
+  if (!list.length || !isServiceConfigured()) return {};
+
+  // Chunk so the query string stays well under common URL limits (~2k chars).
+  const out: Record<string, number> = {};
+  const CHUNK = 40;
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const chunk = list.slice(i, i + CHUNK);
+    const json = await serviceGet<any>(
+      "/ltps",
+      { tradingsymbols: chunk.join(",") },
+      BULK_LTP_TIMEOUT_MS
+    );
+    const results = json?.results;
+    if (!results || typeof results !== "object") continue;
+    for (const [ts, entry] of Object.entries<any>(results)) {
+      const ltp = Number(entry?.ltp ?? 0);
+      if (entry?.ok && Number.isFinite(ltp) && ltp > 0) out[ts.toUpperCase()] = ltp;
+    }
+  }
+  return out;
 }
 
 // ── /oi ─────────────────────────────────────────────────────────────────────

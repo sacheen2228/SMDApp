@@ -14,6 +14,7 @@
 // adds the card envelope + the exchange market clock used by every route.
 
 import { classifyFreshness, type FreshnessLevel } from "./api-freshness";
+import { getCurrentSession } from "./market-session";
 
 export type CardStatus = "AVAILABLE" | "STALE" | "UNAVAILABLE";
 
@@ -211,20 +212,41 @@ export function parseNseTradeDate(raw: string | null | undefined): Date | null {
 let clockCache: { at: number; clock: MarketClock } | null = null;
 const CLOCK_TTL_MS = 60_000;
 
+/**
+ * Session-clock fallback used when NSE's `/api/marketStatus` is unreachable.
+ *
+ * NSE sits behind Akamai: from a blocked IP every request (cookie or not)
+ * returns "Access Denied", so the old code fell through to `isOpen:false` and
+ * every consumer reported "Exchange closed" in the middle of a live session.
+ * The IST session clock is local and network-free — it can never lie about
+ * whether the exchange is open, only about how fresh our data is.
+ */
+function sessionClockFallback(): MarketClock {
+  const info = getCurrentSession("index");
+  const open = info.isMarketOpen;
+  const marketState = !open
+    ? "Close"
+    : info.session === "pre_open"
+      ? "Pre Open"
+      : "Open";
+  return {
+    marketState,
+    isOpen: open,
+    // A local clock has no exchange trade date. Leave it null rather than
+    // inventing one — consumers that need the date still show "unknown".
+    tradeDate: null,
+    tradeDateLabel: "",
+    tradeAgeMs: null,
+    collectedAt: new Date().toISOString(),
+    source: "session-clock",
+  };
+}
+
 /** NSE Capital-Market state + the trade date of the last session. */
 export async function getMarketClock(force = false): Promise<MarketClock> {
   if (!force && clockCache && Date.now() - clockCache.at < CLOCK_TTL_MS) {
     return clockCache.clock;
   }
-  const fallback: MarketClock = {
-    marketState: "unknown",
-    isOpen: false,
-    tradeDate: null,
-    tradeDateLabel: "",
-    tradeAgeMs: null,
-    collectedAt: new Date().toISOString(),
-    source: "nse",
-  };
   try {
     const res = await fetch("https://www.nseindia.com/api/marketStatus", {
       headers: {
@@ -251,6 +273,7 @@ export async function getMarketClock(force = false): Promise<MarketClock> {
     clockCache = { at: Date.now(), clock };
     return clock;
   } catch {
+    const fallback = sessionClockFallback();
     clockCache = { at: Date.now(), clock: fallback };
     return fallback;
   }

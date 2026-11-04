@@ -539,6 +539,9 @@ export async function POST(req: NextRequest) {
             target2: c.tp2,
             source: "🤖 Hermes Pro",
             instrument: c.optionSide === 'PE' ? 'PUT' : 'CALL',
+            // TradeCandidate carries expiry; spot from the fresh chain/context
+            expiry: c.expiry || undefined,
+            spot: freshSpotPrice || undefined,
           }).catch(() => {});
         }
 
@@ -857,6 +860,9 @@ Note: Score = setup quality (0-100), NOT probability.
         target2: signal.target2 || signal.recommendation?.target2,
         source: "🤖 SDM Agent",
         instrument: (signal.optionType || signal.recommendation?.strikeType) === 'PE' ? 'PUT' : 'CALL',
+        // Expiry-day gate + delta/OTM — was omitted on this path too.
+        expiry: expiryDate || undefined,
+        spot: freshSpotPrice || undefined,
       }).catch(() => {});
     }
 

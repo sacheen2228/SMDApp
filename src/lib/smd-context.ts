@@ -2,6 +2,8 @@
 // Aggregates ALL SMD data sources into a single compact context object.
 // Does NOT duplicate engine logic — calls existing APIs.
 
+import { getNearestExpiry } from './expiry-calculator';
+
 export interface SMDContext {
   timestamp: string;
   symbol: string;
@@ -99,10 +101,21 @@ export async function buildSMDContext(
   apiBase: string
 ): Promise<SMDContext> {
   const now = new Date();
+  // ── Expiry day calculator ──────────────────────────────────────────────
+  // The expiry calendar comes from expiry-calculator (the exchange's own list
+  // when it is known, otherwise the SEBI weekday rules). It was NEVER filled
+  // in here before — isExpiryDay stayed false and daysToExpiry stayed 0, so
+  // Hermes could never see an expiry day.
+  const nearestExpiry = getNearestExpiry(symbol);
   const ctx: SMDContext = {
     timestamp: now.toISOString(),
     symbol,
-    market: { status: "UNKNOWN", session: "UNKNOWN", isExpiryDay: false, daysToExpiry: 0 },
+    market: {
+      status: "UNKNOWN",
+      session: "UNKNOWN",
+      isExpiryDay: nearestExpiry ? nearestExpiry.daysToExpiry === 0 : false,
+      daysToExpiry: nearestExpiry ? nearestExpiry.daysToExpiry : 0,
+    },
     spot: { price: 0, change: 0, changePct: 0, prevClose: 0 },
     indices: { nifty: null, sensex: null, banknifty: null },
     options: null,

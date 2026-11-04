@@ -74,7 +74,18 @@ function withMarketOpen(info: Omit<SessionInfo, 'isMarketOpen'>): SessionInfo {
 function baseSession(minutes: number): SessionInfo {
   const t = timeStr(minutes);
 
-  if (minutes < 555) { // before / 09:00 - 09:15
+  if (minutes < 540) { // before 09:00
+    return {
+      session: 'closed',
+      label: 'Market Closed',
+      description: 'Market not open yet. No live data available.',
+      confidenceMultiplier: 0,
+      allowedActions: ['WAIT'],
+      notes: ['Market opens at 09:15 IST', 'Pre-open auction runs 09:00-09:15'],
+    };
+  }
+
+  if (minutes < 555) { // 09:00 - 09:15 pre_open
     return {
       session: 'pre_open',
       label: 'Pre-Market',

@@ -21,7 +21,7 @@ ORDER_METHODS = (
 )
 
 # The routes the service is allowed to expose.
-ALLOWED_ROUTES = ("/health", "/instrument", "/ltp", "/oi", "/depth")
+ALLOWED_ROUTES = ("/health", "/instrument", "/ltp", "/ltps", "/oi", "/depth")
 
 # `<something>.PlaceOrder(` — a CALL, not a mention in a docstring.
 CALL_RE = re.compile(r"\.\s*(%s)\s*\(" % "|".join(ORDER_METHODS), re.IGNORECASE)

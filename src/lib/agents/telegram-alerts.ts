@@ -51,6 +51,20 @@ function alreadyDelivered(tradeId: string, alertType: TPSLAlertType): boolean {
   return false;
 }
 
+/**
+ * True when an alert of this type was ALREADY ATTEMPTED for the trade.
+ *
+ * The TP/SL monitor re-detects the same hit on every 5-second poll, and each
+ * detection builds a FRESH alert (new alertId). Without this check a failed
+ * Telegram send was retried by the poll loop forever — the same strike was
+ * re-alerted every 5s ("same trade spamming on telegram bot once target
+ * hit"). One attempt per (trade, alertType) is enough; the RETRY QUEUE owns
+ * the retries (retryFailedAlerts re-sends the SAME alertId up to 3 times).
+ */
+function alreadyAttempted(tradeId: string, alertType: TPSLAlertType): boolean {
+  return getAlertHistory(tradeId).some(a => a.alertType === alertType);
+}
+
 function onDelivered(alert: TPSLAlert): void {
   markAlertSent(alert.alertId, alert.tradeId);
   // Sync delivery flag onto agents monitor state
@@ -68,10 +82,22 @@ function onDelivered(alert: TPSLAlert): void {
 // ─── Send TP/SL Alert ─────────────────────────────────────────────
 
 export async function sendTPSLAlert(alert: TPSLAlert): Promise<boolean> {
+  const history = getAlertHistory(alert.tradeId);
+  // A retry re-sends the SAME alert (same alertId) — it must be allowed
+  // through. A NEW alert for a type that was already attempted is the poll
+  // loop re-detecting the same hit: that is the duplicate we must suppress.
+  const isRetry = history.some(a => a.alertId === alert.alertId);
+
   // Dedup check — only skip if delivery already CONFIRMED
   if (alreadyDelivered(alert.tradeId, alert.alertType)) {
     console.log(`[TPSLAlert] Dedup: ${alert.alertType} for ${alert.tradeId} already delivered`);
     return true;
+  }
+
+  // One attempt per (trade, alertType) — the retry queue handles the rest.
+  if (!isRetry && alreadyAttempted(alert.tradeId, alert.alertType)) {
+    console.log(`[TPSLAlert] Dedup: ${alert.alertType} for ${alert.tradeId} already attempted`);
+    return false;
   }
 
   // Store alert in history (idempotent on alertId)
@@ -105,6 +131,10 @@ export async function sendTPSLAlert(alert: TPSLAlert): Promise<boolean> {
       } catch { /* event bus offline — non-fatal */ }
       return true;
     } else {
+      // The alert stays UNDELIVERED (sent=false) so the retry queue still
+      // owns the retries and the EOD stats still count it as pending. The
+      // poll loop cannot re-send it: alreadyAttempted() blocks a second
+      // attempt for the same (trade, alertType).
       markAlertFailed(alert.alertId, alert.tradeId, 'Telegram send returned false');
       console.error(`[TPSLAlert] Failed: ${alert.alertType} for ${alert.tradeId}`);
       return false;

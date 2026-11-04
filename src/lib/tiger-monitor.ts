@@ -201,9 +201,12 @@ function pnlStr(t: ActiveTrade, price: number): string {
 }
 
 function card(t: ActiveTrade): string {
+  const isCashEquity = t.optionType === "EQ" || t.instrument === "EQUITY";
   return [
-    `📊 ${t.symbol} — ${t.optionType || t.instrument}`,
-    `⚡ Direction: ${t.side} ${t.optionType === "CE" ? "CALL" : t.optionType === "PE" ? "PUT" : t.instrument || ""}`.trim(),
+    `📊 ${t.symbol} — ${isCashEquity ? "EQUITY" : t.optionType || t.instrument}`,
+    isCashEquity
+      ? `⚡ Direction: ${t.side} (CASH)`
+      : `⚡ Direction: ${t.side} ${t.optionType === "CE" ? "CALL" : t.optionType === "PE" ? "PUT" : t.instrument || ""}`.trim(),
     t.strike ? `🎯 Strike: ${fmtStrike(t.strike)}` : "",
     `🧾 Trade ID: ${t.id}`,
     t.confidence ? `💪 Confidence: ${t.confidence}%` : "",

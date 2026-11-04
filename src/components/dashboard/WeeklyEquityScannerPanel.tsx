@@ -345,7 +345,10 @@ export const WeeklyEquityScannerPanel = memo(function WeeklyEquityScannerPanel()
     queryKey: ["weekly-scanner"],
     queryFn: async () => {
       setDataSource(null);
-      const res = await fetch(`/api/weekly-scanner`, { signal: AbortSignal.timeout(60_000) });
+      // live=true → the strongest setups are pushed to Telegram (entry, SL,
+      // targets) and registered for TP/SL hit alerts. The server dedups per
+      // symbol per day, so a re-scan never alerts the same setup twice.
+      const res = await fetch(`/api/weekly-scanner?live=true`, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error("Weekly scanner failed");
       const json = await res.json();
       if (json.dataSource) setDataSource(json.dataSource);

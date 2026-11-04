@@ -76,7 +76,6 @@ const PROVIDER_COOLDOWNS: Partial<Record<ProviderType, Partial<CooldownConfig>>>
 
 class ProviderHealthManager {
   private providers: Map<ProviderType, ProviderHealth> = new Map();
-  private static instance: ProviderHealthManager;
 
   private constructor() {
     // Initialize all providers
@@ -86,11 +85,16 @@ class ProviderHealthManager {
     }
   }
 
+  // Process-wide singleton on globalThis: each route is its own module graph,
+  // so a class-level `static instance` gave every route its own circuit
+  // breaker. One route could reset the Breeze circuit while another still
+  // saw it OPEN ("Skipping Breeze — circuit open").
   static getInstance(): ProviderHealthManager {
-    if (!ProviderHealthManager.instance) {
-      ProviderHealthManager.instance = new ProviderHealthManager();
+    const g = globalThis as any;
+    if (!g.__SMD_PROVIDER_HEALTH__) {
+      g.__SMD_PROVIDER_HEALTH__ = new ProviderHealthManager();
     }
-    return ProviderHealthManager.instance;
+    return g.__SMD_PROVIDER_HEALTH__;
   }
 
   private createInitialHealth(provider: ProviderType): ProviderHealth {

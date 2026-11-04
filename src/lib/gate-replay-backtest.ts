@@ -9,7 +9,8 @@
 import * as G from "./agent-brain-gate";
 import { analyzeTf, structureLayer, triggerLayer, suggestLevels, DEFAULT_PARAMS, type Candle } from "./indicators";
 import { analyze, layerForDirection, type NormChain, type Row } from "./option-chain-reader";
-import { impliedVolFromPremium, calculateGreeks, parseExpiryToYears } from "./greeks";
+import { impliedVolFromPremium, calculateGreeks, parseExpiryToYears, isExpiryToday } from "./greeks";
+import { isSameExpiry, toIsoDate } from "./data-layer/chains/option-chain";
 
 const INDEX_SYMBOLS = new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]);
 
@@ -112,7 +113,9 @@ function dirOf(optionType?: string): "call" | "put" | undefined {
 
 /** Group bhavcopy rows for one expiry into a NormChain, with real day-over-day changes. */
 function rowsToChain(rows: BhavcopyRow[], prev: BhavcopyRow[] | undefined, spot: number, symbol: string, expiry?: string): NormChain | null {
-  const pick = (rs: BhavcopyRow[]) => rs.filter((r) => !expiry || String(r.expiry).slice(0, 10) === expiry);
+  // Compare by calendar expiry (ISO / Breeze / dd-mm) — never slice(0,10).
+  const pick = (rs: BhavcopyRow[]) =>
+    rs.filter((r) => !expiry || isSameExpiry(String(r.expiry), expiry));
   const byStrike = (rs: BhavcopyRow[]) => {
     const m = new Map<number, { ce?: BhavcopyRow; pe?: BhavcopyRow }>();
     for (const r of rs) {
@@ -166,12 +169,14 @@ export async function deriveGateInput(trade: ReplayTrade, deps: ReplayDeps): Pro
   if (!Number.isFinite(asOfMs)) return { exclude: "unparseable createdAtIst" };
   const istDateStr = new Date(asOfMs + 5.5 * 3600_000).toISOString().slice(0, 10);
 
-  // Expiry: recorded, else nearest Thursday for index weeklies, else no delta → exclude
-  let expiry = trade.expiry ? String(trade.expiry).slice(0, 10) : undefined;
+  // Expiry: recorded, else nearest Thursday for index weeklies, else no delta → exclude.
+  // Keep the FULL recorded string (Breeze "03-Nov-2026" or ISO) — parseExpiryToYears
+  // and isExpiryToday both handle every format; slice(0,10) used to shred Breeze dates.
+  let expiry = trade.expiry ? String(trade.expiry) : undefined;
   if (!expiry && INDEX_SYMBOLS.has(trade.symbol)) expiry = deriveWeeklyExpiry(istDateStr);
   if (!expiry) return { exclude: "no expiry (recorded or derivable) — cannot compute delta" };
 
-  const isExpiryDay = expiry === istDateStr;
+  const isExpiryDay = isExpiryToday(expiry, new Date(asOfMs));
 
   // Daily candles → structure/trigger/suggestLevels (the new brain's own reads, on 1d)
   const daily = await deps.daily(trade.symbol, asOfMs - 120 * 86_400_000, asOfMs);
@@ -392,7 +397,8 @@ export function makeBhavcopyPairLoader(): ReplayDeps["chainPair"] {
         try { prev = await loadBhavcopyForTrade(p, symbol); } catch { prev = []; }
       }
       const map = (rows: any[]) => rows.map((r) => ({
-        strike: Number(r.strike), optionType: String(r.optionType), expiry: String(r.expiry).slice(0, 10),
+        strike: Number(r.strike), optionType: String(r.optionType),
+        expiry: toIsoDate(String(r.expiry)) || String(r.expiry),
         close: Number(r.close), underlying: r.underlying ?? null, lotSize: Number(r.lotSize) || 0,
         volume: Number(r.volume) || 0, oi: Number(r.oi) || 0,
       }));

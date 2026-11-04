@@ -11,7 +11,7 @@
 //   only exists to keep the 10 legacy routes' response shape stable.
 
 import { getOptionChain as canonicalGetOptionChain } from '@/lib/data-layer/chains/option-chain';
-import { calculateGreeks } from '@/lib/greeks';
+import { calculateGreeks, parseExpiryDateLoose } from '@/lib/greeks';
 import { getAllExpiries, getNearestExpiry } from '@/lib/expiry-calculator';
 import { buildFreshnessMeta } from '@/lib/api-freshness';
 import type { OptionChainData, OptionLeg } from '@/lib/data-layer/types';
@@ -140,8 +140,8 @@ export async function fetchLiveOptionChain(
     getNearestExpiry(symbol)?.date ||
     '';
 
-  // time-to-expiry in years for Black-Scholes
-  const expiryDate = selectedExpiry ? new Date(selectedExpiry) : null;
+  // time-to-expiry in years for Black-Scholes — Breeze/DD-MMM-YYYY/ISO safe
+  const expiryDate = selectedExpiry ? (parseExpiryDateLoose(selectedExpiry) ?? new Date(selectedExpiry)) : null;
   const daysToExpiry = expiryDate && !isNaN(expiryDate.getTime())
     ? Math.max(1, Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000))
     : 7;

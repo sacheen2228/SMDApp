@@ -23,6 +23,8 @@ import {
   type ScannerConfig,
   type ScannerMarketData,
 } from "@/lib/intraday-scanner";
+import { sendTradeAlert } from "@/lib/telegram";
+import { isChainFresh, isPlausibleOptionPlan } from "@/lib/sendIntradayAlerts";
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
@@ -32,6 +34,18 @@ import { getNSEIndiaVIX, getNSEIndexQuote } from "@/lib/nse-api";
 import { getStockQuoteProvenance } from "@/lib/nse-stock-data";
 import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
 import { classifyScannerDataQuality, type DataQuality, type SourceStatus } from "@/lib/scanner-data-quality";
+import { getMOCandles } from "@/lib/motilal/candles";
+import { alertScannerStock, scannerTradeId } from "@/lib/scanner-stock-alerts";
+
+// How many cash-equity setups one scan may alert (the shortlist can hold
+// dozens — a phone cannot be used as a ticker tape).
+const MAX_SCANNER_EQUITY_ALERTS = 3;
+// Score floor for a cash-equity alert — the SAME floor the option path in
+// this route uses (65), so both expressions of one setup are judged alike.
+const MIN_SCANNER_EQUITY_SCORE = 65;
+
+/** IST calendar day — one scanner trade per symbol per day. */
+const ymd = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
 // NIFTY 50 stock symbols for scanning
 const NIFTY50_SYMBOLS = [
@@ -98,7 +112,45 @@ async function buildScannerMarketData(symbols: string[]): Promise<{
         } catch { /* a missing history = no daily context for that name */ }
       }));
     }
-  } catch { /* NSE unavailable → no daily context (honest) */ }
+    } catch { /* NSE unavailable → no daily context (honest) */ }
+
+  // ── MOapi daily candles (fallback when NSE historical returns 403) ──────
+  // MO exposes EOD equity spot daily bars via /rest/report/v3/geteoddatabyexchangename.
+  // Not available for index symbols (capability skip — throws fast, no network).
+  let moDailyAdded = false;
+  try {
+    const moSymbols = symbols.filter((sym) => !dailyCandles.has(sym));
+    if (moSymbols.length) {
+      const MO_CONCURRENCY = 6;
+      const MO_DEADLINE = Date.now() + 20_000;
+      for (let i = 0; i < moSymbols.length && Date.now() < MO_DEADLINE; i += MO_CONCURRENCY) {
+        const batch = moSymbols.slice(i, i + MO_CONCURRENCY);
+        await Promise.allSettled(batch.map(async (sym) => {
+          try {
+            const candles = await getMOCandles(sym);
+            if (!candles || candles.length < 20) return;
+            const mapped = candles.map((c: any) => {
+              const t = Date.parse(c.time);
+              const o = Number(c.open);
+              const h = Number(c.high);
+              const l = Number(c.low);
+              const cl = Number(c.close);
+              const v = Number(c.volume || 0);
+              if (!Number.isFinite(t) || !Number.isFinite(o) || !Number.isFinite(cl)) return null;
+              return { time: t, open: o, high: Number.isFinite(h) ? h : cl, low: Number.isFinite(l) ? l : cl, close: cl, volume: Number.isFinite(v) ? v : 0 };
+            }).filter(Boolean).sort((a: any, b: any) => a.time - b.time);
+            if (mapped.length >= 20) {
+              dailyCandles.set(sym, mapped as any);
+              dailyHistoryCache.set(sym, { at: Date.now(), bars: mapped as any });
+              moDailyAdded = true;
+            }
+          } catch { /* MO capability skip / auth error / no rows → honest gap */ }
+        }));
+      }
+    }
+  } catch { /* MOapi unavailable → no daily context */ }
+  if (moDailyAdded) sources.daily = "motilal";
+
   try {
     const { fetchFreeNSEQuotes } = await import("@/lib/nse-stock-data");
     const free = await fetchFreeNSEQuotes(symbols);
@@ -455,6 +507,83 @@ export async function GET(request: NextRequest) {
       console.warn("[Scanner] Trade Audit signal recording skipped:", recErr);
     }
 
+    // ── Scanner option-trade Telegram alerts (live=true) ────────────────
+    // The Scanner tab fetches /api/scanner directly (client side) and never
+    // alerted. When called with ?live=true (the cron path), high-confidence
+    // option trades are pushed through sendTradeAlert — the same centralized
+    // funnel (veto + risk limits + full-day dedup + short-term throttle +
+    // calibrated confidence) used by SDM, agent and Zero-Hero alerts.
+    let equityAlerts = 0;
+    if (searchParams.get("live") === "true" && result.candidates) {
+      const dataQualityOk = dataQuality === "LIVE";
+      const nowMs = Date.now();
+
+      // ── Scanner STOCK (cash equity) alerts ────────────────────────────
+      // The scanner finds stock setups, but only the OPTION expression was
+      // ever alerted — the cash-equity pick (entry/SL/TP on the stock) never
+      // reached Telegram and was never registered, so no TP/SL hit could be
+      // reported. Same funnel; the trade is registered with the tracker so
+      // the TIGER monitor sends the TP_HIT / SL_HIT card.
+      if (dataQualityOk) {
+        for (const stock of result.candidates) {
+          if (equityAlerts >= MAX_SCANNER_EQUITY_ALERTS) break;
+          if (stock.direction !== "BULLISH") continue;
+          if ((stock.totalScore ?? 0) < MIN_SCANNER_EQUITY_SCORE) continue;
+          // Same unified-decision gate as the option path below.
+          const equityUnifiedOk = (stock as any).unifiedDecision === "TRADE" || (stock as any).hardGatesPassed === true;
+          if (!equityUnifiedOk) continue;
+          const sent = await alertScannerStock({
+            symbol: stock.symbol,
+            name: stock.name,
+            side: "BUY",
+            entry: stock.entry,
+            stopLoss: stock.stopLoss,
+            target1: stock.target1,
+            target2: stock.target2,
+            spot: stock.currentPrice,
+            confidence: stock.totalScore ?? 0,
+            source: "intraday-scanner",
+            tradeId: scannerTradeId("intraday-scanner", stock.symbol, ymd),
+            reason: stock.technicalSummary,
+          }).catch(() => false);
+          if (sent) equityAlerts++;
+        }
+      }
+
+      for (const stock of result.candidates) {
+        const opt = stock.monthlyOptionTrade;
+        if (!opt || !(opt.premium > 0)) continue;
+        if ((stock.totalScore ?? 0) < 65) continue;
+        if (!dataQualityOk) continue;
+        const unifiedOk = stock.unifiedDecision === "TRADE" || stock.hardGatesPassed === true;
+        if (!unifiedOk) continue;
+        const risk = opt.premium - Number(opt.stopLoss || 0);
+        const reward = (opt.targets?.[0] ?? 0) - opt.premium;
+        const rr = risk > 0 && reward > 0 ? reward / risk : 0;
+        if (rr < 1.5) continue;
+        if (!isChainFresh((opt as any)?.chainAsOf)) continue;
+        if (!isPlausibleOptionPlan(stock, opt)) continue;
+
+        await sendTradeAlert({
+          symbol: stock.symbol,
+          action: "BUY",
+          strike: opt.strike,
+          type: opt.optionType,
+          confidence: stock.totalScore ?? 0,
+          entry: opt.premium,
+          stopLoss: opt.stopLoss,
+          target1: opt.targets?.[0] ?? 0,
+          target2: opt.targets?.[1] ?? 0,
+          source: "stock-scanner",
+          spot: stock.currentPrice,
+          expiry: opt.expiry,
+          requireExpiry: true,
+          requireSpot: true,
+          nowMs,
+        }).catch(() => {});
+      }
+    }
+
     return NextResponse.json({
       success: true,
       status: dataQuality,
@@ -463,6 +592,10 @@ export async function GET(request: NextRequest) {
       // `meta` carries the provenance of every input behind the scan.
       meta: cardMeta,
       dataQuality,
+      // Cash-equity alerts actually delivered by this scan (the equity
+      // expression of a scanner setup — registered with the tracker so the
+      // TIGER monitor can report its TP/SL hits).
+      equityAlerts,
       liveQuotesCount: (result.candidates || []).length,
       dataSource,
       dataSources: {

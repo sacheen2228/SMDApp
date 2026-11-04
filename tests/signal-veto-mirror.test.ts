@@ -143,9 +143,14 @@ describe("veto — the other hard gates did not move", () => {
     expect(evaluateSignalVeto({ ...MIRRORED_PE, entry: undefined }).verdict).toBe("BLOCK");
   });
 
-  test("expiry-day index option still blocks", () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", expiry: today });
+  test("expiry-day index option still blocks (ISO)", () => {
+    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", expiry: "2026-07-15" });
+    expect(r.verdict).toBe("BLOCK");
+    expect(r.reasons.join(" ")).toMatch(/expiry-day/);
+  });
+
+  test("expiry-day index option still blocks (Breeze DD-MMM-YYYY)", () => {
+    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", expiry: "15-Jul-2026" });
     expect(r.verdict).toBe("BLOCK");
     expect(r.reasons.join(" ")).toMatch(/expiry-day/);
   });

@@ -9,6 +9,7 @@ import {
   toIsoDate,
   toNseExpiry,
 } from '@/lib/data-layer/chains/option-chain';
+import { setExchangeExpiries } from '@/lib/expiry-calculator';
 
 let nseClient: NSEClient | null = null;
 
@@ -17,6 +18,27 @@ function getNSEClient(): NSEClient {
     nseClient = new NSEClient('./downloads', { timeout: 15000 });
   }
   return nseClient;
+}
+
+/**
+ * The expiry list the exchange actually serves, cached in the expiry
+ * calculator so every consumer (Zero Hero, scanners, the agent) asks for a
+ * contract that exists.
+ *
+ * SERVER-SIDE ONLY: expiry-calculator.ts is imported by client components,
+ * so the network call lives HERE, never in the calculator.
+ */
+export async function refreshNSEExpiryList(symbol: string): Promise<string[] | null> {
+  try {
+    const client: any = getNSEClient();
+    const info = await client.options.getOptionChainContractInfo(symbol.toUpperCase());
+    const dates: string[] = Array.isArray(info?.expiryDates) ? info.expiryDates : [];
+    if (!dates.length) return null;
+    setExchangeExpiries(symbol, dates);
+    return dates;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -6,7 +6,7 @@
 // V2 FIX: Added data validation, directional consistency, hard quality gates,
 // and expiry/market-closed protection to prevent false signals.
 
-import { calculateGreeks } from '@/lib/greeks';
+import { calculateGreeks, parseExpiryDateLoose } from '@/lib/greeks';
 import { isExpiryDay, getNearestExpiry } from '@/lib/expiry-calculator';
 
 // ─── Data Validation ────────────────────────────────────────────────
@@ -941,7 +941,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   const today = new Date();
   let daysToExpiry = 7;
   if (expiryDate) {
-    const exp = new Date(expiryDate);
+    const exp = parseExpiryDateLoose(expiryDate) ?? new Date(expiryDate);
     daysToExpiry = Math.max(0, Math.ceil((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
   }
   const timeToExpiry = daysToExpiry / 365;

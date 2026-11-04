@@ -89,6 +89,10 @@ class Config(object):
         self.instrument_ttl = _int(env, "MOAPI_INSTRUMENT_TTL_SECONDS",
                                    _int(env, "MOAPI_INSTRUMENT_TTL", 6 * 3600))
         self.request_timeout = _int(env, "MOAPI_REQUEST_TIMEOUT", 25)
+        # NSEFO's GetInstrumentFile is ~83k rows and takes ~28s on a good
+        # connection — the 25s request timeout used to abandon it mid-flight
+        # and the loader then cached a BSEFO-only master (NIFTY never found).
+        self.instrument_timeout = _int(env, "MOAPI_INSTRUMENT_TIMEOUT", 90)
         self.login_timeout = _int(env, "MOAPI_LOGIN_TIMEOUT", 30)
         # The websocket broadcast feed is OPTIONAL and OFF by default: the
         # service must work with the REST endpoints alone. `MOAPI_WEBSOCKET=1`
@@ -130,6 +134,7 @@ class Config(object):
             "dry_run": self.dry_run,
             "instrument_ttl_s": self.instrument_ttl,
             "request_timeout_s": self.request_timeout,
+            "instrument_timeout_s": self.instrument_timeout,
             "credentials_present": self.has_credentials,
             "totp_key_present": bool(self.totp_key),
             "vendor_id_present": bool(self.vendor_id),

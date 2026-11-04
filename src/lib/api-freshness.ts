@@ -24,6 +24,8 @@ const PROVIDER_RELIABILITY: Record<string, number> = {
   "nse-api": 0.85,
   "bse-api": 0.80,
   "mrchartist": 0.65,
+  // NSE primary + MrChartist fallback (see fii-dii.ts)
+  "fii-dii": 0.65,
   "simulation": 0.0,
 };
 

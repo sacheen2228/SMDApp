@@ -1780,7 +1780,7 @@ ${changes.join("\n")}`;
     case "send_telegram_signal": {
       try {
         const { sendTradeAlert } = await import("./telegram");
-        const { action, strike, optionType, confidence, entry, stopLoss, target1, target2 } = args;
+        const { action, strike, optionType, confidence, entry, stopLoss, target1, target2, expiry, spot } = args;
         if (!action || !strike || !optionType) return "Missing required params: action, strike, optionType";
         const sent = await sendTradeAlert({
           symbol,
@@ -1794,6 +1794,10 @@ ${changes.join("\n")}`;
           target2: target2 ? Number(target2) : undefined,
           source: "Hermes Agent",
           instrument: optionType === 'PE' ? 'PUT' : 'CALL',
+          // Pass through when the tool caller supplied them — enables the
+          // expiry-day hard gate and delta/OTM checks (was always skipped).
+          expiry: expiry ? String(expiry) : undefined,
+          spot: spot ? Number(spot) : undefined,
         });
         return sent ? `Signal sent to Telegram: ${symbol} ${action} ${strike} ${optionType} (${confidence}%)` : "Failed to send signal — check Telegram config or dedup";
       } catch { return "Error sending Telegram signal"; }

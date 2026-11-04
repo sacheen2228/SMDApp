@@ -256,6 +256,69 @@ export function parseExpiryToYears(expiry: string, now: Date = new Date()): numb
   return Math.max(days, 0.5) / 365;
 }
 
+const IST_OFFSET_MS = 5.5 * 3600_000;
+
+/** IST calendar day (YYYY-MM-DD) of a timestamp. */
+function istYmd(ms: number): string {
+  return new Date(ms + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * True when `expiry` falls on the same IST calendar day as `now`.
+ *
+ * THE BUG THIS REPLACED: production expiry strings are Breeze/NSE format
+ * ("03-Nov-2026"). Comparing `String(expiry).slice(0, 10) === todayISO` put
+ * "03-Nov-202" against "2026-11-03" — the expiry-day hard gate NEVER fired
+ * for real trades. Parse first (ISO / DD-MMM-YYYY / dd-mm-yyyy), then compare
+ * IST days. Unparseable → false (same as the old silent miss; fail-closed
+ * would block unknown formats without a proven need).
+ *
+ * Respects `now` so tests and replays can pin the clock.
+ */
+export function isExpiryToday(expiry: string | null | undefined, now: Date | number = new Date()): boolean {
+  if (!expiry) return false;
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(nowMs)) return false;
+  const d = parseExpiryDate(String(expiry), new Date(nowMs));
+  if (!d) return false;
+  return istYmd(d.getTime()) === istYmd(nowMs);
+}
+
+/**
+ * Parse an expiry for DAYS-TO-EXPIRY / calendar math — same formats as
+ * parseExpiryDate but WITHOUT the 12h "already expired" gate (a past expiry
+ * still needs a real date so daysToExpiry can go negative/0 honestly).
+ * Returns null only when the string is unparseable.
+ */
+export function parseExpiryDateLoose(expiry: string | null | undefined, now: Date = new Date()): Date | null {
+  if (!expiry || typeof expiry !== "string") return null;
+  const s = expiry.trim();
+  let d: Date | null = null;
+  let m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3,9})[-/ ](\d{2,4})$/);
+  if (m) {
+    const mon = MONTHS[m[2].slice(0, 3).toLowerCase()];
+    if (mon !== undefined) {
+      const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+      d = new Date(Date.UTC(year, mon, Number(m[1]), 10, 0, 0)); // 15:30 IST
+    }
+  }
+  if (!d) {
+    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/); // dd-mm-yyyy
+    if (m) d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 10, 0, 0));
+  }
+  if (!d) {
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); // ISO
+    if (m) d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 10, 0, 0));
+  }
+  if (!d || isNaN(d.getTime())) return null;
+  // If still null-ish, last-ditch native parse (covers exotic labels).
+  if (!d) {
+    const n = new Date(s);
+    d = isNaN(n.getTime()) ? null : n;
+  }
+  return d;
+}
+
 /** ₹0.05 tick rounding for premium display/levels. */
 export const roundPremium = (x: number) => Math.round(x * 20) / 20;
 

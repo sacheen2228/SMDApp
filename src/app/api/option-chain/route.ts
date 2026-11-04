@@ -6,7 +6,7 @@ import { getOptionChain, getOptionChainExpiries } from '@/lib/icici-breeze/optio
 import { initSession } from '@/lib/icici-breeze/auth';
 import { runFullAnalysis } from '@/lib/sdm-engine';
 import { validateAndSanitize } from '@/lib/data-validation';
-import { calculateGreeks, getGreeksAssumptions } from '@/lib/greeks';
+import { calculateGreeks, getGreeksAssumptions, parseExpiryDateLoose } from '@/lib/greeks';
 import { normalizeOptionChain } from '@/lib/data-layer';
 import {
   EXPIRY_UNAVAILABLE,
@@ -26,6 +26,7 @@ import { getTradingSession } from '@/lib/expiry-liquidity/market-session-config'
 import { providerHealth } from '@/lib/provider-health';
 import { getCurrentSession } from '@/lib/market-session';
 import { isPlausibleOptionSymbol } from '@/lib/stockUniverse';
+import { setExchangeExpiries } from '@/lib/expiry-calculator';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -250,6 +251,10 @@ export async function GET(request: NextRequest) {
         if (nseData?.records?.data) {
           // Which contract is this payload for? (the provider stamps it)
           const nseExpiries: string[] = Array.isArray(nseData.records.expiryDates) ? nseData.records.expiryDates : [];
+          // The exchange's list is the authority on which contracts exist.
+          // Cache it so every downstream consumer (expiry calculator, Zero
+          // Hero, scanners) asks for a date the exchange actually serves.
+          if (nseExpiries.length) setExchangeExpiries(symbol, nseExpiries);
           const nseEffective: string =
             nseData.records.selectedExpiry ||
             (nseData.records.data ?? []).find((r: any) => r?.expiryDates)?.expiryDates ||
@@ -320,6 +325,8 @@ export async function GET(request: NextRequest) {
       try {
         const { getBSEOptionChain, getBSEExpiryDates } = await import('@/lib/bse-api');
         const bseExpiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
+        // Same as NSE: the exchange list wins over any hardcoded weekday rule.
+        if (bseExpiries.length) setExchangeExpiries(symbol, bseExpiries);
         // The requested contract when it exists, else the nearest contract
         // that is still trading (BSE's own list already drops past expiries,
         // but the expiry-day cut-off is applied here too).
@@ -395,7 +402,9 @@ export async function GET(request: NextRequest) {
       const { getMotilalOptionChain } = await import('@/lib/motilal-option-chain');
       const motilalChain = await Promise.race([
         getMotilalOptionChain(symbol, requestedExpiryIso ?? undefined),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 6000))
+        // Fallback rung only runs after NSE/BSE already failed — give the
+        // local MOAPI service room for instruments + bulk LTP (~5s typical).
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('MOAPI_TIMEOUT')), 10000))
       ]);
       if (motilalChain?.data?.length) {
         chainData = {
@@ -724,7 +733,8 @@ export async function GET(request: NextRequest) {
     // happens to be first: the exchange lists the just-expired contract first).
     const selectedExpiry = effectiveExpiry || chainData.selectedExpiry || chainData.expiry || '';
     const now = new Date();
-    const expiryDate = new Date(selectedExpiry);
+    // Breeze/NSE format ("03-Nov-2026") — never new Date() alone
+    const expiryDate = parseExpiryDateLoose(selectedExpiry, now) ?? new Date(selectedExpiry);
     const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
     const tte = daysToExpiry / 365; // time to expiry in years
 
@@ -893,13 +903,14 @@ export async function GET(request: NextRequest) {
       const { isFallingMarket } = await import("@/lib/technical-analysis");
       const peFallingOk = !isPut || isFallingMarket(candles5m, spotPrice).falling;
       if (isTradeAction && hasConfidence && entryOk && levelsOk && sessGate.allowed && peFallingOk) {
-        const { getActiveTrades, addTrade } = await import('@/lib/activeTradeTracker');
-        const tradeSig = `${symbol}|${rec.strike || analysis.atmStrike || spotPrice}|${rec.optionType || ''}|${rec.action}`;
-        const alreadyActive = getActiveTrades().some(t =>
-          t.symbol === symbol && t.strike === (rec.strike || analysis.atmStrike || spotPrice)
-        );
+        const { getMonitoredTrades, addTrade } = await import('@/lib/activeTradeTracker');
+        // ONE position per underlying (matches the trade lock). Strike-based
+        // dedup let ATM drift re-fire and — because addTrade used to run even
+        // when sendTradeAlert was RISK-BLOCKED — pile phantom ACTIVE rows that
+        // permanently tripped the open-deployment budget.
+        const alreadyActive = getMonitoredTrades().some(t => t.symbol === symbol);
         if (!alreadyActive) {
-          sendTradeAlert({
+          const sent = await sendTradeAlert({
             symbol,
             action: rec.action,
             strike: rec.strike || analysis.atmStrike || spotPrice,
@@ -911,8 +922,24 @@ export async function GET(request: NextRequest) {
             target2: rec.tp2,
             source: `📊 SDM Analysis (${source})`,
             instrument: rec.optionType === 'PE' ? 'PUT' : 'CALL',
-          }).then(() => {
-            addTrade({
+            expiry: selectedExpiry || undefined,
+            spot: spotPrice || undefined,
+          });
+          // Only register a position the alert funnel actually accepted.
+          // sendTradeAlert resolves false on VETO/RISK/dedup/window — never
+          // treat a blocked candidate as an open trade.
+          if (sent) {
+            // Persist the REAL journal fields — confidence/risk/size/spot were
+            // omitted before, so every Trade row from this path stored 0/0/0
+            // and calibration + open-exposure estimates were blind.
+            const { positionSize } = await import("@/lib/agent-brain-gate");
+            const { getLotSizeStrict } = await import("@/lib/symbol-config");
+            const lotSize = getLotSizeStrict(symbol) ?? 0;
+            const ps = lotSize > 0 && entryPx > 0 && slPx > 0
+              ? positionSize({ entry: entryPx, sl: slPx, lotSize })
+              : null;
+            const conf = rec.confidence || rec.sdmScore || 0;
+            await addTrade({
               id: `api-${Date.now()}`,
               symbol,
               side: 'BUY' as const, // option-chain route is options-only
@@ -927,8 +954,12 @@ export async function GET(request: NextRequest) {
               sentAt: new Date().toISOString(),
               source: `option-chain-api`,
               expiry: selectedExpiry || undefined,
+              confidence: conf,
+              spotPrice: spotPrice || undefined,
+              positionSize: ps?.lots ?? 0,
+              riskPerTrade: ps?.maxLoss ?? 0,
             }, true); // skipAlert=true — sendTradeAlert already sent above
-          }).catch(() => {});
+          }
         }
       } else if (isTradeAction && hasConfidence) {
         console.log(`[option-chain] Signal skipped: entryOk=${entryOk} levelsOk=${levelsOk} session=${sessGate.allowed ? "ok" : sessGate.reason} conf=${rec.confidence || rec.sdmScore}`);

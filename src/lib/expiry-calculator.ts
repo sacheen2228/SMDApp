@@ -1,15 +1,30 @@
 // Expiry Date Calculator
-// Computes weekly and monthly expiry dates per SEBI rules:
-//   NIFTY:      Weekly = every Tuesday,    Monthly = last Tuesday
-//   BANKNIFTY:  Weekly = every Thursday,   Monthly = last Thursday
-//   FINNIFTY:   Weekly = every Tuesday,    Monthly = last Tuesday
-//   MIDCPNIFTY: Weekly = every Wednesday,  Monthly = last Wednesday
-//   NIFTYNXT50: Weekly = every Tuesday,    Monthly = last Tuesday
-//   SENSEX:     Weekly = every Thursday,   Monthly = last Thursday
-//   BANKEX:     Weekly = every Thursday,   Monthly = last Thursday
-//   F&O Equity: Weekly = per-stock weekday, Monthly = last weekday of month
-//   NSE Equity: Monthly = last Tuesday
-//   BSE Equity: Monthly = last Thursday
+// Computes weekly and monthly expiry dates per the CURRENT SEBI rules and the
+// contracts the exchanges actually list.
+//
+// LIVE-VERIFIED CALENDAR (NSE contract-info + BSE chain, checked 2026-11-04):
+//   NIFTY:      Weekly = Tuesday,            Monthly = last Tuesday
+//   NIFTYNXT50: Weekly = Tuesday,            Monthly = last Tuesday
+//   BANKNIFTY:  Monthly only = last Tuesday  (weekly discontinued, Sep-2025)
+//   FINNIFTY:   Monthly only = last Tuesday  (weekly discontinued)
+//   MIDCPNIFTY: Monthly only = last Tuesday  (weekly discontinued)
+//   SENSEX:     Weekly = Thursday,           Monthly = last Thursday
+//   BANKEX:     Monthly only = last Thursday (BSE weekly = SENSEX only)
+//   NSE equity: Monthly = last Tuesday       (e.g. RELIANCE: 23-Nov-2026)
+//   BSE equity: Monthly = last Thursday
+//
+// TWO FACTS THAT BREAK A HARDCODED WEEKDAY RULE:
+//   1. An expiry that lands on an exchange holiday moves to the PREVIOUS
+//      trading day — e.g. NSE's Oct/Nov-2026 monthlies are published as
+//      23-Nov-2026 (Monday), not 24-Nov (Tuesday), and 25-Jan-2027, not
+//      26-Jan (Republic Day). The published list is the authority.
+//   2. The exchange publishes only the contracts it serves (the nearest
+//      weeklies + the monthlies). A date that is not in that list is not a
+//      tradable contract — asking for it returns EXPIRY_UNAVAILABLE.
+//
+// Therefore: the EXCHANGE LIST WINS whenever it is known (cached from the
+// live chain fetch); the weekday rules below are the fallback only.
+//
 // Holiday shift → previous trading day
 
 import { getLotSizeStrict } from '@/lib/symbol-config';
@@ -53,7 +68,7 @@ export function getStandardizedExpiry(symbol: string, referenceDate: Date = new 
   const nearest = getNearestExpiry(symbol);
   if (!nearest) return null;
 
-  const exchange: 'NSE' | 'BSE' = BSE_INSTRUMENTS.has(symbol) ? 'BSE' : 'NSE';
+  const exchange: 'NSE' | 'BSE' = BSE_INSTRUMENTS.has(symbol.toUpperCase()) ? 'BSE' : 'NSE';
   // The REAL contract lot — null when it is not known (never a guess).
   const lotSize = getLotSizeStrict(symbol);
   const type = nearest.type; // 'weekly' | 'monthly'
@@ -63,7 +78,6 @@ export function getStandardizedExpiry(symbol: string, referenceDate: Date = new 
   const isQuarterly = type === 'monthly' && (nearest.dateObj.getMonth() + 1) % 3 === 0;
   const expiryType: StandardizedExpiry['expiry_type'] = isQuarterly ? 'QUARTERLY' : type === 'monthly' ? 'MONTHLY' : 'WEEKLY';
 
-  const today = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
   const expLocal = new Date(nearest.dateObj.getFullYear(), nearest.dateObj.getMonth(), nearest.dateObj.getDate());
   const yyyy = expLocal.getFullYear();
   const mm = String(expLocal.getMonth() + 1).padStart(2, '0');
@@ -97,36 +111,39 @@ export interface ExpiryInfo {
   label: string;
 }
 
-// Per-symbol weekly expiry weekday (0=Sun ... 6=Sat)
-// Index F&O weekly expiries after the Jul-2025 SEBI revision
-const FNO_WEEKLY_WEEKDAY: Record<string, 0 | 1 | 2 | 3 | 4 | 5 | 6> = {
-  NIFTY: 2,
-  FINNIFTY: 2,
-  NIFTYNXT50: 2,
-  BANKNIFTY: 4,
-  SENSEX: 4,
-  BANKEX: 4,
-  MIDCPNIFTY: 3,
+// ─── The expiry calendar per symbol ───────────────────────────────
+// weeklyWeekday: null → the symbol has NO weekly contracts.
+// monthlyWeekday: the weekday of the MONTHLY expiry (the last such weekday
+// of the month), shifted back to the previous trading day on a holiday.
+interface ExpiryCalendar {
+  weeklyWeekday: number | null;
+  monthlyWeekday: number;
+}
+
+const TUESDAY = 2;
+const THURSDAY = 4;
+
+const EXPIRY_CALENDAR: Record<string, ExpiryCalendar> = {
+  NIFTY:      { weeklyWeekday: TUESDAY, monthlyWeekday: TUESDAY },
+  NIFTYNXT50: { weeklyWeekday: TUESDAY, monthlyWeekday: TUESDAY },
+  BANKNIFTY:  { weeklyWeekday: null,      monthlyWeekday: TUESDAY },
+  FINNIFTY:   { weeklyWeekday: null,      monthlyWeekday: TUESDAY },
+  MIDCPNIFTY: { weeklyWeekday: null,      monthlyWeekday: TUESDAY },
+  SENSEX:     { weeklyWeekday: THURSDAY, monthlyWeekday: THURSDAY },
+  BANKEX:     { weeklyWeekday: null,      monthlyWeekday: THURSDAY },
 };
 
-// F&O equity stocks — weekly expiry weekday (subset; extend as needed)
-const FNO_EQUITY_WEEKDAY: Record<string, 0 | 1 | 2 | 3 | 4 | 5 | 6> = {
-  RELIANCE: 4,
-  TCS: 4,
-  INFY: 4,
-  HDFCBANK: 4,
-  ICICIBANK: 4,
-  SBIN: 4,
-  BHARTIARTL: 4,
-  ITC: 4,
-  KOTAKBANK: 4,
-  LT: 4,
-};
+// F&O equity stocks — MONTHLY only (weekly expiries exist for indices only).
+// NSE stock monthlies are the last Tuesday; BSE stock monthlies the last Thursday.
+const FNO_EQUITY_SYMBOLS = new Set([
+  'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN',
+  'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT',
+]);
 
 // All symbols that have F&O (options) contracts
 const FNO_SYMBOLS = new Set([
-  ...Object.keys(FNO_WEEKLY_WEEKDAY),
-  ...Object.keys(FNO_EQUITY_WEEKDAY),
+  ...Object.keys(EXPIRY_CALENDAR),
+  ...FNO_EQUITY_SYMBOLS,
 ]);
 
 // ─── Is a symbol F&O (has weekly/monthly options)? ────────────────
@@ -136,7 +153,7 @@ export function isFNO(symbol: string): boolean {
 
 // ─── Is a symbol an index? ────────────────────────────────────────
 export function isIndex(symbol: string): boolean {
-  return Object.keys(FNO_WEEKLY_WEEKDAY).includes(symbol.toUpperCase());
+  return Object.keys(EXPIRY_CALENDAR).includes(symbol.toUpperCase());
 }
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -157,7 +174,19 @@ function daysBetween(a: Date, b: Date): number {
   return Math.ceil((b.getTime() - a.getTime()) / msPerDay);
 }
 
-// Known NSE/BSE trading holidays 2025-2026 (subset — extend as needed)
+/** Local (server/IST) calendar date as YYYY-MM-DD. */
+function toLocalIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+// Known NSE/BSE trading holidays 2025-2027 (subset — extend as needed).
+// The 2026-11-10 / 2026-11-24 / 2027-01-26 entries are OBSERVED from the
+// exchange's own contract list: NSE publishes the Oct/Nov-2026 monthly as
+// 23-Nov-2026 and the Jan-2027 monthly as 25-Jan-2027 — i.e. those Tuesdays
+// are non-trading days and the expiry sits on the previous trading day.
 const NSE_HOLIDAYS = new Set([
   // 2025
   '2025-01-26', '2025-03-14', '2025-03-31', '2025-04-10', '2025-04-14',
@@ -165,12 +194,17 @@ const NSE_HOLIDAYS = new Set([
   '2025-10-21', '2025-10-22', '2025-11-05', '2025-12-25',
   // 2026
   '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
+  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-10',
+  '2026-11-24', '2026-12-25',
+  // 2027
+  '2027-01-26', '2027-03-06', '2027-04-14', '2027-08-15', '2027-10-02', '2027-12-25',
 ]);
 
 function isHoliday(d: Date): boolean {
-  const iso = d.toISOString().split('T')[0];
-  return NSE_HOLIDAYS.has(iso);
+  // LOCAL calendar date. toISOString() is UTC — on an IST server a local
+  // midnight Date is 18:30 UTC the PREVIOUS day, so the UTC form checked
+  // the wrong date (every holiday lookup was off by one day).
+  return NSE_HOLIDAYS.has(toLocalIsoDate(d));
 }
 
 function isWeekend(d: Date): boolean {
@@ -191,17 +225,108 @@ function shiftToPrevTradingDay(d: Date): Date {
   return result;
 }
 
+// ─── Exchange expiry list — THE authority ─────────────────────────
+// The exchanges publish the contracts they actually serve. The list is cached
+// when a live chain is fetched (the option-chain route pushes it here), and a
+// direct refresh can be triggered for any symbol.
+const EXCHANGE_EXPIRY_CACHE = new Map<string, { dates: string[]; ts: number }>();
+const EXCHANGE_EXPIRY_TTL_MS = 10 * 60 * 1000;
+
+/** Record the expiry dates the exchange just served for this symbol. */
+export function setExchangeExpiries(symbol: string, dates: string[]): void {
+  const clean = (dates || [])
+    .map((d) => String(d || '').trim())
+    .filter((d) => d && parseExchangeDate(d) !== null);
+  if (!clean.length) return;
+  EXCHANGE_EXPIRY_CACHE.set(symbol.toUpperCase(), { dates: clean, ts: Date.now() });
+}
+
+/** The cached exchange list (fresh only) — null when unknown/stale. */
+export function getCachedExchangeExpiries(symbol: string): string[] | null {
+  const hit = EXCHANGE_EXPIRY_CACHE.get(symbol.toUpperCase());
+  if (!hit) return null;
+  if (Date.now() - hit.ts > EXCHANGE_EXPIRY_TTL_MS) return null;
+  return hit.dates;
+}
+
+/**
+ * NOTE: no network call lives in this module. It is imported by client
+ * components (ZeroHeroTerminal), so a Node-only SDK import here breaks the
+ * browser bundle. The exchange list is refreshed SERVER-side by
+ * `refreshNSEExpiryList()` in src/lib/nse-api.ts, which calls
+ * `setExchangeExpiries()` here.
+ */
+
+/** Parse "09-Nov-2026" / "09 Nov 2026" / "2026-11-09" into a local Date. */
+function parseExchangeDate(raw: string): Date | null {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  m = /^(\d{1,2})[-\s/]([A-Za-z]{3,9})[-\s/](\d{4})$/.exec(s);
+  if (m) {
+    const mon = MONTHS_SHORT.findIndex((x) => x.toLowerCase() === m![2].slice(0, 3).toLowerCase());
+    if (mon < 0) return null;
+    return new Date(+m[3], mon, +m[1]);
+  }
+  return null;
+}
+
+/**
+ * Turn the exchange list into ExpiryInfo.
+ * The MONTHLY contract is the LAST expiry of its calendar month (the monthly
+ * expiry is always the last weekly of the month — the same contract).
+ */
+function classifyExchangeList(symbol: string, dates: string[]): ExpiryInfo[] {
+  const today = localToday();
+  const parsed = dates
+    .map((d) => ({ raw: d, obj: parseExchangeDate(d) }))
+    .filter((p): p is { raw: string; obj: Date } => p.obj !== null)
+    .sort((a, b) => a.obj.getTime() - b.obj.getTime());
+
+  const lastIndexOfMonth = new Map<string, number>();
+  parsed.forEach((p, i) => {
+    lastIndexOfMonth.set(`${p.obj.getFullYear()}-${p.obj.getMonth()}`, i);
+  });
+
+  return parsed.map((p, i) => {
+    const key = `${p.obj.getFullYear()}-${p.obj.getMonth()}`;
+    const type: ExpiryType = lastIndexOfMonth.get(key) === i ? 'monthly' : 'weekly';
+    return {
+      date: toBreezeDate(p.obj),
+      dateObj: p.obj,
+      type,
+      daysToExpiry: daysBetween(today, p.obj),
+      label: toLabel(p.obj),
+    };
+  });
+}
+
+function localToday(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
 // ─── Get expiry weekday for a symbol ──────────────────────────────
-function getExpiryWeekday(symbol: string): 1 | 2 | 3 | 4 | 5 {
+function getCalendar(symbol: string): ExpiryCalendar {
   const sym = symbol.toUpperCase();
-  const wd = FNO_WEEKLY_WEEKDAY[sym] ?? FNO_EQUITY_WEEKDAY[sym];
-  if (wd != null && wd >= 1 && wd <= 5) return wd as 1 | 2 | 3 | 4 | 5;
-  // Default: Tuesday for other NSE equities, Thursday for BSE
-  return sym === 'SENSEX' || sym === 'BANKEX' ? 4 : 2;
+  const known = EXPIRY_CALENDAR[sym];
+  if (known) return known;
+  // NSE F&O equity (monthly only) → last Tuesday. BSE equity → last Thursday.
+  if (BSE_INSTRUMENTS.has(sym)) return { weeklyWeekday: null, monthlyWeekday: THURSDAY };
+  return { weeklyWeekday: null, monthlyWeekday: TUESDAY };
+}
+
+function getWeeklyWeekday(symbol: string): number | null {
+  return getCalendar(symbol).weeklyWeekday;
+}
+
+function getMonthlyWeekday(symbol: string): number {
+  return getCalendar(symbol).monthlyWeekday;
 }
 
 // ─── Find the Nth occurrence of a weekday in a month ──────────────
-function nthWeekdayOfMonth(year: number, month: number, weekday: 1 | 2 | 3 | 4 | 5, n: number): Date | null {
+function nthWeekdayOfMonth(year: number, month: number, weekday: number, n: number): Date | null {
   const d = new Date(year, month, 1);
   // Find first occurrence of weekday
   while (d.getDay() !== weekday) {
@@ -215,7 +340,7 @@ function nthWeekdayOfMonth(year: number, month: number, weekday: 1 | 2 | 3 | 4 |
 }
 
 // ─── Find last occurrence of a weekday in a month ─────────────────
-function lastWeekdayOfMonth(year: number, month: number, weekday: 1 | 2 | 3 | 4 | 5): Date {
+function lastWeekdayOfMonth(year: number, month: number, weekday: number): Date {
   const d = new Date(year, month + 1, 0); // last day of month
   while (d.getDay() !== weekday) {
     d.setDate(d.getDate() - 1);
@@ -225,20 +350,22 @@ function lastWeekdayOfMonth(year: number, month: number, weekday: 1 | 2 | 3 | 4 
 
 // ─── Generate next N weekly expiry dates ──────────────────────────
 // Weekly expiries exist for INDICES only — stock F&O is monthly-only.
-// FNO_EQUITY_WEEKDAY keeps a legacy Thursday mapping for isFNO membership;
-// using it here made every Thursday look like a RELIANCE/TCS expiry
-// (date-bomb surfaced live 2026-10-01 by the safety-guards suite).
 export function getWeeklyExpiries(symbol: string, count: number = 10): ExpiryInfo[] {
-  if (!isIndex(symbol)) return [];
-  const weekday = getExpiryWeekday(symbol);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const exchange = getCachedExchangeExpiries(symbol);
+  if (exchange && exchange.length) {
+    return classifyExchangeList(symbol, exchange).filter((e) => e.type === 'weekly').slice(0, count);
+  }
+  const weekday = getWeeklyWeekday(symbol);
+  if (weekday == null) return [];
+  const today = localToday();
   const results: ExpiryInfo[] = [];
 
   const cursor = new Date(today);
 
-  // Find first upcoming weekday
-  while (cursor.getDay() !== weekday || !isTradingDay(cursor)) {
+  // Find the first upcoming occurrence of the weekday. A holiday does NOT
+  // skip that week — the expiry moves BACK to the previous trading day
+  // (NSE: Tuesday 10-Nov-2026 → Monday 09-Nov-2026).
+  while (cursor.getDay() !== weekday) {
     cursor.setDate(cursor.getDate() + 1);
   }
 
@@ -266,13 +393,16 @@ export function getWeeklyExpiries(symbol: string, count: number = 10): ExpiryInf
 
 // ─── Generate next N monthly expiry dates ─────────────────────────
 export function getMonthlyExpiries(symbol: string, count: number = 6): ExpiryInfo[] {
-  const weekday = getExpiryWeekday(symbol);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const exchange = getCachedExchangeExpiries(symbol);
+  if (exchange && exchange.length) {
+    return classifyExchangeList(symbol, exchange).filter((e) => e.type === 'monthly').slice(0, count);
+  }
+  const weekday = getMonthlyWeekday(symbol);
+  const today = localToday();
   const results: ExpiryInfo[] = [];
 
-  let year = now.getFullYear();
-  let month = now.getMonth();
+  let year = today.getFullYear();
+  let month = today.getMonth();
 
   while (results.length < count) {
     let expiry = lastWeekdayOfMonth(year, month, weekday);
@@ -304,22 +434,19 @@ export function getAllExpiries(symbol: string): ExpiryInfo[] {
   const weekly = getWeeklyExpiries(symbol, 15);
   const monthly = getMonthlyExpiries(symbol, 6);
 
-  const all = [...weekly, ...monthly];
-
-  // Dedupe by date string
-  const seen = new Set<string>();
-  const deduped: ExpiryInfo[] = [];
-  for (const e of all) {
-    if (!seen.has(e.date)) {
-      seen.add(e.date);
-      deduped.push(e);
-    }
+  // Dedupe by date. The MONTHLY contract is also the last WEEKLY of the
+  // month — the MONTHLY entry must win, otherwise the monthly expiry is
+  // labelled "weekly" and every monthly-cycle rule (quarterly detection,
+  // EXPIRY strategy profile) mis-fires.
+  const byDate = new Map<string, ExpiryInfo>();
+  for (const e of weekly) byDate.set(e.date, e);
+  for (const e of monthly) {
+    const existing = byDate.get(e.date);
+    if (!existing || existing.type !== 'monthly') byDate.set(e.date, e);
   }
 
   // Sort by date ascending
-  deduped.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
-
-  return deduped;
+  return Array.from(byDate.values()).sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
 }
 
 // ─── Get nearest expiry (next upcoming) ───────────────────────────

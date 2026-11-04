@@ -65,11 +65,20 @@ describe("signal-veto (hybrid overlay — old brain generates, new brain only bl
     expect(r.reasons.join(" ")).toMatch(/confidence/);
   });
 
-  test("blocks expiry-day index option", () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const r = evaluateSignalVeto({ ...base, expiry: today });
+  test("blocks expiry-day index option (ISO)", () => {
+    // base.nowMs = 2026-07-15 10:05 IST — pin expiry to that same IST day.
+    const r = evaluateSignalVeto({ ...base, expiry: "2026-07-15" });
     expect(r.verdict).toBe("BLOCK");
     expect(r.sizeFactor).toBe(0);
+  });
+
+  test("blocks expiry-day index option (Breeze DD-MMM-YYYY — the production format)", () => {
+    // THE BUG: "15-Jul-2026".slice(0,10) = "15-Jul-202" never equalled
+    // "2026-07-15", so the hard gate never fired for real Breeze trades.
+    const r = evaluateSignalVeto({ ...base, expiry: "15-Jul-2026" });
+    expect(r.verdict).toBe("BLOCK");
+    expect(r.sizeFactor).toBe(0);
+    expect(r.reasons.join(" ")).toMatch(/expiry-day/);
   });
 
   test("passes equity signal — no option checks", () => {

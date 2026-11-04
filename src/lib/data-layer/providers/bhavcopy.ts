@@ -74,8 +74,10 @@ export const bhavcopyProvider = {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: `no bhavcopy rows for ${sym}` };
     }
 
-    // Every contract present in the file.
-    const expiries = [...new Set(rows.map((r) => String(r.expiry).slice(0, 10)))].sort();
+    // Every contract present in the file (canonical ISO — never slice(0,10)).
+    const expiries = [...new Set(
+      rows.map((r) => toIsoDate(String(r.expiry))).filter((e): e is string => !!e)
+    )].sort();
     if (!expiries.length) {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: "bhavcopy has no expiries" };
     }
@@ -117,7 +119,7 @@ export const bhavcopyProvider = {
       }
     }
 
-    const legs = rows.filter((r) => String(r.expiry).slice(0, 10) === selected);
+    const legs = rows.filter((r) => isSameExpiry(String(r.expiry), selected));
     if (!legs.length) {
       return { data: null, fallbackUsed: true, source: "NO_DATA", fallbackReason: `no ${selected} rows for ${sym}` };
     }

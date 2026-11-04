@@ -5,6 +5,8 @@ The routes (all GET, all JSON, all with the same envelope):
   /health                 {"ok","authed","source","ts","error"?}
   /instrument             {"ok","ts","instruments":[{...}]}
   /ltp?tradingsymbol=X    {"ok","ts","tradingsymbol","ltp","source"}
+  /ltps?tradingsymbols=A,B,C
+                           {"ok","ts","results":{A:{ok,ltp,source}, B:{ok:false,error}, …}}
   /oi?tradingsymbol=X     {"ok","ts","tradingsymbol","oi","oiChange","source"}
   /depth?tradingsymbol=X  {"ok","ts","tradingsymbol","bids","asks"}
 
@@ -117,12 +119,20 @@ class MoapiHandler(BaseHTTPRequestHandler):
         if route == "/instrument":
             self._send_instrument(params)
             return 200
-        if route in ("/ltp", "/oi", "/depth"):
+        if route in ("/ltp", "/ltps", "/oi", "/depth"):
             if self._dry_run():
                 self._error(503, DRY_RUN_ERROR)
                 return 503
         if route == "/ltp":
             self._send(200, contract.ltp(self.service, **self._query(params)))
+            return 200
+        if route == "/ltps":
+            raw = _first(params, "tradingsymbols") or _first(params, "symbols") or ""
+            symbols = [s.strip() for s in str(raw).split(",") if s.strip()]
+            if not symbols:
+                self._error(404, "tradingsymbols=A,B,C is required")
+                return 404
+            self._send(200, contract.ltps(self.service, symbols))
             return 200
         if route == "/oi":
             self._send(200, contract.oi(self.service, **self._query(params)))
@@ -134,12 +144,16 @@ class MoapiHandler(BaseHTTPRequestHandler):
         return 404
 
     def _send_instrument(self, params):
-        """The instrument master — served pre-serialized (it is ~30 MB)."""
+        """The instrument master — served pre-serialized (it is ~30 MB).
+
+        `?symbol=NIFTY` filters to one underlying before serialization.
+        """
         if self._dry_run():
             self._error(503, DRY_RUN_ERROR)
             return
         force = _first(params, "refresh") == "1"
-        body = self.service.instrument_response_bytes(force=force)
+        symbol = _first(params, "symbol")
+        body = self.service.instrument_response_bytes(force=force, symbol=symbol)
         self._send_bytes(200, body)
 
     def _dry_run(self):
