@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, TrendingDown, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, TrendingDown, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText, FlaskConical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -58,6 +58,7 @@ import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
 import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
 import { SectorRotation } from '@/components/dashboard/SectorRotation';
 import { MarketHeatmap } from '@/components/dashboard/MarketHeatmap';
+import { UnifiedIntelligenceDashboard } from '@/components/dashboard/UnifiedIntelligenceDashboard';
 import { BestTradesNow } from '@/components/dashboard/BestTradesNow';
 import { AlertCenter } from '@/components/dashboard/AlertCenter';
 import { CASPanel } from '@/components/dashboard/CASPanel';
@@ -332,7 +333,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper' | 'unified-intelligence'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -837,6 +838,16 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('intelligence'); setDisplayMode('pro'); }}>
               <Brain className="h-2.5 w-2.5 mr-0.5" /> Intel
             </Button>
+            <Button variant={viewMode === 'unified-intelligence' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'unified-intelligence' ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-sm shadow-blue-500/25' : 'text-muted-foreground hover:text-blue-500'}`}
+              onClick={() => { setViewMode('unified-intelligence'); setDisplayMode('pro'); }}>
+              <Brain className="h-2.5 w-2.5 mr-0.5" /> Unified Quant
+            </Button>
+            <Button variant="ghost" size="sm"
+              className="h-6 text-[9px] px-1.5 font-bold text-muted-foreground hover:text-emerald-500"
+              onClick={() => window.open('/premarket-lab', '_blank')}>
+              <FlaskConical className="h-2.5 w-2.5 mr-0.5" /> Pre-Lab
+            </Button>
           </div>
 
           {/* More dropdown */}
@@ -1086,6 +1097,11 @@ export default function TradingDashboard() {
         /* ═══════ MARKET DECISION INTELLIGENCE CENTER ═══════ */
         <div className="flex-1 overflow-hidden">
           <IntelTab onStockClick={setSelectedAnalysisStock} />
+        </div>
+        ) : viewMode === 'unified-intelligence' ? (
+        /* ═══════ UNIFIED INTRADAY INTELLIGENCE ENGINE ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <UnifiedIntelligenceDashboard symbol={symbol} />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */

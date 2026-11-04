@@ -17,7 +17,7 @@ export type MobileViewMode =
   | "terminal" | "chain" | "zerohero" | "scanner" | "btst" | "daily"
   | "backtest" | "expiry" | "gap" | "news" | "institutional" | "futures"
   | "commodity" | "india" | "intelligence" | "credit" | "challenge"
-  | "agent" | "agent-intel" | "paper" | "admin";
+  | "agent" | "agent-intel" | "paper" | "admin" | "unified-intelligence";
 
 interface MobileNavProps {
   viewMode: MobileViewMode;
