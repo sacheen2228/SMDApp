@@ -37,6 +37,22 @@ import { classifyScannerDataQuality, type DataQuality, type SourceStatus } from 
 import { getMOCandles } from "@/lib/motilal/candles";
 import { alertScannerStock, scannerTradeId } from "@/lib/scanner-stock-alerts";
 
+// Unified Intraday Intelligence Engine — additive layer on the Scanner tab.
+// Computes a coordinator decision (BUY CE / BUY PE / WAIT) for the index
+// symbol and a per-candidate unified signal, using data the scan already
+// fetched (no redundant network calls). Does not replace existing scanner
+// scoring, alerts, or trade registration.
+import {
+  computeIndicatorBundle,
+  indicatorsSufficientForTrade,
+} from "@/lib/unified-engine/indicators";
+import { readSMC } from "@/lib/unified-engine/smc";
+import { detectMarketMechanism } from "@/lib/unified-engine/mechanism";
+import { coordinateDecision } from "@/lib/unified-engine/coordinator";
+import { buildMarketContext } from "@/lib/unified-engine/market-context";
+import type { SectorBreadthResult } from "@/lib/universe/sector-breadth";
+import type { Candle } from "@/types/engine";
+
 // How many cash-equity setups one scan may alert (the shortlist can hold
 // dozens — a phone cannot be used as a ticker tape).
 const MAX_SCANNER_EQUITY_ALERTS = 3;
@@ -335,6 +351,190 @@ export async function GET(request: NextRequest) {
     // Run the scan
     const result = await runIntradayScan(config, optionChains, marketData);
 
+    // ─── Unified Intraday Intelligence — additive market-level decision ───
+    // Reuses data the scan already fetched (daily candles, VIX, PCR, OI chain).
+    // No redundant network calls. Does not replace existing scanner scoring.
+    let unifiedIntelligence: any = null;
+    try {
+      const indexSymbol = config.symbol;
+      const indexCandlesRaw = marketData.dailyCandles?.get(indexSymbol);
+      const indexCandles: Candle[] = Array.isArray(indexCandlesRaw)
+        ? indexCandlesRaw
+            .map((b: any) => {
+              const t = Date.parse(String(b.mtimestamp || b.timestamp || b.time || ""));
+              const o = Number(b.chOpeningPrice ?? b.open);
+              const h = Number(b.chTradeHighPrice ?? b.high);
+              const l = Number(b.chTradeLowPrice ?? b.low);
+              const c = Number(b.chClosingPrice ?? b.close);
+              const v = Number(b.chTotTradedQty ?? b.volume ?? 0);
+              if (!Number.isFinite(t) || !Number.isFinite(o) || !Number.isFinite(c)) return null;
+              return { time: t, open: o, high: Number.isFinite(h) ? h : c, low: Number.isFinite(l) ? l : c, close: c, volume: Number.isFinite(v) ? v : 0 };
+            })
+            .filter((b): b is Candle => b != null)
+            .sort((a: Candle, b: Candle) => a.time - b.time)
+        : [];
+
+      const lastCandle = indexCandles[indexCandles.length - 1];
+      const todayCandles = lastCandle ? [lastCandle] : [];
+      const historicalCandles = indexCandles.slice(0, -1);
+      const lastCandleTs = lastCandle?.time ?? null;
+
+      // Phase B: indicator bundle
+      const indicatorBundle = computeIndicatorBundle(
+        indexSymbol, todayCandles, historicalCandles, config.spotPrice, lastCandleTs,
+      );
+
+      // Phase C: SMC read + mechanism detection
+      const smcRead = readSMC(indexSymbol, historicalCandles, indicatorBundle);
+      const mechanismRead = detectMarketMechanism(indexSymbol, indicatorBundle, smcRead, {
+        indiaVix: vix ?? null,
+        sectorBreadth: result.sectors
+          ? {
+              advancing: result.sectors.reduce((s, sec: any) => s + (sec.advanceCount ?? 0), 0),
+              declining: result.sectors.reduce((s, sec: any) => s + (sec.declineCount ?? 0), 0),
+              unchanged: result.sectors.reduce((s, sec: any) => s + ((sec.stocks?.length ?? 0) - (sec.advanceCount ?? 0) - (sec.declineCount ?? 0)), 0),
+            }
+          : undefined,
+        lastCandleTs,
+      });
+
+      // Phase D: derivatives context (reuse chainResult already fetched — no re-fetch)
+      const chainData = chainResult?.data ?? [];
+      const chainSummary = chainResult?.data?.summary ?? {};
+      const totalCallOI = chainData.reduce((s: number, st: any) => s + (st.ce?.oi || 0), 0);
+      const totalPutOI = chainData.reduce((s: number, st: any) => s + (st.pe?.oi || 0), 0);
+      const derivatives: any = {
+        symbol: indexSymbol,
+        exchange: "NSE",
+        timestamp: new Date().toISOString(),
+        futuresOI: {
+          value: {
+            symbol: indexSymbol,
+            expiry: chainResult?.data?.selectedExpiry ?? null,
+            currentOI: totalCallOI > 0 && totalPutOI > 0 ? totalCallOI + totalPutOI : null,
+            previousOI: null,
+            oiChange: null,
+            oiChangePct: null,
+            priceChange: null,
+            priceChangePct: null,
+            volume: null,
+            buildup: null,
+            divergence: null,
+          },
+          freshness: "FRESH" as const,
+          available: true,
+          reason: null,
+        },
+        optionChain: {
+          value: {
+            symbol: indexSymbol,
+            expiry: chainResult?.data?.selectedExpiry ?? null,
+            spot: chainResult?.data?.spotPrice ?? null,
+            atmStrike: chainResult?.data?.summary?.atmStrike ?? null,
+            daysToExpiry: null,
+            pcr: pcr ?? null,
+            totalCallOI: totalCallOI > 0 ? totalCallOI : null,
+            totalPutOI: totalPutOI > 0 ? totalPutOI : null,
+            callOiChange: null,
+            putOiChange: null,
+            atmIV: null,
+            maxPain: maxPain ?? null,
+            supports: [],
+            resistances: [],
+            bias: (pcr ?? 0) > 1.2 ? "BULLISH_LEAN" : (pcr ?? 0) < 0.8 ? "BEARISH_LEAN" : "NEUTRAL",
+            chainFreshness: "FRESH" as const,
+            available: chainResult?.success ?? false,
+          },
+          freshness: "FRESH" as const,
+          available: chainResult?.success ?? false,
+          reason: null,
+        },
+        greeks: { delta: null, iv: null, theta: null, vega: null, valid: false, reason: "not computed in scanner path" },
+        vix: {
+          value: vix ? { value: vix, change: 0, regime: vix > 22 ? "extreme" : vix > 20 ? "high" : vix > 14 ? "moderate" : "low" } : null,
+          freshness: "FRESH" as const,
+          available: vix != null && vix > 0,
+          reason: vix == null ? "VIX unavailable" : null,
+        },
+        fiiDii: {
+          value: null,
+          freshness: "UNAVAILABLE" as const,
+          available: false,
+          reason: "not fetched in scanner path",
+        },
+        optionPlan: {
+          value: null,
+          freshness: "UNAVAILABLE" as const,
+          available: false,
+          reason: "not computed in scanner path",
+        },
+      };
+
+      // Phase D: market context (sync — VIX already fetched; FII/DII not in scanner path)
+      const sectorBreadthResult: SectorBreadthResult = result.sectors
+        ? {
+            advances: result.sectors.reduce((s: number, sec: any) => s + (sec.advanceCount ?? 0), 0),
+            declines: result.sectors.reduce((s: number, sec: any) => s + (sec.declineCount ?? 0), 0),
+            unchanged: result.sectors.reduce(
+              (s: number, sec: any) => s + ((sec.stocks?.length ?? 0) - (sec.advanceCount ?? 0) - (sec.declineCount ?? 0)),
+              0,
+            ),
+            totalWithPriceData: result.sectors.reduce(
+              (s: number, sec: any) => s + (sec.stocks?.length ?? 0),
+              0,
+            ),
+            withoutPriceData: 0,
+            sectorCounts: {} as Record<string, number>,
+            otherUnmappedCount: 0,
+            sectorAdvances: {} as Record<string, number>,
+            sectorDeclines: {} as Record<string, number>,
+            uniqueCompanies: result.sectors.length,
+            duplicateCount: 0,
+            dualListedCount: 0,
+          }
+        : {
+            advances: 0,
+            declines: 0,
+            unchanged: 0,
+            totalWithPriceData: 0,
+            withoutPriceData: 0,
+            sectorCounts: {},
+            otherUnmappedCount: 0,
+            sectorAdvances: {},
+            sectorDeclines: {},
+            uniqueCompanies: 0,
+            duplicateCount: 0,
+            dualListedCount: 0,
+          };
+
+      const marketContext = buildMarketContext(
+        indexSymbol,
+        indicatorBundle,
+        smcRead,
+        mechanismRead,
+        {
+          advancing: sectorBreadthResult.advances,
+          declining: sectorBreadthResult.declines,
+          unchanged: sectorBreadthResult.unchanged,
+        },
+      );
+
+      // Phase E: coordinator decision
+      unifiedIntelligence = coordinateDecision(
+        indexSymbol,
+        "NSE",
+        indicatorBundle,
+        smcRead,
+        mechanismRead,
+        derivatives,
+        marketContext,
+        sectorBreadthResult,
+        100_000,
+      );
+    } catch (err: any) {
+      console.warn("[Scanner] Unified intelligence computation skipped:", err.message);
+    }
+
     // Apply real news scores to candidates
     if (marketNews && marketNews.articles?.length > 0) {
       result.candidates = result.candidates.map((candidate) => {
@@ -417,6 +617,15 @@ export async function GET(request: NextRequest) {
             unifiedDecision: decision.decision,
             unifiedReasons: decision.reasons,
             hardGatesPassed: decision.hardGateStatus.passed,
+            // Unified Intelligence signal — additive, derived from existing
+            // candidate fields (no extra network calls). BUY_CE / BUY_PE only.
+            unifiedSignal: (() => {
+              const rr = candidate.riskReward ?? 0;
+              const score = candidate.totalScore ?? 0;
+              if (direction === "BULLISH" && rr >= 1.5 && score >= 60) return "BUY_CE";
+              if (direction === "BEARISH" && rr >= 1.5 && score >= 60) return "BUY_PE";
+              return "WAIT";
+            })(),
           };
         } catch {
           return candidate;
@@ -592,6 +801,10 @@ export async function GET(request: NextRequest) {
       // `meta` carries the provenance of every input behind the scan.
       meta: cardMeta,
       dataQuality,
+      // Unified Intraday Intelligence Engine — coordinator decision for the
+      // index symbol (market-level BUY CE / BUY PE / WAIT). Additive to the
+      // existing scanner scoring; does not replace it.
+      unifiedIntelligence,
       // Cash-equity alerts actually delivered by this scan (the equity
       // expression of a scanner setup — registered with the tracker so the
       // TIGER monitor can report its TP/SL hits).
