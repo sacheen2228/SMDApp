@@ -721,15 +721,39 @@ class MoapiService(object):
                           "websocket feed is not running — MO has no REST market-depth endpoint "
                           "(set MOAPI_WEBSOCKET=1 to enable the broadcast feed)")
         levels = self.feed_cache.depth(contract.get("scripcode"))
+        if not levels and self.feed is not None:
+            # The default subscription registers only the nearest-expiry OPTION
+            # strikes; a FUTURE asked for here (e.g. the SENSEX future) was never
+            # registered. Register on demand and wait — bounded — for the first
+            # depth packet.
+            try:
+                exchange = contract.get("exchange") or "NSEFO"
+                self.feed.register(exchange, FEED_EXCHANGE_TYPE.get(exchange, "FNO"),
+                                   int(contract.get("scripcode") or 0))
+                deadline = time.time() + 4.0
+                while time.time() < deadline:
+                    time.sleep(0.25)
+                    levels = self.feed_cache.depth(contract.get("scripcode"))
+                    if levels:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                self.log.warn("moapi.feed.ondemand_register_failed", error=str(exc))
         if not levels:
             raise MoError(NO_DATA, "no market depth received for %s yet" %
                           (contract.get("tradingsymbol") or contract.get("scripcode")))
         bids = []
         asks = []
+        data_ts = 0.0
         for level in sorted(levels.keys(), key=lambda k: int(k)):
             entry = levels[level]
             bid, bid_qty = entry.get("bid"), entry.get("bidQty")
             ask, ask_qty = entry.get("ask"), entry.get("askQty")
+            ts = entry.get("ts") or 0
+            try:
+                ts = float(ts)
+            except (TypeError, ValueError):
+                ts = 0.0
+            data_ts = max(data_ts, ts)
             if bid is not None and bid > 0:
                 bids.append([bid, bid_qty])
             if ask is not None and ask > 0:
@@ -741,6 +765,7 @@ class MoapiService(object):
             "bids": bids,
             "asks": asks,
             "ts": _now(),
+            "dataTs": data_ts,
             "source": "websocket",
         }
 

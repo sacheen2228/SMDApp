@@ -41,6 +41,12 @@ import { addTrade, type ActiveTrade } from "./activeTradeTracker";
 import { buildOptionPlan } from "./option-plan";
 import { getLotSize } from "./symbol-config";
 
+// Deterministic trade ID — same setup gets same ID across restarts
+function makeTradeId(symbol: string, strike: number, optionType: string, expiry: string, direction: string): string {
+  const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+  return `SCAN-${direction}-${symbol}-${strike}-${optionType}-${expiry}-${ymd}`;
+}
+
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 const MIN_CONFIDENCE = 70; // Minimum confidence to include in morning digest
 
@@ -605,7 +611,8 @@ export async function sendIndividualSignals(
       continue;
     }
 
-    const tradeId = `morning-${s.symbol}-${Date.now()}`;
+    const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+    const tradeId = makeTradeId(s.symbol, s.strike ?? 0, s.type ?? 'EQ', s.expiry ?? 'NOEXP', s.side);
     await register({
       id: tradeId,
       symbol: s.symbol,

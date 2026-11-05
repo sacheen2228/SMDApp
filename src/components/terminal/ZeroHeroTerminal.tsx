@@ -23,8 +23,6 @@ import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 import MostActiveContracts from "@/components/terminal/MostActiveContracts";
-import { fetchStockQuotes } from "@/lib/nse-stock-data";
-import { getNSEIndices } from "@/lib/nse-api";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -1981,8 +1979,13 @@ function WatchlistTab({ watchlist, setWatchlist, setSymbol, symbol }: { watchlis
 }
 
 // ─── Calculation Engine ────────────────────────────────────────────────────────
+// Test cases (comments):
+// 1. NIFTY 23650 CE, premium 30, settlement 23700 -> expiry value 50, P&L +20 per unit.
+// 2. Settlement 23650 (ATM) -> expiry value 0, P&L -30 per unit.
+// 3. Settlement 23600 (OTM) -> expiry value 0, P&L -30 per unit.
 function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   const {
+    index,
     optionType,
     position,
     strike,
@@ -2001,9 +2004,10 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
     gstPct,
     sebiPct,
     stampDutyPct,
+    zeroHeroPremiumThreshold,
   } = inputs;
 
-  // Validation
+  // Validation — reject negatives, T <= 0, IV <= 0 with friendly messages
   if (!spot || spot <= 0) throw new Error("Spot price must be > 0");
   if (!strike || strike <= 0) throw new Error("Strike must be > 0");
   if (!entryPremium || entryPremium <= 0) throw new Error("Entry premium must be > 0");
@@ -2011,52 +2015,85 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   if (!lotSize || lotSize <= 0) throw new Error("Lot size must be > 0");
   if (!iv || iv <= 0) throw new Error("IV must be > 0");
   if (!timeHours || timeHours <= 0) throw new Error("Time to expiry must be > 0");
+  if (settlementMode === "final" && (!settlementPrice || settlementPrice <= 0)) {
+    throw new Error("Settlement price is required when mode is Final");
+  }
 
   const long = position === "BUY";
   const isCall = optionType === "CE";
+  const quantity = lots * lotSize;
+
+  // Settlement: Final uses manual settlement price; Provisional uses current spot
   const settlement = settlementPrice != null && settlementPrice > 0 ? settlementPrice : spot;
 
+  // Time in years using trading hours (6.25 h per day)
+  const tDays = timeHours / 6.25;
+  const T = tDays / 365;
+  const sigma = iv / 100;
+  const sqrtT = Math.sqrt(T);
+  const r = 0; // risk-free rate = 0 per spec
+
+  // Black-Scholes d1 / d2 (r = 0, dividend = 0)
+  // d1 = [ln(S/K) + 0.5*sigma^2*T] / (sigma*sqrt(T)); d2 = d1 - sigma*sqrt(T)
+  const d1 = (Math.log(spot / strike) + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
+  const d2 = d1 - sigma * sqrtT;
+  const nd1 = normalCDF(d1);
+  const nd2 = normalCDF(d2);
+  const nNegD1 = normalCDF(-d1);
+  const nNegD2 = normalCDF(-d2);
+  const nD1pdf = normalPDF(d1);
+
   // Expiry value per unit (cash-settled, European-style)
+  // CE: max(Settlement - Strike, 0); PE: max(Strike - Settlement, 0)
   const expiryValue = isCall ? Math.max(settlement - strike, 0) : Math.max(strike - settlement, 0);
 
-  // P&L per unit
+  // P&L per unit at settlement
   const pnlPerUnit = long ? expiryValue - entryPremium : entryPremium - expiryValue;
 
-  // Break-even
+  // Break-even (same for buyer and seller)
+  // CE: Strike + premium; PE: Strike - premium
   const breakEven = isCall ? strike + entryPremium : strike - entryPremium;
 
-  // Stop Loss and Targets (rupee risk model: 20% risk, 2R/3R/4R targets)
-  const riskPoints = entryPremium * 0.20;
-  const stopLoss = long ? entryPremium - riskPoints : entryPremium + riskPoints;
-  const targets = long
-    ? [entryPremium + riskPoints * 2, entryPremium + riskPoints * 3, entryPremium + riskPoints * 4]
-    : [entryPremium - riskPoints * 2, entryPremium - riskPoints * 3, entryPremium - riskPoints * 4];
+  // Probability of finishing ITM: CE = N(d2), PE = N(-d2) = 1 - N(d2)
+  const probITM = isCall ? nd2 : nNegD2;
+
+  // Probability of profit: N(d2) evaluated with K replaced by break-even
+  // CE: P(S > BE); PE: P(S < BE)
+  const d2Be = (Math.log(spot / breakEven) + 0.5 * sigma * sigma * T) / (sigma * sqrtT);
+  const probProfit = isCall ? normalCDF(d2Be) : normalCDF(-d2Be);
+
+  // Expected payoff (Black-Scholes, r = 0)
+  // CE: E[payoff] = S*N(d1) - K*N(d2); PE: K*N(-d2) - S*N(-d1)
+  const expectedPayoff = isCall
+    ? spot * nd1 - strike * nd2
+    : strike * nNegD2 - spot * nNegD1;
+  const expectedValuePerUnit = long ? expectedPayoff - entryPremium : entryPremium - expectedPayoff;
+  const expectedValuePerLot = expectedValuePerUnit * lotSize;
+  const expectedValuePctOfPremium = (expectedValuePerUnit / entryPremium) * 100;
 
   // Distance to strike
   const distanceToStrike = spot - strike;
   const distanceToStrikePct = (distanceToStrike / spot) * 100;
+  // Distance in units of expected-move standard deviations: (K - S) / (S*sigma*sqrt(T))
+  const distanceToStrikeSD = (strike - spot) / (spot * sigma * sqrtT);
 
-  // Expected move: Spot × (IV/100) × sqrt(T_days/365)
-  // T_days = hours / 6.25 (trading hours per day)
-  const tDays = timeHours / 6.25;
-  const sigma = iv / 100;
-  const expectedMove = spot * sigma * Math.sqrt(tDays / 365);
+  // Expected move: Spot * (IV/100) * sqrt(T_days/365)
+  const expectedMove = spot * sigma * sqrtT;
 
-  // Probability of finishing ITM (lognormal model)
-  // d2 = [ln(S/K) + (r - 0.5*sigma²)*T] / (sigma*sqrt(T)); r = 0.07
-  const r = 0.07;
-  const T = tDays / 365;
-  const sqrtT = Math.sqrt(T);
-  const d2 = (Math.log(spot / strike) + (r - 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
-  const probITM = isCall ? normalCDF(d2) : 1 - normalCDF(d2);
+  // Greeks (r = 0)
+  // delta = N(d1) for CE, N(d1) - 1 for PE
+  const delta = isCall ? nd1 : nd1 - 1;
+  // gamma = n(d1) / (S * sigma * sqrt(T))
+  const gamma = nD1pdf / (spot * sigma * sqrtT);
+  // theta per day (per unit): -S*n(d1)*sigma/(2*sqrt(T)) / 365 ; per lot: x lotSize
+  const thetaPerUnitPerDay = (-spot * nD1pdf * sigma) / (2 * sqrtT * 365);
+  const thetaPerLotPerDay = thetaPerUnitPerDay * lotSize;
+  // vega per 1% IV change, per lot: S * n(d1) * sqrt(T) * 0.01 * lotSize
+  const vegaPerLotPer1pct = spot * nD1pdf * sqrtT * 0.01 * lotSize;
 
-  // Expected value
-  const expectedValuePerUnit = probITM * (expiryValue - entryPremium) - (1 - probITM) * entryPremium;
-  const expectedValuePerLot = expectedValuePerUnit * lotSize;
-
-  // Zero-Hero flag: OTM, premium below threshold, required move > 1 std dev
+  // Zero-Hero flag: OTM AND premium < user threshold (default 10) AND distance > 1 SD
+  const premiumThreshold = zeroHeroPremiumThreshold != null && zeroHeroPremiumThreshold > 0 ? zeroHeroPremiumThreshold : 10;
   const otm = isCall ? spot < strike : spot > strike;
-  const premiumThreshold = 10;
   const requiredMove = Math.abs(strike - spot);
   const oneStdDev = expectedMove;
   const zeroHeroFlag = otm && entryPremium < premiumThreshold && requiredMove > oneStdDev;
@@ -2065,84 +2102,195 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
     : "";
 
   // Max loss
-  const maxLossBuyer = long ? entryPremium * lotSize * lots : 0;
-  const maxLossSeller = long ? "unlimited" : (entryPremium * lotSize * lots).toFixed(0);
+  const maxLossBuyer = long ? entryPremium * quantity : 0;
+  let maxLossSeller: string | number;
+  let maxLossSellerValue: number;
+  if (long) {
+    maxLossSeller = "unlimited";
+    maxLossSellerValue = Infinity;
+  } else if (isCall) {
+    maxLossSeller = "unlimited (naked CE)";
+    maxLossSellerValue = Infinity;
+  } else {
+    // PE seller max loss = (Strike - premium) x quantity
+    maxLossSellerValue = Math.max(strike - entryPremium, 0) * quantity;
+    maxLossSeller = maxLossSellerValue;
+  }
 
-  // Charges
-  const sttOnSell = currentLTP * sttPct / 100;
-  const sttOnIntrinsic = expiryValue * sttPct / 100;
-  const exchangeCharges = entryPremium * exchangeChargesPct / 100;
-  const gstOnBrokerage = brokeragePerOrder * gstPct / 100;
-  const sebiCharges = entryPremium * sebiPct / 100;
-  const stampDuty = entryPremium * stampDutyPct / 100;
+  // === Charges: three exit paths ===
+  // GST applies to brokerage + exchange charges + SEBI fees only (not STT or stamp duty)
+  // Stamp duty applies on buy side only.
+  const exchangeChargesPerUnit = entryPremium * exchangeChargesPct / 100;
+  const sebiChargesPerUnit = entryPremium * sebiPct / 100;
+  const stampDutyPerUnit = entryPremium * stampDutyPct / 100; // buy side only
 
-  // Square-off P&L (sell at current LTP, STT on sell premium)
-  const squareOffPnL = long ? (currentLTP - entryPremium) * lotSize * lots : (entryPremium - currentLTP) * lotSize * lots;
-  const squareOffCharges = sttOnSell * lotSize * lots + exchangeCharges * lotSize * lots + gstOnBrokerage + sebiCharges * lotSize * lots + stampDuty * lotSize * lots;
-  const squareOffNet = squareOffPnL - squareOffCharges - brokeragePerOrder;
+  // GST base per side = exchange + sebi (per transaction)
+  const gstBuyPerUnit = (brokeragePerOrder + exchangeChargesPerUnit + sebiChargesPerUnit) * (gstPct / 100) / lotSize; // GST apportioned per unit for buy side
+  // Note: brokerage is per order (flat), GST on it is flat too.
 
-  // Hold to settlement P&L (STT on intrinsic value if ITM)
-  const holdPnL = pnlPerUnit * lotSize * lots;
-  const holdCharges = sttOnIntrinsic * lotSize * lots + exchangeCharges * lotSize * lots + gstOnBrokerage + sebiCharges * lotSize * lots + stampDuty * lotSize * lots;
-  const holdNet = holdPnL - holdCharges - brokeragePerOrder;
+  // Path a) Square-off before expiry: brokerage on both buy & sell orders, STT on sell premium
+  const sttSellPerUnit = currentLTP * sttPct / 100;
+  const exchangeChargesSellPerUnit = currentLTP * exchangeChargesPct / 100;
+  const gstSellPerUnit = (brokeragePerOrder + exchangeChargesSellPerUnit + sebiChargesPerUnit) * (gstPct / 100) / lotSize;
 
-  const totalCharges = Math.max(squareOffCharges, holdCharges);
-  const netPnLAfterCharges = long ? holdNet : holdNet;
+  const squareOffPnL = long
+    ? (currentLTP - entryPremium) * quantity
+    : (entryPremium - currentLTP) * quantity;
+  const squareOffCharges =
+    sttSellPerUnit * quantity +                 // STT on sell premium
+    brokeragePerOrder * 2 +                      // brokerage buy + sell orders
+    exchangeChargesPerUnit * quantity +          // exchange buy side
+    exchangeChargesSellPerUnit * quantity +      // exchange sell side
+    sebiChargesPerUnit * quantity * 2 +          // SEBI both sides
+    stampDutyPerUnit * quantity +                // stamp duty buy side only
+    (gstBuyPerUnit * quantity) +                 // GST buy side (brokerage+exchange+sebi)
+    (gstSellPerUnit * quantity);                 // GST sell side
+  const squareOffNet = squareOffPnL - squareOffCharges;
 
-  // Cost-trap: charges > 50% of small profit
-  const costTrapWarning = holdPnL > 0 && holdCharges > holdPnL * 0.5;
+  // Path b) Expires worthless: only buy-side brokerage & charges, no sell leg, no STT
+  const expiresWorthlessPnL = long ? -entryPremium * quantity : entryPremium * quantity;
+  const expiresWorthlessCharges =
+    brokeragePerOrder +                          // buy brokerage only
+    exchangeChargesPerUnit * quantity +          // exchange buy side
+    sebiChargesPerUnit * quantity +              // SEBI buy side
+    stampDutyPerUnit * quantity +                // stamp duty buy side
+    gstBuyPerUnit * quantity;                    // GST buy side
+  const expiresWorthlessNet = expiresWorthlessPnL - expiresWorthlessCharges;
 
-  // Risk meter
+  // Path c) ITM held to settlement: STT on intrinsic value x quantity + buy-side charges
+  const sttOnIntrinsicPerUnit = expiryValue * sttPct / 100;
+  const holdPnL = pnlPerUnit * quantity;
+  const holdCharges =
+    sttOnIntrinsicPerUnit * quantity +           // STT on intrinsic value
+    brokeragePerOrder +                          // buy brokerage
+    exchangeChargesPerUnit * quantity +          // exchange buy side
+    sebiChargesPerUnit * quantity +              // SEBI buy side
+    stampDutyPerUnit * quantity +                // stamp duty buy side
+    gstBuyPerUnit * quantity;                    // GST buy side
+  const holdNet = holdPnL - holdCharges;
+
+  // Active path depends on settlement state
+  let activePath: "squareOff" | "expiresWorthless" | "holdToSettlement";
+  let netPnLAfterCharges: number;
+  let totalCharges: number;
+
+  if (settlementMode === "final") {
+    if (expiryValue <= 0) {
+      activePath = "expiresWorthless";
+      netPnLAfterCharges = expiresWorthlessNet;
+      totalCharges = expiresWorthlessCharges;
+    } else {
+      activePath = "holdToSettlement";
+      netPnLAfterCharges = holdNet;
+      totalCharges = holdCharges;
+    }
+  } else {
+    // Provisional: spot as assumed settlement; square-off indicative
+    activePath = "squareOff";
+    netPnLAfterCharges = squareOffNet;
+    totalCharges = squareOffCharges;
+  }
+
+  // Cost trap: charges > 10% of gross profit, or STT on intrinsic wipes out most of small profit
+  const grossProfit = Math.max(holdPnL, 0);
+  const costTrapWarning = grossProfit > 0 && totalCharges > grossProfit * 0.10;
+  const sttWipesProfit = expiryValue > 0 && holdPnL > 0 && sttOnIntrinsicPerUnit * quantity > holdPnL * 0.5;
+
+  // Risk meter: based on Zero-Hero conditions + expected value + ITM probability
   let riskMeter: "Low" | "Medium" | "High" | "Extreme" = "Low";
-  if (zeroHeroFlag || Math.abs(pnlPerUnit) > entryPremium * 2 || probITM < 30) riskMeter = "Extreme";
-  else if (Math.abs(pnlPerUnit) > entryPremium || probITM < 45 || costTrapWarning) riskMeter = "High";
-  else if (Math.abs(pnlPerUnit) > entryPremium * 0.5 || probITM < 60) riskMeter = "Medium";
+  const reasons: string[] = [];
+  if (zeroHeroFlag) {
+    riskMeter = "Extreme";
+    reasons.push("Zero-Hero: OTM, low premium, move > 1 SD");
+  } else if (expectedValuePerUnit < -entryPremium * 0.5 || probProfit < 30) {
+    riskMeter = "Extreme";
+    reasons.push("Deep negative expected value or low profit probability");
+  } else if (expectedValuePerUnit < 0 || probProfit < 45 || costTrapWarning) {
+    riskMeter = "High";
+    reasons.push("Negative expected value or cost trap");
+  } else if (Math.abs(distanceToStrikeSD) < 0.5 || probProfit < 60) {
+    riskMeter = "Medium";
+    reasons.push("Near-ATM or moderate profit probability");
+  } else {
+    riskMeter = "Low";
+    reasons.push("Favorable expected value and probability");
+  }
 
   // Status
   const status = spot > strike * 1.001 ? "ITM" : spot < strike * 0.999 ? "OTM" : "ATM";
 
-  // Scenario table
+  // Scenario table centered on break-even, dynamic steps (~13-15 rows)
+  const step = index === "SENSEX" ? 100 : index === "BANKNIFTY" ? 100 : 50;
+  const rangePoints = Math.max(expectedMove * 1.5, step * 6);
+  const start = Math.floor((breakEven - rangePoints) / step) * step;
+  const end = Math.ceil((breakEven + rangePoints) / step) * step;
   const scenarioTable: ScenarioRow[] = [];
-  for (let s = strike - 300; s <= strike + 300; s += 50) {
+  for (let s = start; s <= end; s += step) {
     const ev = isCall ? Math.max(s - strike, 0) : Math.max(strike - s, 0);
     const pnl = long ? ev - entryPremium : entryPremium - ev;
     scenarioTable.push({
       settlement: s,
       expiryValue: ev,
       pnlPerLot: pnl * lotSize,
+      pnlAfterCharges: pnl * quantity,
       status: s > strike * 1.001 ? "ITM" : s < strike * 0.999 ? "OTM" : "ATM",
-      isBreakEven: Math.abs(s - breakEven) < 25,
-      isSpot: Math.abs(s - spot) < 25,
+      isBreakEven: Math.abs(s - breakEven) < step / 2,
+      isSpot: Math.abs(s - spot) < step / 2,
+      isStrike: Math.abs(s - strike) < step / 2,
     });
   }
 
+  // Theoretical model price (Black-Scholes, r=0) for premium sanity warning
+  let modelPrice = 0;
+  if (isCall) modelPrice = spot * nd1 - strike * nd2;
+  else modelPrice = strike * nNegD2 - spot * nNegD1;
+  const premiumFarFromModel = modelPrice > 0 && Math.abs(entryPremium - modelPrice) > modelPrice * 0.5;
+
   return {
     expiryValue,
+    entryPremium,
+    riskPoints: entryPremium * 0.2,
     pnlPerUnit,
     breakEven,
     distanceToStrike,
     distanceToStrikePct,
+    distanceToStrikeSD,
     expectedMove,
-    probITM: probITM * 100,
+    expectedPayoff,
     expectedValuePerUnit,
     expectedValuePerLot,
+    expectedValuePctOfPremium,
+    probITM: probITM * 100,
+    probProfit: probProfit * 100,
+    delta,
+    gamma,
+    thetaPerUnitPerDay,
+    thetaPerLotPerDay,
+    vegaPerLotPer1pct,
     zeroHeroFlag,
     zeroHeroReason,
     maxLossBuyer,
     maxLossSeller,
+    maxLossSellerValue,
     netPnLAfterCharges,
     totalCharges,
+    costTrapWarning,
+    sttWipesProfit,
+    riskMeter,
+    riskMeterReasons: reasons,
     status,
     settlementUsed: settlement,
     settlementLabel: settlementMode === "final" ? "Final (market close)" : "Provisional (current spot)",
-    squareOffPnL,
+    squareOffPnL: squareOffNet,
     holdToSettlementPnL: holdNet,
-    costTrapWarning,
-    riskMeter,
+    expiresWorthlessPnL: expiresWorthlessNet,
+    activePath,
     scenarioTable,
-    stopLoss,
-    tp1: targets[0],
-    tp2: targets[1],
+    stopLoss: 0,
+    tp1: 0,
+    tp2: 0,
+    modelPrice,
+    premiumFarFromModel,
   };
 }
 
@@ -2170,59 +2318,65 @@ interface ExpCalcInputs {
   gstPct: number;
   sebiPct: number;
   stampDutyPct: number;
-}
-
-interface LiveOptionRow {
-  symbol: string;
-  name: string;
-  ltp: number;
-  change: number;
-  changePct: number;
-  ceLtp: number;
-  ceOi: number;
-  ceOiChg: number;
-  ceIv: number;
-  ceDelta: number;
-  peLtp: number;
-  peOi: number;
-  peOiChg: number;
-  peIv: number;
-  peDelta: number;
+  zeroHeroPremiumThreshold?: number; // user-editable, default 10
 }
 
 interface ExpCalcResult {
   expiryValue: number;
+  entryPremium: number;
+  riskPoints: number;
   pnlPerUnit: number;
   breakEven: number;
   distanceToStrike: number;
   distanceToStrikePct: number;
+  distanceToStrikeSD: number;
   expectedMove: number;
-  probITM: number;
+  expectedPayoff: number;
   expectedValuePerUnit: number;
   expectedValuePerLot: number;
+  expectedValuePctOfPremium: number;
+  probITM: number;
+  probProfit: number;
+  delta: number;
+  gamma: number;
+  thetaPerUnitPerDay: number;
+  thetaPerLotPerDay: number;
+  vegaPerLotPer1pct: number;
   zeroHeroFlag: boolean;
   zeroHeroReason: string;
   maxLossBuyer: number;
-  maxLossSeller: string;
+  maxLossSeller: string | number;
+  maxLossSellerValue: number;
   netPnLAfterCharges: number;
   totalCharges: number;
+  costTrapWarning: boolean;
+  sttWipesProfit: boolean;
+  riskMeter: "Low" | "Medium" | "High" | "Extreme";
+  riskMeterReasons: string[];
   status: "ITM" | "OTM" | "ATM";
   settlementUsed: number;
   settlementLabel: string;
   squareOffPnL: number;
   holdToSettlementPnL: number;
-  costTrapWarning: boolean;
-  riskMeter: "Low" | "Medium" | "High" | "Extreme";
+  expiresWorthlessPnL: number;
+  activePath: "squareOff" | "expiresWorthless" | "holdToSettlement";
   scenarioTable: ScenarioRow[];
+  stopLoss: number;
+  tp1: number;
+  tp2: number;
+  modelPrice: number;
+  premiumFarFromModel: boolean;
 }
 
 interface ScenarioRow {
   settlement: number;
   expiryValue: number;
   pnlPerLot: number;
+  pnlAfterCharges: number;
   status: "ITM" | "OTM" | "ATM";
   isBreakEven: boolean;
   isSpot: boolean;
+  isStrike: boolean;
 }
 
 // Normal CDF (Abramowitz-Stegun approximation)
@@ -2242,65 +2396,47 @@ function normalCDF(x: number): number {
   return 0.5 * (1 + sign * y);
 }
 
+// Standard normal PDF: n(x) = (1/sqrt(2*pi)) * exp(-x^2/2)
+function normalPDF(x: number): number {
+  return (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-(x * x) / 2);
+}
+
 // Round half up to 2 decimals
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
 }
 
-// ─── Expiry-Day Option Survival / Zero-Hero Risk Calculator ─────────────────────
-interface ExpCalcInputs {
-  index: string;
-  optionType: "CE" | "PE";
-  position: "BUY" | "SELL";
-  strike: number;
-  entryPremium: number;
-  currentLTP: number;
-  lots: number;
-  lotSize: number;
-  spot: number;
-  iv: number;
-  timeHours: number;
-  settlementPrice?: number;
-  settlementMode: "provisional" | "final";
-  brokeragePerOrder: number;
-  sttPct: number;
-  exchangeChargesPct: number;
-  gstPct: number;
-  sebiPct: number;
-  stampDutyPct: number;
+// Per-index strike steps (SENSEX/BANKNIFTY trade in 100-pt strikes)
+const INDEX_STEPS: Record<string, number> = { NIFTY: 50, FINNIFTY: 50, MIDCPNIFTY: 50, BANKNIFTY: 100, SENSEX: 100 };
+// Fallback spot only when the chain API is unreachable (index switch with no live data)
+const INDEX_FALLBACK_SPOT: Record<string, number> = { NIFTY: 24500, BANKNIFTY: 50000, FINNIFTY: 22000, MIDCPNIFTY: 11000, SENSEX: 80000 };
+
+// Derive index from symbol. Check the LONG names first: "BANKNIFTY"/"FINNIFTY"/"MIDCPNIFTY"
+// all contain the substring "NIFTY".
+function indexFromSymbol(sym: string): string {
+  const s = (sym || "").toUpperCase();
+  if (s.includes("BANKNIFTY")) return "BANKNIFTY";
+  if (s.includes("FINNIFTY")) return "FINNIFTY";
+  if (s.includes("MIDCPNIFTY")) return "MIDCPNIFTY";
+  if (s.includes("SENSEX")) return "SENSEX";
+  return "NIFTY";
 }
 
-interface ExpCalcResult {
-  entryPremium: number;
-  stopLoss: number;
-  tp1: number;
-  tp2: number;
-  expiryValue: number;
-  pnlPerUnit: number;
-  breakEven: number;
-  distanceToStrike: number;
-  distanceToStrikePct: number;
-  expectedMove: number;
-  probITM: number;
-  expectedValuePerUnit: number;
-  expectedValuePerLot: number;
-  zeroHeroFlag: boolean;
-  zeroHeroReason: string;
-  maxLossBuyer: number;
-  maxLossSeller: string;
-  netPnLAfterCharges: number;
-  totalCharges: number;
-  status: "ITM" | "OTM" | "ATM";
-  settlementUsed: number;
-  settlementLabel: string;
-  squareOffPnL: number;
-  holdToSettlementPnL: number;
-  costTrapWarning: boolean;
-  riskMeter: "Low" | "Medium" | "High" | "Extreme";
-  scenarioTable: ScenarioRow[];
+// The option-chain API returns either a bare array, records.data, or the
+// current wrapped shape: { data: { data: [...], spotPrice, ... }, ... }
+function parseChainPayload(json: any): { rows: any[] | null; liveSpot: number } {
+  const holder = json?.data && typeof json.data === "object" && !Array.isArray(json.data) ? json.data : null;
+  const rows = Array.isArray(json?.data)
+    ? json.data
+    : Array.isArray(holder?.data)
+      ? holder.data
+      : Array.isArray(json?.records?.data)
+        ? json.records.data
+        : null;
+  const liveSpot = Number(holder?.spotPrice || json?.records?.underlyingValue || json?.spotPrice || 0) || 0;
+  return { rows, liveSpot };
 }
 
-// Normal CDF (Abramowitz-Stegun approximation)
 function ExpiryCalculator({
   spot,
   vix,
@@ -2312,11 +2448,13 @@ function ExpiryCalculator({
   symbol: string;
   lotSize: number;
 }) {
+  const initialIndex = indexFromSymbol(symbol);
+  const initialStep = INDEX_STEPS[initialIndex] ?? 50;
   const [inputs, setInputs] = useState<ExpCalcInputs>({
-    index: symbol.includes("NIFTY") ? "NIFTY" : symbol.includes("BANKNIFTY") ? "BANKNIFTY" : symbol.includes("FINNIFTY") ? "FINNIFTY" : symbol.includes("SENSEX") ? "SENSEX" : "MIDCPNIFTY",
+    index: initialIndex,
     optionType: "CE",
     position: "BUY",
-    strike: spot > 0 ? Math.round(spot / 50) * 50 : 24000,
+    strike: spot > 0 ? Math.round(spot / initialStep) * initialStep : 24000,
     entryPremium: spot > 0 ? Math.max(spot * 0.03, 25) : 30,
     currentLTP: spot > 0 ? Math.max(spot * 0.03, 25) : 30,
     lots: 1,
@@ -2332,10 +2470,24 @@ function ExpiryCalculator({
     gstPct: 18,
     sebiPct: 0.001,
     stampDutyPct: 0.002,
+    zeroHeroPremiumThreshold: 10,
   });
   const [result, setResult] = useState<ExpCalcResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isCalculating, setIsCalculating] = useState(true);
+  const [tradePlanOpen, setTradePlanOpen] = useState(false);
+
+  // Manual-edit markers: once the user edits a field, live seeding must not overwrite it
+  const spotTouchedRef = useRef(false);
+  const strikeTouchedRef = useRef(false);
+  const premiumTouchedRef = useRef(false);
+  const ivTouchedRef = useRef(false);
+  // Last index the chain was seeded for (index switch = full reset of defaults)
+  const lastSeedIndexRef = useRef<string>("");
+  // Cached chain rows for the current index (avoids refetching on every strike change)
+  const chainCacheRef = useRef<{ index: string; rows: any[] | null; fetchedAt: number }>({ index: "", rows: null, fetchedAt: 0 });
+  const [slPremium, setSlPremium] = useState<number | null>(null);
+  const [tpPremium, setTpPremium] = useState<number | null>(null);
 
   const fmt = (n: number | null | undefined): string => {
     if (n == null || isNaN(n)) return "—";
@@ -2357,61 +2509,108 @@ function ExpiryCalculator({
     }
   };
 
-  // Auto-calculate trade from live chain data on mount
+  // ── Effect 1: seed live chain data ──────────────────────────────────────────
+  // Runs on mount, symbol/vix/prop-spot change, index switch, CE/PE toggle and
+  // strike change. Reads the REAL chain rows (wrapped {data:{data:[...]}} or a
+  // bare array) + live spotPrice. Manual edits are protected by touch refs.
   useEffect(() => {
     setIsCalculating(true);
     let cancelled = false;
 
-    async function runCalculation() {
+    const idx = inputs.index;
+    const step = INDEX_STEPS[idx] ?? 50;
+    const indexChanged = lastSeedIndexRef.current !== idx;
+    if (indexChanged) {
+      lastSeedIndexRef.current = idx;
+      spotTouchedRef.current = false;
+      strikeTouchedRef.current = false;
+      premiumTouchedRef.current = false;
+      ivTouchedRef.current = false;
+    }
+
+    async function seed() {
       try {
-        let chainData: any = null;
-        try {
-          const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(inputs.index)}`, { signal: AbortSignal.timeout(10000) });
-          if (res.ok) {
-            const json = await res.json();
-            chainData = json?.data || json?.records?.data || null;
+        const cached = chainCacheRef.current;
+        const cacheFresh = cached.index === idx && cached.rows && Date.now() - cached.fetchedAt < 60_000;
+        let rows: any[] | null = cached.index === idx ? cached.rows : null;
+        let liveSpot = 0;
+
+        if (!cacheFresh) {
+          try {
+            const res = await fetch(`/api/option-chain?symbol=${encodeURIComponent(idx)}`, { signal: AbortSignal.timeout(10000) });
+            if (res.ok) {
+              const parsed = parseChainPayload(await res.json());
+              rows = parsed.rows;
+              liveSpot = parsed.liveSpot;
+              if (rows) chainCacheRef.current = { index: idx, rows, fetchedAt: Date.now() };
+            }
+          } catch {
+            // offline / market closed → fall back to cached rows or estimates
           }
-        } catch {
-          // chain fetch failed, will use estimated premium
         }
+        if (cancelled) return;
 
-        const spotPrice = inputs.spot;
-        const strike = Math.round(spotPrice / 50) * 50;
+        // Spot: live from chain → keep current (manual/parent) → index default on switch
+        const propMatchesIndex = indexFromSymbol(symbol) === idx && spot > 0;
+        const nextSpot = spotTouchedRef.current
+          ? inputs.spot
+          : liveSpot > 0
+            ? liveSpot
+            : indexChanged
+              ? propMatchesIndex ? spot : (INDEX_FALLBACK_SPOT[idx] ?? 24000)
+              : inputs.spot;
 
-        let realPremium = 0;
-        let realIV = inputs.iv;
-        if (Array.isArray(chainData)) {
-          const atmRow = chainData.find((r: any) => r.strike === strike);
-          if (atmRow) {
-            const leg = inputs.optionType === "CE" ? atmRow.ce : atmRow.pe;
+        // Strike: ATM of next spot (correct step per index) unless user picked one
+        const nextStrike = strikeTouchedRef.current && !indexChanged
+          ? inputs.strike
+          : Math.round(nextSpot / step) * step;
+
+        // Live premium + IV for the chosen strike (nearest chain row within half a step)
+        let livePremium = 0;
+        let liveIV = 0;
+        if (rows && rows.length) {
+          let best: any = null;
+          let bestDist = Infinity;
+          for (const r of rows) {
+            const d = Math.abs((r?.strike ?? -Infinity) - nextStrike);
+            if (d < bestDist) { bestDist = d; best = r; }
+          }
+          if (best && bestDist <= step / 2) {
+            const leg = inputs.optionType === "CE" ? best.ce : best.pe;
             if (leg && leg.ltp > 0) {
-              realPremium = leg.ltp;
-              realIV = leg.iv || inputs.iv;
+              livePremium = leg.ltp;
+              liveIV = leg.iv > 0 ? leg.iv : 0;
             }
           }
         }
 
-        const finalPremium = realPremium > 0 ? realPremium : Math.max(spotPrice * 0.03, 25);
-        const finalIV = realIV > 0 ? realIV : inputs.iv;
+        const nextPremium = premiumTouchedRef.current
+          ? inputs.entryPremium
+          : livePremium > 0
+            ? livePremium
+            : indexChanged
+              ? Math.max(nextSpot * 0.03, 25)
+              : inputs.entryPremium;
+
+        const nextIV = ivTouchedRef.current
+          ? inputs.iv
+          : liveIV > 0
+            ? liveIV
+            : indexChanged && vix > 0
+              ? vix
+              : inputs.iv;
+
+        const nextLotSize = indexChanged ? getLotSize(idx) : inputs.lotSize;
 
         setInputs((prev) => ({
           ...prev,
-          strike,
-          entryPremium: finalPremium,
-          currentLTP: finalPremium,
-          spot: spotPrice,
-          iv: finalIV,
+          spot: nextSpot,
+          strike: nextStrike,
+          entryPremium: nextPremium,
+          currentLTP: nextPremium,
+          iv: nextIV,
+          lotSize: nextLotSize,
         }));
-
-        const r = calculate({
-          ...inputs,
-          strike,
-          entryPremium: finalPremium,
-          currentLTP: finalPremium,
-          spot: spotPrice,
-          iv: finalIV,
-        });
-        if (!cancelled) setResult(r);
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Calculation error");
       } finally {
@@ -2419,9 +2618,55 @@ function ExpiryCalculator({
       }
     }
 
-    runCalculation();
+    seed();
     return () => { cancelled = true; };
-  }, [inputs.spot, inputs.index, inputs.optionType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, spot, vix, inputs.index, inputs.optionType, inputs.strike]);
+
+  // ── Effect 2: recalculate dynamically whenever any input changes ───────────
+  useEffect(() => {
+    if (inputs.settlementMode === "final" && (!inputs.settlementPrice || inputs.settlementPrice <= 0)) {
+      setResult(null);
+      setError(null);
+      setIsCalculating(false);
+      return;
+    }
+
+    setIsCalculating(true);
+    let cancelled = false;
+    try {
+      const r = calculate(inputs);
+      if (!cancelled) setResult(r);
+      if (!cancelled) setError(null);
+    } catch (e: any) {
+      if (!cancelled) setResult(null);
+      if (!cancelled) setError(e?.message || "Calculation error");
+    } finally {
+      if (!cancelled) setIsCalculating(false);
+    }
+    return () => { cancelled = true; };
+  }, [
+    inputs.index,
+    inputs.optionType,
+    inputs.position,
+    inputs.strike,
+    inputs.entryPremium,
+    inputs.currentLTP,
+    inputs.lots,
+    inputs.lotSize,
+    inputs.spot,
+    inputs.iv,
+    inputs.timeHours,
+    inputs.settlementPrice,
+    inputs.settlementMode,
+    inputs.brokeragePerOrder,
+    inputs.sttPct,
+    inputs.exchangeChargesPct,
+    inputs.gstPct,
+    inputs.sebiPct,
+    inputs.stampDutyPct,
+    inputs.zeroHeroPremiumThreshold,
+  ]);
 
   if (error) {
     return (
@@ -2432,16 +2677,253 @@ function ExpiryCalculator({
     );
   }
   if (!result) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
-        <Target className="h-8 w-8 animate-pulse mb-2" />
-        <p>Calculating option plan from live chain data…</p>
-      </div>
-    );
+    if (inputs.settlementMode === "final") {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
+          <AlertTriangle className="h-8 w-8 mb-3" />
+          <p>Enter the final settlement price to calculate.</p>
+        </div>
+      );
+    }
+    if (isCalculating) {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 text-[#7d8ba0] text-xs">
+          <Target className="h-8 w-8 animate-pulse mb-2" />
+          <p>Loading live option chain…</p>
+        </div>
+      );
+    }
+    return null;
   }
 
   const atmStrike = Math.round(result.settlementUsed / 50) * 50;
 
+  return (
+    <div className="flex flex-col h-full overflow-y-auto p-3 bg-[#0a0e14] text-[#dfe6ee]">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Target className="h-4 w-4 text-violet-500" />
+          <span className="font-bold text-sm">Expiry-Day Option Survival / Zero-Hero Calculator</span>
+        </div>
+        <Badge variant="outline" className="text-[9px] px-2 py-1">
+          {inputs.settlementMode === "final" ? "FINAL SETTLEMENT" : "PROVISIONAL SETTLEMENT"}
+        </Badge>
+      </div>
+
+      {/* Disclaimer */}
+      <div className="bg-red-500/5 border border-red-500/20 rounded p-2 mb-3 text-[9px] text-red-400/90">
+        Educational tool. Probabilities are model estimates, not predictions. Options trading involves substantial risk. Not investment advice.
+      </div>
+
+      {/* Inputs Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
+        <InputRow label="Index" type="select" value={inputs.index} options={["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]} onChange={(v) => setInputs((prev) => ({ ...prev, index: v }))} />
+        <InputRow label="Option Type" type="select" value={inputs.optionType} options={["CE", "PE"]} onChange={(v) => setInputs((prev) => ({ ...prev, optionType: v }))} />
+        <InputRow label="Position" type="select" value={inputs.position} options={["BUY", "SELL"]} onChange={(v) => setInputs((prev) => ({ ...prev, position: v }))} />
+        <InputRow label="Strike" type="number" value={inputs.strike} step={50} onChange={(v) => { strikeTouchedRef.current = true; setInputs((prev) => ({ ...prev, strike: Number(v) })); }} />
+        <InputRow label="Entry Premium" type="number" value={inputs.entryPremium} step={0.05} onChange={(v) => { premiumTouchedRef.current = true; setInputs((prev) => ({ ...prev, entryPremium: Number(v) })); }} />
+        <InputRow label="Current LTP" type="number" value={inputs.currentLTP} step={0.05} onChange={(v) => { premiumTouchedRef.current = true; setInputs((prev) => ({ ...prev, currentLTP: Number(v) })); }} />
+        <InputRow label="Lots" type="number" value={inputs.lots} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lots: Number(v) }))} />
+        <InputRow label="Lot Size" type="number" value={inputs.lotSize} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lotSize: Number(v) }))} />
+        <InputRow label="Spot Price" type="number" value={inputs.spot} step={0.05} onChange={(v) => { spotTouchedRef.current = true; setInputs((prev) => ({ ...prev, spot: Number(v) })); }} />
+        <InputRow label="IV / VIX (%)" type="number" value={inputs.iv} step={0.1} onChange={(v) => { ivTouchedRef.current = true; setInputs((prev) => ({ ...prev, iv: Number(v) })); }} />
+        <InputRow label="Zero-Hero Premium Threshold (₹)" type="number" value={inputs.zeroHeroPremiumThreshold ?? 10} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, zeroHeroPremiumThreshold: Number(v) }))} />
+        <InputRow label="Hours to Expiry" type="number" value={inputs.timeHours} step={0.5} onChange={(v) => setInputs((prev) => ({ ...prev, timeHours: Number(v) }))} />
+        <InputRow label="Settlement Price" type="number" value={inputs.settlementPrice ?? ""} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, settlementPrice: v === "" ? undefined : Number(v) }))} />
+        <InputRow label="Settlement Mode" type="select" value={inputs.settlementMode} options={["provisional", "final"]} onChange={(v) => setInputs((prev) => ({ ...prev, settlementMode: v }))} />
+      </div>
+
+      {/* Charges */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+        <InputRow label="Brokerage/Order (₹)" type="number" value={inputs.brokeragePerOrder} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, brokeragePerOrder: Number(v) }))} />
+        <InputRow label="STT (%)" type="number" value={inputs.sttPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sttPct: Number(v) }))} />
+        <InputRow label="Exchange (%)" type="number" value={inputs.exchangeChargesPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, exchangeChargesPct: Number(v) }))} />
+        <InputRow label="GST (%)" type="number" value={inputs.gstPct} step={0.1} onChange={(v) => setInputs((prev) => ({ ...prev, gstPct: Number(v) }))} />
+        <InputRow label="SEBI (%)" type="number" value={inputs.sebiPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, sebiPct: Number(v) }))} />
+        <InputRow label="Stamp Duty (%)" type="number" value={inputs.stampDutyPct} step={0.001} onChange={(v) => setInputs((prev) => ({ ...prev, stampDutyPct: Number(v) }))} />
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Status</div>
+          <div className={`font-bold ${result.status === "ITM" ? "text-emerald-500" : result.status === "OTM" ? "text-red-500" : "text-yellow-500"}`}>
+            {result.status}
+          </div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Expiry Value</div>
+          <div className="font-bold text-emerald-500">₹{fmt(result.expiryValue)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Break-Even</div>
+          <div className="font-bold text-blue-500">₹{fmt(result.breakEven)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">ITM Probability</div>
+          <div className={`font-bold ${pctColor(result.probITM)}`}>{result.probITM.toFixed(1)}%</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Max Loss (Buyer)</div>
+          <div className="font-bold text-red-500">₹{fmt(result.maxLossBuyer)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Net P&L After Charges</div>
+          <div className={`font-bold ${pctColor(result.netPnLAfterCharges)}`}>₹{fmt(result.netPnLAfterCharges)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Risk Meter</div>
+          <div className={`font-bold ${meterColor(result.riskMeter)}`}>{result.riskMeter}</div>
+        </Card>
+      </div>
+
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Distance to Strike</div>
+          <div className="font-bold">{fmt(result.distanceToStrike)} pts ({fmt(result.distanceToStrikePct)}%)</div>
+          <div className="text-[9px] text-muted-foreground mt-1">Expected Move: ₹{fmt(result.expectedMove)}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Expected Value</div>
+          <div className="font-bold text-emerald-500">₹{fmt(result.expectedValuePerUnit)} / unit</div>
+          <div className="text-[9px] text-muted-foreground mt-1">₹{fmt(result.expectedValuePerLot)} / lot</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Settlement</div>
+          <div className="font-bold text-blue-500">₹{fmt(result.settlementUsed)}</div>
+          <div className="text-[9px] text-muted-foreground mt-1">{result.settlementLabel}</div>
+        </Card>
+        <Card className="border border-[#1f2733] bg-[#0f1117] p-2">
+          <div className="text-[9px] text-[#7d8ba0] mb-1">Max Loss (Seller)</div>
+          <div className={`font-bold ${pctColor(-Math.abs(Number(result.maxLossSeller)))}`}>{result.maxLossSeller}</div>
+        </Card>
+      </div>
+
+      {/* Trade Plan (collapsible, user-editable) */}
+      <div className="mb-3">
+        <button
+          onClick={() => setTradePlanOpen(!tradePlanOpen)}
+          className="flex items-center justify-between w-full text-left bg-[#0f1117] border border-[#1f2733] rounded px-3 py-2 text-[9px] text-[#7d8ba0] hover:text-[#dfe6ee] transition-colors"
+        >
+          <span className="flex items-center gap-1">
+            <Zap className="h-4 w-4" />
+            Trade Plan
+          </span>
+          <span className={`text-[8px] ${tradePlanOpen ? "▲" : "▼"}`} />
+        </button>
+        {tradePlanOpen && (
+          <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
+            <Card className="border border-[#1f2733] bg-[#0f1117] p-3 col-span-3">
+              <div className="text-[9px] text-[#7d8ba0] mb-1">Entry</div>
+              <div className="font-bold text-emerald-500 text-lg">₹{fmt(result.entryPremium)}</div>
+              <div className="text-[9px] text-muted-foreground mt-1">Lots: {inputs.lots} × Lot {inputs.lotSize} · Qty: {inputs.lots * inputs.lotSize}</div>
+              <div className="text-[9px] text-red-400/80 mt-1">On expiry day, premiums can gap or fall faster than a stop-loss can execute. Treat SL as indicative.</div>
+            </Card>
+            <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+              <div className="text-[9px] text-[#7d8ba0] mb-1">Stop-Loss Premium (₹)</div>
+              <InputRow
+                type="number"
+                value={slPremium ?? ""}
+                step={0.05}
+                onChange={(v) => setSlPremium(v === "" ? null : Number(v))}
+              />
+              <div className="text-[9px] text-muted-foreground mt-1">
+                Risk per lot: ₹{fmt(slPremium != null ? Math.abs(slPremium - result.entryPremium) * inputs.lotSize : 0)}
+              </div>
+            </Card>
+            <Card className="border border-[#1f2733] bg-[#0f1117] p-3">
+              <div className="text-[9px] text-[#7d8ba0] mb-1">Target Premium (₹)</div>
+              <InputRow
+                type="number"
+                value={tpPremium ?? ""}
+                step={0.05}
+                onChange={(v) => setTpPremium(v === "" ? null : Number(v))}
+              />
+              <div className="text-[9px] text-muted-foreground mt-1">
+                Reward per lot: ₹{fmt(tpPremium != null ? Math.abs(tpPremium - result.entryPremium) * inputs.lotSize : 0)} ·
+                R:R {slPremium != null && tpPremium != null && slPremium !== result.entryPremium ? (Math.abs(tpPremium - result.entryPremium) / Math.abs(slPremium - result.entryPremium)).toFixed(2) : "—"}
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+
+      {/* Zero-Hero Flag */}
+      {result.zeroHeroFlag && (
+        <div className="bg-orange-500/10 border border-orange-500/40 rounded p-2 mb-3">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle className="h-4 w-4 text-orange-500" />
+            <span className="font-bold text-orange-500 text-xs">🚫 ZERO-HERO FLAG — NO TRADE</span>
+          </div>
+          <p className="text-[10px] text-orange-400">{result.zeroHeroReason}</p>
+        </div>
+      )}
+
+      {/* Cost-Trap Warning */}
+      {result.costTrapWarning && (
+        <div className="bg-amber-500/10 border border-amber-500/40 rounded p-2 mb-3">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+            <span className="font-bold text-amber-500 text-xs">⚠️ COST TRAP — Charges eat a large share of profit</span>
+          </div>
+          <p className="text-[10px] text-amber-400">Square-off before expiry may be better than holding to settlement.</p>
+        </div>
+      )}
+
+      {/* Payoff Diagram (SVG) */}
+      <div className="border border-[#1f2733] bg-[#0f1117] rounded p-2 mb-3">
+        <div className="text-[9px] text-[#7d8ba0] font-bold mb-2">Payoff Diagram at Expiry</div>
+        <PayoffChart result={result} spot={inputs.spot} />
+      </div>
+
+      {/* Scenario Table */}
+      <div className="border border-[#1f2733] bg-[#0f1117] rounded overflow-hidden">
+        <div className="px-3 py-2 border-b border-[#1f2733] bg-[#10151d]/50">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-bold text-[#dfe6ee]">Settlement Scenario Table (₹{inputs.strike} − 300 to +300 in 50-pt steps)</span>
+            <span className="text-[9px] text-muted-foreground">Highlighted: Break-Even</span>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[9px]">
+            <thead>
+              <tr className="bg-[#10151d] border-b border-[#1f2733]">
+                <th className="px-2 py-1 text-left text-[#7d8ba0]">Settlement</th>
+                <th className="px-2 py-1 text-right text-[#7d8ba0]">Expiry Value</th>
+                <th className="px-2 py-1 text-right text-[#7d8ba0]">P&L / Lot</th>
+                <th className="px-2 py-1 text-right text-[#7d8ba0]">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.scenarioTable.map((row) => (
+                <tr
+                  key={row.settlement}
+                  className={`border-b border-[#1f2733] ${row.isBreakEven ? "bg-emerald-500/20" : row.isSpot ? "bg-blue-500/10" : ""}`}
+                >
+                  <td className="px-2 py-1">{row.settlement}</td>
+                  <td className="px-2 py-1 text-right font-mono">{fmt(row.expiryValue)}</td>
+                  <td className={`px-2 py-1 text-right font-mono ${row.pnlPerLot >= 0 ? "text-emerald-500" : "text-red-500"}`}>{fmt(row.pnlPerLot)}</td>
+                  <td className="px-2 py-1 text-right">
+                    <span className={`text-[9px] ${row.status === "ITM" ? "text-emerald-500" : row.status === "OTM" ? "text-red-500" : "text-yellow-500"} font-bold`}>
+                      {row.status}
+                    </span>
+                    {row.isBreakEven && <span className="ml-1 text-[8px] text-emerald-500">BE</span>}
+                    {row.isSpot && <span className="ml-1 text-[8px] text-blue-500">SPOT</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Payoff Chart (SVG) ──────────────────────────────────────────────────────
+function PayoffChart({ result, spot }: { result: ExpCalcResult; spot: number }) {
   const width = 420;
   const height = 180;
   const margin = { top: 20, right: 30, bottom: 30, left: 50 };

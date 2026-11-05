@@ -55,7 +55,7 @@ async function alertWeeklySetups(candidates: any[]): Promise<number> {
       spot: c.price,
       confidence: c.confidence,
       source: "weekly-equity-scanner",
-      tradeId: scannerTradeId("weekly-equity-scanner", c.symbol, ymd),
+      tradeId: scannerTradeId("weekly-equity-scanner", c.symbol, c.strike, c.optionType, ymd),
       reason: c.confidenceNote,
     }).catch(() => false);
     if (ok) sent++;

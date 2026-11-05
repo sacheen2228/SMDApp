@@ -86,6 +86,8 @@ async function ensureConnected(): Promise<SharedStream> {
       const timer = setTimeout(() => reject(new Error('Breeze WS connect timeout')), 8000);
       const s = breeze.socket;
       if (!s) { clearTimeout(timer); reject(new Error('No Breeze socket')); return; }
+      // Already connected (e.g. the Order Book feed joined first) — resolve now.
+      if (s.connected) { clearTimeout(timer); resolve(); return; }
       const onConnect = () => { clearTimeout(timer); s.off('connect', onConnect); resolve(); };
       const onErr = (e: any) => { clearTimeout(timer); s.off('connect', onConnect); reject(new Error(e?.message || 'Breeze WS error')); };
       s.on('connect', onConnect);

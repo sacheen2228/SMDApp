@@ -1,21 +1,28 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// Trade Monitor — deterministic TP/SL detection for ALL trade types
-// This is NOT an AI agent — it is pure math monitoring live prices
+// ════════════════════════════════════════════════════════════════════════════════════
+// Universal Trade Monitor — single TP/SL event loop for ALL trade types
+//
+// Replaces tiger-monitor.ts as the ONLY monitoring loop in the app.
+// Polls live prices every 5s during market hours, detects TP/SL hits,
+// and sends all alerts through the central alert funnel
+// (src/lib/trade-event-coordinator.ts → sendTradeEvent).
+//
 // Works for: BUY CE, BUY PE, equity BUY, equity SELL, futures, MCX
-// ═══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════════════
 
 import type {
   TradeMonitorState, TradeMonitorStatus, TPSLAlert, TPSLAlertType,
 } from './agent-contract';
-import { updateTradeStatus, releaseTradeLock, isTradeActive } from '../active-trade-lock';
+import { updateTradeStatus, isTradeActive, getMonitoredTrades } from '../activeTradeTracker';
+import { isTerminalTradeStatus } from '../activeTradeTracker';
+import { releaseTradeLock } from '../active-trade-lock';
+import { sendTradeEvent } from '../trade-event-coordinator';
 
 // ─── In-Memory Trade Monitor State ────────────────────────────────
-
 const monitoredTrades = new Map<string, TradeMonitorState>();
-const alertHistory = new Map<string, TPSLAlert[]>();
+const alertHistory = new Map<string, TPSLAlert[]>;
+const ltpFailCounts = new Map<string, number>();
 
 // ─── Register Trade for Monitoring ────────────────────────────────
-
 export function registerTradeForMonitoring(trade: Omit<TradeMonitorState,
   'currentLTP' | 'status' | 'pnl' | 'pnlPct' | 'mfe' | 'mae' |
   'tp1AlertSent' | 'tp2AlertSent' | 'tp3AlertSent' | 'slAlertSent' |
@@ -42,7 +49,6 @@ export function registerTradeForMonitoring(trade: Omit<TradeMonitorState,
 }
 
 // ─── Update Price and Detect TP/SL ────────────────────────────────
-
 export function updateAndDetect(
   tradeId: string,
   currentLTP: number
@@ -52,21 +58,17 @@ export function updateAndDetect(
     throw new Error(`Trade ${tradeId} not found in monitor`);
   }
 
-  // Update LTP
   state.currentLTP = currentLTP;
   state.lastCheckedAt = new Date().toISOString();
 
-  // Calculate P&L
   if (state.side === 'BUY') {
     state.pnl = (currentLTP - state.entry) * (state.quantity || 1);
     state.pnlPct = state.entry > 0 ? ((currentLTP - state.entry) / state.entry) * 100 : 0;
   } else {
-    // SELL positions
     state.pnl = (state.entry - currentLTP) * (state.quantity || 1);
     state.pnlPct = state.entry > 0 ? ((state.entry - currentLTP) / state.entry) * 100 : 0;
   }
 
-  // Update MFE/MAE
   if (state.side === 'BUY') {
     state.mfe = Math.max(state.mfe, currentLTP - state.entry);
     state.mae = Math.max(state.mae, state.entry - currentLTP);
@@ -75,66 +77,48 @@ export function updateAndDetect(
     state.mae = Math.max(state.mae, currentLTP - state.entry);
   }
 
-  // Detect TP/SL
   const alerts = detectTPSL(state);
 
   return { state, alerts };
 }
 
 // ─── TP/SL Detection (pure math, deterministic) ───────────────────
-// Detection is gated by STATUS sequencing (never re-fires once status
-// advanced). Delivery flags (*AlertSent) are set ONLY after Telegram
-// confirms send — see telegram-alerts.markAlertSent — so a failed send
-// can be retried without duplicating a successful one.
 
 function detectTPSL(state: TradeMonitorState): TPSLAlert[] {
   const alerts: TPSLAlert[] = [];
 
   if (state.status === 'CLOSED' || state.status === 'CANCELLED' || state.status === 'ERROR') {
-    return alerts; // Terminal — no more detection
+    return alerts;
   }
-  // Terminal hit statuses stop detection (SL / final TP)
   if (state.status === 'SL_HIT' || state.status === 'TP3_HIT') {
     return alerts;
   }
   if (state.status === 'TP2_HIT' && !(state.tp3 && state.tp3 > 0)) {
-    return alerts; // TP2 was the final target
+    return alerts;
   }
 
   const ltp = state.currentLTP;
 
   if (state.side === 'BUY') {
-    // BUY positions: SL if price drops, TP if price rises
-    // SL check (works from any non-terminal status — includes trailed SL after TP1)
     if (state.stopLoss > 0 && ltp <= state.stopLoss) {
       alerts.push(createAlert(state, 'SL_HIT', state.stopLoss));
       state.status = 'SL_HIT';
-    }
-    // TP1 check (only from OPEN/ACTIVE)
-    else if (state.status === 'OPEN' && state.tp1 > 0 && ltp >= state.tp1) {
+    } else if (state.status === 'OPEN' && state.tp1 > 0 && ltp >= state.tp1) {
       alerts.push(createAlert(state, 'TP1_HIT', state.tp1));
       state.status = 'TP1_HIT';
-      // Trail SL to breakeven after TP1 (mirrors activeTradeTracker)
       state.stopLoss = state.entry;
-    }
-    // TP2 check (only after TP1)
-    else if (state.status === 'TP1_HIT' && state.tp2 > 0 && ltp >= state.tp2) {
+    } else if (state.status === 'TP1_HIT' && state.tp2 > 0 && ltp >= state.tp2) {
       alerts.push(createAlert(state, 'TP2_HIT', state.tp2));
       state.status = 'TP2_HIT';
-    }
-    // TP3 check (only after TP2)
-    else if (state.status === 'TP2_HIT' && state.tp3 && state.tp3 > 0 && ltp >= state.tp3) {
+    } else if (state.status === 'TP2_HIT' && state.tp3 && state.tp3 > 0 && ltp >= state.tp3) {
       alerts.push(createAlert(state, 'TP3_HIT', state.tp3));
       state.status = 'TP3_HIT';
     }
   } else {
-    // SELL positions: SL if price rises, TP if price drops
     if (state.stopLoss > 0 && ltp >= state.stopLoss) {
       alerts.push(createAlert(state, 'SL_HIT', state.stopLoss));
       state.status = 'SL_HIT';
-    }
-    // TP check (single TP for SELL)
-    else if (state.status === 'OPEN' && state.tp1 > 0 && ltp <= state.tp1) {
+    } else if (state.status === 'OPEN' && state.tp1 > 0 && ltp <= state.tp1) {
       alerts.push(createAlert(state, 'TP1_HIT', state.tp1));
       state.status = 'TP1_HIT';
       state.stopLoss = state.entry;
@@ -143,8 +127,6 @@ function detectTPSL(state: TradeMonitorState): TPSLAlert[] {
 
   return alerts;
 }
-
-// ─── Create Alert ─────────────────────────────────────────────────
 
 function createAlert(
   state: TradeMonitorState,
@@ -227,7 +209,6 @@ export function closeTrade(tradeId: string, exitPrice: number, reason: string): 
   state.exitTime = new Date().toISOString();
   state.exitReason = reason;
 
-  // Update final P&L
   if (state.side === 'BUY') {
     state.pnl = (exitPrice - state.entry) * (state.quantity || 1);
     state.pnlPct = state.entry > 0 ? ((exitPrice - state.entry) / state.entry) * 100 : 0;
@@ -236,7 +217,6 @@ export function closeTrade(tradeId: string, exitPrice: number, reason: string): 
     state.pnlPct = state.entry > 0 ? ((state.entry - exitPrice) / state.entry) * 100 : 0;
   }
 
-  // Release trade lock
   releaseTradeLock(state.symbol, state.exchange);
 }
 
@@ -265,7 +245,6 @@ export function getAlertHistory(tradeId: string): TPSLAlert[] {
 
 export function storeAlert(alert: TPSLAlert): void {
   const history = alertHistory.get(alert.tradeId) || [];
-  // Idempotent on alertId — retries must not duplicate history entries
   if (!history.some(a => a.alertId === alert.alertId)) {
     history.push(alert);
   }
@@ -294,7 +273,7 @@ export function markAlertFailed(alertId: string, tradeId: string, error: string)
   }
 }
 
-// ─── Get Failed Alerts (for retry) ────────────────────────────────
+// ─── Get Failed Alerts (for retry) ──────────────────────────────────
 
 export function getFailedAlerts(): TPSLAlert[] {
   const all: TPSLAlert[] = [];
@@ -328,3 +307,295 @@ export function getMonitorSummary(): {
     totalPnL: all.reduce((sum, t) => sum + t.pnl, 0),
   };
 }
+
+// ─── LTP fetcher (MO → Breeze → NSE) ─────────────────────────────
+export interface LTPFetchDeps {
+  moPath?: (ref: {
+    symbol: string;
+    strike: number;
+    optionType: string;
+    expiry?: string;
+  }) => Promise<number>;
+  breezeChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
+  nseChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
+}
+
+async function defaultMOPath(ref: {
+  symbol: string;
+  strike: number;
+  optionType: string;
+  expiry?: string;
+}): Promise<number> {
+  const { resolveMOOptionLTP } = await import('@/lib/motilal/quote');
+  const result = await resolveMOOptionLTP({
+    symbol: ref.symbol,
+    strike: ref.strike,
+    optionType: ref.optionType,
+    expiry: ref.expiry,
+  });
+  return result.ltp > 0 ? result.ltp : 0;
+}
+
+async function defaultBreezeChain(
+  symbol: string,
+  strike: number,
+  optionType: string
+): Promise<number> {
+  try {
+    const { getOptionChain } = await import('@/lib/icici-breeze/option-chain');
+    const chain = await getOptionChain(symbol, "");
+    if (chain) {
+      const idx = chain.strikes.indexOf(strike);
+      if (idx >= 0) {
+        const call = chain.calls[idx];
+        const put = chain.puts[idx];
+        const leg = optionType === "CE" ? call : put;
+        if (leg?.ltp && leg.ltp > 0) return leg.ltp;
+      }
+    }
+  } catch {}
+  return 0;
+}
+
+async function defaultNSEChain(
+  symbol: string,
+  strike: number,
+  optionType: string
+): Promise<number> {
+  try {
+    const { getNSEOptionChain } = await import("@/lib/nse-api");
+    const data = await getNSEOptionChain(symbol);
+    if (data?.records?.data) {
+      const row = data.records.data.find((r: any) => r.strikePrice === strike);
+      if (row) {
+        const leg = optionType === "CE" ? row.CE : row.PE;
+        if (leg?.lastPrice && leg.lastPrice > 0) return leg.lastPrice;
+      }
+    }
+  } catch {}
+  return 0;
+}
+
+export async function fetchLTP(
+  symbol: string,
+  strike: number,
+  optionType: string,
+  expiry?: string,
+  deps?: LTPFetchDeps
+): Promise<number> {
+  const isOption = optionType === "CE" || optionType === "PE";
+
+  if (isOption && strike > 0) {
+    const moPath = deps?.moPath ?? defaultMOPath;
+    const mo = await moPath({ symbol, strike, optionType, expiry });
+    if (mo > 0) return mo;
+
+    const breezeChain = deps?.breezeChain ?? defaultBreezeChain;
+    const breeze = await breezeChain(symbol, strike, optionType);
+    if (breeze > 0) return breeze;
+
+    const nseChain = deps?.nseChain ?? defaultNSEChain;
+    const nse = await nseChain(symbol, strike, optionType);
+    if (nse > 0) return nse;
+
+    return 0;
+  }
+
+  try {
+    const { getQuotes } = await import("@/lib/icici-breeze/option-chain");
+    const q = await getQuotes(symbol, "NSE");
+    const ltp = Number(q?.[0]?.ltp ?? q?.ltp ?? 0);
+    if (ltp > 0) return ltp;
+  } catch {}
+
+  try {
+    const { fetchStockQuotes } = await import("@/lib/nse-stock-data");
+    const quotes = await fetchStockQuotes([symbol]);
+    const ltp = Number(quotes?.[symbol]?.ltp ?? quotes?.[symbol.toUpperCase()]?.ltp ?? 0);
+    if (ltp > 0) return ltp;
+  } catch {}
+
+  return 0;
+}
+
+// ─── Market hours check ──────────────────────────────────────────
+
+const MARKET_START_HOUR = 9;
+const MARKET_START_MIN = 15;
+const MARKET_END_HOUR = 15;
+const MARKET_END_MIN = 30;
+
+function isMarketOpen(): boolean {
+  const now = new Date();
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const h = ist.getHours();
+  const m = ist.getMinutes();
+  const dow = ist.getDay();
+  if (dow === 0 || dow === 6) return false;
+  const mins = h * 60 + m;
+  return mins >= MARKET_START_HOUR * 60 + MARKET_START_MIN && mins <= MARKET_END_HOUR * 60 + MARKET_END_MIN;
+}
+
+// ─── Polling loop ────────────────────────────────────────────────
+
+const POLL_INTERVAL_MS = 5_000;
+const LTP_FAIL_THRESHOLD = 10;
+
+let monitorRunning = false;
+let monitorTimer: ReturnType<typeof setInterval> | null = null;
+
+export async function pollTradesOnce(
+  resolveLTP?: (t: TradeMonitorState) => Promise<number>
+): Promise<{ detected: number; sent: number; errors: string[] }> {
+  const errors: string[] = [];
+  let detected = 0;
+  let sent = 0;
+  const resolver =
+    resolveLTP ??
+    ((t: TradeMonitorState) => fetchLTP(t.symbol, t.strike ?? 0, t.instrument === 'CALL' ? 'CE' : t.instrument === 'PUT' ? 'PUT' : t.instrument === 'FUTURES' ? 'FUTURES' : 'EQ', t.expiry));
+
+  const trades = Array.from(monitoredTrades.values()).filter(
+    t => !['CLOSED', 'CANCELLED', 'ERROR', 'SL_HIT', 'TP3_HIT'].includes(t.status)
+      && !(t.status === 'TP2_HIT' && !(t.tp3 && t.tp3 > 0))
+  );
+
+  for (const trade of trades) {
+    try {
+      const ltp = await resolver(trade);
+      if (ltp <= 0) {
+        const fails = (ltpFailCounts.get(trade.tradeId) || 0) + 1;
+        ltpFailCounts.set(trade.tradeId, fails);
+        if (fails === LTP_FAIL_THRESHOLD) {
+          const msg = [
+            "⚠️ MONITORING ERROR",
+            `Symbol: ${trade.symbol}`,
+            `Strike: ${trade.strike}`,
+            `Type: ${trade.instrument}`,
+            `LTP feed unavailable after ${fails} consecutive attempts`,
+            `Trade remains OPEN — no TP/SL detection until feed recovers`,
+            `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
+          ].join("\n");
+          await sendTradeEvent({
+            tradeId: trade.tradeId,
+            eventType: 'SL_HIT',
+            targetLevel: trade.stopLoss,
+            symbol: trade.symbol,
+            action: trade.side,
+            strike: trade.strike,
+            optionType: trade.instrument,
+            entry: trade.entry,
+            spot: trade.currentLTP,
+            source: 'trade-monitor',
+            confidence: (trade as any).confidence ?? 50,
+          }).catch(() => {});
+          errors.push(`LTP unavailable for ${trade.symbol} (${trade.tradeId}) after ${fails} attempts`);
+        }
+        continue;
+      }
+      ltpFailCounts.delete(trade.tradeId);
+
+      const { state, alerts } = await updateAndDetect(trade.tradeId, ltp);
+      if (!alerts || alerts.length === 0) continue;
+
+      detected += alerts.length;
+
+      for (const alert of alerts) {
+        const ok = await sendTradeEvent({
+          tradeId: alert.tradeId,
+          eventType: alert.alertType,
+          targetLevel: alert.triggerPrice,
+          symbol: alert.symbol,
+          action: alert.side,
+          strike: alert.strike,
+          optionType: alert.instrument,
+          entry: alert.entry,
+          stopLoss: alert.sl,
+          target1: alert.tp1,
+          target2: alert.tp2,
+          spot: alert.currentLTP,
+          source: 'trade-monitor',
+          confidence: state.confidence,
+        }).catch(() => {});
+
+        if (ok) sent++;
+      }
+
+      if (
+        state.status === 'SL_HIT' ||
+        state.status === 'TP3_HIT' ||
+        (state.status === 'TP2_HIT' && !(trade.tp3 && trade.tp3 > 0))
+      ) {
+        ltpFailCounts.delete(trade.tradeId);
+        console.log(`[TradeMonitor] ${trade.symbol} ${state.status} — monitoring stopped`);
+      }
+    } catch (err: any) {
+      errors.push(`${trade.tradeId}: ${err.message}`);
+    }
+  }
+
+  return { detected, sent, errors };
+}
+
+async function monitorTick(): Promise<void> {
+  if (!isMarketOpen()) return;
+  try {
+    const result = await pollTradesOnce();
+    if (result.detected > 0 || result.errors.length > 0) {
+      console.log(
+        `[TradeMonitor] tick detected=${result.detected} sent=${result.sent} errors=${result.errors.length}`,
+        result.errors.slice(0, 3)
+      );
+    }
+  } catch (err: any) {
+    console.warn(`[TradeMonitor] tick error: ${err.message}`);
+  }
+}
+
+// ── Public API ──────────────────────────────────────────────
+
+export async function startUniversalMonitor(): Promise<void> {
+  const g = globalThis as any;
+  if (!g.__tradeMonitor) g.__tradeMonitor = { running: false, timer: null };
+  const state = g.__tradeMonitor;
+  if (state.running) return;
+
+  try {
+    const { reloadActiveTrades } = await import('../activeTradeTracker');
+    const loaded = await reloadActiveTrades();
+    console.log(`[TradeMonitor] Reloaded ${loaded} active trades from database`);
+  } catch (err: any) {
+    console.warn(`[TradeMonitor] Failed to reload trades: ${err.message}`);
+  }
+
+  state.running = true;
+  state.timer = setInterval(monitorTick, POLL_INTERVAL_MS);
+  monitorRunning = true;
+  monitorTimer = state.timer;
+  console.log("[TradeMonitor] Trade monitor started — polling every 5s");
+}
+
+export function stopUniversalMonitor(): void {
+  const g = globalThis as any;
+  const state = g.__tradeMonitor;
+  if (state?.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+  if (monitorTimer) {
+    clearInterval(monitorTimer);
+    monitorTimer = null;
+  }
+  if (state) state.running = false;
+  monitorRunning = false;
+  console.log("[TradeMonitor] Trade monitor stopped");
+}
+
+export function isUniversalMonitorRunning(): boolean {
+  const g = globalThis as any;
+  return g.__tradeMonitor?.running || monitorRunning;
+}
+
+export function detectHitForTest(trade: ActiveTrade, currentLTP: number): TPSLAlertType | null {
+  return detectPlanHit(trade, currentLTP);
+}
+

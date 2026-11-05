@@ -77,11 +77,13 @@ model Post {
 model Trade {
   id               String   @id @default(cuid())
   tradeId          String   @unique
+  signalId         String?   // stable signal identity (distinct from tradeId)
+  signalDate       String?   // IST trading date YYYY-MM-DD
   symbol           String
   exchange         String   @default("NSE")
   strike           Float
-  type             String
-  side             String   @default("BUY")
+  type             String   // CE | PE | EQUITY
+  side             String   @default("BUY") // BUY | SELL
   entryTime        DateTime
   entryPrice       Float
   exitTime         DateTime?
@@ -103,9 +105,33 @@ model Trade {
   target3          Float?
   tpHitLevel       String?
   strategy         String   @default("intraday-scan")
+  expiry           String?   // contract expiry YYYY-MM-DD (options), NULL for equity
   underlyingSpot   Float?   // UNDERLYING price at signal time. NULL when unknown — NEVER the option premium
   tradedAt         DateTime @default(now())
   createdAt        DateTime @default(now())
+
+  @@unique([symbol, exchange, strike, type, expiry, side, strategy, signalDate])
+}
+
+// ── Trade Event Notification (single source of truth for TP/SL/entry/exit alerts) ──
+// One row per (tradeId, eventType, targetLevel, eventVersion). Status drives the
+// retry queue: PENDING → PROCESSING → SENT | FAILED | DELIVERY_UNKNOWN.
+model NotificationEvent {
+  id             String   @id @default(cuid())
+  tradeId        String   // references Trade.tradeId
+  eventType      String   // ENTRY | TP1_HIT | TP2_HIT | TP3_HIT | SL_HIT | EXIT
+  targetLevel    Float?   // the price level that triggered this event (entry / SL / TP1 / TP2 / TP3)
+  eventVersion   Int      @default(1) // bump when event semantics change
+  status         String   @default("PENDING") // PENDING | PROCESSING | SENT | FAILED | DELIVERY_UNKNOWN
+  telegramMsgId  String?  // Telegram messageId when delivered
+  attemptCount   Int      @default(0)
+  lastError      String?
+  createdAt      DateTime @default(now())
+  sentAt         DateTime?
+
+  @@unique([tradeId, eventType, targetLevel, eventVersion])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model DomAnalysis {

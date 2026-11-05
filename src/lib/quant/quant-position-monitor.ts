@@ -14,7 +14,7 @@
 // stale data.
 
 import { db } from "@/lib/db";
-import { fetchLTP } from "@/lib/tiger-monitor";
+import { fetchLTP } from "@/lib/agents/trade-monitor";
 import { quantTelegramChatId } from "./quant-config";
 import { istDayKey, istIso } from "./quant-data";
 import { qid } from "./quant-types";

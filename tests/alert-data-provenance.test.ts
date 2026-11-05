@@ -30,7 +30,7 @@ describe("monitoring errors never reach the real Telegram from a test run", () =
     const { __setAlertSenderForTests } = await import("@/lib/agents/telegram-alerts");
     const sent: string[] = [];
     __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
-    const { pollTradesOnce } = await import("@/lib/tiger-monitor");
+    const { pollTradesOnce } = await import("@/lib/agents/trade-monitor");
     const { addTrade } = await import("@/lib/activeTradeTracker");
     const id = `provenance-${Date.now()}`;
     await addTrade({

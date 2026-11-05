@@ -24,7 +24,7 @@ import { useTheme } from 'next-themes';
 import { useTradingStore } from '@/stores/useTradingStore';
 import { dataSourceBadge } from '@/lib/data-source-label';
 import { OrderPanel } from '@/components/dashboard/OrderPanel';
-import { OrderBook } from '@/components/dashboard/OrderBook';
+import { OrderBookPanel } from '@/components/orderbook/OrderBookPanel';
 import { PositionTracker } from '@/components/dashboard/PositionTracker';
 import { MarketStatus } from '@/components/dashboard/MarketStatus';
 import { SDMDashboard } from '@/components/dashboard/SDMDashboard';
@@ -58,7 +58,6 @@ import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
 import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
 import { SectorRotation } from '@/components/dashboard/SectorRotation';
 import { MarketHeatmap } from '@/components/dashboard/MarketHeatmap';
-import { UnifiedIntelligenceDashboard } from '@/components/dashboard/UnifiedIntelligenceDashboard';
 import { BestTradesNow } from '@/components/dashboard/BestTradesNow';
 import { AlertCenter } from '@/components/dashboard/AlertCenter';
 import { CASPanel } from '@/components/dashboard/CASPanel';
@@ -333,7 +332,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper' | 'unified-intelligence'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -811,6 +810,11 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('futures'); setDisplayMode('pro'); }}>
               <Zap className="h-2.5 w-2.5 mr-0.5" /> Futures
             </Button>
+            <Button variant={viewMode === 'orderbook' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orderbook' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
+              onClick={() => { setViewMode('orderbook'); setDisplayMode('pro'); }}>
+              <BookOpen className="h-2.5 w-2.5 mr-0.5" /> Book
+            </Button>
             <Button variant={viewMode === 'commodity' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'commodity' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('commodity'); setDisplayMode('pro'); }}>
@@ -838,17 +842,7 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('intelligence'); setDisplayMode('pro'); }}>
               <Brain className="h-2.5 w-2.5 mr-0.5" /> Intel
             </Button>
-            <Button variant={viewMode === 'unified-intelligence' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'unified-intelligence' ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-sm shadow-blue-500/25' : 'text-muted-foreground hover:text-blue-500'}`}
-              onClick={() => { setViewMode('unified-intelligence'); setDisplayMode('pro'); }}>
-              <Brain className="h-2.5 w-2.5 mr-0.5" /> Unified Quant
-            </Button>
-            <Button variant="ghost" size="sm"
-              className="h-6 text-[9px] px-1.5 font-bold text-muted-foreground hover:text-emerald-500"
-              onClick={() => window.open('/premarket-lab', '_blank')}>
-              <FlaskConical className="h-2.5 w-2.5 mr-0.5" /> Pre-Lab
-            </Button>
-          </div>
+            </div>
 
           {/* More dropdown */}
           <Popover>
@@ -1085,6 +1079,11 @@ export default function TradingDashboard() {
         <div className="flex-1 overflow-auto p-2">
           <CommodityDashboard />
         </div>
+        ) : viewMode === 'orderbook' ? (
+        /* ═══════ ORDER BOOK (NIFTY + SENSEX futures depth) ═══════ */
+        <div className="flex-1 overflow-auto">
+          <OrderBookPanel />
+        </div>
         ) : viewMode === "credit" ? (
         /* ═══════ CREDIT SPREAD ═══════ */
         <CreditTab />
@@ -1097,11 +1096,6 @@ export default function TradingDashboard() {
         /* ═══════ MARKET DECISION INTELLIGENCE CENTER ═══════ */
         <div className="flex-1 overflow-hidden">
           <IntelTab onStockClick={setSelectedAnalysisStock} />
-        </div>
-        ) : viewMode === 'unified-intelligence' ? (
-        /* ═══════ UNIFIED INTRADAY INTELLIGENCE ENGINE ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <UnifiedIntelligenceDashboard symbol={symbol} />
         </div>
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */

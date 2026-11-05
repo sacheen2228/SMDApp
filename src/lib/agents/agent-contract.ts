@@ -481,22 +481,20 @@ export interface TradeMonitorState {
   status: TradeMonitorStatus;
   pnl: number;
   pnlPct: number;
-  mfe: number;   // Maximum Favorable Excursion
-  mae: number;   // Maximum Adverse Excursion
+  mfe: number;
+  mae: number;
   entryTime: string;
   lastCheckedAt: string;
   quantity?: number;
-
-  // Alert state (prevents duplicate alerts)
   tp1AlertSent: boolean;
   tp2AlertSent: boolean;
   tp3AlertSent: boolean;
   slAlertSent: boolean;
-
-  // Outcome
   exitPrice?: number;
   exitTime?: string;
   exitReason?: string;
+  expiry?: string;
+  confidence?: number;
 }
 
 // ─── TP/SL Alert Types ───────────────────────────────────────────

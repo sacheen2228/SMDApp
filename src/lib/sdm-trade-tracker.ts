@@ -2,6 +2,12 @@
 // Persistent trade journal using Prisma + SQLite with in-memory cache
 // SAFETY: Uses canonical validator + active trade lock
 
+// Deterministic trade ID — same setup gets same ID across restarts
+function makeTradeId(symbol: string, strike: number, optionType: string, expiry: string, direction: string): string {
+  const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+  return `SCAN-${direction}-${symbol}-${strike}-${optionType}-${expiry}-${ymd}`;
+}
+
 import type { TradeRecord, TradeGrade } from "@/types/sdm";
 import { db } from "@/lib/db";
 import { validateCandidateTrade } from "@/lib/trade-validator-gate";
@@ -106,7 +112,8 @@ export async function addTrade(
   reason: string = ""
 ): Promise<TradeRecord | null> {
   // SAFETY: Option selling is forbidden — reject sell directions at runtime
-  if (direction === "SELL_CALL" || direction === "SELL_PUT") {
+  const direction = trade.side === 'BUY' ? 'BUY_CALL' : 'BUY_PE';
+  if (direction === 'BUY_CE' || direction === 'BUY_PE') {
     console.error(`[SDM Trade Tracker] REJECTED: ${direction} — option selling is not allowed`);
     return null;
   }
@@ -140,7 +147,7 @@ export async function addTrade(
   }
 
   // SAFETY: Acquire active trade lock
-  const tradeId = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+  const tradeId = makeTradeId(currentSymbol, strike, direction === 'CALL' ? 'CE' : 'PE', '', direction === 'CALL' ? 'BUY_CE' : 'BUY_PE');
   const lockResult = await acquireTradeLock({
     tradeId,
     strategy: 'SDM',

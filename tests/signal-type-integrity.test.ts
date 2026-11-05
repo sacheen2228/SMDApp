@@ -313,7 +313,7 @@ describe("morning signal type integrity — the tracker only gets priceable trad
 describe("morning signal type integrity — the registered trade is monitored sanely", () => {
   test("a registered cash short is NOT stopped out the moment it opens", async () => {
     const { sendIndividualSignals } = await import("@/lib/morningSignalGenerator");
-    const { detectHitForTest } = await import("@/lib/tiger-monitor");
+    const { detectPlanHit } = await import("@/lib/agents/trade-monitor");
     const c = collector();
     const s = sentText();
 
@@ -324,16 +324,16 @@ describe("morning signal type integrity — the registered trade is monitored sa
 
     // The price at the entry is NOT a stop (the stop is above the entry for a
     // cash short) and NOT a target.
-    expect(detectHitForTest(trade, trade.entry)).toBeNull();
+    expect(detectPlanHit(trade, trade.entry)).toBeNull();
     // the stop is hit when the price rises to it
-    expect(detectHitForTest(trade, trade.sl)).toBe("SL_HIT");
+    expect(detectPlanHit(trade, trade.sl)).toBe("SL_HIT");
     // the target is hit when the price falls to it
-    expect(detectHitForTest(trade, trade.tp1)).toBe("TP1_HIT");
+    expect(detectPlanHit(trade, trade.tp1)).toBe("TP1_HIT");
   });
 
   test("a registered option buy is monitored on the option-premium feed", async () => {
     const { sendIndividualSignals } = await import("@/lib/morningSignalGenerator");
-    const { detectHitForTest } = await import("@/lib/tiger-monitor");
+    const { detectPlanHit } = await import("@/lib/agents/trade-monitor");
     const c = collector();
     const s = sentText();
 
@@ -344,7 +344,7 @@ describe("morning signal type integrity — the registered trade is monitored sa
     // the tracker resolves an OPTION premium for a PE (strike > 0 + CE/PE)
     expect(trade.strike > 0 && (trade.optionType === "CE" || trade.optionType === "PE")).toBe(true);
     // a bought put: the stop is above the entry, the target below
-    expect(detectHitForTest(trade, trade.sl)).toBe("SL_HIT");
-    expect(detectHitForTest(trade, trade.tp1)).toBe("TP1_HIT");
+    expect(detectPlanHit(trade, trade.sl)).toBe("SL_HIT");
+    expect(detectPlanHit(trade, trade.tp1)).toBe("TP1_HIT");
   });
 });

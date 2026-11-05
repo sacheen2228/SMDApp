@@ -638,8 +638,8 @@ export async function GET(request: NextRequest) {
     // ─── Honest 6-state data quality ────────────────────────────────────
     // Derived from provider freshness + market session + source availability.
     // ERROR | CLOSED | STALE | DELAYED | PARTIAL | LIVE
-    const quoteOk = marketData.quoteFallback?.size > 0;
-    const dailyOk = marketData.dailyCandles?.size > 0;
+    const quoteOk = (marketData.quoteFallback?.size ?? 0) > 0;
+    const dailyOk = (marketData.dailyCandles?.size ?? 0) > 0;
     const chainStatus: SourceStatus = {
       ok: chainOk,
       ageMs: chainAgeMs,
@@ -679,7 +679,7 @@ export async function GET(request: NextRequest) {
     (result as any).dataQuality = dataQuality;
 
     const cardMeta = buildCardMeta({
-      source: chainOk ? chainSource : quoteOk ? (prov.source === "moneycontrol" ? "moneycontrol" : "nse") : "none",
+        source: chainOk ? chainSource : quoteOk ? (marketDataBundle.quoteSource === "moneycontrol" ? "moneycontrol" : "nse") : "none",
       providerTimestamp: chainOk ? (chainAgeMs != null ? new Date(Date.now() - chainAgeMs) : null) : quoteStamp,
       ttlMs: 120_000,
       live: clock.isOpen && dataQuality === "LIVE",
@@ -754,7 +754,7 @@ export async function GET(request: NextRequest) {
             spot: stock.currentPrice,
             confidence: stock.totalScore ?? 0,
             source: "intraday-scanner",
-            tradeId: scannerTradeId("intraday-scanner", stock.symbol, ymd),
+            tradeId: scannerTradeId("intraday-scanner", stock.symbol, stock.monthlyOptionTrade?.strike ?? 0, stock.monthlyOptionTrade?.optionType ?? 'CE', ymd),
             reason: stock.technicalSummary,
           }).catch(() => false);
           if (sent) equityAlerts++;
@@ -766,7 +766,7 @@ export async function GET(request: NextRequest) {
         if (!opt || !(opt.premium > 0)) continue;
         if ((stock.totalScore ?? 0) < 65) continue;
         if (!dataQualityOk) continue;
-        const unifiedOk = stock.unifiedDecision === "TRADE" || stock.hardGatesPassed === true;
+        const unifiedOk = (stock as any).unifiedDecision === "TRADE" || (stock as any).hardGatesPassed === true;
         if (!unifiedOk) continue;
         const risk = opt.premium - Number(opt.stopLoss || 0);
         const reward = (opt.targets?.[0] ?? 0) - opt.premium;

@@ -35,7 +35,7 @@ export default function LoginForm() {
             disabled={loading}
             onClick={async () => {
               setLoading(true);
-              await signIn("google", { callbackUrl: "/terminal" });
+              await signIn("google");
             }}
           >
             {loading ? "Redirecting…" : "Continue with Google"}

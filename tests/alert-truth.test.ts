@@ -26,7 +26,7 @@ import {
 } from "@/lib/activeTradeTracker";
 import { formatStockOptionAlert, isPlausibleOptionPlan } from "@/lib/sendIntradayAlerts";
 import { formatEventForTelegram } from "@/lib/hermes/telegram-queue";
-import { detectHitForTest, pollTradesOnce } from "@/lib/tiger-monitor";
+import { detectHitForTest, pollTradesOnce } from "@/lib/agents/trade-monitor";
 import { __setAlertSenderForTests } from "@/lib/agents/telegram-alerts";
 import { releaseTradeLock } from "@/lib/active-trade-lock";
 import { getLotSize } from "@/lib/symbol-config";
@@ -371,7 +371,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
     __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
     const t = tradeOf(LIVE_PE, { id: `truth-tiger-${Date.now()}`, symbol: "TRUTHTIG1" });
     await addTrade(t, true);
-    const res = await pollTradesOnce(async (x) => (x.id === t.id ? LIVE_PE.stopLoss : 0));
+    const res = await pollTradesOnce(async (x) => (x.tradeId === t.id ? LIVE_PE.stopLoss : 0));
     expect(res.detected).toBe(1);
     expect(sent.length).toBe(1);
     const card = sent[0];
@@ -391,7 +391,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
     __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
     const t = tradeOf(LIVE_PE, { id: `truth-tiger-tp-${Date.now()}`, symbol: "TRUTHTIG2" });
     await addTrade(t, true);
-    const res = await pollTradesOnce(async (x) => (x.id === t.id ? LIVE_PE.targets[0] : 0));
+    const res = await pollTradesOnce(async (x) => (x.tradeId === t.id ? LIVE_PE.targets[0] : 0));
     expect(res.detected).toBe(1);
     const card = sent[0];
     expect(card).toContain("TARGET 1 HIT");

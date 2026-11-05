@@ -23,7 +23,7 @@ import {
   type ActiveTrade,
 } from '../src/lib/activeTradeTracker';
 import { isTradeActive, forceRelease } from '../src/lib/active-trade-lock';
-import { pollTradesOnce, startTigerMonitor, stopTigerMonitor, isTigerMonitorRunning } from '../src/lib/tiger-monitor';
+import { pollTradesOnce, startUniversalMonitor, stopUniversalMonitor, isUniversalMonitorRunning } from '../src/lib/agents/trade-monitor';
 import { sendTPSLAlert, retryFailedAlerts, __setAlertSenderForTests, getGlobalDeliveryStats } from '../src/lib/agents/telegram-alerts';
 import { sendTelegramMessage, verifyTelegramBot } from '../src/lib/telegram';
 import { db } from '../src/lib/db';
@@ -156,24 +156,24 @@ async function main() {
   check('S0', 'OPEN: trade active + lock held', getTrade(sm.id)?.status === 'ACTIVE' && isTradeActive(smSymbol, 'NFO') !== null);
 
   // TP1
-  await pollTradesOnce(async (t) => (t.id === sm.id ? 115 : 0));
+  await pollTradesOnce(async (t) => (t.tradeId === sm.id ? 115 : 0));
   const s1 = getTrade(sm.id);
   check('S1', 'OPEN→TP1: status TP1_HIT, still monitored, lock held, SL trailed',
-    s1?.status === 'TP1_HIT' && getMonitoredTrades().some(t => t.id === sm.id) && isTradeActive(smSymbol, 'NFO') !== null && s1?.sl === 100,
-    `status=${s1?.status} sl=${s1?.sl} monitored=${getMonitoredTrades().some(t => t.id === sm.id)}`);
+    s1?.status === 'TP1_HIT' && getMonitoredTrades().some(t => t.tradeId === sm.id) && isTradeActive(smSymbol, 'NFO') !== null && s1?.sl === 100,
+    `status=${s1?.status} sl=${s1?.sl} monitored=${getMonitoredTrades().some(t => t.tradeId === sm.id)}`);
 
   // TP2 (not terminal — tp3 pending)
-  await pollTradesOnce(async (t) => (t.id === sm.id ? 125 : 0));
+  await pollTradesOnce(async (t) => (t.tradeId === sm.id ? 125 : 0));
   const s2 = getTrade(sm.id);
   check('S2', 'TP1→TP2: status TP2_HIT, STILL monitored (tp3 pending), lock NOT released',
-    s2?.status === 'TP2_HIT' && getMonitoredTrades().some(t => t.id === sm.id) && isTradeActive(smSymbol, 'NFO') !== null,
-    `status=${s2?.status} monitored=${getMonitoredTrades().some(t => t.id === sm.id)} lock=${isTradeActive(smSymbol, 'NFO') !== null}`);
+    s2?.status === 'TP2_HIT' && getMonitoredTrades().some(t => t.tradeId === sm.id) && isTradeActive(smSymbol, 'NFO') !== null,
+    `status=${s2?.status} monitored=${getMonitoredTrades().some(t => t.tradeId === sm.id)} lock=${isTradeActive(smSymbol, 'NFO') !== null}`);
 
   // TP3 (terminal)
-  await pollTradesOnce(async (t) => (t.id === sm.id ? 135 : 0));
+  await pollTradesOnce(async (t) => (t.tradeId === sm.id ? 135 : 0));
   const s3 = getTrade(sm.id);
   check('S3', 'TP2→TP3: terminal — removed from memory, lock released, monitoring stopped',
-    s3 === undefined && isTradeActive(smSymbol, 'NFO') === null && !getMonitoredTrades().some(t => t.id === sm.id),
+    s3 === undefined && isTradeActive(smSymbol, 'NFO') === null && !getMonitoredTrades().some(t => t.tradeId === sm.id),
     `getTrade=${s3 === undefined ? 'undefined' : s3.status} lock=${isTradeActive(smSymbol, 'NFO')}`);
 
   // Trailing SL path: new trade → TP1 → price falls to trailed SL
@@ -229,10 +229,10 @@ async function main() {
 
   // ── 5. Real monitor start/stop ──
   console.log('\n── 5. Real monitor start/stop ──');
-  await startTigerMonitor();
-  check('M1', 'startTigerMonitor() sets running=true', isTigerMonitorRunning() === true);
-  stopTigerMonitor();
-  check('M2', 'stopTigerMonitor() sets running=false', isTigerMonitorRunning() === false);
+  await startUniversalMonitor();
+  check('M1', 'startUniversalMonitor() sets running=true', isUniversalMonitorRunning() === true);
+  stopUniversalMonitor();
+  check('M2', 'stopUniversalMonitor() sets running=false', isUniversalMonitorRunning() === false);
 
   // ── 6. Full restart: reloadActiveTrades + no re-alert ──
   console.log('\n── 6. Process restart simulation ──');

@@ -17,6 +17,7 @@ import { computeEodClose, holdingMinutes } from "./eod-squareoff";
 import { istSession } from "./audit-recorders";
 import { acquireTradeLock, releaseTradeLock, updateTradeStatus as updateLockStatus, isTradeActive } from "./active-trade-lock";
 import { getLotSize } from "./symbol-config";
+import { sendTradeEvent } from "./trade-event-coordinator";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -391,9 +392,24 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<v
   // TIGER alert: send Telegram notification for new trade (skip if caller already sent alert)
   if (!skipAlert) {
     try {
-      const { alertNewTrade } = await import("./tiger-monitor");
-      await alertNewTrade(trade);
-    } catch { /* tiger-monitor offline — non-fatal */ }
+      await sendTradeEvent({
+        tradeId: trade.id,
+        eventType: 'ENTRY',
+        targetLevel: trade.entry,
+        symbol: trade.symbol,
+        action: trade.side,
+        strike: trade.strike,
+        optionType: trade.optionType as any,
+        entry: trade.entry,
+        stopLoss: trade.sl,
+        target1: trade.tp1,
+        target2: trade.tp2,
+        spot: trade.entry,
+        source: trade.source,
+        confidence: trade.confidence,
+        expiry: trade.expiry,
+      }).catch(() => {});
+    } catch { /* alert funnel offline — non-fatal */ }
   }
 
   // Persist to database (idempotent — trade-journal route upserts on tradeId).

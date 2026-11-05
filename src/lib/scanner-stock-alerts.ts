@@ -199,6 +199,6 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
 }
 
 /** Stable trade id: one scanner trade per symbol per day. */
-export function scannerTradeId(source: ScannerStockSource, symbol: string, ymd: string): string {
-  return `SCAN-${source === "weekly-equity-scanner" ? "WEEK" : "INTRA"}-${symbol}-${ymd}`;
+export function scannerTradeId(source: ScannerStockSource, symbol: string, strike: number, optionType: string, ymd: string): string {
+  return `SCAN-${source === "weekly-equity-scanner" ? "WEEK" : "INTRA"}-${symbol}-${strike}-${optionType}-${ymd}`;
 }

@@ -188,4 +188,5 @@ def depth(service, **query):
         "tradingsymbol": result.get("tradingsymbol"),
         "bids": result.get("bids") or [],
         "asks": result.get("asks") or [],
+        "dataTs": result.get("dataTs"),
     }

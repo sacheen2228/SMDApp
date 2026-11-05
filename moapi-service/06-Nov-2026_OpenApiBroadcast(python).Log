@@ -1,0 +1,26 @@
+2026-11-06 00:01:30             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:02:22             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:06:00             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:06:00             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:09:16             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:12:28             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:16:02             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:21:56             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 63725 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 63728 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 145076 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 127156 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 62216 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 144171 Register Packet Sent (count=121/200)
+2026-11-06 00:23:23             SUCCESS             MOFSLOPENAPI.py             Script 63428 Register Packet Sent (count=121/200)
+2026-11-06 00:24:19             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 00:40:46             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:02:28             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:10:32             SUCCESS             MOFSLOPENAPI.py             Script 125999 Register Packet Sent (count=121/200)
+2026-11-06 01:10:32             SUCCESS             MOFSLOPENAPI.py             Script 39913 Register Packet Sent (count=121/200)
+2026-11-06 01:34:55             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:37:11             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:41:05             FAILED             MOFSLOPENAPI.py             'NoneType' object is not subscriptable
+2026-11-06 01:44:53             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:47:16             ERROR             MOFSLOPENAPI.py             Connection to remote host was lost.
+2026-11-06 01:48:56             FAILED             MOFSLOPENAPI.py             'set' object is not subscriptable

@@ -20,7 +20,7 @@ import {
 } from "@/lib/motilal/quote";
 import { resetServiceCache } from "@/lib/motilal/service";
 import { clearServiceLotSizes } from "@/lib/symbol-config";
-import { fetchLTP } from "@/lib/tiger-monitor";
+import { fetchLTP } from "@/lib/agents/trade-monitor";
 
 const ORIGINAL_URL = process.env.MOAPI_SERVICE_URL;
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -228,7 +228,7 @@ describe("moapi plausibility — the MO path in the TP/SL monitor", () => {
   });
 
   test("the monitor passes the trade's expiry to the price resolver", () => {
-    const src = readFileSync(join(process.cwd(), "src/lib/tiger-monitor.ts"), "utf8");
+    const src = readFileSync(join(process.cwd(), "src/lib/agents/trade-monitor.ts"), "utf8");
     expect(src).toContain("t.expiry");
   });
 });

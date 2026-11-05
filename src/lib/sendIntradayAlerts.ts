@@ -469,7 +469,8 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 
           if (results.some(Boolean)) {
             markSentToday(sig);
-            const tradeId = `stk-${stock.symbol}-${Date.now()}`;
+            const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+            const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? 'NOEXP'}-${ymd}`;
             await addTrade({
               id: tradeId,
               symbol: stock.symbol,

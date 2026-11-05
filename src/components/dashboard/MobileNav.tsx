@@ -9,15 +9,14 @@ import { useEffect, useRef } from "react";
 import {
   Activity, Bot, CalendarClock, Scan, Newspaper, Settings2, BarChart3,
   LineChart, TrendingUp, Flame, LayoutGrid, Crosshair, Shield, Target,
-  FileText, Zap, Gem, Map, Landmark, Handshake,
+  FileText, Zap, Gem, Map, Landmark, Handshake, BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export type MobileViewMode =
   | "terminal" | "chain" | "zerohero" | "scanner" | "btst" | "daily"
   | "backtest" | "expiry" | "gap" | "news" | "institutional" | "futures"
-  | "commodity" | "india" | "intelligence" | "credit" | "challenge"
-  | "agent" | "agent-intel" | "paper" | "admin" | "unified-intelligence";
+  | "orderbook" | "commodity" | "india" | "intelligence" | "credit" | "challenge"
 
 interface MobileNavProps {
   viewMode: MobileViewMode;
@@ -39,6 +38,7 @@ const TABS: { mode: MobileViewMode; label: string; icon: any; color: string }[] 
   // Market intel
   { mode: "institutional", label: "FII", icon: Landmark, color: "text-sky-500" },
   { mode: "futures", label: "Futures", icon: TrendingUp, color: "text-emerald-500" },
+  { mode: "orderbook", label: "Book", icon: BookOpen, color: "text-indigo-500" },
   { mode: "commodity", label: "MCX", icon: Gem, color: "text-yellow-500" },
   { mode: "india", label: "India", icon: Map, color: "text-orange-500" },
   { mode: "intelligence", label: "Intel", icon: LayoutGrid, color: "text-emerald-500" },

@@ -19,7 +19,7 @@ import {
   isTerminalTradeStatus, applyAlertFlags, type ActiveTrade,
 } from '../src/lib/activeTradeTracker';
 import { isTradeActive, acquireTradeLock, releaseTradeLock, forceRelease } from '../src/lib/active-trade-lock';
-import { pollTradesOnce } from '../src/lib/tiger-monitor';
+import { pollTradesOnce } from '../src/lib/agents/trade-monitor';
 import {
   sendTPSLAlert, retryFailedAlerts, getDeliveryStatus,
   getGlobalDeliveryStats, __setAlertSenderForTests,

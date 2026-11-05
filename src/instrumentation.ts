@@ -144,13 +144,13 @@ export async function register() {
       console.warn(`[ActiveTrade] Reload failed: ${err.message}`);
     }
 
-    // Auto-start TIGER trade monitor (SL/TP/T trailing + Telegram alerts)
+    // Auto-start Universal Trade Monitor (TP/SL polling + Telegram alerts)
     try {
-      const { startTigerMonitor } = await import("@/lib/tiger-monitor");
-      await startTigerMonitor();
-      console.log("[TIGER] Trade monitor auto-started");
+      const { startUniversalMonitor } = await import("@/lib/agents/trade-monitor");
+      await startUniversalMonitor();
+      console.log("[TradeMonitor] Trade monitor auto-started");
     } catch (err: any) {
-      console.warn(`[TIGER] Monitor auto-start failed: ${err.message}`);
+      console.warn(`[TradeMonitor] Monitor auto-start failed: ${err.message}`);
     }
 
     // Start voice output layer (output-only; synthesis is async — never blocks startup)

@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isEodEligible } from "@/lib/eod-squareoff";
 import { forceCloseTrade } from "@/lib/activeTradeTracker";
-import { fetchLTP } from "@/lib/tiger-monitor";
+import { fetchLTP } from "@/lib/agents/trade-monitor";
 
 const SECRET = process.env.DAILY_SCAN_SECRET;
 const CLOSABLE = ["ACTIVE", "OPEN", "PENDING", "TP1_HIT", "TP2_HIT"] as const;

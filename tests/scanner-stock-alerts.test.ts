@@ -102,18 +102,16 @@ describe("scanner stock alerts — honest cash sizing", () => {
 });
 
 describe("scanner stock alerts — stable trade id", () => {
-  test("one trade per symbol per day, per source", () => {
-    expect(scannerTradeId("intraday-scanner", "ADANIENT", "2026-11-04")).toBe(
-      "SCAN-INTRA-ADANIENT-2026-11-04",
+    expect(scannerTradeId("intraday-scanner", "ADANIENT", 0, "CE", "2026-11-04")).toBe(
+      "SCAN-INTRA-ADANIENT-0-CE-2026-11-04",
     );
-    expect(scannerTradeId("weekly-equity-scanner", "BEL", "2026-11-04")).toBe(
-      "SCAN-WEEK-BEL-2026-11-04",
+    expect(scannerTradeId("weekly-equity-scanner", "BEL", 0, "EQ", "2026-11-04")).toBe(
+      "SCAN-WEEK-BEL-0-EQ-2026-11-04",
     );
   });
 
   test("a different day is a different trade", () => {
-    expect(scannerTradeId("intraday-scanner", "ADANIENT", "2026-11-05")).not.toBe(
-      scannerTradeId("intraday-scanner", "ADANIENT", "2026-11-04"),
+    expect(scannerTradeId("intraday-scanner", "ADANIENT", 0, "CE", "2026-11-05")).not.toBe(
+      scannerTradeId("intraday-scanner", "ADANIENT", 0, "CE", "2026-11-04"),
     );
   });
-});
