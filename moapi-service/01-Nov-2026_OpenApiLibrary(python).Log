@@ -1,0 +1,2 @@
+2026-11-01 18:54:51             FAILED             MOFSLOPENAPI.py             GetPublicIPAddressHTTPConnectionPool(host='checkip.dyndns.org', port=80): Max retries exceeded with url: / (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f43fdfadba0>: Failed to establish a new connection: [Errno -2] Name or service not known'))
+2026-11-01 18:54:51             SUCCESS             MOFSLOPENAPI.py             Initilize login request send
