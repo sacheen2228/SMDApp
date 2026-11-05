@@ -399,10 +399,12 @@ export async function GET(request: NextRequest) {
       });
 
       // Phase D: derivatives context (reuse chainResult already fetched — no re-fetch)
-      const chainData = chainResult?.data ?? [];
+      const chainStrikes = Array.isArray(chainResult?.data?.strikes)
+        ? chainResult.data.strikes
+        : [];
       const chainSummary = chainResult?.data?.summary ?? {};
-      const totalCallOI = chainData.reduce((s: number, st: any) => s + (st.ce?.oi || 0), 0);
-      const totalPutOI = chainData.reduce((s: number, st: any) => s + (st.pe?.oi || 0), 0);
+      const totalCallOI = chainStrikes.reduce((s: number, st: any) => s + (st.ce?.oi || 0), 0);
+      const totalPutOI = chainStrikes.reduce((s: number, st: any) => s + (st.pe?.oi || 0), 0);
       const derivatives: any = {
         symbol: indexSymbol,
         exchange: "NSE",

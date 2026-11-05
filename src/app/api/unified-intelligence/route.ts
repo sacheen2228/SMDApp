@@ -25,6 +25,7 @@ import { coordinateDecision } from "@/lib/unified-engine/coordinator";
 import { computeSectorBreadth } from "@/lib/universe/sector-breadth";
 import { buildCashUniverse } from "@/lib/universe/cash-universe";
 import { getNSEHistoricalData } from "@/lib/nse-api";
+import { getMOCandles } from "@/lib/motilal/candles";
 import type { Candle } from "@/types/engine";
 
 // Map NSE historical bar shape to Candle
@@ -49,10 +50,28 @@ export async function GET(request: NextRequest) {
     // ── Fetch historical candles (last 100 days) ──
     const to = new Date();
     const from = new Date(to.getTime() - 120 * 86_400_000);
-    const bars = await getNSEHistoricalData(symbol, from, to);
-    if (!Array.isArray(bars) || bars.length < 30) {
+    let bars = await getNSEHistoricalData(symbol, from, to);
+    if (!Array.isArray(bars) || bars.length === 0) {
+      // NSE failed — try Motilal as fallback (same as scanner route)
+      try {
+        const moCandles = await getMOCandles(symbol);
+        if (Array.isArray(moCandles) && moCandles.length > 0) {
+          bars = moCandles.map((c: any) => ({
+            time: Date.parse(c.time),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+            volume: Number(c.volume || 0),
+          })).filter((b: any) => Number.isFinite(b.time) && Number.isFinite(b.close));
+        }
+      } catch {
+        /* Mo fallback also failed — will report insufficient data below */
+      }
+    }
+    if (!Array.isArray(bars) || bars.length === 0) {
       return NextResponse.json(
-        { success: false, error: `Insufficient historical data for ${symbol}` },
+        { success: false, error: `No historical data for ${symbol}` },
         { status: 503 },
       );
     }
@@ -65,6 +84,16 @@ export async function GET(request: NextRequest) {
     const historicalCandles = candles.slice(0, -1);
 
     const lastCandleTs = candles[candles.length - 1].time;
+    const historicalCount = historicalCandles.length;
+
+    // If fewer than 30 historical candles, some indicators will report
+    // insufficient data — that's expected and handled gracefully downstream.
+    if (historicalCount < 5) {
+      return NextResponse.json(
+        { success: false, error: `Too few historical candles (${historicalCount}) for ${symbol}` },
+        { status: 503 },
+      );
+    }
 
     // ── Phase B: Indicator bundle ──
     const indicatorBundle = computeIndicatorBundle(
