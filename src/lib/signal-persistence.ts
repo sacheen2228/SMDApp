@@ -180,6 +180,19 @@ export function updateSignal(
   const confirmedConf = state.confirmedConfidence;
   const isNewSignal = confirmedDir === "WAIT";
 
+  // ── No established signal yet → accept first directional signal immediately ──
+  // Only flips require confirmation/hysteresis; the initial call/put must show
+  // so the user isn't stuck on NO TRADE until a confirmation window elapses.
+  if (isNewSignal && dir !== "WAIT") {
+    state.confirmedDirection = dir;
+    state.confirmedConfidence = conf;
+    state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+    state.pendingDirection = null;
+    state.pendingSince = null;
+    state.pendingConfirmations = 0;
+    return buildResult(state.lastConfirmedRec, true, "confirmed");
+  }
+
   // ── Same direction as confirmed → refresh levels, clear pending ────
   if (dir === confirmedDir) {
     state.confirmedConfidence = conf;
@@ -190,7 +203,7 @@ export function updateSignal(
     return buildResult(
       state.lastConfirmedRec,
       true,
-      isNewSignal ? "confirmed" : "confirmed",
+      "confirmed",
     );
   }
 

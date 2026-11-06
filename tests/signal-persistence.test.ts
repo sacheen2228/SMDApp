@@ -39,38 +39,35 @@ beforeEach(() => {
   resetSignalState();
 });
 
-describe("initial signal is not shown immediately", () => {
-  test("first raw CALL stays pending → card reads WAIT/NO TRADE", () => {
+describe("initial signal shows immediately (only flips need confirmation)", () => {
+  test("first raw CALL → card shows BUY CALL immediately", () => {
     const { rec: out, showDirection, status } = updateSignal(rec(), T0);
-    expect(showDirection).toBe(false);
-    expect(out.direction).toBe("WAIT");
-    expect(status).toBe("new signal pending");
+    expect(showDirection).toBe(true);
+    expect(out.direction).toBe("CALL");
+    expect(out.confidence).toBe(75);
+    expect(status).toBe("confirmed");
   });
 
-  test("repeating the same CALL without enough time still stays pending", () => {
+  test("first raw PUT → card shows BUY PUT immediately", () => {
+    const r = updateSignal(rec({ direction: "PUT", confidence: 80 }), T0);
+    expect(r.showDirection).toBe(true);
+    expect(r.rec.direction).toBe("PUT");
+    expect(r.status).toBe("confirmed");
+  });
+
+  test("repeating the same CALL refreshes levels", () => {
     updateSignal(rec(), T0);
-    const r1 = updateSignal(rec(), T0 + 10_000); // +10s, count=2
-    expect(r1.showDirection).toBe(false);
-    expect(r1.status).toBe("new signal pending");
+    const r1 = updateSignal(rec({ entry: 160 }), T0 + 10_000);
+    expect(r1.showDirection).toBe(true);
+    expect(r1.rec.entry).toBe(160);
+    expect(r1.rec.direction).toBe("CALL");
   });
 });
 
-describe("confirmation flips to a directional call", () => {
-  test("CALL confirmed after minConfirmations + minPersistenceMs", () => {
-    updateSignal(rec(), T0);
-    updateSignal(rec(), T0 + 10_000); // count=2, elapsed 10s
-    const r = updateSignal(rec(), T0 + 130_000); // count=3, elapsed 130s >= 120s
-    expect(r.showDirection).toBe(true);
-    expect(r.status).toBe("confirmed");
-    expect(r.rec.direction).toBe("CALL");
-    expect(r.rec.confidence).toBe(75);
-  });
-
+describe("confirmation required only for flips", () => {
   test("confirmed CALL keeps refreshing levels on subsequent CALLs", () => {
-    updateSignal(rec(), T0);
-    updateSignal(rec(), T0 + 10_000);
-    updateSignal(rec(), T0 + 130_000); // confirmed CALL @ 157
-    const r = updateSignal(rec({ entry: 160 }), T0 + 140_000);
+    updateSignal(rec(), T0); // initial CALL shown immediately
+    const r = updateSignal(rec({ entry: 160 }), T0 + 130_000);
     expect(r.showDirection).toBe(true);
     expect(r.rec.entry).toBe(160);
     expect(r.rec.direction).toBe("CALL");
