@@ -312,15 +312,15 @@ async function executeLive(opp: ChallengeOpportunity): Promise<ExecutionResult> 
       target2: opp.target2,
     });
 
-    // Telegram alert
+    // Telegram alert — call directly (same process), not via HTTP API
     try {
       const msg = `🟢 CHALLENGE AUTO-TRADE\n${action} ${quantity} ${opp.symbol} @ ₹${opp.entry}\nStrategy: ${opp.strategy} | Score: ${opp.score}/100\nSL: ₹${opp.stopLoss} | TP: ₹${opp.target1}\nR:R 1:${opp.riskReward.toFixed(1)}\nOrder ID: ${orderId}`;
-      await fetch(`http://localhost:3000/api/telegram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-      }).catch(() => {});
-    } catch {}
+      await sendTelegramMessage(msg).catch((err: any) => {
+        console.log(`[auto-executor] Telegram send failed: ${err?.message || String(err)}`);
+      });
+    } catch (err: any) {
+      console.log(`[auto-executor] Telegram send error: ${err?.message || String(err)}`);
+    }
 
     return {
       success: true,

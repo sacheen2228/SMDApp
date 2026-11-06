@@ -15,7 +15,9 @@ services:
         value: 1
       # Add your API keys in Render Dashboard → Environment tab
       # BREEZE_API_KEY, BREEZE_SECRET_KEY, BREEZE_SESSION_TOKEN
-      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_API_SECRET
+      # TELEGRAM_DIGEST_CHAT_IDS
+      # NSE_HOLIDAYS=2026-11-10,2026-11-24,2026-12-25
       # GROQ_API_KEY, OPENROUTER_API_KEY, TOKENRA_API_KEY
     healthCheckPath: /api/health
     autoDeploy: true

@@ -214,6 +214,88 @@ export async function sendTradeAlert(params: Parameters<typeof sendTradeAlertInn
  * pipeline and sends the message. Called by the public sendTradeAlert
  * wrapper which adds the in-flight guard.
  */
+export async function evaluateTradeGate(params: {
+  symbol: string;
+  action: string;
+  optionType?: string;
+  strike: number;
+  entry: number;
+  stopLoss: number;
+  tp1: number;
+  confidence: number;
+  spot?: number;
+  expiry?: string;
+  requireExpiry?: boolean;
+  requireSpot?: boolean;
+  nowMs?: number;
+  lots?: number;
+  lotSize?: number;
+  deployedAmount?: number;
+  riskAmount?: number;
+}): Promise<{ blocked: boolean; reasons: string[] }> {
+  const reasons: string[] = [];
+
+  // SAFETY: Option selling blocked — instrument-aware (options only)
+  // SELL is valid for EQUITY and FUTURES
+  const isOption = params.instrument === 'CALL' || params.instrument === 'PUT';
+  if (isOption && params.action && (params.action.includes('SELL') || params.action.includes('SHORT'))) {
+    reasons.push('option selling not allowed (' + params.action + ' on ' + params.instrument + ')');
+    return { blocked: true, reasons };
+  }
+
+  // Calibration band for the stated confidence (cached, DB-free on the hot path).
+  const calibrationBand = await calibrationBandFor(params.confidence);
+  // Cached technical read — O(1), no network. Cold cache → warning, never a block.
+  const optType = params.type === 'CE' || params.type === 'PE' ? params.type : undefined;
+  const dir = optType === 'CE' ? 'call' : optType === 'PE' ? 'put' : undefined;
+  const tech = dir
+    ? cachedLayers(params.symbol, '15m', dir, structureLayer, triggerLayer)
+    : undefined;
+  // HYBRID veto: old brain (scanners / SDM / Zero Hero) generates candidates;
+  // this layer only blocks or warns — it never creates signals.
+  const veto = evaluateSignalVeto({
+    symbol: params.symbol,
+    action: params.action,
+    optionType: optType,
+    strike: params.strike,
+    entry: params.entry,
+    stopLoss: params.stopLoss,
+    tp1: params.target1,
+    confidence: params.confidence,
+    spot: params.spot,
+    expiry: params.expiry,
+    source: params.source,
+    requireExpiry: params.requireExpiry,
+    requireSpot: params.requireSpot,
+    nowMs: params.nowMs,
+    calibrationBand,
+    tech: tech
+      ? { structure: tech.structure?.state, trigger: tech.trigger?.state, stale: tech.stale }
+      : undefined,
+  });
+  if (veto.suppress) {
+    reasons.push(...veto.reasons);
+    return { blocked: true, reasons };
+  }
+
+  const riskCheck = await checkSignalRiskLimits({
+    symbol: params.symbol,
+    entry: params.entry ?? null,
+    stopLoss: params.stopLoss ?? null,
+    lots: params.lots ?? null,
+    lotSize: params.lotSize ?? null,
+    deployedAmount: params.deployedAmount ?? null,
+    riskAmount: params.riskAmount ?? null,
+    nowMs: params.nowMs,
+  });
+  if (riskCheck.blocked) {
+    reasons.push(...riskCheck.reasons);
+    return { blocked: true, reasons };
+  }
+
+  return { blocked: false, reasons: [] };
+}
+
 export async function sendTradeAlertInner(params: {
   symbol: string;
   action: string;

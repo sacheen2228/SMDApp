@@ -15,13 +15,13 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 min
 
 function formatAlert(a: any): string {
   return [
-    `🔵 *BTST Alert — ${a.symbol}*`,
+    `🔵 <b>BTST Alert — ${a.symbol}</b>`,
     `Grade: ${a.grade} | Score: ${a.total}/100 | Conf: ${a.confidence}%`,
     `Entry ₹${a.entry} | SL ₹${a.sl} | TP1 ₹${a.tp1}`,
     `R:R ${a.riskReward} | Gap Risk: ${a.gapRisk}`,
     `Trend: ${a.trendLabel} | Sector: ${a.sectorLabel}`,
     ``,
-    `_Holding: 1 Day_`,
+    `<i>Holding: 1 Day</i>`,
   ].join("\n");
 }
 

@@ -17,6 +17,9 @@ import {
 } from "./activeTradeTracker";
 import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
+import { evaluateTradeGate } from "@/lib/telegram";
+import { evaluateTradeGate } from "@/lib/telegram";
+import { CONF_FLOOR_CALL, CONF_FLOOR_PUT } from "@/lib/signal-persistence";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 
@@ -52,7 +55,35 @@ async function fetchAndPushSignal(
 
     const conf = (alert.confidence || 0) / 100;
     const rr = alert.rrGate || 1;
-    if (conf < 0.6 || rr < 1.5) return;
+    const floor = (alert.optionType === "CE") ? CONF_FLOOR_CALL : CONF_FLOOR_PUT;
+    if (conf < floor / 100 || rr < 1.5) return;
+
+    // Gate check: veto + risk limits (same logic as /api/telegram)
+    try {
+      const gate = await evaluateTradeGate({
+        symbol: alert.symbol,
+        action: alert.side,
+        optionType: alert.optionType,
+        strike: alert.strike,
+        entry: alert.entry,
+        stopLoss: alert.sl,
+        tp1: alert.tp1,
+        confidence: alert.confidence,
+        spot: alert.spot,
+        expiry: alert.expiry,
+      });
+      if (gate.blocked) {
+        console.log("[Intraday] GATE BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
+        return;
+      }
+    } catch (err: any) {
+      const intradayGates = process.env.INTRADAY_GATES || "log";
+      if (intradayGates === "enforce") {
+        console.log("[Intraday] GATE ERROR " + alert.symbol + ": " + (err?.message || String(err)));
+        return;
+      }
+      console.log("[Intraday] GATE ERROR " + alert.symbol + ": " + (err?.message || String(err)));
+    }
 
     candidates.push({ symbol: sym, alert });
   } catch {
