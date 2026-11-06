@@ -324,7 +324,7 @@ function getHoldingMins(trade: ActiveTrade): number {
   return Math.round((now - start) / 60000);
 }
 
-export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<void> {
+export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<boolean> {
   // Restore any persisted alert flags (re-add after restart must not re-alert)
   applyAlertFlags(trade);
 
@@ -343,8 +343,8 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<v
     target2: trade.tp2,
   });
   if ('blocked' in lockResult) {
-    console.log(`[ActiveTrade] BLOCKED: ${trade.symbol} — active trade ${lockResult.activeTrade.tradeId} exists`);
-    return;
+    console.warn(`[ActiveTrade] BLOCKED: ${trade.symbol} — active trade ${lockResult.activeTrade.tradeId} exists; trade NOT monitored`);
+    return false;
   }
 
   activeTrades.set(trade.id, trade);
@@ -437,6 +437,8 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<v
   // every strategy — SDM, SMC, Zero Hero AI, BTST, Intraday — lives in the
   // same verification store. recordSignal is idempotent on tradeId.
   recordAuditSignal(trade).catch(() => { /* non-fatal */ });
+
+  return true;
 }
 
 function auditInstrumentType(trade: ActiveTrade): "EQUITY" | "OPTIONS" | "FUTURES" | "INDEX" {
@@ -642,15 +644,19 @@ export async function updateTradeStatus(
 
     // 1. Persist update to the Prisma journal (source of truth for dashboard/
     //    Telegram/Agent reports).
-    await updateTrade(trade.id, {
-      status,
-      exitPrice: hitPrice,
-      exitReason: status,
-      pnl: Math.round(pnl * 100) / 100,
-      pnlPercent: Math.round(pnlPct * 100) / 100,
-      holdingTimeMin: getHoldingMins(trade),
-      tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : status === 'TP3_HIT' ? 'TP3' : null,
-    });
+    try {
+      await updateTrade(trade.id, {
+        status,
+        exitPrice: hitPrice,
+        exitReason: status,
+        pnl: Math.round(pnl * 100) / 100,
+        pnlPercent: Math.round(pnlPct * 100) / 100,
+        holdingTimeMin: getHoldingMins(trade),
+        tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : status === 'TP3_HIT' ? 'TP3' : null,
+      });
+    } catch (err: any) {
+      console.error(`[ActiveTrade] updateTrade (terminal) failed for ${trade.id}: ${err?.message || String(err)}`);
+    }
 
     // 2. Sync the exit to the Trade Audit engine (idempotent).
     const reason = status === 'SL_HIT' ? 'stop_loss' : status === 'TP1_HIT' ? 'tp1' : status === 'TP2_HIT' ? 'tp2' : 'tp3';
@@ -679,10 +685,14 @@ export async function updateTradeStatus(
   } else {
     // ── INTERMEDIATE HIT (e.g. TP1 with TP2 pending): status only ──
     // Do NOT write exitPrice/pnl — trade is still open and monitored.
-    await updateTrade(trade.id, {
-      status,
-      tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : undefined,
-    });
+    try {
+      await updateTrade(trade.id, {
+        status,
+        tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : undefined,
+      });
+    } catch (err: any) {
+      console.error(`[ActiveTrade] updateTrade (intermediate) failed for ${trade.id}: ${err?.message || String(err)}`);
+    }
     console.log(`[ActiveTrade] ${trade.symbol} → ${status} (still monitored, lock held)`);
   }
 }
@@ -795,7 +805,10 @@ export async function checkSLTP(
   for (const trade of getMonitoredTrades()) {
     try {
       const currentPrice = await getCurrentPrice(trade.symbol, trade.strike, trade.optionType, trade.expiry);
-      if (currentPrice <= 0) continue;
+      if (currentPrice <= 0) {
+        console.warn(`[ActiveTrade] checkSLTP: price fetch returned <=0 for ${trade.symbol} (${trade.id}), skipping`);
+        continue;
+      }
 
       // ONE ladder for every monitor — side-aware (a mirrored bearish plan
       // stops when the price RISES to the stop and targets when it FALLS).
@@ -810,14 +823,18 @@ export async function checkSLTP(
         ? stopFillPrice(trade, currentPrice)
         : targetLevel(trade, hit);
 
-      await updateTradeStatus(trade.id, hit, fill);
+      try {
+        await updateTradeStatus(trade.id, hit, fill);
+      } catch (err: any) {
+        console.error(`[ActiveTrade] updateTradeStatus failed for ${trade.symbol} (${trade.id}) on ${hit}: ${err?.message || String(err)}`);
+      }
       const closed: ActiveTrade = { ...trade, status: hit, exitPrice: fill };
       if (hit === "SL_HIT") hitSL.push(closed);
       else if (hit === "TP1_HIT") hitTP1.push(closed);
       else if (hit === "TP2_HIT") hitTP2.push(closed);
       else hitTP3.push(closed);
-    } catch {
-      // skip if price fetch fails
+    } catch (err: any) {
+      console.warn(`[ActiveTrade] checkSLTP: price fetch failed for ${trade.symbol} (${trade.id}): ${err?.message || String(err)}`);
     }
   }
 

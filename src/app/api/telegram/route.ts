@@ -1,16 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendTelegramMessage, sendTradeAlert, sendSignalAlert, sendSystemAlert, verifyTelegramBot } from "@/lib/telegram";
 
+const API_SECRET = process.env.TELEGRAM_API_SECRET || "";
+
+function checkApiKey(request: NextRequest): { ok: true } | { ok: false; response: NextResponse } {
+  // "verify" type does not require the API key (it validates the bot token via getMe).
+  // All other types require x-api-key header.
+  if (!API_SECRET) {
+    return { ok: false, response: NextResponse.json({ error: "Telegram API secret not configured" }, { status: 503 }) };
+  }
+  const provided = request.headers.get("x-api-key") || "";
+  if (!provided || !timingSafeEqual(Buffer.from(provided), Buffer.from(API_SECRET))) {
+    return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  return { ok: true };
+}
+
+function timingSafeEqual(a: Buffer, b: Buffer): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+function requireNonEmptyString(value: unknown, field: string): string | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  return value.trim();
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { type, ...params } = body;
 
-    // Connection test — validates the bot token via getMe (not gated by market hours).
+    // Connection test — validates the bot token via getMe (not gated by market hours,
+    // not gated by API key — it's a diagnostic endpoint).
     if (type === "verify") {
       const v = await verifyTelegramBot();
       return NextResponse.json({ success: v.ok, username: v.username, error: v.description });
     }
+
+    // All other types require API key authentication.
+    const auth = checkApiKey(request);
+    if (!auth.ok) return auth.response;
 
     let sent = false;
     switch (type) {
@@ -20,12 +52,22 @@ export async function POST(request: NextRequest) {
       case "signal":
         sent = await sendSignalAlert(params);
         break;
-      case "system":
-        sent = await sendSystemAlert(params.message);
+      case "system": {
+        const message = requireNonEmptyString(params.message, "message");
+        if (message === null) {
+          return NextResponse.json({ error: "message must be a non-empty string" }, { status: 400 });
+        }
+        sent = await sendSystemAlert(message);
         break;
-      case "message":
-        sent = await sendTelegramMessage(params.text, params.chatId);
+      }
+      case "message": {
+        const text = requireNonEmptyString(params.text, "text");
+        if (text === null) {
+          return NextResponse.json({ error: "text must be a non-empty string" }, { status: 400 });
+        }
+        sent = await sendTelegramMessage(text, params.chatId);
         break;
+      }
       default:
         return NextResponse.json({ error: "Invalid type" }, { status: 400 });
     }
@@ -39,6 +81,6 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     bot: "@Sacheen_SD_Bot",
-    usage: "POST with { type: 'trade'|'signal'|'system'|'message', ...params }",
+    usage: "POST with { type: 'trade'|'signal'|'system'|'message', ...params }. Requires x-api-key header (except type=verify).",
   });
 }

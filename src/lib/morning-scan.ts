@@ -4,11 +4,20 @@
 
 import { buildOptionPlan } from "./option-plan";
 import { getLotSize } from "./symbol-config";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { sendTelegramMessage } from "./telegram";
 import { isPlausibleOptionPremium } from "./morningSignalGenerator";
+import { isTelegramSendWindow } from "./marketHours";
 
-const SCAN_FILE = "/tmp/morning-scan-history.json";
+const SCAN_FILE = process.env.MORNING_SCAN_HISTORY_FILE || "./data/morning-scan-history.json";
+const SCAN_DIR = "./data";
+
+const CHUNK_MAX_CHARS = 3800;
+
+// Ensure the data directory exists
+try {
+  mkdirSync(SCAN_DIR, { recursive: true });
+} catch { /* non-fatal */ }
 
 interface SentTrade {
   symbol: string;
@@ -192,12 +201,16 @@ export function buildIndexOptionPlan(
 }
 
 // ── Scan NIFTY/SENSEX options from Motilal ──
-async function scanIndexOptions(): Promise<IndexOption[]> {
+async function scanIndexOptions(
+  baseUrl: string,
+  fetchWithTimeout: (url: string, timeoutMs?: number) => Promise<Response>
+): Promise<IndexOption[]> {
   const options: IndexOption[] = [];
 
   try {
     // Get NIFTY option chain
-    const niftyRes = await fetch("http://localhost:3000/api/option-chain?symbol=NIFTY");
+    const niftyRes = await fetchWithTimeout(`${baseUrl}/api/option-chain?symbol=NIFTY`);
+    if (!niftyRes.ok) throw new Error(`NIFTY chain returned ${niftyRes.status}`);
     const niftyData = await niftyRes.json();
 
     if (niftyData.data?.data) {
@@ -283,7 +296,8 @@ async function scanIndexOptions(): Promise<IndexOption[]> {
     }
 
     // Get SENSEX option chain
-    const sensexRes = await fetch("http://localhost:3000/api/option-chain?symbol=SENSEX");
+    const sensexRes = await fetchWithTimeout(`${baseUrl}/api/option-chain?symbol=SENSEX`);
+    if (!sensexRes.ok) throw new Error(`SENSEX chain returned ${sensexRes.status}`);
     const sensexData = await sensexRes.json();
 
     if (sensexData.data?.data) {
@@ -378,18 +392,44 @@ export async function runMorningScan(): Promise<{
 }> {
   const results = { sent: 0, skipped: 0, totalScanned: 0, message: "" };
 
+  // Send window gate: no scanning, sending, or history writes outside market hours.
+  if (!isTelegramSendWindow()) {
+    results.message = "Outside Telegram send window (09:10–15:30 IST) — scan skipped";
+    return results;
+  }
+
+  const baseUrl = process.env.APP_BASE_URL || "http://localhost:3000";
+  const fetchWithTimeout = async (url: string, timeoutMs = 15_000): Promise<Response> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   try {
     const history = loadHistory();
     let body = "";
     let rank = 0;
 
     // ── PART 1: Equity trades ──
-    const scanRes = await fetch("http://localhost:3000/api/challenge");
-    const scanData = await scanRes.json();
+    let scanData: any;
+    try {
+      const scanRes = await fetchWithTimeout(`${baseUrl}/api/challenge`);
+      if (!scanRes.ok) {
+        throw new Error(`challenge API returned ${scanRes.status}`);
+      }
+      scanData = await scanRes.json();
+    } catch (error: any) {
+      results.message = `Scan failed: ${error.message}`;
+      return results;
+    }
     const opportunities: ScanOpportunity[] = scanData.scan?.topOpportunities || [];
+    results.totalScanned = opportunities.length;
 
     const highAccuracy = opportunities.filter((o) => o.score >= 70);
-    results.totalScanned = opportunities.length;
 
     for (const opp of highAccuracy) {
       if (rank >= 5) break;
@@ -400,20 +440,16 @@ export async function runMorningScan(): Promise<{
 
       rank++;
       body += formatEquityMessage(opp, rank) + "\n\n";
-
-      history.push({
-        symbol: opp.symbol,
-        direction: opp.direction,
-        strike: opp.entry,
-        entry: opp.entry,
-        score: opp.score,
-        sentAt: new Date().toISOString(),
-      });
-      results.sent++;
     }
 
     // ── PART 2: Index options (NIFTY/SENSEX) ──
-    const indexOptions = await scanIndexOptions();
+    let indexOptions: IndexOption[] = [];
+    try {
+      indexOptions = await scanIndexOptions(baseUrl, fetchWithTimeout);
+    } catch (error: any) {
+      results.message = `Scan failed: ${error.message}`;
+      return results;
+    }
 
     for (const opt of indexOptions) {
       if (rank >= 8) break; // Max 8 total trades
@@ -425,19 +461,9 @@ export async function runMorningScan(): Promise<{
 
       rank++;
       body += formatIndexOptionMessage(opt, rank) + "\n\n";
-
-      history.push({
-        symbol: opt.symbol,
-        direction,
-        strike: opt.strike,
-        entry: opt.entry,
-        score: 80,
-        sentAt: new Date().toISOString(),
-      });
-      results.sent++;
     }
 
-    if (results.sent === 0) {
+    if (results.sent === 0 && body.trim() === "") {
       results.message = `Scanned ${results.totalScanned} | ${results.skipped} duplicates | No new trades`;
       return results;
     }
@@ -452,17 +478,83 @@ export async function runMorningScan(): Promise<{
 
     const fullMessage = header + body + footer;
 
-    // Send via Telegram
-    await sendTelegramMessage(fullMessage);
+    // Send via Telegram — split into chunks of at most CHUNK_MAX_CHARS.
+    // A trade is added to history ONLY after its chunk is sent successfully.
+    let allSent = true;
+    const chunks: string[] = [];
+    let current = "";
+    const parts = fullMessage.split("\n");
+    for (const part of parts) {
+      if ((current + part + "\n").length > CHUNK_MAX_CHARS && current.length > 0) {
+        chunks.push(current.trim());
+        current = part + "\n";
+      } else {
+        current += part + "\n";
+      }
+    }
+    if (current.trim().length > 0) {
+      chunks.push(current.trim());
+    }
 
-    // Save history (keep last 7 days)
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const recentHistory = history.filter(
-      (h) => new Date(h.sentAt).getTime() > sevenDaysAgo
-    );
-    saveHistory(recentHistory);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = i === 0 ? `${header}${chunks[i]}${footer}` : chunks[i];
+      const sent = await sendTelegramMessage(chunk);
+      if (!sent) {
+        allSent = false;
+        console.error(`[MorningScan] chunk ${i + 1}/${chunks.length} failed to send`);
+        break;
+      }
+    }
 
-    results.message = `Sent ${results.sent} trades | ${results.skipped} skipped`;
+    if (allSent) {
+      // Only now add trades to history — after successful delivery.
+      for (const opp of highAccuracy) {
+        if (rank <= 0) break;
+        // Re-check duplicates against the history we already loaded
+        // (we already skipped duplicates during the scan above, so just mark the ones we sent)
+      }
+      // Mark sent trades in history by re-scanning the opportunities we included
+      for (const opp of highAccuracy) {
+        if (isDuplicate(opp.symbol, opp.direction, opp.entry, opp.entry, opp.score, history)) continue;
+        history.push({
+          symbol: opp.symbol,
+          direction: opp.direction,
+          strike: opp.entry,
+          entry: opp.entry,
+          score: opp.score,
+          sentAt: new Date().toISOString(),
+        });
+        results.sent++;
+      }
+      for (const opt of indexOptions) {
+        const direction = opt.type === "CE" ? "BUY_CALL" : "BUY_PUT";
+        if (isDuplicate(opt.symbol, direction, opt.strike, opt.entry, 80, history)) continue;
+        history.push({
+          symbol: opt.symbol,
+          direction,
+          strike: opt.strike,
+          entry: opt.entry,
+          score: 80,
+          sentAt: new Date().toISOString(),
+        });
+        results.sent++;
+      }
+
+      // Save history (keep last 7 days)
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const recentHistory = history.filter(
+        (h) => new Date(h.sentAt).getTime() > sevenDaysAgo
+      );
+      try {
+        writeFileSync(SCAN_FILE, JSON.stringify(recentHistory, null, 2));
+      } catch (error: any) {
+        console.error(`[MorningScan] failed to save history: ${error.message}`);
+      }
+
+      results.message = `Sent ${results.sent} trades | ${results.skipped} skipped`;
+    } else {
+      results.message = `Scan completed but Telegram send failed — no history saved`;
+    }
   } catch (error: any) {
     results.message = `Scan failed: ${error.message}`;
   }

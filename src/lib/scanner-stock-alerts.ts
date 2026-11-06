@@ -160,14 +160,21 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
     lotSize: 1,
     deployedAmount,
     riskAmount,
-  }).catch(() => false);
+  }).catch((err: any) => {
+    console.error(`[ScannerAlert] sendTradeAlert error for ${s.symbol}: ${err?.message || String(err)}`);
+    return false;
+  });
 
-  if (!sent) return false;
+  if (!sent) {
+    console.log(`[ScannerAlert] NOT DELIVERED ${s.symbol}: alert blocked by gate, dedup, or failed send`);
+    return false;
+  }
 
   // Register with the tracker so the TIGER monitor (5s poll) watches the
   // position and sends the TP_HIT / SL_HIT card when a level is reached.
+  let added = false;
   try {
-    await addTrade(
+    added = await addTrade(
       {
         id: s.tradeId,
         symbol: s.symbol,
@@ -193,6 +200,10 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
     );
   } catch (err: any) {
     console.warn(`[ScannerAlert] ${s.symbol} — trade registration failed: ${err.message}`);
+  }
+
+  if (!added) {
+    console.warn(`[ScannerAlert] ${s.symbol} — alert sent but trade NOT monitored (addTrade returned false)`);
   }
 
   return true;

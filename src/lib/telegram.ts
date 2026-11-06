@@ -26,15 +26,20 @@ function rrOf(entry?: number, sl?: number, tp?: number, action?: string): number
 const recentAlerts = new Map<string, number>();
 const SHORT_COOLDOWN_MS = 5 * 60 * 1000;
 
-function shortTermThrottle(key: string): boolean {
+/** Read-only: true when `key` is within the short-term cooldown window. */
+export function isThrottled(key: string): boolean {
   const last = recentAlerts.get(key);
-  if (last && Date.now() - last < SHORT_COOLDOWN_MS) return true;
+  return Boolean(last && Date.now() - last < SHORT_COOLDOWN_MS);
+}
+
+/** Sets the throttle timestamp for `key` and prunes stale entries. Call only
+ *  after a successful send. */
+export function markThrottle(key: string): void {
   recentAlerts.set(key, Date.now());
   if (recentAlerts.size > 200) {
     const cutoff = Date.now() - 3600000;
     for (const [k, v] of recentAlerts) { if (v < cutoff) recentAlerts.delete(k); }
   }
-  return false;
 }
 
 function getBotToken(): string {
@@ -63,7 +68,31 @@ export async function verifyTelegramBot(): Promise<{ ok: boolean; username?: str
 }
 
 function escapeHtml(s: string) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export { escapeHtml };
+
+/** Strip Telegram HTML tags and unescape entities for a plain-text retry. */
+function stripHtmlTags(text: string): string {
+  return text
+    .replace(/<\/?(b|i|u|s|code|pre|a|strong|em)\b[^>]*>/gi, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+const PARSE_ERROR_HINTS = ["can't parse entities", "parse error", "bad message", "invalid", "telegram"];
+function isParseError(description: string | undefined): boolean {
+  const d = (description || "").toLowerCase();
+  return PARSE_ERROR_HINTS.some((h) => d.includes(h));
 }
 
 export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
@@ -75,41 +104,117 @@ export async function sendTelegramMessage(text: string, chatId?: string): Promis
   }
   const token = getBotToken();
   const cid = chatId || getChatId();
-  if (!token || !cid) {
-    console.warn("[Telegram] Bot token or chat ID not configured");
+  const missing: string[] = [];
+  if (!token) missing.push("TELEGRAM_BOT_TOKEN");
+  if (!cid) missing.push("TELEGRAM_CHAT_ID");
+  if (missing.length > 0) {
+    console.warn(`[Telegram] Not configured — missing: ${missing.join(", ")}`);
     return false;
   }
-  try {
-    const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: cid,
-        text,
-        parse_mode: "HTML",
-      }),
-    });
-    const data = await res.json();
-    if (!data.ok) {
-      console.error("[Telegram] Send failed:", data.description);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+  const sendOnce = async (payloadText: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: cid,
+          text: payloadText,
+          parse_mode: "HTML",
+        }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        const desc = data.description || "";
+        const error_code = data.error_code;
+        if (error_code === 429) {
+          console.error(`[Telegram] Rate limited (429), retry_after=${data.parameters?.retry_after ?? "unknown"}`);
+        } else if (isParseError(desc)) {
+          console.warn("[Telegram] HTML parse error — retrying as plain text");
+          // Retry once as plain text
+          const plain = stripHtmlTags(payloadText);
+          const res2 = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: cid,
+              text: plain,
+            }),
+            signal: controller.signal,
+          });
+          const data2 = await res2.json();
+          if (!data2.ok) {
+            console.error("[Telegram] Send failed:", data2.description);
+            return false;
+          }
+          return true;
+        } else {
+          console.error("[Telegram] Send failed:", desc);
+        }
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        console.error("[Telegram] Send timed out after 15s");
+      } else {
+        console.error("[Telegram] Error:", err.message);
+      }
       return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return true;
-  } catch (err: any) {
-    console.error("[Telegram] Error:", err.message);
-    return false;
+  };
+
+  try {
+    return await sendOnce(text);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
-// Full-day dedup: check if same signal was sent today
+// Full-day dedup: check if same signal was sent today (read-only — no side
+// effects; the throttle timestamp is recorded only after a successful send).
 export function checkTradeDedup(symbol: string, action: string, strike: number, type: string): boolean {
   const sig = buildSignalSignature({ symbol, strike, optionType: type, direction: action });
   if (isSignalAlreadySent(sig)) return true;
-  // Also check short-term throttle
-  return shortTermThrottle(sig);
+  // Read-only throttle check — does not record a timestamp.
+  return isThrottled(sig);
 }
 
-export async function sendTradeAlert(params: {
+// In-flight guard: prevents concurrent sends of the same signal signature.
+const inFlight = new Set<string>();
+
+export async function sendTradeAlert(params: Parameters<typeof sendTradeAlertInner>[0]): Promise<boolean> {
+  const sig = buildSignalSignature({
+    symbol: params.symbol,
+    strike: params.strike,
+    optionType: params.type,
+    direction: params.action,
+  });
+  if (inFlight.has(sig)) {
+    console.log(`[Telegram] sendTradeAlert in-flight — skipping duplicate ${sig}`);
+    return false;
+  }
+  inFlight.add(sig);
+  try {
+    return await sendTradeAlertInner(params);
+  } catch (err: any) {
+    console.log(`[Telegram] sendTradeAlert THREW ${sig}: ${err?.message || String(err)}`);
+    return false;
+  } finally {
+    inFlight.delete(sig);
+  }
+}
+
+/**
+ * Inner implementation of sendTradeAlert — runs the full veto/risk/dedup
+ * pipeline and sends the message. Called by the public sendTradeAlert
+ * wrapper which adds the in-flight guard.
+ */
+export async function sendTradeAlertInner(params: {
   symbol: string;
   action: string;
   strike: number;
@@ -215,9 +320,10 @@ export async function sendTradeAlert(params: {
     return false;
   }
   if (veto.verdict === "WARN") {
+    const safeReasons = veto.reasons.map((r) => escapeHtml(r)).join("; ");
     vetoWarn = BRAIN_FLAGS.tiering
-      ? `\n🏷 Tier ${veto.tier}: ${veto.reasons.join("; ")}`
-      : `\n⚠ ${veto.reasons.join("; ")} — halve size`;
+      ? `\n🏷 Tier ${veto.tier}: ${safeReasons}`
+      : `\n⚠ ${safeReasons} — halve size`;
   }
 
   // DAY-LOSS + CONCURRENT-EXPOSURE GATE (2026-10-20).
@@ -275,14 +381,15 @@ export async function sendTradeAlert(params: {
     return false;
   }
 
-  // Short-term throttle: also skip if sent within 5 minutes
-  if (shortTermThrottle(sig)) {
+  // Short-term throttle: also skip if sent within 5 minutes (read-only check;
+  // the timestamp is recorded only after a successful send below).
+  if (isThrottled(sig)) {
     console.log(`[Telegram] Dedup (short-term): skipped ${sig} (sent <5min ago)`);
     return false;
   }
 
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
-  const sourceLabel = params.source || "SDM Engine";
+  const sourceLabel = escapeHtml(params.source || "SDM Engine");
   const isCashEquity = params.instrument === "EQUITY";
   // Cash prices read as rupees (₹2,709.20); option premiums keep the raw
   // premium format the option path has always used.
@@ -290,13 +397,13 @@ export async function sendTradeAlert(params: {
     v == null ? "" : `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const px = (v?: number) => (isCashEquity ? cashPx(v) : v == null ? "" : `₹${v}`);
   const mtfLine = (params.mtf
-    ? `\n📐 MTF: ${params.mtf.direction} (${params.mtf.trendDirection} trend, score ${params.mtf.compositeScore})`
+    ? `\n📐 MTF: ${escapeHtml(params.mtf.direction)} (${escapeHtml(params.mtf.trendDirection)} trend, score ${params.mtf.compositeScore})`
     : '') + vetoWarn;
   const msg = `
 ${emoji} <b>${sourceLabel}</b>
 
-📊 <b>${params.symbol}</b> — ${isCashEquity ? "EQUITY" : params.type}
-⚡ Action: <b>${params.action}</b>
+📊 <b>${escapeHtml(params.symbol)}</b> — ${isCashEquity ? "EQUITY" : escapeHtml(params.type)}
+⚡ Action: <b>${escapeHtml(params.action)}</b>
 ${params.strike > 0 ? `🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>` : ""}
 💪 Confidence: <b>${veto.calibratedConfidence}%</b>${veto.calibratedConfidence !== params.confidence ? ` <i>(stated ${params.confidence}%)</i>` : ""}${mtfLine}
 ${params.entryZone
@@ -343,6 +450,7 @@ ${isCashEquity && params.lots && params.deployedAmount
   });
   if (sent) {
     markSignalSent(sig, params.confidence, params.source || "sdm-engine");
+    markThrottle(sig);
     // Voice output layer (fire-and-forget — never blocks the text alert or trading).
     // Central tap: all TRADE_SIGNAL producers flow through sendTradeAlert.
     void import("./voice/voiceService")
@@ -384,13 +492,16 @@ export async function sendSignalAlert(params: {
   }
 
   const emoji = params.direction === "BULLISH" ? "📈" : params.direction === "BEARISH" ? "📉" : "➡️";
+  const safeDirection = escapeHtml(params.direction);
+  const safeSymbol = escapeHtml(params.symbol);
+  const safeReasons = params.reasons.map((r) => escapeHtml(r));
   const msg = `
-${emoji} <b>ML Signal — ${params.direction}</b>
+${emoji} <b>ML Signal — ${safeDirection}</b>
 
-📊 Symbol: <b>${params.symbol}</b>
+📊 Symbol: <b>${safeSymbol}</b>
 💪 Confidence: <b>${params.confidence}%</b>
 📝 Reasons:
-${params.reasons.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
+${safeReasons.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
 
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();

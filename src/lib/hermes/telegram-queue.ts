@@ -63,17 +63,25 @@ export class TelegramQueue {
     this.sendFn = sendFn;
     this.started = true;
 
-    // Restore dedup state from event bus (restart recovery)
-    const bus = getEventBus();
-    const recent = await bus.getRecentEvents(200);
-    for (const evt of recent) {
-      if (evt.delivered) {
-        this.sentToday.add(evt.eventId);
+    // Restore dedup state from event bus (restart recovery).
+    // Wrapped in try/catch so a bus failure never prevents the timer from
+    // being created — the queue must always process.
+    try {
+      const bus = getEventBus();
+      const recent = await bus.getRecentEvents(200);
+      for (const evt of recent) {
+        if (evt.delivered) {
+          this.sentToday.add(evt.eventId);
+        }
       }
+    } catch (err: any) {
+      console.warn(`[TelegramQueue] Failed to restore dedup state from event bus: ${err?.message || String(err)}`);
     }
 
-    // Process queue every 3 seconds
-    this.processInterval = setInterval(() => this.processQueue(), 3000);
+    // Process queue every 3 seconds — always created, even if bus restore fails.
+    this.processInterval = setInterval(() => this.processQueue().catch((err: any) => {
+      console.error(`[TelegramQueue] processQueue cycle error: ${err?.message || String(err)}`);
+    }), 3000);
 
     console.log('[TelegramQueue] Started — dedup state:', this.sentToday.size, 'entries restored');
   }
@@ -153,9 +161,14 @@ export class TelegramQueue {
             item.status = 'SENT';
             this.sentToday.add(item.eventId);
 
-            // Mark in event bus
-            const bus = getEventBus();
-            await bus.markDelivered(item.eventId);
+            // Mark in event bus — bookkeeping failure must NEVER send the
+            // item into the retry path (that causes duplicate messages).
+            try {
+              const bus = getEventBus();
+              await bus.markDelivered(item.eventId);
+            } catch (err: any) {
+              console.warn(`[TelegramQueue] markDelivered failed for ${item.eventId}: ${err?.message || String(err)}`);
+            }
 
             // Remove from queue after short delay
             setTimeout(() => {
@@ -174,8 +187,13 @@ export class TelegramQueue {
         } catch (err: any) {
           item.retryCount++;
           item.error = err.message || 'unknown';
-          const bus = getEventBus();
-          await bus.markFailed(item.eventId, item.error);
+          // Wrap markFailed in try/catch so it cannot abort the rest of the cycle.
+          try {
+            const bus = getEventBus();
+            await bus.markFailed(item.eventId, item.error);
+          } catch (err2: any) {
+            console.warn(`[TelegramQueue] markFailed failed for ${item.eventId}: ${err2?.message || String(err2)}`);
+          }
 
           if (item.retryCount >= item.maxRetries) {
             item.status = 'FAILED';

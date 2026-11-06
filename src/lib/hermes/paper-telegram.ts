@@ -5,6 +5,8 @@
 import type { PaperTrade, NoTradeObservation } from "./paper-engine";
 import { getTelegramQueue } from "./telegram-queue";
 import { getEventBus } from "./event-bus";
+import { isTelegramSendWindow } from "../marketHours";
+import { escapeHtml } from "../telegram";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
@@ -13,11 +15,16 @@ function getBotToken(): string {
 }
 
 function getChatId(): string {
-  return process.env.TELEGRAM_CHAT_ID || "7862815314";
+  return process.env.TELEGRAM_CHAT_ID || "";
 }
 
 // Direct sender (kept as fallback, bypasses queue)
+// Checks the send window and escapes HTML in dynamic fields.
 async function sendTelegramDirect(text: string): Promise<boolean> {
+  if (!isTelegramSendWindow()) {
+    console.warn("[paper-telegram] outside send window — suppressed");
+    return false;
+  }
   const token = getBotToken();
   const chatId = getChatId();
   if (!token || !chatId) return false;
@@ -53,10 +60,10 @@ export async function sendPaperTradeSignal(trade: PaperTrade): Promise<boolean> 
   const side = trade.decision === "BUY_CE" ? "BUY CE" : "BUY PE";
   const text = `🔔 <b>HERMES PAPER SIGNAL</b>
 
-<b>${trade.underlying}</b>
-<b>${side}</b>
+<b>${escapeHtml(trade.underlying)}</b>
+<b>${escapeHtml(side)}</b>
 
-${trade.strike} ${trade.optionType}
+${escapeHtml(String(trade.strike))} ${escapeHtml(trade.optionType)}
 
 Entry: ₹${trade.entryPrice.toFixed(2)}
 SL: ₹${trade.stopLoss.toFixed(2)}
@@ -65,10 +72,10 @@ ${trade.target2 ? `TP2: ₹${trade.target2.toFixed(2)}` : ""}
 ${trade.target3 ? `TP3: ₹${trade.target3.toFixed(2)}` : ""}
 
 Score: ${trade.score}
-Regime: ${trade.regime}
+Regime: ${escapeHtml(trade.regime)}
 
-Provider: ${trade.provider}
-Data: ${trade.freshness}
+Provider: ${escapeHtml(trade.provider)}
+Data: ${escapeHtml(trade.freshness)}
 
 ⚠️ PAPER ONLY — NO REAL ORDER`;
 
@@ -84,14 +91,14 @@ export async function sendPaperTradeExit(trade: PaperTrade): Promise<boolean> {
   const exitType = trade.exitSource || trade.status;
   const text = `📊 <b>HERMES PAPER EXIT</b>
 
-<b>${trade.underlying} ${trade.strike} ${trade.optionType}</b>
+<b>${escapeHtml(trade.underlying)} ${escapeHtml(String(trade.strike))} ${escapeHtml(trade.optionType)}</b>
 
 Entry: ₹${trade.entryPrice.toFixed(2)}
 Exit: ₹${(trade.exitPrice || 0).toFixed(2)}
 
 P&L: ${pnlStr}
 
-Result: ${exitType}
+Result: ${escapeHtml(exitType)}
 Holding: ${holding}
 
 MFE: +₹${(trade.maxFavorableExcursion || 0).toFixed(2)} (${(trade.maxFavorableExcursionPct || 0).toFixed(1)}%)
@@ -106,20 +113,21 @@ MAE: -₹${Math.abs(trade.maxAdverseExcursion || 0).toFixed(2)} (${Math.abs(trad
 export async function sendNoTradeObservation(obs: NoTradeObservation): Promise<boolean> {
   const text = `📋 <b>HERMES NO_TRADE</b>
 
-<b>${obs.underlying}</b>
+<b>${escapeHtml(obs.underlying)}</b>
 Spot: ₹${obs.spotAtObservation.toLocaleString("en-IN")}
 
 Score: ${obs.score}
-Regime: ${obs.regime}
+Regime: ${escapeHtml(obs.regime)}
 
-${obs.blockingConditions.slice(0, 3).map(r => `• ${r}`).join("\n")}
+${obs.blockingConditions.slice(0, 3).map(r => `• ${escapeHtml(r)}`).join("\n")}
 
-Provider: ${obs.provider}
-Data: ${obs.freshness}
+Provider: ${escapeHtml(obs.provider)}
+Data: ${escapeHtml(obs.freshness)}
 
 ⚠️ PAPER OBSERVATION`;
 
-  const eventId = `NO_TRADE:${obs.underlying}:${Date.now()}`;
+  // NO_TRADE eventId uses a 15-minute bucket instead of Date.now()
+  const eventId = `NO_TRADE:${obs.underlying}:${Math.floor(Date.now() / 900000)}`;
   // Publish structured observation to the event bus (voice layer taps NO_TRADE_OBSERVED)
   try {
     void getEventBus().emit("NO_TRADE_OBSERVED", {
