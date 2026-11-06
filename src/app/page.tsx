@@ -71,6 +71,7 @@ import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
 import type { SDMRecommendation } from '@/types/sdm';
 import { getCurrentSession } from '@/lib/market-session';
+import { updateSignal, type SignalRec } from '@/lib/signal-persistence';
 
 // ─── Types ────────────────────────────────────────────────────────
 type OptionSide = {
@@ -462,6 +463,13 @@ export default function TradingDashboard() {
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. The API returns analysis.recommendation + analysis.pcr / vix /
   // maxPain; we map it onto the SDMRecommendation shape SimpleMode reads.
+  //
+  // Direction is routed through the signal-persistence layer so the card does
+  // not flip BUY CE <-> BUY PE on every option-chain refresh. A raw direction
+  // must persist (minConfirmations × minPersistenceMs) and clear a hysteresis
+  // margin before it becomes the confirmed signal; below the confidence floor
+  // the card reads NO TRADE. Levels (entry/SL/targets) always belong to the
+  // displayed direction. Genuine reversals are confirmed, not blocked.
   const recommendation: SDMRecommendation | null = useMemo(() => {
     const a = (data as any)?.analysis;
     const rec = a?.recommendation;
@@ -471,19 +479,32 @@ export default function TradingDashboard() {
     const tp1 = rec.tp1 || 0;
     const rr = entry && sl && entry !== sl ? Math.abs((tp1 - entry) / (entry - sl)) : 0;
     const score = rec.sdmScore ?? 0;
-    const grade: any =
-      score >= 75 ? "A+" : score >= 65 ? "A" : score >= 55 ? "B+" : score >= 45 ? "B" : "C";
-    return {
+    const raw: SignalRec = {
       direction: rec.direction,
-      strike: rec.strike,
-      strikeType: "ATM" as any,
+      confidence: Math.round(rec.confidence || 0),
       entry,
+      sl,
       tp1,
       tp2: rec.tp2 || 0,
       tp3: rec.tp3 || 0,
-      sl,
-      confidence: Math.round(rec.confidence || 0),
+      strike: rec.strike,
+      tradeGrade:
+        score >= 75 ? "A+" : score >= 65 ? "A" : score >= 55 ? "B+" : score >= 45 ? "B" : "C",
+      reason: Array.isArray(rec.reasons) ? rec.reasons.join(" · ") : (rec.reasons || ""),
       riskReward: Math.round(rr * 10) / 10,
+    };
+    const { rec: confirmedRec, showDirection } = updateSignal(raw);
+    return {
+      direction: showDirection ? confirmedRec.direction : "WAIT",
+      strike: confirmedRec.strike,
+      strikeType: "ATM" as any,
+      entry: confirmedRec.entry,
+      tp1: confirmedRec.tp1,
+      tp2: confirmedRec.tp2,
+      tp3: confirmedRec.tp3,
+      sl: confirmedRec.sl,
+      confidence: showDirection ? confirmedRec.confidence : 0,
+      riskReward: confirmedRec.riskReward,
       isExpiryDay: false,
       daysToExpiry: a?.expiry?.daysToExpiry ?? 0,
       currentWindow: "DAY" as any,
@@ -502,13 +523,13 @@ export default function TradingDashboard() {
       watchList: [] as any,
       whyThisTrade: [] as any,
       sdmScores: {} as any,
-      reason: Array.isArray(rec.reasons) ? rec.reasons.join(" · ") : (rec.reasons || ""),
+      reason: confirmedRec.reason,
       timeSensitiveNote: "",
       smartEntry: {} as any,
       smartExit: {} as any,
       premiumFairValue: {} as any,
       probabilities: {} as any,
-      tradeGrade: grade,
+      tradeGrade: showDirection ? confirmedRec.tradeGrade : ("C" as any),
       dataHealth: {} as any,
       positionSizing: {} as any,
       marketRegime: {} as any,
