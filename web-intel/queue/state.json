@@ -1,9 +1,9 @@
 {
   "lastRun": {
-    "collectedAt": "2026-11-06T08:12:17.183273Z",
-    "fetched": 799,
+    "collectedAt": "2026-11-06T08:22:47.431465Z",
+    "fetched": 798,
     "flushedFromQueue": 0,
-    "inserted": 36,
+    "inserted": 35,
     "duplicates": 763,
     "queueLength": 0,
     "sourcesOk": 17,

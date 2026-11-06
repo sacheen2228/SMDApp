@@ -12565,5 +12565,18 @@
   },
   "sell-1793952622074-21": {
     "SL_HIT": true
+  },
+  "retry-mon-1793953437876-9": {
+    "TP1_HIT": true
+  },
+  "persist-1793953438001-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1793953438029-20": {
+    "TP1_HIT": true
+  },
+  "sell-1793953438070-21": {
+    "SL_HIT": true
   }
 }

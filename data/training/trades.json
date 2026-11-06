@@ -27617,5 +27617,33 @@
       "dataFreshness": "2026-11-06T08:10:26.901Z"
     },
     "createdAt": "2026-11-06T08:10:26.867Z"
+  },
+  {
+    "id": "guard-real-1793953440503",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "13:54 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-06T08:24:00.516Z"
+    },
+    "createdAt": "2026-11-06T08:24:00.503Z"
   }
 ]
