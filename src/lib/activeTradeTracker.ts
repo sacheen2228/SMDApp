@@ -353,7 +353,12 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<b
   // Skip test/synthetic trades — fake symbols (e2e IDs) would fire REAL
   // NSE/Breeze requests from collectMarketSnapshot (60+ provider calls
   // per test run). Same predicate as reloadActiveTrades.
+  // TRAINING_SNAPSHOT_DISABLED=1 opts out entirely (tests set it — a module
+  // mock of the trainer leaks into other test files in the same bun process).
+  // Read at call time, not module load, so the flag works regardless of
+  // import order.
   const snapshotEligible =
+    process.env.TRAINING_SNAPSHOT_DISABLED !== "1" &&
     !isTestSource(trade.source || "") && !/^(e2e|persist|chain|sell|prod)-/.test(trade.id);
   if (snapshotEligible) {
   try {

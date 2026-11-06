@@ -18,7 +18,6 @@ import {
 import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
 import { evaluateTradeGate } from "@/lib/telegram";
-import { evaluateTradeGate } from "@/lib/telegram";
 import { CONF_FLOOR_CALL, CONF_FLOOR_PUT } from "@/lib/signal-persistence";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
@@ -73,8 +72,13 @@ async function fetchAndPushSignal(
         expiry: alert.expiry,
       });
       if (gate.blocked) {
-        console.log("[Intraday] GATE BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
-        return;
+        const intradayGates = process.env.INTRADAY_GATES || "log";
+        if (intradayGates === "enforce") {
+          console.log("[Intraday] GATE BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
+          return;
+        }
+        // log mode: log but still send
+        console.log("[Intraday] WOULD BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
       }
     } catch (err: any) {
       const intradayGates = process.env.INTRADAY_GATES || "log";
