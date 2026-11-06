@@ -276,13 +276,13 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">PCR</span>
             <span className={`font-bold tabular-nums ${summary.pcr > 1.2 ? "text-emerald-500" : summary.pcr < 0.7 ? "text-red-500" : ""}`}>
-              {fmt(summary.pcr)}
+              {summary.pcr?.toFixed(2) ?? "—"}
             </span>
           </div>
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">ATM</span>
-            <span className="font-bold tabular-nums text-primary">{summary.atmStrike}</span>
+            <span className="font-bold tabular-nums text-primary">{liveATM}</span>
           </div>
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
