@@ -12539,5 +12539,31 @@
   },
   "sell-1793950957915-21": {
     "SL_HIT": true
+  },
+  "retry-mon-1793952501706-9": {
+    "TP1_HIT": true
+  },
+  "persist-1793952502108-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1793952502190-20": {
+    "TP1_HIT": true
+  },
+  "sell-1793952502409-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1793952621473-9": {
+    "TP1_HIT": true
+  },
+  "persist-1793952621797-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1793952621928-20": {
+    "TP1_HIT": true
+  },
+  "sell-1793952622074-21": {
+    "SL_HIT": true
   }
 }
