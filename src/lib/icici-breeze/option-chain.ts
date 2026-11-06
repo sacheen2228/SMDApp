@@ -5,6 +5,7 @@ import { getBreezeClient, getConfig, withAuthRetry } from './auth';
 import type { OptionChainData, OptionQuote } from '@/types';
 import { calculateGreeks, parseExpiryDateLoose } from '@/lib/greeks';
 import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
+import { mergeExpiryCandidates } from '@/lib/expiry-calculator';
 
 // BSE symbols that need BFO exchange code (BSE F&O segment)
 const BSE_SYMBOLS = new Set(['SENSEX', 'BANKEX']);
@@ -214,25 +215,16 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
       }
     }
 
-    // Add expiry dates using correct weekday per symbol
-    // NIFTY/indices → Tuesday (2), SENSEX/BSE → Thursday (4)
-    const weekday = BSE_SYMBOLS.has(stockCode.toUpperCase()) ? 4 : 2;
-    const now = new Date();
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    for (let i = 0; i < 35; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() + i);
-      while (d.getDay() !== weekday) d.setDate(d.getDate() + 1);
-      const dd = d.getDate().toString().padStart(2, '0');
-      expiries.add(`${dd}-${months[d.getMonth()]}-${d.getFullYear()}`);
-    }
+    // The calendar side comes from the expiry-calculator (exchange-aware,
+    // holiday-shift aware) merged with the real futures contract dates above.
+    // NEVER ladder dates inline: the old rule ("every Tuesday, 35 days out")
+    // invented holiday expiries — Tue 10-Nov-2026 is a trading holiday, that
+    // week settles Mon 09-Nov-2026 — and the gate rejected the invented date
+    // with EXPIRY_UNAVAILABLE while the UI auto-selected expiries[0] from it,
+    // looping the option-chain tab on 400s.
+    const expiryList = mergeExpiryCandidates(stockCode, Array.from(expiries));
 
-    console.log('[Breeze SDK] Found %d expiries (futures + probe)', expiries.size);
-
-    // Sort chronologically (nearest expiry first)
-    const expiryList = Array.from(expiries).sort((a, b) => {
-      return new Date(a).getTime() - new Date(b).getTime();
-    });
+    console.log('[Breeze SDK] Found %d expiries (futures + calendar)', expiryList.length);
 
     // Cache only real results — never cache the error/empty fallback
     if (expiryList.length > 0) {

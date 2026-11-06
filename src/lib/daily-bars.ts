@@ -1,8 +1,9 @@
 // Real daily bars + derived technicals (EMA / daily VWAP) for the dashboard.
 //
 // Every "EMA participation" / "above VWAP" number the dashboard shows comes
-// from the exchange's OWN daily history (`/api/historical/...` through the NSE
-// client) — never from a previous close or a constant.
+// from real daily history — NSE's own `/api/historical/...` first, Breeze
+// cash dailies when NSE is rate-limiting (GetQuoteApi 403) — never from a
+// previous close or a constant.
 //
 // The previous implementation faked these:
 //   ema20 = prevClose + change * 0.3      (not an EMA at all)
@@ -70,8 +71,105 @@ export function parseSessionDate(raw: string): number | null {
 }
 
 /**
+ * Breeze getHistoricalDatav2 rows → DailyBar, same session semantics as an
+ * NSE bar: sessionDate "06-Nov-2026", t = parseSessionDate(sessionDate)
+ * (15:30 IST). Breeze ships no per-session vwap → left undefined so
+ * dailyTechnicals falls back to the local rolled one.
+ */
+export function normalizeBreezeBars(raw: any[]): DailyBar[] {
+  const out: DailyBar[] = [];
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  for (const b of raw || []) {
+    const o = Number(b?.open ?? b?.OPEN);
+    const h = Number(b?.high ?? b?.HIGH);
+    const l = Number(b?.low ?? b?.LOW);
+    const c = Number(b?.close ?? b?.CLOSE);
+    if (!Number.isFinite(o) || !Number.isFinite(c)) continue;
+    // "2026-11-06 00:00:00" → date part → dd-Mon-yyyy session stamp.
+    const datePart = String(b?.datetime ?? b?.DATETIME ?? '').slice(0, 10);
+    const m = datePart.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) continue;
+    const day = Number(m[3]);
+    const sessionDate = `${day < 10 ? '0' : ''}${day}-${months[Number(m[2]) - 1]}-${m[1]}`;
+    const t = parseSessionDate(sessionDate);
+    if (t == null) continue;
+    out.push({
+      t,
+      o,
+      h: Number.isFinite(h) ? h : c,
+      l: Number.isFinite(l) ? l : c,
+      c,
+      v: Number(b?.volume ?? b?.VOLUME ?? 0) || 0,
+      sessionDate,
+    });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+function istDate(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Second real source: Breeze EOD daily bars (cash product). Needs ICICI's
+ * scrip codes (RELIANCE → RELIND, via icici-scrip-master). Session errors
+ * and empty data both resolve to [] — never throws into a data path.
+ */
+async function fetchBreezeDailyBars(
+  sym: string,
+  lookbackDays: number,
+): Promise<DailyBar[]> {
+  try {
+    const { initSession, getBreezeClient } = await import('./icici-breeze/auth');
+    const { resolveBreezeStockCode } = await import('./icici-scrip-master');
+    await initSession();
+    const breeze = getBreezeClient();
+    const stockCode = await resolveBreezeStockCode(sym);
+    const to = new Date();
+    const from = new Date(to.getTime() - lookbackDays * 86_400_000);
+    const baseReq = {
+      interval: '1day',
+      fromDate: istDate(from),
+      toDate: istDate(to),
+      stockCode,
+      exchangeCode: sym === 'SENSEX' || sym === 'BANKEX' ? 'BSE' : 'NSE',
+      productType: 'cash',
+    };
+    // v2 (axios, BREEZE_NEW_URL) is preferred; fall back to v1 when it 500s
+    // (both endpoints flap independently). Retry only on throw/server-500;
+    // an honest empty Success is not retried.
+    const callers: (() => Promise<any>)[] = [
+      () => breeze.getHistoricalDatav2(baseReq),
+      () => breeze.getHistoricalData(baseReq),
+    ];
+    for (const call of callers) {
+      for (const attempt of [0, 1]) {
+        let res: any = null;
+        let threw = false;
+        try {
+          res = await call();
+        } catch {
+          threw = true;
+        }
+        const rows = res ? (res?.Success ?? res?.success ?? []) : [];
+        if (Array.isArray(rows) && rows.length)
+          return normalizeBreezeBars(rows);
+        const serverError = res && (res.Error || res.Status === 500 || res.Status === 502 || res.Status === 503);
+        if (!threw && !serverError) break; // honest empty → next endpoint
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 800));
+      }
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Real daily bars for one symbol (exchange history, cached 15 min).
- * Returns [] when the exchange has nothing for that symbol.
+ * NSE primary; when NSE is empty or rate-limited (GetQuoteApi 403) falls
+ * back to Breeze cash dailies. Returns [] when both sources have nothing.
  */
 export async function getDailyBars(
   symbol: string,
@@ -81,10 +179,16 @@ export async function getDailyBars(
   const hit = barCache.get(sym);
   if (hit && Date.now() - hit.at < BAR_CACHE_TTL_MS) return hit.bars;
   try {
-    const to = new Date();
-    const from = new Date(to.getTime() - lookbackDays * 86_400_000);
-    const raw: any = await getNSEHistoricalData(sym, from, to);
-    const bars = normalizeNseBars(Array.isArray(raw) ? raw : []);
+    let bars: DailyBar[] = [];
+    try {
+      const to = new Date();
+      const from = new Date(to.getTime() - lookbackDays * 86_400_000);
+      const raw: any = await getNSEHistoricalData(sym, from, to);
+      bars = normalizeNseBars(Array.isArray(raw) ? raw : []);
+    } catch {
+      bars = [];
+    }
+    if (!bars.length) bars = await fetchBreezeDailyBars(sym, lookbackDays);
     if (bars.length) barCache.set(sym, { at: Date.now(), bars });
     return bars;
   } catch {

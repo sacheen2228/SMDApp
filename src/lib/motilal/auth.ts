@@ -19,13 +19,34 @@ let accessToken: string | null = null;
 let sessionExpiry: number = 0;
 let isVerified: boolean = false;
 
-const SESSION_FILE = "/tmp/motilal-session.json";
+// Read the session path dynamically: the module may be imported by background
+// suites before test/env overrides are applied, a const would freeze it at
+// import time. MOTILAL_SESSION_FILE keeps tests off the live app's file.
+function sessionFile(): string {
+  return process.env.MOTILAL_SESSION_FILE || "/tmp/motilal-session.json";
+}
+
+// ── OTP dispatch guards ──
+// Background auto-recovery paths (candle-chain, option-chain, session-manager)
+// call autoLogin() on every MO failure. Each OTP-flow re-auth rotated the
+// AuthToken: MO re-queued a fresh OTP SMS every time (gateway throttled →
+// nothing delivered) and a delivered code would verify against a stale token.
+// Two guards: reuse a pending unverified session as-is, throttle dispatches.
+const OTP_DISPATCH_COOLDOWN_MS = 2 * 60 * 1000;
+let lastOtpDispatchAt = 0;
+
+// Manual/test recovery: forget the dispatch throttle so the next autoLogin may
+// queue an OTP immediately (the UI's explicit "Login with OTP" / "Resend" are
+// separate paths and do not need this).
+export function clearOtpDispatchCooldown(): void {
+  lastOtpDispatchAt = 0;
+}
 
 // ── Persist/restore session across hot reloads ──
 function saveSession(): void {
   if (sessionToken) {
     writeFileSync(
-      SESSION_FILE,
+      sessionFile(),
       JSON.stringify({
         sessionToken,
         accessToken,
@@ -38,8 +59,8 @@ function saveSession(): void {
 
 function restoreSession(): void {
   try {
-    if (existsSync(SESSION_FILE)) {
-      const data = JSON.parse(readFileSync(SESSION_FILE, "utf-8"));
+    if (existsSync(sessionFile())) {
+      const data = JSON.parse(readFileSync(sessionFile(), "utf-8"));
       if (data.sessionToken && data.sessionExpiry > Date.now()) {
         sessionToken = data.sessionToken;
         accessToken = data.accessToken || null;
@@ -54,6 +75,13 @@ function restoreSession(): void {
 
 // Restore on import
 restoreSession();
+
+// Re-read the session file into memory (external writer changed it — e.g. a
+// hand-edited file or a test seeding a state). No-op when the file is missing
+// or expired; use logout() first to clear memory hard.
+export function reloadSession(): void {
+  restoreSession();
+}
 
 // ── SHA-256 hash (Motilal requires SHA-256(password + apiKey)) ──
 function sha256(data: string): string {
@@ -166,6 +194,7 @@ export async function loginWithOTP(
       }
 
       // Needs OTP verification
+      lastOtpDispatchAt = Date.now(); // this call queued an OTP SMS
       return { success: true, token: sessionToken, needsVerification: true };
     }
 
@@ -237,6 +266,7 @@ export async function resendOTP(): Promise<{ success: boolean; error?: string }>
     );
 
     const data = await response.json();
+    if (data.status === "SUCCESS") lastOtpDispatchAt = Date.now();
     return data.status === "SUCCESS"
       ? { success: true }
       : { success: false, error: data.message };
@@ -357,7 +387,7 @@ export async function logout(): Promise<void> {
     isVerified = false;
     try {
       const { unlinkSync } = require("fs");
-      unlinkSync(SESSION_FILE);
+      unlinkSync(sessionFile());
     } catch {
       // ignore
     }
@@ -387,6 +417,19 @@ export async function autoLogin(): Promise<boolean> {
     } catch (e: any) {
       console.warn('[Motilal] TOTP auto-login threw, falling back to OTP flow:', e?.message || e);
     }
+  }
+
+  // Reuse a pending unverified session: its OTP is already in flight and
+  // re-authenticating would rotate the AuthToken out from under that SMS.
+  if (sessionToken && sessionExpiry > Date.now() && !isVerified) {
+    console.log("[Motilal] Auto-login: pending OTP session reused (awaiting verification — no new dispatch)");
+    return true;
+  }
+
+  // Throttle dispatches — MO's SMS gateway stops delivering under rapid retries.
+  if (lastOtpDispatchAt && Date.now() - lastOtpDispatchAt < OTP_DISPATCH_COOLDOWN_MS) {
+    console.warn("[Motilal] Auto-login: OTP dispatch suppressed by cooldown (window = 2 min)");
+    return false;
   }
 
   try {

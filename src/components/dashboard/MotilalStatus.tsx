@@ -54,7 +54,7 @@ export function MotilalStatus() {
       const data = await res.json();
       if (data.success) {
         setShowOtpInput(true);
-        setMessage('OTP sent! Check your phone.');
+        setMessage('OTP sent! Check your phone and registered email (incl. spam).');
       } else {
         setMessage(data.error || 'Login failed');
       }

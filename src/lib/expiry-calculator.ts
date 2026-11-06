@@ -200,7 +200,7 @@ const NSE_HOLIDAYS = new Set([
   '2027-01-26', '2027-03-06', '2027-04-14', '2027-08-15', '2027-10-02', '2027-12-25',
 ]);
 
-function isHoliday(d: Date): boolean {
+export function isHoliday(d: Date): boolean {
   // LOCAL calendar date. toISOString() is UTC — on an IST server a local
   // midnight Date is 18:30 UTC the PREVIOUS day, so the UTC form checked
   // the wrong date (every holiday lookup was off by one day).
@@ -247,6 +247,37 @@ export function getCachedExchangeExpiries(symbol: string): string[] | null {
   if (!hit) return null;
   if (Date.now() - hit.ts > EXCHANGE_EXPIRY_TTL_MS) return null;
   return hit.dates;
+}
+
+/**
+ * The ONE candidate expiry list a provider chain path may use: this module's
+ * calendar (exchange-aware, holiday-shift aware — a holiday Tuesday shifts
+ * BACK to the previous trading day) UNION the provider's own real contract
+ * dates — normalized to Breeze format ("DD-MMM-YYYY"), dead sessions dropped,
+ * strictly ascending.
+ *
+ * Providers must never ladder dates themselves. The old inline weekday rule
+ * in icici-breeze/option-chain.ts invented Tue 10-Nov-2026 (a trading
+ * holiday — that week settles Mon 09-Nov-2026), the UI auto-selected
+ * expiries[0] and the option-chain tab looped on EXPIRY_UNAVAILABLE 400s.
+ */
+export function mergeExpiryCandidates(symbol: string, providerDates: string[] = []): string[] {
+  const today = localToday();
+  const out = new Set<string>();
+
+  for (const raw of providerDates) {
+    const d = parseExchangeDate(String(raw || "").trim());
+    if (d) out.add(toBreezeDate(d));
+  }
+  for (const info of getAllExpiries(symbol)) out.add(info.date);
+
+  const parse = (s: string) => parseExchangeDate(s);
+  return Array.from(out)
+    .filter((date) => {
+      const d = parse(date);
+      return !!d && d.getTime() >= today.getTime();
+    })
+    .sort((a, b) => parse(a)!.getTime() - parse(b)!.getTime());
 }
 
 /**

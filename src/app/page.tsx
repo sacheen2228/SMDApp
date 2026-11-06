@@ -533,11 +533,23 @@ export default function TradingDashboard() {
     }
   }, [data]);
   
-  // Set default expiry
+  // Set default expiry — prefer the contract the response actually SERVED
+  // (nearest still-live). Never expiries[0]: exchanges/providers list dead or
+  // holiday-shifted contracts first (observed: holiday Tue 10-Nov-2026 as
+  // expiries[0] → gate rejected it with EXPIRY_UNAVAILABLE 400s and this tab
+  // looped on the bad query key).
   useEffect(() => {
-    if (data?.expiries?.length && !selectedExpiry) {
-      setSelectedExpiry(data.expiries[0].date);
-      setStoreExpiry(data.expiries[0].date);
+    if (selectedExpiry || !data) return;
+    const served = data.selectedExpiry || data.expiry;
+    if (served) {
+      setSelectedExpiry(served);
+      setStoreExpiry(served);
+      return;
+    }
+    if (data.expiries?.length) {
+      const firstLive = data.expiries.find((e: any) => !e.expired)?.date || data.expiries[0].date;
+      setSelectedExpiry(firstLive);
+      setStoreExpiry(firstLive);
     }
   }, [data, selectedExpiry, setSelectedExpiry, setStoreExpiry]);
   

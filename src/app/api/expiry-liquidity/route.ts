@@ -2,15 +2,15 @@
 // Main endpoint for the Expiry Liquidity Shift Engine
 //
 // POST: caller supplies real market data (preferred — caller already has it).
-// GET:  gathers real data itself (NSE/BSE chain + Yahoo VIX + Yahoo daily
-//       candles) for callers that only know the symbol — ExpiryRadar,
-//       agent-brain `get_expiry_liquidity`, Hermes tool-registry.
+// GET:  gathers real data itself (chain via chain-source — NSE/BSE primary,
+//       Breeze live, canonical tree; + VIX + daily candles) for callers that
+//       only know the symbol — ExpiryRadar, agent-brain
+//       `get_expiry_liquidity`, Hermes tool-registry.
 //       No fabricated data anywhere: if the chain source fails → 503.
 
 import { NextResponse } from 'next/server';
 import { getExpiryLiquidityEngine } from '@/lib/expiry-liquidity/engine';
-import { getNSEOptionChain } from '@/lib/nse-api';
-import { isBSEIndex } from '@/lib/bse-api';
+import { gatherChainWithFallback } from '@/lib/expiry-liquidity/chain-source';
 
 // Bounded parallel fetch of real inputs for a symbol.
 async function gatherRealData(symbol: string): Promise<{
@@ -21,30 +21,8 @@ async function gatherRealData(symbol: string): Promise<{
   source: string;
 }> {
   const [chainRes, vixRes, candlesRes] = await Promise.all([
-    // 1. Option chain + spot — NSE (BSE for SENSEX/BANKEX)
-    (async () => {
-      if (isBSEIndex(symbol)) {
-        const { getBSEExpiryDates, getBSEOptionChain } = await import('@/lib/bse-api');
-        const expiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
-        if (!expiries[0]) return null;
-        const chain = await Promise.race([
-          getBSEOptionChain(symbol, expiries[0]),
-          new Promise<null>((_, r) => setTimeout(() => r(new Error('BSE_TIMEOUT')), 5000)),
-        ]).catch(() => null);
-        if (!chain?.data?.length) return null;
-        return { rows: chain.data, spot: chain.spotPrice || 0, source: 'bse-api' };
-      }
-      const nseData = await Promise.race([
-        getNSEOptionChain(symbol),
-        new Promise<null>((_, r) => setTimeout(() => r(new Error('NSE_TIMEOUT')), 7000)),
-      ]).catch(() => null);
-      if (!nseData?.records?.data?.length) return null;
-      return {
-        rows: nseData.records.data,
-        spot: nseData.records.underlyingValue || 0,
-        source: 'nse-api',
-      };
-    })(),
+    // 1. Option chain + spot — NSE/BSE primary → Breeze live → canonical tree
+    gatherChainWithFallback(symbol).catch(() => null),
 
     // 2. India VIX — Yahoo (bounded 2s)
     (async () => {
