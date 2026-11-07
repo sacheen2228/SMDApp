@@ -129,7 +129,7 @@ export default function CreditAutoSuggest() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
           {suggestions.map((s) => (
-            <SpreadCard key={s.id} s={s} />
+            <SpreadCard key={s.id} s={s} capital={capital} />
           ))}
         </div>
       )}
@@ -143,7 +143,7 @@ export default function CreditAutoSuggest() {
   );
 }
 
-function SpreadCard({ s }: { s: SpreadSuggestion }) {
+function SpreadCard({ s, capital }: { s: SpreadSuggestion; capital: number }) {
   const meta = STRATEGY_META[s.strategy] ?? { label: s.strategy, cls: "" };
   return (
     <div className="rounded-lg border bg-card p-2.5 flex flex-col gap-1.5">
@@ -186,11 +186,11 @@ function SpreadCard({ s }: { s: SpreadSuggestion }) {
       {s.affordableLots > 0 && (
         <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] tabular-nums border-t pt-1">
           <Metric label={`Total lots`} value={`${s.affordableLots}`} tone="neutral" />
-          <Metric label="Risk % capital" value={`${((s.maxLossPerLot * s.affordableLots) / capital * 100 || 0).toFixed(2)}%`} tone="warn" />
+          <Metric label="Risk % capital" value={`${((s.maxLossPerLot * s.affordableLots) / Math.max(capital,1) * 100 || 0).toFixed(2)}%`} tone="warn" />
           <Metric label="Total max profit" value={inr(s.maxProfitPerLot * s.affordableLots)} tone="profit" />
           <Metric label="Total max loss" value={inr(s.maxLossPerLot * s.affordableLots)} tone="loss" />
           <Metric label="Reward:Risk" value={`${(s.maxProfitPerLot / Math.max(s.maxLossPerLot,1)).toFixed(2)}:1`} tone="credit" />
-          <Metric label="EV" value={`${(s.winProb/100 * s.maxProfitPerLot - (1 - s.winProb/100) * s.maxLossPerLot).toFixed(0)}`} tone="neutral" />
+          <Metric label="EV per lot" value={`${(s.winProb/100 * s.maxProfitPerLot - (1 - s.winProb/100) * s.maxLossPerLot).toFixed(0)}`} tone="neutral" />
         </div>
       )}
 
