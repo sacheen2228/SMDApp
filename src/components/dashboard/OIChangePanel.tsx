@@ -73,15 +73,32 @@ export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot
         <div className="col-span-3">
           <div className="h-[300px] border rounded-md p-2">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={oiData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="strike" tick={{fontSize:10}} />
-                <YAxis tick={{fontSize:10}} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="callOiChg" name="Call OI chg" fill="#ef4444" />
-                <Bar dataKey="putOiChg" name="Put OI chg" fill="#22c55e" />
-              </BarChart>
+              {activeTab === "OI Change" && (
+                <BarChart data={oiData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="strike" tick={{fontSize:10}} />
+                  <YAxis tick={{fontSize:10}} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="callOiChg" name="Call OI chg" fill="#ef4444" />
+                  <Bar dataKey="putOiChg" name="Put OI chg" fill="#22c55e" />
+                </BarChart>
+              )}
+              {activeTab === "Open Interest" && (
+                <BarChart data={oiData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="strike" tick={{fontSize:10}} />
+                  <YAxis tick={{fontSize:10}} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="callOiChg" name="Call OI" fill="#ef4444" />
+                </BarChart>
+              )}
+              {activeTab !== "OI Change" && activeTab !== "Open Interest" && (
+                <div className="flex h-full items-center justify-center text-muted-foreground text-xs">
+                  {activeTab} view coming soon
+                </div>
+              )}
             </ResponsiveContainer>
           </div>
           <div className="flex gap-2 mt-2">
