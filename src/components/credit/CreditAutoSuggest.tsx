@@ -136,8 +136,8 @@ export default function CreditAutoSuggest() {
 
       <p className="text-[9px] text-muted-foreground mt-auto pt-1">
         Auto-suggested from live chain premiums — decision support only, not investment advice.
-        Margin = defined-risk spread margin (width − credit) × lot. Min profit = early exit at
-        50% credit capture; min loss = stop when spread costs 2× credit.
+        Margin = defined-risk spread margin (width − credit) × lot. Sizings use 2% capital risk per trade.
+        Min profit = early exit at 50% credit capture; min loss = stop at 1.5× credit.
       </p>
     </div>
   );
@@ -176,17 +176,23 @@ function SpreadCard({ s }: { s: SpreadSuggestion }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] tabular-nums">
         <Metric label="Net credit" value={`₹${s.netCredit}`} tone="credit" />
         <Metric label="Amount needed" value={inr(s.marginPerLot * Math.max(s.affordableLots, 1))} tone="warn" />
-        <Metric label="Max profit" value={inr(s.maxProfitPerLot)} tone="profit" />
-        <Metric label="Max loss" value={inr(s.maxLossPerLot)} tone="loss" />
-        <Metric label="Min profit" value={inr(s.minProfitPerLot)} tone="profit" />
-        <Metric label="Min loss" value={inr(s.minLossPerLot)} tone="loss" />
+        <Metric label="Max profit / lot" value={inr(s.maxProfitPerLot)} tone="profit" />
+        <Metric label="Max loss / lot" value={inr(s.maxLossPerLot)} tone="loss" />
+        <Metric label="Min profit / lot" value={inr(s.minProfitPerLot)} tone="profit" />
+        <Metric label="Min loss / lot" value={inr(s.minLossPerLot)} tone="loss" />
         <Metric label="Win est." value={`${s.winProb}%`} tone="credit" />
-        <Metric
-          label="Breakeven"
-          value={s.breakeven.join(" / ")}
-          tone="neutral"
-        />
+        <Metric label="Breakeven" value={s.breakeven.join(" / ")} tone="neutral" />
       </div>
+      {s.affordableLots > 0 && (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] tabular-nums border-t pt-1">
+          <Metric label={`Total lots`} value={`${s.affordableLots}`} tone="neutral" />
+          <Metric label="Risk % capital" value={`${((s.maxLossPerLot * s.affordableLots) / capital * 100 || 0).toFixed(2)}%`} tone="warn" />
+          <Metric label="Total max profit" value={inr(s.maxProfitPerLot * s.affordableLots)} tone="profit" />
+          <Metric label="Total max loss" value={inr(s.maxLossPerLot * s.affordableLots)} tone="loss" />
+          <Metric label="Reward:Risk" value={`${(s.maxProfitPerLot / Math.max(s.maxLossPerLot,1)).toFixed(2)}:1`} tone="credit" />
+          <Metric label="EV" value={`${(s.winProb/100 * s.maxProfitPerLot - (1 - s.winProb/100) * s.maxLossPerLot).toFixed(0)}`} tone="neutral" />
+        </div>
+      )}
 
       <div className="text-[9px] text-muted-foreground leading-snug">
         {s.reasons.join(" · ")}

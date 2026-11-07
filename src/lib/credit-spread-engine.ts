@@ -67,6 +67,12 @@ export interface SuggestOptions {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════
 
+export function lotsForRisk(capital: number, maxLossPerLot: number, riskPct = 0.02): number {
+  if (maxLossPerLot <= 0) return 0;
+  const riskAmount = capital * riskPct;
+  return Math.max(0, Math.floor(riskAmount / maxLossPerLot));
+}
+
 export function lotsForCapital(capital: number, marginPerLot: number): number {
   if (marginPerLot <= 0) return 0;
   return Math.floor(capital / marginPerLot);
@@ -135,6 +141,9 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
   // Candidate widths: 1x, 2x, 4x the strike step
   const widths = [step, step * 2, step * 4];
 
+  // Volatility sigma for POP estimation
+  const sigma = spot * (vix / 100) * Math.sqrt(Math.max(years, 1/365));
+
   const bullPuts: SpreadSuggestion[] = [];
   const bearCalls: SpreadSuggestion[] = [];
 
@@ -153,10 +162,18 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
         const credit = +(shortPrem - longPrem).toFixed(2);
         if (credit <= 0 || credit >= w) continue;
         const ratio = credit / w;
-        if (ratio < 0.15) continue;
+        if (ratio < 0.25) continue; // require >=25% credit capture
 
-        const winProb = Math.round(Math.max(0, Math.min(0.95, 1 - absD)) * 100);
+        // POP estimation: 1 - credit/width, capped, and sigma-based sanity
+        const popFromCredit = Math.max(0, 1 - credit / w);
+        const be = short.strike - credit;
+        const distToBE = Math.abs(spot - be) / Math.max(sigma, 0.01);
+        const popFromSigma = normCdf(distToBE);
+        const pop = Math.min(popFromCredit, popFromSigma);
+        const winProb = Math.round(Math.max(0, Math.min(0.95, pop)) * 100);
+
         const margin = (w - credit) * lotSize;
+        const maxLossPerLot = (w - credit) * lotSize;
         const score = scoreSpread(ratio, absD, short.pe.oi ?? 0, valid.map((r) => r.pe?.oi ?? 0));
 
         const reasons = [
@@ -179,9 +196,9 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
           width: w,
           marginPerLot: margin,
           maxProfitPerLot: credit * lotSize,
-          maxLossPerLot: (w - credit) * lotSize,
+          maxLossPerLot,
           minProfitPerLot: credit * 0.5 * lotSize,   // exit at 50% credit
-          minLossPerLot: credit * lotSize,            // stop at 2x spread cost
+          minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize), // stop at 1.5x credit
           breakeven: [+(short.strike - credit).toFixed(2)],
           winProb,
           score,
@@ -205,10 +222,17 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
         const credit = +(shortPrem - longPrem).toFixed(2);
         if (credit <= 0 || credit >= w) continue;
         const ratio = credit / w;
-        if (ratio < 0.15) continue;
+        if (ratio < 0.25) continue;
 
-        const winProb = Math.round(Math.max(0, Math.min(0.95, 1 - absD)) * 100);
+        const popFromCredit = Math.max(0, 1 - credit / w);
+        const be = short.strike + credit;
+        const distToBE = Math.abs(spot - be) / Math.max(sigma, 0.01);
+        const popFromSigma = normCdf(distToBE);
+        const pop = Math.min(popFromCredit, popFromSigma);
+        const winProb = Math.round(Math.max(0, Math.min(0.95, pop)) * 100);
+
         const margin = (w - credit) * lotSize;
+        const maxLossPerLot = (w - credit) * lotSize;
         const score = scoreSpread(ratio, absD, short.ce.oi ?? 0, valid.map((r) => r.ce?.oi ?? 0));
 
         const reasons = [
@@ -231,9 +255,9 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
           width: w,
           marginPerLot: margin,
           maxProfitPerLot: credit * lotSize,
-          maxLossPerLot: (w - credit) * lotSize,
+          maxLossPerLot,
           minProfitPerLot: credit * 0.5 * lotSize,
-          minLossPerLot: credit * lotSize,
+          minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize),
           breakeven: [+(short.strike + credit).toFixed(2)],
           winProb,
           score,
@@ -256,9 +280,21 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
   const callPick = topBear[0] ?? bearCalls[0];
   if (putPick && callPick) {
     const credit = +(putPick.netCredit + callPick.netCredit).toFixed(2);
-    const width = Math.max(putPick.width, callPick.width);
+    const putWidth = putPick.width;
+    const callWidth = callPick.width;
+    const width = putWidth + callWidth;
     const margin = (width - credit) * lotSize;
     if (credit > 0 && credit < width) {
+      // POP for iron condor: probability spot stays between two breakevens
+      const lowerBE = putPick.breakeven[0];
+      const upperBE = callPick.breakeven[0];
+      const distLow = Math.abs(spot - lowerBE) / Math.max(sigma, 0.01);
+      const distHigh = Math.abs(spot - upperBE) / Math.max(sigma, 0.01);
+      const popLow = normCdf(distLow);
+      const popHigh = normCdf(distHigh);
+      const popCondor = Math.max(0, Math.min(0.95, popLow * popHigh));
+      const winProb = Math.round(popCondor * 100);
+
       condors.push({
         id: `IC-${putPick.legs[0].strike}-${callPick.legs[0].strike}`,
         strategy: "IRON_CONDOR",
@@ -271,9 +307,9 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
         maxProfitPerLot: credit * lotSize,
         maxLossPerLot: (width - credit) * lotSize,
         minProfitPerLot: credit * 0.5 * lotSize,
-        minLossPerLot: credit * lotSize,
+        minLossPerLot: Math.min((width - credit) * lotSize, credit * 1.5 * lotSize),
         breakeven: [...putPick.breakeven, ...callPick.breakeven],
-        winProb: Math.round((putPick.winProb + callPick.winProb) / 2),
+        winProb,
         score: Math.round((putPick.score + callPick.score) / 2),
         affordableLots: 1,
         reasons: [
@@ -287,11 +323,13 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
 
   let all = [...topBull, ...topBear, ...condors];
 
-  // Capital filter + lot sizing
+  // Capital filter + lot sizing by risk
   if (capital && capital > 0) {
     all = all.filter((s) => s.marginPerLot <= capital);
     for (const s of all) {
-      s.affordableLots = Math.max(1, lotsForCapital(capital, s.marginPerLot));
+      // Risk-based sizing: 2% capital per trade, total risk cap 5%
+      const riskLots = lotsForRisk(capital, s.maxLossPerLot, 0.02);
+      s.affordableLots = Math.max(0, riskLots);
     }
   }
 
