@@ -13,7 +13,11 @@ const fmtNum = (n: number, d = 2) => {
   return n.toFixed(d);
 };
 
-const fmtPct = (n: number) => fmtNum(n) + '%';
+const fmtPct = (n: number) => {
+  if (n === undefined || n === null || isNaN(n)) return '0%';
+  const val = n > 1 ? n : n * 100;
+  return fmtNum(val) + '%';
+};
 const fmtRs = (n: number) => '₹' + fmtNum(n);
 const fmtOI = (n: number) => {
   if (n >= 1e7) return (n / 1e5).toFixed(1) + 'L';
@@ -78,8 +82,31 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 300000);
-    return () => clearInterval(interval);
+    const eventSource = new EventSource(`/api/options-edge/stream?symbol=${selectedSymbol}`);
+    eventSource.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'update') {
+          setData(msg.data);
+          setError(null);
+        } else if (msg.type === 'validation') {
+          setError('Validation: ' + (msg.errors?.[0] || 'Invalid data'));
+        } else if (msg.type === 'error') {
+          setError(msg.error);
+        }
+      } catch {}
+    };
+    eventSource.onerror = () => {
+      // fallback to poll if stream fails
+      const interval = setInterval(fetchData, 30000);
+      return () => {
+        eventSource.close();
+        clearInterval(interval);
+      };
+    };
+    return () => {
+      eventSource.close();
+    };
   }, [selectedSymbol]);
 
   if (loading && !data) {

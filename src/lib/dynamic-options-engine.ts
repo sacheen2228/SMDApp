@@ -28,6 +28,28 @@ export function validateOptionChainData(input: DynamicOptionsInput): DataValidat
   if (input.atmStrike <= 0) errors.push('Invalid ATM strike');
   if (input.totalCallOI <= 0 && input.totalPutOI <= 0) errors.push('Total OI both zero');
 
+  // Sanity check: spot should be within reasonable range of strikes
+  if (input.strikes.length > 0) {
+    const strikesArr = input.strikes.map(s => s.strike);
+    const nearest = Math.min(...strikesArr.map(st => Math.abs(st - input.spot)));
+    if (nearest > input.spot * 0.3) {
+      errors.push(`Spot (${input.spot}) far from nearest strike (${nearest} diff) — data likely mismatched`);
+    }
+    // Check for impossible premiums (premium < intrinsic) — warn, don't hard fail
+    for (const s of input.strikes) {
+      const ceIntrinsic = Math.max(0, input.spot - s.strike);
+      const peIntrinsic = Math.max(0, s.strike - input.spot);
+      if (s.ce.ltp != null && s.ce.ltp > 0 && s.ce.ltp < ceIntrinsic * 0.95) {
+        warnings.push(`CE premium ${s.ce.ltp} below intrinsic ${ceIntrinsic} at strike ${s.strike}`);
+        break;
+      }
+      if (s.pe.ltp != null && s.pe.ltp > 0 && s.pe.ltp < peIntrinsic * 0.95) {
+        warnings.push(`PE premium ${s.pe.ltp} below intrinsic ${peIntrinsic} at strike ${s.strike}`);
+        break;
+      }
+    }
+  }
+
   const atm = input.strikes.find(s => s.strike === input.atmStrike);
   if (!atm) {
     errors.push('ATM strike not found in chain');
@@ -935,9 +957,6 @@ function computeOptionsEdgeScore(
 export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOptionsResult {
   const { symbol, spot, vix, pcr, maxPain, atmStrike, strikes, totalCallOI, totalPutOI, callOiChg, putOiChg, expiryDate, lotSize = 50 } = input;
 
-  // ── V2: Data validation ──
-  const dataValidation = validateOptionChainData(input);
-
   const today = new Date();
   let daysToExpiry = 7;
   if (expiryDate) {
@@ -945,6 +964,37 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     daysToExpiry = Math.max(0, Math.ceil((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
   }
   const timeToExpiry = daysToExpiry / 365;
+
+  // Normalize IV from percent to decimal if incoming data is in percent >1
+  const normalizeIV = (iv: number) => {
+    if (!iv && iv !== 0) return 0;
+    return iv > 1 ? iv / 100 : iv;
+  };
+
+  // Fill missing Greeks via Black-Scholes when IV is present
+  const fillGreeks = (leg: any, spot: number, strike: number, tte: number, isCall: boolean) => {
+    if (!leg) return leg;
+    const ivDec = normalizeIV(leg.iv);
+    if (ivDec <= 0 || tte <= 0) return { ...leg, iv: ivDec };
+    const g = calculateGreeks(spot, strike, tte, ivDec, isCall);
+    return {
+      ...leg,
+      iv: ivDec,
+      delta: leg.delta != null && leg.delta !== 0 ? leg.delta : g.delta,
+      gamma: leg.gamma != null && leg.gamma !== 0 ? leg.gamma : g.gamma,
+      theta: leg.theta != null && leg.theta !== 0 ? leg.theta : g.theta,
+      vega: leg.vega != null && leg.vega !== 0 ? leg.vega : g.vega,
+    };
+  };
+
+  const strikesNorm = strikes.map(s => ({
+    ...s,
+    ce: fillGreeks(s.ce, spot, s.strike, timeToExpiry, true),
+    pe: fillGreeks(s.pe, spot, s.strike, timeToExpiry, false),
+  }));
+
+  // ── V2: Data validation ──
+  const dataValidation = validateOptionChainData({ ...input, strikes: strikesNorm });
   const expiryMode = isExpiryDay(symbol, today);
   const marketOpen = isMarketOpenNow();
 
@@ -958,9 +1008,9 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const spotMovement24h = expectedMove * 0.3;
 
-  const currentATM = findATMStrike(strikes.map(s => s.strike), spot);
+  const currentATM = findATMStrike(strikesNorm.map(s => s.strike), spot);
 
-  const strikeAnalyses: DynamicStrikeAnalysis[] = strikes.map(s => {
+  const strikeAnalyses: DynamicStrikeAnalysis[] = strikesNorm.map(s => {
     const moneyness = classifyMoneyness(s.strike, currentATM, spot);
     const distanceFromATM = Math.abs(s.strike - spot);
 
@@ -1096,7 +1146,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     otm: otmCandidate || { strike: currentATM + 100, type: 'OTM', optionType: 'CE', premium: 0, delta: 0, gamma: 0, theta: 0, vega: 0, iv: 0, meltRisk: 'LOW', expectedMove: 0, spread: 0, capitalRequired: 0, maxLoss: 0, breakevenMove: 0, edgeScore: 0, rank: 0 },
   };
 
-  const directionResult = evaluateDirection(strikes, spot, currentATM, vix, pcr, vix / 100, trend, timeToExpiry);
+  const directionResult = evaluateDirection(strikesNorm, spot, currentATM, vix, pcr, vix / 100, trend, timeToExpiry);
 
   // ── V2: Enforce directional consistency ──
   directionResult.recommendedDirection = enforceDirectionalConsistency(
@@ -1107,7 +1157,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     ? evaluateHeroZero(otmCandidate.strike, spot, 'CE', otmCandidate.delta, otmCandidate.gamma, otmCandidate.iv, otmCandidate.premium, otmCandidate.premium, 0, otmCandidate.premium, otmCandidate.premium, otmCandidate.premium, vix, trend, expiryMode)
     : { qualifies: false, reasons: [], rejectionReasons: ['No OTM candidate'], momentumStrength: 0, gammaStrength: 0, deltaAdequacy: false, volumeConfirmation: false, oiConfirmation: false, ivConfirmation: false, liquidityOk: false, spreadOk: false };
 
-  const straddleAnalysis = analyzeStraddleStrangle(symbol, spot, strikes, currentATM, expectedMove, lotSize, vix);
+  const straddleAnalysis = analyzeStraddleStrangle(symbol, spot, strikesNorm, currentATM, expectedMove, lotSize, vix);
 
   let bestStrike = currentATM;
   let bestEdge = 0;

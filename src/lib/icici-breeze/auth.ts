@@ -7,6 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { providerHealth } from '../provider-health';
 import { reportSessionFailure, classifySourceError } from '../session-health';
+import { breezeStream } from './market-stream';
+import { motilalStream } from '../motilal/market-stream';
 
 // ─── Session Cache ────────────────────────────────────────────────
 const SESSION_FILE = path.join(process.cwd(), '.breeze-session.json');
@@ -156,6 +158,9 @@ async function doInitSession(): Promise<boolean> {
         store.sessionState.createdAt = new Date(cached.createdAt).toISOString();
         store.sessionState.expiresAt = new Date(cached.expiresAt).toISOString();
         providerHealth.recordSuccess("breeze", 0);
+        // Auto-connect live streams on successful auth
+        breezeStream.connect().catch(()=>{});
+        motilalStream.connect().catch(()=>{});
         return true;
       }
     } catch {
@@ -166,6 +171,8 @@ async function doInitSession(): Promise<boolean> {
     const config = getConfig();
     if (config.sessionToken) {
       await generateSession(config.sessionToken);
+      breezeStream.connect().catch(()=>{});
+      motilalStream.connect().catch(()=>{});
       return true;
     }
 
