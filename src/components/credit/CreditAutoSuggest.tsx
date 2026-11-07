@@ -37,7 +37,9 @@ const inr = (n: number) =>
 
 export default function CreditAutoSuggest() {
   const [symbol, setSymbol] = useState("NIFTY");
-  const [capital, setCapital] = useState(100000);
+  const [capital, setCapital] = useState(50000);
+
+  const clampCapital = (v: number) => Math.max(25000, Math.min(50000, v));
 
   const lot = SYMBOLS.find((s) => s.value === symbol)?.lot ?? 65;
 
@@ -86,9 +88,10 @@ export default function CreditAutoSuggest() {
           <Input
             type="number"
             value={capital}
-            min={10000}
-            step={10000}
-            onChange={(e) => setCapital(Math.max(0, +e.target.value))}
+            min={25000}
+            max={50000}
+            step={5000}
+            onChange={(e) => setCapital(clampCapital(Math.max(0, +e.target.value)))}
             className="h-7 w-[90px] text-[11px]"
           />
         </div>
