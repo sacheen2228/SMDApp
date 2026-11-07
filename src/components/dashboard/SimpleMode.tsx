@@ -4,6 +4,7 @@
 "use client";
 
 import { useState, useEffect, memo } from "react";
+import { OIChangePanel } from "./OIChangePanel";
 import type { SDMRecommendation } from "@/types/sdm";
 import type { FullAnalysis } from "@/lib/sdm-engine";
 import { Badge } from "@/components/ui/badge";
@@ -540,6 +541,9 @@ export const SimpleMode = memo(function SimpleMode({
           <div><span className="text-muted-foreground">Max Pain</span><div className="font-bold">{liveMaxPain ? fmt(liveMaxPain) : '—'}</div></div>
         </div>
       </div>
+
+      {/* ─── OI CHANGE CHART ─── */}
+      <OIChangePanel symbol={symbol} spot={spotPrice} vix={liveVIX} pcr={livePCR} />
 
       {/* ─── SESSION NOTE ─── */}
       {rec?.session?.notes != null && rec.session.notes.length > 0 && (
