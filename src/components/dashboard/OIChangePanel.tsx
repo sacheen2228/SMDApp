@@ -4,11 +4,20 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot: number; vix: number; pcr: number }) {
   const [minStrike, setMinStrike] = useState(24550);
   const [maxStrike, setMaxStrike] = useState(25550);
   const [strikes] = useState(10);
+  const [oiData] = useState(() => Array.from({length: 21}, (_,i)=>{
+    const strike = 25050 - 250 + i*25;
+    return {
+      strike,
+      callOiChg: Math.round((Math.random()-0.5)*4000000),
+      putOiChg: Math.round((Math.random()-0.5)*4000000),
+    };
+  }));
 
   return (
     <div className="rounded-xl border bg-card p-3">
@@ -51,8 +60,18 @@ export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot
           </div>
         </div>
         <div className="col-span-3">
-          <div className="h-[300px] border rounded-md p-2 flex items-center justify-center text-muted-foreground text-xs">
-            OI Change Chart Placeholder – Call OI chg / Put OI chg bar chart
+          <div className="h-[300px] border rounded-md p-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={oiData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="strike" tick={{fontSize:10}} />
+                <YAxis tick={{fontSize:10}} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="callOiChg" name="Call OI chg" fill="#ef4444" />
+                <Bar dataKey="putOiChg" name="Put OI chg" fill="#22c55e" />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
           <div className="flex gap-2 mt-2">
             {["Last 5 mins","Last 10 mins","Full Day"].map(t=>(
