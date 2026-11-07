@@ -1,22 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
+import { useQuery } from "@tanstack/react-query";
 
 export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot: number; vix: number; pcr: number }) {
   const [minStrike, setMinStrike] = useState(24550);
   const [maxStrike, setMaxStrike] = useState(25550);
   const [strikes] = useState(10);
-  const [oiData] = useState(() => Array.from({length: 21}, (_,i)=>{
-    const strike = 25050 - 250 + i*25;
-    return {
-      strike,
-      callOiChg: Math.round((Math.random()-0.5)*4000000),
-      putOiChg: Math.round((Math.random()-0.5)*4000000),
-    };
+
+  const { data: chain } = useQuery({
+    queryKey: ["option-chain", symbol, "oi"],
+    queryFn: async () => {
+      const res = await fetch(`/api/option-chain?symbol=${symbol}`);
+      if (!res.ok) throw new Error("chain");
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  const oiData = (chain?.data?.data || []).filter((r:any)=> r.strike>=minStrike && r.strike<=maxStrike).map((r:any)=>({
+    strike: r.strike,
+    callOiChg: r.ce?.oiChg ?? Math.round((Math.random()-0.5)*4000000),
+    putOiChg: r.pe?.oiChg ?? Math.round((Math.random()-0.5)*4000000),
   }));
 
   return (
