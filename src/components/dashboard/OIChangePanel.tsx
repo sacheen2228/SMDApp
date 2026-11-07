@@ -10,7 +10,9 @@ import { useQuery } from "@tanstack/react-query";
 export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot: number; vix: number; pcr: number }) {
   const [minStrike, setMinStrike] = useState(24550);
   const [maxStrike, setMaxStrike] = useState(25550);
-  const [strikes] = useState(10);
+  const [strikes, setStrikes] = useState(10);
+  const [activeTab, setActiveTab] = useState("OI Change");
+  const [activeTime, setActiveTime] = useState("Full Day");
 
   const { data: chain } = useQuery({
     queryKey: ["option-chain", symbol, "oi"],
@@ -33,7 +35,7 @@ export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot
       <div className="flex items-center justify-between mb-2">
         <div className="flex gap-2 text-[10px]">
           {["OI Change","Open Interest","Multistrike OI","Option OI vs Time","Fut OI vs Time"].map(t=>(
-            <Badge key={t} variant="outline" className="text-[9px]">{t}</Badge>
+            <button key={t} onClick={()=>setActiveTab(t)} className={`text-[9px] px-2 py-0.5 rounded border ${activeTab===t?"bg-primary text-white":""}`}>{t}</button>
           ))}
         </div>
         <div className="text-[10px] text-muted-foreground">INDIA VIX {vix} PCR {pcr}</div>
@@ -63,7 +65,7 @@ export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot
             <div className="text-[10px] mb-1">Strikes above and below ATM</div>
             <div className="flex gap-1">
               {[5,10,15,20,25].map(n=>(
-                <Button key={n} variant="outline" size="sm" className="h-6 text-[10px]">{n}</Button>
+                <Button key={n} variant={strikes===n?"default":"outline"} size="sm" className="h-6 text-[10px]" onClick={()=>setStrikes(n)}>{n}</Button>
               ))}
             </div>
           </div>
@@ -84,7 +86,7 @@ export function OIChangePanel({ symbol, spot, vix, pcr }: { symbol: string; spot
           </div>
           <div className="flex gap-2 mt-2">
             {["Last 5 mins","Last 10 mins","Full Day"].map(t=>(
-              <Button key={t} variant="outline" size="sm" className="h-6 text-[10px]">{t}</Button>
+              <Button key={t} variant={activeTime===t?"default":"outline"} size="sm" className="h-6 text-[10px]" onClick={()=>setActiveTime(t)}>{t}</Button>
             ))}
           </div>
           <div className="text-[10px] text-muted-foreground mt-2">
