@@ -22,7 +22,9 @@ import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfi
 import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
+import SignalExplanationPanel from "@/components/terminal/SignalExplanationPanel";
 import MostActiveContracts from "@/components/terminal/MostActiveContracts";
+import ExpiryDayOptionSurvivalCalculator from "@/components/terminal/ExpiryDayOptionSurvivalCalculator";
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
@@ -197,6 +199,9 @@ interface TradeRec {
   rr: number;
   reason: string;
   confidence: number;
+  // Kept for the Signal Explanation panel (why this trade / factor breakdown)
+  whyThisTrade?: any[];
+  qualityScore?: any;
 }
 
 interface Trade {
@@ -806,6 +811,8 @@ export function ZeroHeroTerminal() {
         rr: s.riskReward || 2,
         reason: s.reason || "",
         confidence: typeof s.confidence === "number" ? s.confidence : 0,
+        whyThisTrade: Array.isArray(s.whyThisTrade) ? s.whyThisTrade : [],
+        qualityScore: s.qualityScore || null,
       });
     } catch {}
   }, [symbol, expiry]);
@@ -1128,7 +1135,7 @@ export function ZeroHeroTerminal() {
               flowData={flowData} zhCandidates={zhCandidates} isEligible={isEligible}
               lotSize={lotSize} symbol={symbol} expiryType={expiryType}
               openTrade={openTrade} loading={loading} error={error} errorMsg={errorMsg}
-              notAvailable={notAvailable}
+              notAvailable={notAvailable} rec={rec}
             />
           )}
           {activeTab === "options" && (
@@ -1209,7 +1216,7 @@ export function ZeroHeroTerminal() {
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Overview Tab ──────────────────────────────────────────────────
-function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, isEligible, lotSize, symbol, expiryType, openTrade, loading, error, errorMsg, notAvailable }: any) {
+function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, isEligible, lotSize, symbol, expiryType, openTrade, loading, error, errorMsg, notAvailable, rec }: any) {
   if (loading) return <div className="text-[#7d8ba0] text-center py-10">Loading option chain data...</div>;
   if (error) return <div className="text-[#f2495c] text-center py-10"><div className="mb-2">Failed to load data</div>{errorMsg && <div className="text-[11px] text-[#7d8ba0] font-mono">{errorMsg}</div>}<div className="text-[11px] text-[#7d8ba0] mt-2">Retrying...</div></div>;
 
@@ -1283,6 +1290,18 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
             <OIDistribution chain={chain} maxPain={maxPain} />
           </div>
         </div>
+      </div>
+
+      {/* Row 3: Signal Explanation — why CE / PE / WAIT (read-only) */}
+      <SignalExplanationPanel symbol={symbol} rec={rec} />
+      <div className="mt-4">
+        <ExpiryDayOptionSurvivalCalculator
+          initialStrike={rec?.strike}
+          initialUnderlying={spot || undefined}
+          initialEntry={rec?.entry}
+          initialLotSize={getLotSize(symbol, rec?.type === "CE" ? "CE" : rec?.type === "PE" ? "PE" : "CE")}
+          initialOptionType={rec?.type}
+        />
       </div>
     </>
   );
@@ -1625,6 +1644,8 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
   // ─── Unified Scoring Engine ───────────────────────────────────────
   const scoredCandidates = useMemo(() => {
     if (!chain.length || !spot) return [];
+    // SMC requires real intraday candles for structure/volume. If unavailable, still provide OI-flow based candidates with reduced confidence, never simulated.
+    const candlesOk = (candles?.length ?? 0) >= 5;
     try {
       const lotSize = getLotSize(activeSymbol);
       // Build option chain for unified engine
@@ -1652,6 +1673,52 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
       const oiRatio = oiTot > 0 ? (callOiChg - putOiChg) / oiTot : 0;
       const flowBias: "BULLISH" | "BEARISH" | "NEUTRAL" =
         oiRatio < -0.1 ? "BULLISH" : oiRatio > 0.1 ? "BEARISH" : "NEUTRAL";
+
+      // OI-only fallback when candles unavailable — real OI/FII flow, no simulated candles
+      if (!candlesOk) {
+        const results: any[] = [];
+        for (const row of nearStrikes) {
+          const ce = row.ce;
+          const pe = row.pe;
+          if (flowBias === "BULLISH" && ce && ce.ltp >= 5 && ce.oiChg > 0) {
+            results.push({
+              strike: row.strike,
+              type: "CE",
+              entry: ce.ltp,
+              sl: ce.ltp * 0.7,
+              tp1: ce.ltp * 1.5,
+              tp2: ce.ltp * 2.0,
+              tp3: ce.ltp * 2.5,
+              rr: 1.0,
+              confidence: Math.min(55, 40 + Math.min(15, Math.abs(ce.oiChg)/1000)),
+              qualityGrade: "B",
+              maxLoss: 0,
+              reasons: ["OI-only mode: candles unavailable, OI flow BULLISH, CE OI rising"],
+              direction: "BULLISH",
+              hardGates: { passed: false },
+            });
+          }
+          if (flowBias === "BEARISH" && pe && pe.ltp >= 5 && pe.oiChg > 0) {
+            results.push({
+              strike: row.strike,
+              type: "PE",
+              entry: pe.ltp,
+              sl: pe.ltp * 1.3,
+              tp1: pe.ltp * 0.6,
+              tp2: pe.ltp * 0.5,
+              tp3: pe.ltp * 0.4,
+              rr: 1.0,
+              confidence: Math.min(55, 40 + Math.min(15, Math.abs(pe.oiChg)/1000)),
+              qualityGrade: "B",
+              maxLoss: 0,
+              reasons: ["OI-only mode: candles unavailable, OI flow BEARISH, PE OI rising"],
+              direction: "BEARISH",
+              hardGates: { passed: false },
+            });
+          }
+        }
+        return results.sort((a: any, b: any) => b.confidence - a.confidence).slice(0, 5);
+      }
 
       // Falling-market detector (TECHNICAL confirmation, Oct 2026):
       // OI flow says who's winning the positioning war; this says whether
@@ -1899,7 +1966,7 @@ const peInput: MarketDataInput = {
               <div>
                 {(candles?.length ?? 0) >= 5
                   ? "Market structure is ranging — no strong directional signals detected. Candidates require OI confirmation + favorable risk:reward."
-                  : "Candle feed unavailable (no structure/volume data) — candidates suppressed until real candles return. Never scoring simulated data."}
+                  : "Candle feed unavailable — OI-flow fallback active. Candidates will appear based on real OI/FII flow when strong OI change is present."}
               </div>
             </div>
           ) : (

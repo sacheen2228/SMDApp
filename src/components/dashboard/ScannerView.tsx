@@ -1,6 +1,7 @@
 // ScannerView — Scanner tab wrapper
-// Sub-tabs: Intraday (existing intraday scanner) and Weekly (weekly equity
-// scanner). Lets the user switch between the two without leaving the tab.
+// Sub-tabs: Intraday (existing intraday scanner), Weekly (weekly equity
+// scanner), Equity Universe, and F&O Pulse (ranked momentum board over
+// /api/scanner/fno). Lets the user switch without leaving the tab.
 
 "use client";
 
@@ -9,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { ScannerPanel } from "@/components/dashboard/ScannerPanel";
 import { WeeklyEquityScannerPanel } from "@/components/dashboard/WeeklyEquityScannerPanel";
 import EquityUniversePanel from "@/components/dashboard/EquityUniversePanel";
-import { Zap, Clock, Filter } from "lucide-react";
+import FnoPulseBoard from "@/components/dashboard/FnoPulseBoard";
+import { Zap, Clock, Filter, Activity } from "lucide-react";
 
 interface ScannerViewProps {
   symbol: string;
@@ -17,7 +19,7 @@ interface ScannerViewProps {
 }
 
 export default function ScannerView({ symbol, spotPrice }: ScannerViewProps) {
-  const [mode, setMode] = useState<"intraday" | "weekly" | "universe">("intraday");
+  const [mode, setMode] = useState<"intraday" | "weekly" | "universe" | "pulse">("intraday");
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -47,6 +49,14 @@ export default function ScannerView({ symbol, spotPrice }: ScannerViewProps) {
         >
           <Filter className="h-3 w-3 mr-1" /> Equity Universe
         </Button>
+        <Button
+          variant={mode === 'pulse' ? 'default' : 'ghost'}
+          size="sm"
+          className={`h-6 text-[10px] px-2 font-bold ${mode === 'pulse' ? 'bg-sky-600 text-white shadow-sm shadow-sky-500/25' : 'text-muted-foreground hover:text-sky-500'}`}
+          onClick={() => setMode('pulse')}
+        >
+          <Activity className="h-3 w-3 mr-1" /> F&O Pulse
+        </Button>
       </div>
 
       {/* Panel */}
@@ -55,8 +65,10 @@ export default function ScannerView({ symbol, spotPrice }: ScannerViewProps) {
           <ScannerPanel symbol={symbol} spotPrice={spotPrice} />
         ) : mode === 'weekly' ? (
           <WeeklyEquityScannerPanel />
-        ) : (
+        ) : mode === 'universe' ? (
           <EquityUniversePanel />
+        ) : (
+          <FnoPulseBoard />
         )}
       </div>
     </div>

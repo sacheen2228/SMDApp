@@ -19,6 +19,7 @@ import {
   exportUrl,
   EMPTY_STATS,
 } from "@/lib/trade-audit-client";
+import TrackRecordPanel from "@/components/backtest/TrackRecordPanel";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_TRADE_AUDIT_URL ?? "http://localhost:4001";
@@ -460,6 +461,8 @@ export default function BacktestDashboard() {
               color="text-red-400"
             />
           </div>
+
+          <TrackRecordPanel stats={stats} connected={connected} />
 
           <ReplayPanel />
 

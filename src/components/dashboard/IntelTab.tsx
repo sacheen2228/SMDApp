@@ -21,6 +21,7 @@ import { AlertCenter } from "./AlertCenter";
 import { BestTradesNow } from "./BestTradesNow";
 import { MarketHeatmap } from "./MarketHeatmap";
 import { OptionBuyerPanel } from "./OptionBuyerPanel";
+import IndustryHeatmapPanel from "./IndustryHeatmapPanel";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -529,7 +530,7 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
               <ResearchCommentary regime={regime} breadth={breadth} derivative={derivativeFlow} oi={oi} sector={sectors} />
             </div>
             <div className="md:col-span-2 lg:col-span-3">
-              <MarketHeatmap onStockClick={onStockClick} />
+              <IndustryHeatmapPanel />
             </div>
           </TabsContent>
 
