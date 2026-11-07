@@ -522,6 +522,25 @@ export const SimpleMode = memo(function SimpleMode({
         </div>
       </div>
 
+      {/* ─── OI NIFTY DASHBOARD ─── */}
+      <div className="rounded-xl border bg-card p-3 mt-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">OI NIFTY</span>
+            <Badge className="text-[9px] bg-emerald-600 text-white">LIVE</Badge>
+          </div>
+          <div className="text-xs text-muted-foreground">{symbol} {spotPrice.toLocaleString("en-IN")}</div>
+        </div>
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-xs">
+          <div><span className="text-muted-foreground">VIX</span><div className="font-bold">{liveVIX.toFixed(1)}%</div></div>
+          <div><span className="text-muted-foreground">PCR</span><div className="font-bold">{livePCR.toFixed(2)}</div></div>
+          <div><span className="text-muted-foreground">ATM</span><div className="font-bold">{liveATM}</div></div>
+          <div><span className="text-muted-foreground">CE OI</span><div className="font-bold text-red-500">{formatIndian(liveCEOI)}</div></div>
+          <div><span className="text-muted-foreground">PE OI</span><div className="font-bold text-emerald-500">{formatIndian(livePEOI)}</div></div>
+          <div><span className="text-muted-foreground">Max Pain</span><div className="font-bold">{liveMaxPain ? fmt(liveMaxPain) : '—'}</div></div>
+        </div>
+      </div>
+
       {/* ─── SESSION NOTE ─── */}
       {rec?.session?.notes != null && rec.session.notes.length > 0 && (
         <div className="rounded-lg bg-muted/30 border p-2 text-center">
