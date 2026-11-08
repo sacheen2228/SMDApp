@@ -543,7 +543,14 @@ export const SimpleMode = memo(function SimpleMode({
       </div>
 
       {/* ─── OI CHANGE CHART ─── */}
-      <OIChangePanel symbol={symbol} spot={spotPrice} vix={liveVIX} pcr={livePCR} />
+      <OIChangePanel
+        symbol={symbol}
+        spot={spotPrice}
+        vix={liveVIX}
+        pcr={livePCR}
+        expiries={expiries}
+        selectedExpiry={selectedExpiry}
+      />
 
       {/* ─── SESSION NOTE ─── */}
       {rec?.session?.notes != null && rec.session.notes.length > 0 && (

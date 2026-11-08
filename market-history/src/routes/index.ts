@@ -9,6 +9,7 @@ import {
   getSnapshotsForSymbol,
   getSnapshotsSummary,
   getSessionCandles,
+  getChainOiHistory,
   getSnapshotIntegrityRows,
   getSnapshotVersion,
   getTotalSnapshots,
@@ -171,6 +172,15 @@ apiRouter.get("/candles", (req: Request, res: Response) => {
     success: true,
     candles: getSessionCandles(symbol, interval, date),
   });
+});
+
+// Per-strike OI series for one symbol/day — powers the Simple-tab OI panel
+// time windows (Last 5/10/15/30m, 1/2/3h) and the Option-OI-vs-Time chart.
+apiRouter.get("/chain-oi-history", (req: Request, res: Response) => {
+  const { symbol, date } = req.query as Record<string, string | undefined>;
+  if (!symbol) return res.status(400).json({ error: "symbol_required" });
+  const snapshots = getChainOiHistory(symbol, date);
+  return res.json({ success: true, symbol, count: snapshots.length, snapshots });
 });
 
 apiRouter.get("/integrity", (req: Request, res: Response) => {

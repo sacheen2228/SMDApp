@@ -162,6 +162,27 @@ export async function getSnapshotIntegrityRows(
   return data.rows ?? [];
 }
 
+export interface ChainOiSnapshot {
+  timestamp: string;
+  spot?: number | null;
+  rows: { strike: number; ceOi: number; peOi: number }[];
+}
+
+/** Per-strike OI series for one symbol/day (recorder history). */
+export async function getChainOiHistory(
+  symbol: string,
+  date?: string,
+): Promise<ChainOiSnapshot[]> {
+  const q = new URLSearchParams({ symbol });
+  if (date) q.append("date", date);
+  try {
+    const data = await getJson(`${MARKET_HISTORY_BASE}/api/chain-oi-history?${q.toString()}`);
+    return data.snapshots ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getSnapshotVersion(
   id: string,
 ): Promise<{ engineVersion: string; featureVersion: number } | null> {
