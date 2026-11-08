@@ -493,6 +493,25 @@ export function getExpiryType(symbol: string, expiryDate: string): ExpiryType {
   return 'weekly';
 }
 
+/**
+ * 'weekly' | 'monthly' for ONE exchange date — the type the OI panel's W/M
+ * badge reads. Unlike getExpiryType() this compares DATE OBJECTS, so ISO
+ * ("2026-11-24") and Breeze ("24-Nov-2026") inputs both classify correctly.
+ * The monthly contract is the last expiry of its calendar month — the same
+ * rule classifyExchangeList() applies to a full list. Unparseable → null.
+ */
+export function classifyExpiryType(symbol: string, expiryDate: string): ExpiryType | null {
+  const obj = parseExchangeDate(expiryDate);
+  if (!obj) return null;
+  const monthly = getMonthlyExpiries(symbol, 12);
+  const isMonthly = monthly.some(m =>
+    m.dateObj.getFullYear() === obj.getFullYear() &&
+    m.dateObj.getMonth() === obj.getMonth() &&
+    m.dateObj.getDate() === obj.getDate()
+  );
+  return isMonthly ? 'monthly' : 'weekly';
+}
+
 // ─── Get next monthly expiry from today ───────────────────────────
 export function getNextMonthlyExpiry(symbol: string): ExpiryInfo | null {
   const monthly = getMonthlyExpiries(symbol, 6);

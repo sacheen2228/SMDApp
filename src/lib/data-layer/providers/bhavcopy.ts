@@ -16,6 +16,7 @@
 // Data: NSE/BSE bhavcopy (src/lib/option-bhavcopy.ts) — real exchange files.
 import type { OptionChainData, OptionLeg, OptionStrike, ProviderResult } from "../types";
 import { loadBhavcopyForTrade, type PremiumCandle } from "@/lib/option-bhavcopy";
+import { toContracts } from "@/lib/oi-units";
 import {
   EXPIRY_UNAVAILABLE,
   expiryUnavailableReason,
@@ -32,8 +33,9 @@ const MAX_LOOKBACK_DAYS = 6;
 function legFrom(row: PremiumCandle): OptionLeg {
   return {
     ltp: row.close > 0 ? row.close : null,
-    volume: row.volume || null,
-    oi: row.oi || null,
+    volume: row.volume || null, // TtlTradgVol is already in CONTRACTS
+    // OpnIntrst is in UNDERLYING UNITS (÷lot = participant OI) → CONTRACTS.
+    oi: row.oi ? toContracts(row.oi, row.symbol) : null,
     oiChange: null,        // the bhavcopy is a single day — no day-over-day delta
     iv: null,               // not in the bhavcopy
     bid: null,

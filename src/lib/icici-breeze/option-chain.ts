@@ -6,6 +6,7 @@ import type { OptionChainData, OptionQuote } from '@/types';
 import { calculateGreeks, parseExpiryDateLoose } from '@/lib/greeks';
 import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
 import { mergeExpiryCandidates } from '@/lib/expiry-calculator';
+import { toContracts } from '@/lib/oi-units';
 
 // BSE symbols that need BFO exchange code (BSE F&O segment)
 const BSE_SYMBOLS = new Set(['SENSEX', 'BANKEX']);
@@ -116,9 +117,11 @@ export async function getOptionChain(
           ltp: parseFloat(opt.ltp || '0'),
           bid: parseFloat(opt.best_bid_price || '0'),
           ask: parseFloat(opt.best_offer_price || '0'),
-          volume: parseInt(opt.total_quantity_traded || '0'),
-          openInterest: parseInt(opt.open_interest || '0'),
-          oiChange: parseInt(opt.chnge_oi || '0'),
+          // Breeze reports volume/OI/OI-change in UNDERLYING UNITS
+          // (contracts × lot) — the canonical chain unit is CONTRACTS.
+          volume: toContracts(parseInt(opt.total_quantity_traded || '0'), stockCode),
+          openInterest: toContracts(parseInt(opt.open_interest || '0'), stockCode),
+          oiChange: toContracts(parseInt(opt.chnge_oi || '0'), stockCode),
           iv: parseFloat(opt.implied_volatility || '0'),
           delta: 0,
           gamma: 0,

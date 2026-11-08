@@ -26,7 +26,7 @@ import { getTradingSession } from '@/lib/expiry-liquidity/market-session-config'
 import { providerHealth } from '@/lib/provider-health';
 import { getCurrentSession } from '@/lib/market-session';
 import { isPlausibleOptionSymbol } from '@/lib/stockUniverse';
-import { setExchangeExpiries } from '@/lib/expiry-calculator';
+import { setExchangeExpiries, classifyExpiryType } from '@/lib/expiry-calculator';
 import type { OptionChainStrike } from '@/lib/sdm-engine';
 
 // Init Breeze session on first request
@@ -977,7 +977,10 @@ export async function GET(request: NextRequest) {
       // The exchange keeps the just-expired contract in the list — flag it so
       // a consumer never offers a dead contract as tradable.
       const expired = isExpiryExpired(dateStr, now);
-      return { date: dateStr, label: dateStr, daysToExpiry, expired };
+      // W/M badge: 'weekly' | 'monthly' — without this the OI panel's
+      // `e.type === "weekly"` check saw undefined and every badge read "M".
+      const type = classifyExpiryType(symbol, dateStr) ?? undefined;
+      return { date: dateStr, label: dateStr, daysToExpiry, expired, type };
     });
 
 

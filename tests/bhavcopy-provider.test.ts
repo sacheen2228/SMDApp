@@ -1,8 +1,13 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { bhavcopyProvider, __setBhavcopyLoaderForTests } from "@/lib/data-layer/providers/bhavcopy";
 
+// Relative dates: a hardcoded expiry rots into the past and the provider
+// (correctly) refuses to serve a dead contract — see isExpiryExpired.
+const futureExpiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+const pastDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+
 const row = (over: any) => ({
-  date: "2026-10-19", symbol: "SENSEX", strike: 74000, optionType: "CE", expiry: "2026-10-22",
+  date: pastDate, symbol: "SENSEX", strike: 74000, optionType: "CE", expiry: futureExpiry,
   open: 100, high: 120, low: 90, close: 110, underlying: 73852.9, lotSize: 20, volume: 500, oi: 12000,
   ...over,
 });
@@ -17,17 +22,19 @@ describe("bhavcopy provider — EOD chain fallback", () => {
       row({ strike: 74100, optionType: "CE", close: 60, oi: 4000 }),
       row({ strike: 74100, optionType: "PE", close: 140, oi: 9000 }),
     ]) as any);
-    const res = await bhavcopyProvider.getOptionChain("SENSEX", "2026-10-22");
+    const res = await bhavcopyProvider.getOptionChain("SENSEX", futureExpiry);
     expect(res.data).not.toBeNull();
     expect(res.source).toBe("BHAVCOPY");
     expect(res.fallbackUsed).toBe(true);
     expect(res.data!.source).toBe("BHAVCOPY");
     expect(res.data!.spot).toBeCloseTo(73852.9, 2);
-    expect(res.data!.expiry).toBe("2026-10-22");
+    expect(res.data!.expiry).toBe(futureExpiry);
     expect(res.data!.strikes.length).toBe(2);
     const atm = res.data!.strikes.find((s) => s.strike === 74000)!;
     expect(atm.ce?.ltp).toBe(110);
-    expect(atm.ce?.oi).toBe(12000);
+    // bhavcopy OpnIntrst is in UNDERLYING UNITS (12,000 = 600 contracts × lot 20)
+    // — the chain's canonical unit is CONTRACTS.
+    expect(atm.ce?.oi).toBe(600);
     expect(atm.pe?.ltp).toBe(95);
     // the EOD source must never be mistaken for a live chain
     expect(res.data!.freshness).toBe("STALE");
@@ -38,7 +45,7 @@ describe("bhavcopy provider — EOD chain fallback", () => {
     const asked: string[] = [];
     __setBhavcopyLoaderForTests(async (d: string) => {
       asked.push(d);
-      return (d === "2026-10-17" ? [row({})] : []) as any;
+      return (d === pastDate ? [row({})] : []) as any;
     });
     const res = await bhavcopyProvider.getOptionChain("SENSEX");
     expect(res.data).not.toBeNull();
