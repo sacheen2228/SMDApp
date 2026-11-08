@@ -1,0 +1,51 @@
+export const BTST_CONFIG = {
+  scoring: {
+    weights: {
+      closeStrength: 15,
+      breakout: 15,
+      volumeVs20d: 15,
+      deliveryPct: 10,
+      fnoBuildup: 15,
+      stockPcrOiChange: 5,
+      sectorStrength: 10,
+      relativeStrength: 10,
+      institutionalAlignment: 5,
+    },
+    hardFilters: {
+      minAvgTurnoverCr: 10,
+      minRelativeVolume: 0.8,
+      minDeliveryPct: 35,
+      excludeBan: true,
+      excludeCircuit: true,
+      excludeResultsTomorrow: true,
+    },
+    marketGate: {
+      niftyTrendMinScore: 55,
+      maxIndiaVix: 22,
+      globalCuesWeight: 0.2,
+    },
+    verdict: {
+      buyThreshold: 75,
+      watchMin: 60,
+      maxGradeWhenConflict: "B",
+      conflictAlignmentThreshold: 60,
+    },
+  },
+  tradePlan: {
+    slModel: "ATR",
+    atrMultiplier: 1.2,
+    slMinPct: 0.008,
+    slMaxPct: 0.025,
+    tp1Mult: 0.9,
+    tp2Mult: 1.5,
+    expectedMoveFromATR: 1.4,
+    minRR: 1.8,
+    capitalPerTrade: 20000,
+    riskPctOfDeployed: 0.20,
+  },
+  universe: {
+    includeFNO: true,
+    includeNifty500: true,
+    avgTurnoverDays: 20,
+  },
+} as const;

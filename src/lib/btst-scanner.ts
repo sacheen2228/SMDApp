@@ -7,6 +7,8 @@
 
 import { runIntradayScan } from "./intraday-scanner";
 import { analyzeBTST, type BTSTAnalysis } from "./btst-engine";
+import { analyzeBTSTv2 } from "./btst-v2-engine";
+import { BTST_CONFIG } from "./btst-config";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "./ml-engine";
 import { recordSignal, getTrades, closeTrade } from "./trade-audit-client";
 import { updateTrade } from "./tradeStore";
@@ -55,6 +57,60 @@ function calcATR(candles: Candle[], period = 14): number {
   let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for (let i = period; i < tr.length; i++) atr = (atr * (period - 1) + tr[i]) / period;
   return atr;
+}
+
+// Adapter: map legacy BTST input to v2 and back to legacy shape
+function analyzeBTSTWithV2(inp: Parameters<typeof analyzeBTST>[0]): BTSTAnalysis {
+  const v2inp = {
+    symbol: inp.symbol,
+    price: inp.price,
+    changePct: inp.changePct,
+    rsi: inp.rsi,
+    ema9: inp.ema9,
+    ema21: inp.ema21,
+    ema50: inp.ema50,
+    volume: inp.volume,
+    avgVolume20d: inp.avgVolume,
+    deliveryPct: inp.deliveryPct,
+    atr14: inp.atr,
+    sectorStrength: inp.sectorStrength,
+    relativeStrength: inp.relativeStrength,
+    isFNO: inp.isFNO,
+    oiChangePct: inp.oiChangePct,
+    pcr: inp.pcr,
+    iv: inp.iv,
+    alignment: inp.institutional?.alignment,
+    avgTurnoverCr: 50,
+    isBan: false,
+    circuit: false,
+    resultsTomorrow: false,
+    dataFresh: true,
+  };
+  const v2 = analyzeBTSTv2(v2inp, { niftyScore: 65, vix: 18 });
+  // Fallback to legacy if v2 skips
+  if (v2.grade === "SKIP") {
+    return analyzeBTST(inp);
+  }
+  // Map v2 result back to legacy BTSTAnalysis shape minimally
+  const legacy = analyzeBTST(inp);
+  return {
+    ...legacy,
+    total: v2.score,
+    confidence: v2.confidence,
+    grade: v2.finalGrade === "A+" ? "A+" : v2.finalGrade === "A" ? "A" : v2.finalGrade === "B" ? "B" : "SKIP",
+    reasons: [...legacy.reasons, ...v2.warnings],
+    entry: v2.entry,
+    sl: v2.sl,
+    tp1: v2.tp1,
+    tp2: v2.tp2,
+    tp3: v2.tp2 * 1.15,
+    riskReward: v2.rr,
+    positionSize: {
+      qty: v2.qty || legacy.positionSize.qty,
+      capital: v2.capitalDeployed || legacy.positionSize.capital,
+      riskPerTrade: v2.riskAmount || legacy.positionSize.riskPerTrade,
+    },
+  };
 }
 
 /**
@@ -112,7 +168,7 @@ async function buildIndexETFBTST(institutionalData?: {
     const macdSignal = calculateEMA(macdSeries, 9).at(-1) ?? 0;
     const avgVolume = d.volume * 0.8;
 
-    const analysis = analyzeBTST({
+    const analysis = analyzeBTSTWithV2({
       symbol: etf.sym,
       name: etf.label,
       sector: "Index",
@@ -143,6 +199,74 @@ async function buildIndexETFBTST(institutionalData?: {
     });
 
     if (analysis.grade !== "SKIP") out.push(analysis);
+  }
+  return out;
+}
+
+async function buildFNOCandidates(institutionalData?: any): Promise<BTSTAnalysis[]> {
+  const out: BTSTAnalysis[] = [];
+  const symbols = Array.from(FNO_STOCKS);
+  for (const sym of symbols) { // full F&O universe
+    try {
+      const d = await fetchDailyCandles(sym);
+      if (!d || d.candles.length < 50) continue;
+      const closes = d.candles.map(c => c.close);
+      const ema9 = calculateEMA(closes, 9).at(-1) ?? d.price;
+      const ema21 = calculateEMA(closes, 21).at(-1) ?? d.price;
+      const ema50 = calculateEMA(closes, 50).at(-1) ?? d.price;
+      const rsi = calculateRSI(d.candles, 14);
+      const adx = calculateADX(d.candles, 14);
+      const atr = calcATR(d.candles, 14);
+      const e12 = calculateEMA(closes, 12);
+      const e26 = calculateEMA(closes, 26);
+      const macdLine = (e12.at(-1) ?? 0) - (e26.at(-1) ?? 0);
+      const macdSeries = closes.map((_, i) => (e12[i] ?? 0) - (e26[i] ?? 0));
+      const macdSignal = calculateEMA(macdSeries, 9).at(-1) ?? 0;
+      const avgVol = d.candles.slice(-20).reduce((a,c)=>a+c.volume,0)/20 || d.volume;
+      // Fetch live OI/PCR/IV
+      let oiChangePct = null;
+      let pcr = null;
+      let iv = null;
+      try {
+        const base = process.env.INTERNAL_API_BASE || 'http://localhost:3000';
+        const res = await fetch(`${base}/api/option-chain?symbol=${encodeURIComponent(sym)}`, { cache: 'no-store' });
+        if (res.ok) {
+          const j = await res.json();
+          const chain = j?.data || j;
+          oiChangePct = chain?.oiChangePct ?? null;
+          pcr = chain?.pcr ?? null;
+          iv = chain?.iv ?? null;
+        }
+      } catch {}
+      const analysis = analyzeBTSTWithV2({
+        symbol: sym,
+        name: sym,
+        sector: "",
+        price: d.price,
+        changePct: d.changePct,
+        rsi,
+        macd: macdLine,
+        macdSignal,
+        macdHist: macdLine - macdSignal,
+        adx,
+        ema9,
+        ema21,
+        ema50,
+        volume: d.volume,
+        avgVolume: avgVol,
+        oiChangePct,
+        pcr,
+        iv,
+        sectorStrength: d.changePct * 2,
+        relativeStrength: d.changePct,
+        deliveryPct: 50,
+        breadth: 0.55,
+        atr,
+        isFNO: true,
+        institutional: institutionalData ?? undefined,
+      });
+      if (analysis.grade !== "SKIP") out.push(analysis);
+    } catch {}
   }
   return out;
 }
@@ -211,7 +335,7 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
     // relativeStrength approximated from the stock's own momentum vs a flat market.
     // deliveryPct / breadth are not published by the free feeds — derived as
     // honest proxies from the real relative volume / market breadth.
-    const analysis = analyzeBTST({
+    const analysis = analyzeBTSTWithV2({
       symbol: c.symbol,
       name: c.name,
       sector: c.sector,
@@ -241,6 +365,10 @@ export async function runBTSTScan(): Promise<BTSTScanResult> {
 
     if (analysis.grade !== "SKIP") candidates.push(analysis);
   }
+
+  // Add F&O universe candidates
+  const fnoCandidates = await buildFNOCandidates(institutionalData);
+  candidates.push(...fnoCandidates);
 
   // Add index ETFs (NIFTY / SENSEX) as BTST candidates
   const indexCandidates = await buildIndexETFBTST(institutionalData);

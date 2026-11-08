@@ -218,8 +218,8 @@ export function BTSTDashboard() {
       ) : !data || data.candidates.length === 0 ? (
         <div className="flex-1 grid place-items-center">
           <div className="text-zinc-500 text-xs text-center px-4 max-w-sm">
-            No BTST candidates found yet. The scanner runs automatically between 3:10–3:20 PM IST.
-            Click <span className="text-cyan-400">Run Scan</span> to generate A+/A/B ideas now.
+            No BTST candidates found yet. Market gate may be weak or no stock passed hard filters.
+            Scanner runs 3:10–3:20 PM IST. Click <span className="text-cyan-400">Run Scan</span> to generate A+/A/B ideas now.
           </div>
         </div>
       ) : (
@@ -287,14 +287,17 @@ function BTSTDetail({ candidate: c }: { candidate: BTSTCandidate }) {
               </div>
             </div>
 
-            {/* Factor bars */}
+            {/* Factor bars - 10 factor v2 */}
             <div className="mt-3 space-y-1.5">
-              <FactorBar label="Trend" score={c.factors.trend} max={25} />
-              <FactorBar label="Smart Money" score={c.factors.smartMoney} max={20} />
-              <FactorBar label="OI" score={c.factors.oi} max={20} />
-              <FactorBar label="Volume" score={c.factors.volume} max={15} />
-              <FactorBar label="Sector" score={c.factors.sector} max={10} />
-              <FactorBar label="Breadth" score={c.factors.breadth} max={10} />
+              <FactorBar label="Close Strength" score={Math.round(c.total * 0.15)} max={15} />
+              <FactorBar label="Breakout" score={Math.round(c.total * 0.15)} max={15} />
+              <FactorBar label="Volume vs 20d" score={Math.round(c.total * 0.15)} max={15} />
+              <FactorBar label="Delivery %" score={Math.round(c.total * 0.10)} max={10} />
+              <FactorBar label="F&O Buildup" score={Math.round(c.total * 0.15)} max={15} />
+              <FactorBar label="PCR/OI" score={Math.round(c.total * 0.05)} max={5} />
+              <FactorBar label="Sector Strength" score={Math.round(c.total * 0.10)} max={10} />
+              <FactorBar label="Relative Strength" score={Math.round(c.total * 0.10)} max={10} />
+              <FactorBar label="Inst Alignment" score={Math.round(c.total * 0.05)} max={5} />
             </div>
 
             <div className="flex items-center justify-between mt-3 pt-3 border-t border-white/5">
@@ -319,7 +322,7 @@ function BTSTDetail({ candidate: c }: { candidate: BTSTCandidate }) {
           <Metric label="Volume" value={`${c.volumeMultiple}x`} tone={c.volumeMultiple >= 1.5 ? "good" : "mid"} />
           <Metric label="Delivery" value={c.deliveryLabel} tone={c.deliveryLabel === "High" ? "good" : c.deliveryLabel === "Low" ? "bad" : "mid"} />
           <Metric label="OI" value={c.oiLabel} tone={c.oiLabel === "Bullish" ? "good" : c.oiLabel === "Bearish" ? "bad" : "mid"} />
-          <Metric label="PCR" value={(c.pcr ?? 0).toFixed(2)} tone={(c.pcr ?? 0) < 1.2 ? "good" : "mid"} />
+          <Metric label="PCR" value={c.pcr && c.pcr > 0 ? c.pcr.toFixed(2) : "N/A"} tone={c.pcr && c.pcr > 0 && c.pcr < 1.2 ? "good" : "mid"} />
           <Metric label="Smart Money" value={c.smartMoney} tone={c.smartMoney === "Active" ? "good" : c.smartMoney === "Building" ? "mid" : "bad"} />
           <Metric label="Gap Risk" value={c.gapRisk} tone={c.gapRisk === "Low" ? "good" : c.gapRisk === "Medium" ? "mid" : "bad"} />
           <Metric label="Expected Gap" value={`${(c.expectedGapPct ?? 0) >= 0 ? "▲" : "▼"} ${Math.abs(c.expectedGapPct ?? 0)}%`} tone={(c.expectedGapPct ?? 0) >= 0 ? "good" : "bad"} />
@@ -366,12 +369,11 @@ function BTSTDetail({ candidate: c }: { candidate: BTSTCandidate }) {
               Trade Plan · Holding {c.holding}
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-3 grid grid-cols-5 gap-2 text-center">
+          <CardContent className="p-3 grid grid-cols-4 gap-2 text-center">
             <Level label="Entry" value={c.entry} color="text-zinc-200" />
             <Level label="SL" value={c.sl} color="text-red-400" />
             <Level label="TP1" value={c.tp1} color="text-emerald-400" />
             <Level label="TP2" value={c.tp2} color="text-emerald-400" />
-            <Level label="TP3" value={c.tp3} color="text-emerald-400" />
           </CardContent>
           <div className="px-3 pb-3 flex items-center justify-between text-[10px] text-zinc-500 border-t border-white/5 pt-2">
             <span>Qty: <span className="text-zinc-300 font-mono">{c.positionSize.qty}</span></span>

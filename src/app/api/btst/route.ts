@@ -11,7 +11,7 @@ import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
 // In-memory cache (independent of intraday engine)
 let cached: BTSTScanResult | null = null;
 let lastScanAt = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 min
+const CACHE_TTL = 0; // 5 min
 
 function formatAlert(a: any): string {
   return [
