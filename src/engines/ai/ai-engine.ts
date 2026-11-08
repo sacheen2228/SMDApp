@@ -59,6 +59,25 @@ export function computeGrade(score: number): { grade: string; quality: string; r
   return { grade: 'F', quality: 'Very Poor', risk: 'high' };
 }
 
+// Last-resort TP ladder: when no structural target exists (IMIE plan null AND
+// the generateTargets filters — score ≥ 70, R:R ≥ 1.5 — found nothing) but a
+// stop does, derive TP1/TP2/TP3 as clean R multiples of the stop distance.
+// Same 1:2 / 1:3 / 1:4 geometry as the repo's option-plan rule; returns null
+// for WAIT direction or a degenerate stop so nothing is ever invented.
+export function deriveRMultipleTargets(
+  entry: number,
+  stop: number,
+  direction: 'long' | 'short' | 'wait',
+): { tp1: number; tp2: number; tp3: number; riskReward: number } | null {
+  if (direction === 'wait') return null;
+  if (!Number.isFinite(entry) || !Number.isFinite(stop)) return null;
+  const risk = Math.abs(entry - stop);
+  if (!(risk > 0)) return null;
+  const sign = direction === 'long' ? 1 : -1;
+  const at = (r: number) => parseFloat((entry + sign * risk * r).toFixed(2));
+  return { tp1: at(2), tp2: at(3), tp3: at(4), riskReward: 2 };
+}
+
 export function analyzeMarket(
   candles: Candle[],
   trades: Trade[],
@@ -234,14 +253,36 @@ export function analyzeMarket(
   const targetWinRate = plan ? plan.confidence * 100 : (fallbackTargets?.expectedWinRate || 50);
   const winRate = Math.max(probabilities.confidence * finalConf * 100, targetWinRate);
 
+  const recDirection = plan?.direction || side;
+  const recEntry = plan?.entry.price || price;
+  const recStop = plan?.stop.price || fallbackSL?.price || null;
+  // TargetPlan carries `targets` (NOT `tp` — the old `plan?.tp[i]` read threw
+  // a TypeError the moment IMIE produced a valid plan and never showed its TPs).
+  let recTp1 = plan?.targets[0]?.price || fallbackTargets?.tp1?.price || null;
+  let recTp2 = plan?.targets[1]?.price || fallbackTargets?.tp2?.price || null;
+  let recTp3 = plan?.targets[2]?.price || fallbackTargets?.tp3?.price || null;
+  let recRR = plan?.riskReward || fallbackTargets?.riskReward || null;
+
+  // No structural target at all → R-multiple ladder from the stop (2R/3R/4R).
+  if (recTp1 == null && recStop != null) {
+    const derived = deriveRMultipleTargets(recEntry, recStop, recDirection);
+    if (derived) {
+      recTp1 = derived.tp1;
+      recTp2 = derived.tp2;
+      recTp3 = derived.tp3;
+      recRR = derived.riskReward;
+      allReasons.push('TPs: R-multiple fallback — 2R/3R/4R from stop (no structural target found)');
+    }
+  }
+
   const recommendation: Recommendation = {
-    direction: plan?.direction || side,
-    entry: plan?.entry.price || price,
-    stop: plan?.stop.price || fallbackSL?.price || null,
-    tp1: plan?.tp[0]?.price || fallbackTargets?.tp1?.price || null,
-    tp2: plan?.tp[1]?.price || fallbackTargets?.tp2?.price || null,
-    tp3: plan?.tp[2]?.price || fallbackTargets?.tp3?.price || null,
-    riskReward: plan?.riskReward || fallbackTargets?.riskReward || null,
+    direction: recDirection,
+    entry: recEntry,
+    stop: recStop,
+    tp1: recTp1,
+    tp2: recTp2,
+    tp3: recTp3,
+    riskReward: recRR,
     expectedWinRate: Math.round(winRate),
     confidence: Math.round(plan ? plan.confidence * 100 : finalConf * 100),
     positionSize: plan ? plan.positionSize : (results.risk?.positionSize || null),

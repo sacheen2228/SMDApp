@@ -9,6 +9,7 @@ type ICandleSeries = ReturnType<ReturnType<typeof createChart>['addSeries']>;
 
 interface Props {
   symbol?: string; // NIFTY, BANKNIFTY, etc.
+  onBars?: (bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>) => void;
 }
 
 const TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d', '1w', '1M'];
@@ -24,7 +25,7 @@ function tfMs(tf: string): number {
   return (m[tf] || 300) * 1000;
 }
 
-export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
+export function IndiaMarketChart({ symbol = 'NIFTY', onBars }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ICandleSeries | null>(null);
@@ -44,6 +45,10 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
   useEffect(() => { liveRef.current = live; }, [live]);
 
   // ── Historical candles (seeded from Breeze real data) ──
+  // onBars is held in a ref so chart-init effects don't re-run on parent re-renders.
+  const onBarsRef = useRef(onBars);
+  useEffect(() => { onBarsRef.current = onBars; }, [onBars]);
+
   const fetchCandles = useCallback(async (sym: string, tf: string) => {
     try {
       const res = await fetch(`/api/breeze/candles?symbol=${sym}&interval=${tf}&limit=300`);
@@ -52,11 +57,12 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
         const candles = json.data
           .filter((c: any) => c.time)
           .map((c: any) => ({
-            time: Math.floor(c.time / 1000) as any,
+            time: Math.floor(c.time / 1000),
             open: c.open,
             high: c.high,
             low: c.low,
             close: c.close,
+            volume: Number(c.volume ?? 0),
           }))
           .sort((a: any, b: any) => a.time - b.time);
         if (candles.length > 0) {
@@ -64,6 +70,7 @@ export function IndiaMarketChart({ symbol = 'NIFTY' }: Props) {
           lastCandleRef.current = candles[candles.length - 1];
           if (candles.length > 0) setDayOpen(candles[0].open);
           setBars(candles);
+          onBarsRef.current?.(candles);
         }
       }
     } catch {}

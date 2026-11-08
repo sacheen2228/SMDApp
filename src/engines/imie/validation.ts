@@ -27,8 +27,11 @@ export function validateTrade(input: ValidationInput): ValidationResult {
   }
 
   // 2. Confidence < 70%
+  // NOTE: the orchestrator passes confidence on a PERCENT scale
+  // (Math.round(confidence * 100) → 54), so render it as-is — multiplying by
+  // 100 again produced nonsense like "Confidence 5400% below minimum 70%".
   if (confidence < 70) {
-    rejectReasons.push(`Confidence ${(confidence * 100).toFixed(0)}% below minimum 70%`);
+    rejectReasons.push(`Confidence ${confidence.toFixed(0)}% below minimum 70%`);
   }
 
   // 3. R:R < 1.5

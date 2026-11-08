@@ -16,6 +16,8 @@ interface Props {
   chart: IChartApi | null;
   candleSeries: SeriesApi<'Candlestick'> | null;
   bars: Bar[];
+  footprintOn?: boolean;
+  onToggleFootprint?: () => void;
 }
 
 type IndicatorId = 'SMA' | 'EMA' | 'BB' | 'RSI' | 'VWAP' | 'VOL';
@@ -34,7 +36,7 @@ interface Drawing {
   trendLine?: ReturnType<SeriesApi<'Candlestick'>['createPriceLine']>; // second line for trend
 }
 
-export function ChartToolbar({ chart, candleSeries, bars }: Props) {
+export function ChartToolbar({ chart, candleSeries, bars, footprintOn, onToggleFootprint }: Props) {
   const [indicators, setIndicators] = useState<Record<IndicatorId, boolean>>({
     SMA: false, EMA: false, BB: false, RSI: false, VWAP: false, VOL: false,
   });
@@ -44,10 +46,19 @@ export function ChartToolbar({ chart, candleSeries, bars }: Props) {
   const [trendStart, setTrendStart] = useState<{ time: number; price: number } | null>(null);
 
   const overlayRef = useRef<Map<string, SeriesEntry>>(new Map());
+  // Chart instance the overlay entries belong to. Series die with their chart:
+  // on a market/timeframe switch the old chart is disposed, so the map must be
+  // dropped BEFORE any setData/addSeries — otherwise they hit the disposed
+  // canvas ("Object is disposed").
+  const overlayChartRef = useRef<IChartApi | null>(null);
 
   // ── Indicator overlay/pane management ──────────────────────────────
   useEffect(() => {
     if (!chart || !bars || bars.length === 0) return;
+    if (overlayChartRef.current !== chart) {
+      overlayRef.current.clear();
+      overlayChartRef.current = chart;
+    }
     const active = Object.entries(indicators).filter(([, v]) => v).map(([k]) => k as IndicatorId);
     const mainScale = candleSeries?.priceScale();
 
@@ -180,6 +191,7 @@ export function ChartToolbar({ chart, candleSeries, bars }: Props) {
   useEffect(() => {
     if (!chart) return;
     const handler = (param: any) => {
+      try {
       const t = param?.time as any;
       // Check if click is near a drawing
       for (const d of drawings) {
@@ -207,6 +219,9 @@ export function ChartToolbar({ chart, candleSeries, bars }: Props) {
           }
         }
       }
+      } catch {
+        // price-line objects from a previous chart instance are dead — ignore
+      }
     };
     chart.subscribeDblClick(handler);
     return () => chart.unsubscribeDblClick(handler);
@@ -219,7 +234,11 @@ export function ChartToolbar({ chart, candleSeries, bars }: Props) {
     drawings.forEach(d => { try { d.priceLine?.remove(); d.trendLine?.remove(); } catch {} });
     setDrawings([]);
   };
-  const resetZoom = () => { if (chart) { chart.timeScale().resetTimeScale(); chart.timeScale().fitContent(); } };
+  const resetZoom = () => {
+    try {
+      if (chart) { chart.timeScale().resetTimeScale(); chart.timeScale().fitContent(); }
+    } catch { /* chart prop can be stale for a frame after a market/timeframe switch */ }
+  };
   const toggleFull = () => {
     const host = document.getElementById('chart-host');
     if (!host) return;
@@ -253,6 +272,7 @@ export function ChartToolbar({ chart, candleSeries, bars }: Props) {
       {indBtn('VWAP', 'VWAP', '#26c6da')}
       {indBtn('RSI', 'RSI 14', '#ff7043')}
       {indBtn('VOL', 'VOL', '#7e57c2')}
+      {onToggleFootprint && toolBtn('FP', !!footprintOn, onToggleFootprint, '#26c6da')}
       <span className="mx-1 h-4 w-px" style={{ background: '#1e222d' }} />
       <span className="text-[8px] font-bold uppercase tracking-wider mr-1" style={{ color: '#5d6070' }}>Draw</span>
       {toolBtn('H-LINE', drawMode === 'hline', () => startDraw('hline'), '#ff5d00')}

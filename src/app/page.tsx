@@ -54,6 +54,7 @@ import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
 import { CommodityDashboard } from '@/components/dashboard/CommodityDashboard';
 import CreditTab from '@/components/credit/CreditTab';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
+import { VolumeProfilePanel } from '@/components/shared/VolumeProfilePanel';
 import { MarketRegimePanel } from '@/components/dashboard/MarketRegimePanel';
 import { MarketBreadth } from '@/components/dashboard/MarketBreadth';
 import { SectorRotation } from '@/components/dashboard/SectorRotation';
@@ -337,6 +338,8 @@ export default function TradingDashboard() {
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
+  // Candles published by IndiaMarketChart → feed the Volume Profile panel
+  const [indiaBars, setIndiaBars] = useState<Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>([]);
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. (The raw API returns analysis.recommendation + analysis.pcr /
   // vix / maxPain; we map it onto the SDMRecommendation shape SimpleMode reads.)
@@ -1121,9 +1124,10 @@ export default function TradingDashboard() {
         /* ═══════ CREDIT SPREAD ═══════ */
         <CreditTab />
         ) : viewMode === 'india' ? (
-        /* ═══════ INDIA MARKET CHART ═══════ */
-        <div className="flex-1 overflow-hidden p-2">
-          <IndiaMarketChart symbol="NIFTY" />
+        /* ═══════ INDIA MARKET CHART + VOLUME PROFILE ═══════ */
+        <div className="flex-1 overflow-hidden p-2 grid gap-2" style={{ gridTemplateColumns: 'minmax(0, 2.2fr) minmax(0, 1fr)' }}>
+          <IndiaMarketChart symbol="NIFTY" onBars={setIndiaBars} />
+          <VolumeProfilePanel candles={indiaBars} symbol="NIFTY" />
         </div>
         ) : viewMode === 'intelligence' ? (
         /* ═══════ MARKET DECISION INTELLIGENCE CENTER ═══════ */

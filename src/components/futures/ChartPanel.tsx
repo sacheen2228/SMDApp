@@ -3,6 +3,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
 import { ChartToolbar } from './ChartToolbar';
+import { FootprintPanel } from './FootprintPanel';
+import type { Trade } from '@/types/engine';
 
 type IChartApi = ReturnType<typeof createChart>;
 type ICandleSeries = ReturnType<ReturnType<typeof createChart>['addSeries']>;
@@ -14,6 +16,7 @@ interface Props {
   ticker?: any;
   livePrice?: number | null;
   liveConnected?: boolean;
+  trades?: Trade[];
 }
 
 const TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d', '1w', '1M'];
@@ -26,7 +29,7 @@ function toPair(market: string): string {
   return `B-${base}_${quote}`;
 }
 
-export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticker, livePrice, liveConnected }: Props) {
+export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticker, livePrice, liveConnected, trades = [] }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ICandleSeries | null>(null);
@@ -36,6 +39,7 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
   const lastCandleRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
   // Raw bars (for the indicator toolbar).
   const [bars, setBars] = useState<Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>([]);
+  const [showFootprint, setShowFootprint] = useState(false);
 
   // Live price header — wired to the ticker feed.
   const lp = ticker ? parseFloat(ticker.last_price || ticker.lastPrice || '0') : 0;
@@ -94,6 +98,7 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
             high: c.high,
             low: c.low,
             close: c.close,
+            volume: Number(c.volume ?? 0),
           }))
           .sort((a: any, b: any) => a.time - b.time);
         if (candles.length > 0) {
@@ -161,11 +166,24 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
     };
   }, [market, timeframe, fetchCandles]);
 
+  // Re-measure the chart when the footprint panel opens/closes (layout changed).
+  // The chart instance is read at FIRE time — a market/timeframe switch may
+  // have disposed the captured one before the rAF runs ("Object is disposed").
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const raf = requestAnimationFrame(() => {
+      const c = chartRef.current;
+      if (!c || !containerRef.current) return;
+      c.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [showFootprint]);
+
   const h = new Date().getHours() + new Date().getMinutes() / 60;
   const activeSession = h >= 18.5 && h < 27.5 ? 'NEW YORK' : h >= 13.5 && h < 22.5 ? 'LONDON' : h >= 7.5 && h < 16.5 ? 'TOKYO' : h >= 5.5 && h < 12.5 ? 'SYDNEY' : '';
 
   return (
-    <div className="relative flex flex-col h-full" style={{ background: '#0d1321', border: '1px solid #1e222d', borderRadius: 4 }}>
+    <div className="relative flex flex-col h-full overflow-hidden" style={{ background: '#0d1321', border: '1px solid #1e222d', borderRadius: 4 }}>
       <div className="flex items-center justify-between px-3 py-1.5" style={{ borderBottom: '1px solid #1e222d' }}>
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold" style={{ color: '#d1d4dc' }} ref={priceRef} id="chart-price">---</span>
@@ -188,8 +206,9 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
           ))}
         </div>
       </div>
-      <ChartToolbar chart={chartRef.current} candleSeries={seriesRef.current} bars={bars} />
-      <div className="flex-1 relative" style={{ minHeight: 280 }}>
+      <ChartToolbar chart={chartRef.current} candleSeries={seriesRef.current} bars={bars}
+        footprintOn={showFootprint} onToggleFootprint={() => setShowFootprint(v => !v)} />
+      <div className="flex-1 relative" style={{ minHeight: showFootprint ? 160 : 280 }}>
         <div ref={containerRef} className="w-full h-full" />
         {activeSession && (
           <div className="absolute top-2 right-3 text-[9px] font-bold uppercase px-2 py-0.5 rounded" style={{ background: '#ff5d0015', color: '#ff5d00', border: '1px solid #ff5d0040' }}>
@@ -197,6 +216,7 @@ export function ChartPanel({ market, timeframe = '15m', onTimeframeChange, ticke
           </div>
         )}
       </div>
+      {showFootprint && <FootprintPanel trades={trades} market={market} />}
     </div>
   );
 }

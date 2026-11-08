@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { TerminalHeader } from './TerminalHeader';
 import { ChartPanel } from './ChartPanel';
+import { DomLadder } from './DomLadder';
+import { TimeSalesPanel } from './TimeSalesPanel';
+import { mergePrints } from '@/lib/futures/footprint';
 import { useCoinDCXLivePrice } from '@/hooks/useCoinDCXLive';
 import type { Candle, Trade, OrderBookLevel, AiFinalScore, Recommendation, OpenInterestData } from '@/types/engine';
 import { analyzeMarket, computeGrade } from '@/engines/ai/ai-engine';
@@ -64,6 +67,9 @@ export function FuturesDashboard() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [prevTrades, setPrevTrades] = useState<Trade[]>([]);
+  // Session accumulator for the footprint panel — folded in the poll callback
+  // (mergePrints dedupes overlapping polls, caps at 20k). Reset on market change.
+  const [tradesAcc, setTradesAcc] = useState<Trade[]>([]);
   const [levels, setLevels] = useState<OrderBookLevel[]>([]);
   const [bidVol, setBidVol] = useState(0);
   const [askVol, setAskVol] = useState(0);
@@ -245,6 +251,7 @@ export function FuturesDashboard() {
           setPrevTrades(prev.length > 0 ? prev : newTrades);
           return newTrades;
         });
+        setTradesAcc(prev => mergePrints(prev, newTrades));
       }
     } catch {}
   }, [selected, pair, fundingData]);
@@ -274,19 +281,6 @@ export function FuturesDashboard() {
     }
   }, [candles, trades, levels, bidVol, askVol, ticker, fundingData]);
 
-  const maxAskSz = Math.max(...levels.filter(l => !l.isBid).map(l => l.size), 0.001);
-  const maxBidSz = Math.max(...levels.filter(l => l.isBid).map(l => l.size), 0.001);
-  const maxOrderSz = Math.max(maxAskSz, maxBidSz, 0.001);
-  const avgSz = levels.length > 0 ? levels.reduce((s, l) => s + l.size, 0) / levels.length : 0;
-  const instAskThreshold = avgSz * 3;
-  const instBidThreshold = avgSz * 3;
-
-  const asks = levels.filter(l => !l.isBid).sort((a, b) => b.price - a.price);
-  const bids = levels.filter(l => l.isBid).sort((a, b) => b.price - a.price);
-  const bestAsk = asks.length > 0 ? asks[asks.length - 1].price : 0;
-  const bestBid = bids.length > 0 ? bids[0].price : 0;
-  const spread = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
-
   const { aiScore, recommendation } = aiResult || {
     aiScore: { overallScore: 0, grade: '—', tradeQuality: 'Waiting...', expectedWinRate: 0, risk: 'medium' as const, engines: {} },
     recommendation: { direction: 'wait' as const, entry: null, stop: null, tp1: null, tp2: null, tp3: null, riskReward: null, expectedWinRate: 0, confidence: 0, positionSize: null, leverage: null, liquidationPrice: null, fundingImpact: null, reasons: [], warnings: [], marketStructureExplanation: '', expectedMoveExplanation: '', riskExplanation: '' },
@@ -307,6 +301,7 @@ export function FuturesDashboard() {
       <TerminalHeader selectedMarket={selected} marketList={marketList}
         onMarketChange={m => {
           setSelected(m); setTicker(null); setTrades([]); setPrevTrades([]);
+          setTradesAcc([]);
           setLevels([]); setCandles([]); setAiResult(null); setBidVol(0); setAskVol(0);
         }}
       />
@@ -358,10 +353,10 @@ export function FuturesDashboard() {
 
         {/* Center: Chart */}
         <div className="h-full" style={{ minHeight: 350 }}>
-          <ChartPanel market={selected} timeframe={timeframe} onTimeframeChange={setTimeframe} ticker={ticker} livePrice={livePrice} liveConnected={wsConnected} />
+          <ChartPanel market={selected} timeframe={timeframe} onTimeframeChange={setTimeframe} ticker={ticker} livePrice={livePrice} liveConnected={wsConnected} trades={tradesAcc} />
         </div>
 
-        {/* Right: Recommendation + Order Book */}
+        {/* Right: Recommendation + Ladder/Tape */}
         <div className="text-xs flex flex-col h-full overflow-hidden" style={{ background: '#0d1321', border: '1px solid #1e222d', borderRadius: 4 }}>
           {/* Recommendation card */}
           <div className="p-2" style={{ borderBottom: '1px solid #1e222d' }}>
@@ -402,43 +397,10 @@ export function FuturesDashboard() {
             )}
           </div>
 
-          {/* Order Book */}
-          <div className="px-2 py-1 text-[9px] font-bold uppercase flex items-center justify-between" style={{ color: '#5d6070', borderBottom: '1px solid #1e222d' }}>
-            <span>Order Book</span>
-            <span style={{ color: '#787b86' }}>{selected}</span>
-          </div>
-          <div className="flex items-center justify-between px-2 py-0.5 text-[8px] uppercase" style={{ color: '#3d4050', borderBottom: '1px solid #1e222d' }}>
-            <span className="w-[24%]">Price</span>
-            <span className="w-[22%] text-right">Size</span>
-            <span className="w-[22%] text-right">Total</span>
-            <span className="w-[16%] text-right">Depth%</span>
-            <span className="w-[16%] text-right">Wall</span>
-          </div>
-          <div className="flex-1 overflow-y-auto" style={{ maxHeight: 'none' }}>
-            {asks.map((l) => (
-              <div key={`a-${l.price}`} className="flex items-center justify-between px-2 py-0.5 relative text-[10px]" style={{ color: '#ef5350' }}>
-                <div className="absolute right-0 top-0 bottom-0" style={{ background: 'rgba(239,83,80,0.06)', width: `${(l.size / maxOrderSz) * 100}%` }} />
-                <span className="relative z-10 w-[24%] font-medium">{l.price.toFixed(2)}</span>
-                <span className="relative z-10 w-[22%] text-right">{fmt(l.size)}</span>
-                <span className="relative z-10 w-[22%] text-right">${l.total.toFixed(1)}</span>
-                <span className="relative z-10 w-[16%] text-right" style={{ color: '#5d6070' }}>{(l.size / (bidVol + askVol || 1) * 100).toFixed(1)}</span>
-                <span className="relative z-10 w-[16%] text-right">{l.size > instAskThreshold ? '🏦' : ''}</span>
-              </div>
-            ))}
-            <div className="flex items-center justify-between px-2 py-0.5 text-[9px] font-bold" style={{ color: '#d1d4dc', background: '#0a0e17', borderTop: '1px solid #1e222d', borderBottom: '1px solid #1e222d' }}>
-              <span>Spread: ${spread.toFixed(2)}</span>
-              <span>Bid: {fmt(bidVol)} / Ask: {fmt(askVol)}</span>
-            </div>
-            {bids.map((l) => (
-              <div key={`b-${l.price}`} className="flex items-center justify-between px-2 py-0.5 relative text-[10px]" style={{ color: '#26a69a' }}>
-                <div className="absolute right-0 top-0 bottom-0" style={{ background: 'rgba(38,166,154,0.06)', width: `${(l.size / maxOrderSz) * 100}%` }} />
-                <span className="relative z-10 w-[24%] font-medium">{l.price.toFixed(2)}</span>
-                <span className="relative z-10 w-[22%] text-right">{fmt(l.size)}</span>
-                <span className="relative z-10 w-[22%] text-right">${l.total.toFixed(1)}</span>
-                <span className="relative z-10 w-[16%] text-right" style={{ color: '#5d6070' }}>{(l.size / (bidVol + askVol || 1) * 100).toFixed(1)}</span>
-                <span className="relative z-10 w-[16%] text-right">{l.size > instBidThreshold ? '🏦' : ''}</span>
-              </div>
-            ))}
+          {/* Ladder | Tape — flowsurface-style depth + print columns */}
+          <div className="flex-1 grid gap-1 overflow-hidden" style={{ gridTemplateColumns: '1fr 1fr', minHeight: 0 }}>
+            <DomLadder levels={levels} market={selected} bidVol={bidVol} askVol={askVol} />
+            <TimeSalesPanel trades={trades} market={selected} />
           </div>
         </div>
 
