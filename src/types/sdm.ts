@@ -208,6 +208,9 @@ export interface TradeRecord {
 // ─── SDM Recommendation ─────────────────────────────────────────
 export interface SDMRecommendation {
   direction: TradeDirection;
+  /** CE/PE of the recommended leg — populated even when direction is WAIT
+   *  (gates may override direction after levels are computed). */
+  optionType?: "CE" | "PE";
   strike: number;
   strikeType: "ATM" | "ITM" | "OTM";
   entry: number;

@@ -19,6 +19,7 @@ import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/regist
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
 import { evaluateTradeGate } from "@/lib/telegram";
 import { CONF_FLOOR_CALL, CONF_FLOOR_PUT } from "@/lib/signal-persistence";
+import { providerHealth } from "@/lib/provider-health";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 
@@ -41,6 +42,12 @@ async function fetchAndPushSignal(
   expiry?: string
 ): Promise<void> {
   const startMs = Date.now();
+  
+  // Breeze fast-fail: if Breeze circuit is open, log and fall back to MOAPI/NSE via the API
+  if (providerHealth.shouldSkip("breeze")) {
+    console.log("[sendIntradayAlerts] " + sym + " " + direction + " Breeze circuit open, falling back to MOAPI/NSE");
+  }
+  
   try {
     let url = `${BASE}/api/sdm-signal?symbol=${encodeURIComponent(sym)}&dir=${direction}`;
     if (expiry) url += `&expiry=${encodeURIComponent(expiry)}`;
@@ -285,9 +292,53 @@ export function isChainFresh(chainAsOf?: string, maxMinutes = 15): boolean {
   return age <= maxMinutes;
 }
 
+/** Single-flight lock: only one scan at a time. */
+let scanInFlight = false;
+
+/** Run up to `concurrency` async tasks concurrently. Each item is processed
+ * exactly once; results are returned in the same order as items. */
+async function boundedConcurrency<T>(items: any[], concurrency: number, fn: (item: any) => Promise<T>, checkDeadline?: () => boolean): Promise<T[]> {
+  const results: T[] = new Array(items.length);
+  let i = 0;
+  
+  async function worker() {
+    while (i < items.length) {
+      if (checkDeadline && checkDeadline()) {
+        console.log("[scan] deadline reached in worker, stopping");
+        return;
+      }
+      const idx = i++;
+      try {
+        results[idx] = await fn(items[idx]);
+      } catch (e) {
+        results[idx] = e as any;
+      }
+    }
+  }
+  
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  
+  return results;
+}
+
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
+  if (scanInFlight) {
+    console.log("[scan] already in flight, skipping");
+    return { ran: false, newAlerts: 0 };
+  }
+  scanInFlight = true;
   const scanStartMs = Date.now();
   const startTime = new Date(scanStartMs).toISOString();
+  const SCAN_DEADLINE_MS = 100000; // 100 seconds
+
+  const checkDeadline = (): boolean => {
+    if (Date.now() - scanStartMs > SCAN_DEADLINE_MS) {
+      console.log("[scan] deadline reached (" + SCAN_DEADLINE_MS + "ms), stopping");
+      return true;
+    }
+    return false;
+  };
 
   if (!isTelegramSendWindow()) {
       console.error("[sendIntradayAlerts] outside 09:10-15:30 IST window — skipping");
@@ -343,30 +394,32 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   // 2. Filter symbols — skip those with active trades
   const symbolsToScan = symbolList;
   if (symbolsToScan.length === 0) {
-    console.log("[scan] end ts=" + Date.now().toISOString() + " ran=true newAlerts=" + newAlerts + " skipped=noSymbols");
+    console.log("[scan] end ts=" + new Date(Date.now()).toISOString() + " ran=true newAlerts=" + newAlerts + " skipped=noSymbols");
     return { ran: true, newAlerts };
   }
 
   // 3. Fetch SDM V2 recommendations for each symbol (both CE and PE, weekly + monthly)
   const candidates: { symbol: string; alert: any }[] = [];
 
+  // Collect all scan tasks (symbol × direction × expiry) then run with bounded concurrency
+  const scanTasks: { symbol: string; direction: string; expiry?: string }[] = [];
   for (const sym of symbolsToScan) {
-    // Get monthly expiry date for this symbol
     const monthlyExpiry = getNextMonthlyExpiry(sym);
-
     for (const direction of ['CALL', 'PUT'] as const) {
-      // Weekly expiry (default — no expiry param)
       for (const expiryOpt of [null, monthlyExpiry?.date]) {
-        if (!expiryOpt) {
-          // Fetch weekly expiry (no expiry param)
-          await fetchAndPushSignal(sym, direction, candidates);
-        } else {
-          // Fetch monthly expiry
-          await fetchAndPushSignal(sym, direction, candidates, expiryOpt);
-        }
+        scanTasks.push({ symbol: sym, direction, expiry: expiryOpt });
       }
     }
   }
+
+  // Run fetchAndPushSignal with bounded concurrency (5 at a time), deadline enforced
+  await boundedConcurrency(scanTasks, 5, async (task) => {
+    if (checkDeadline()) {
+      console.log("[scan] deadline reached, stopping scan");
+      return;
+    }
+    await fetchAndPushSignal(task.symbol, task.direction, candidates, task.expiry);
+  });
 
   // Sort by confidence descending
   candidates.sort((a, b) => (b.alert.confidence || 0) - (a.alert.confidence || 0));
