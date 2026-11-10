@@ -237,16 +237,16 @@ export async function evaluateTradeGate(params: {
 
   // SAFETY: Option selling blocked — instrument-aware (options only)
   // SELL is valid for EQUITY and FUTURES
-  const isOption = params.instrument === 'CALL' || params.instrument === 'PUT';
+  const isOption = params.optionType === 'CE' || params.optionType === 'PE';
   if (isOption && params.action && (params.action.includes('SELL') || params.action.includes('SHORT'))) {
-    reasons.push('option selling not allowed (' + params.action + ' on ' + params.instrument + ')');
+    reasons.push('option selling not allowed (' + params.action + ' on ' + params.optionType + ')');
     return { blocked: true, reasons };
   }
 
   // Calibration band for the stated confidence (cached, DB-free on the hot path).
   const calibrationBand = await calibrationBandFor(params.confidence);
   // Cached technical read — O(1), no network. Cold cache → warning, never a block.
-  const optType = params.type === 'CE' || params.type === 'PE' ? params.type : undefined;
+  const optType = params.optionType === 'CE' || params.optionType === 'PE' ? params.optionType : undefined;
   const dir = optType === 'CE' ? 'call' : optType === 'PE' ? 'put' : undefined;
   const tech = dir
     ? cachedLayers(params.symbol, '15m', dir, structureLayer, triggerLayer)
@@ -306,6 +306,7 @@ export async function sendTradeAlertInner(params: {
   stopLoss?: number;
   target1?: number;
   target2?: number;
+  tp3?: number;
   source?: string;
   instrument?: string;  // 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY' — for SELL safety
   spot?: number;        // UNDERLYING level (never the option premium) — enables delta/OTM checks
