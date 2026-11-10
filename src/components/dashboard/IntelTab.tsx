@@ -339,34 +339,56 @@ function ResearchCommentary({ regime, breadth, derivative, oi, sector }: {
 }) {
   const parts: string[] = [];
 
-  const regimeLabel = regime?.regime || "NEUTRAL";
-  const breadthScore = breadth?.score || 50;
-  const adv = breadth?.advances || 0;
-  const dec = breadth?.declines || 0;
-  const derivBias = derivative?.bias || "NEUTRAL";
-  const oiBias = oi?.overallBias || "NEUTRAL";
+  const hasRegime = regime?.regime && regime.regime !== "UNKNOWN";
+  const regimeLabel = hasRegime ? regime.regime : null;
+  const hasBreadth = breadth && breadth.score != null;
+  const breadthScore = hasBreadth ? breadth.score : null;
+  const adv = hasBreadth ? breadth.advances : null;
+  const dec = hasBreadth ? breadth.declines : null;
+  const hasDeriv = derivative?.bias && derivative.bias !== "UNKNOWN";
+  const derivBias = hasDeriv ? derivative.bias : null;
+  const hasOi = oi?.overallBias && oi.overallBias !== "UNKNOWN" && oi.overallBias !== "NEUTRAL";
+  const oiBias = hasOi ? oi.overallBias : null;
 
-  // Market
-  parts.push(`Market regime is ${regimeLabel} with breadth at ${breadthScore}/100.`);
-  parts.push(`${adv} constituents advancing against ${dec} declining.`);
+  // Market — only when real data exists
+  if (regimeLabel && breadthScore != null) {
+    parts.push(`Market regime is ${regimeLabel} with breadth at ${breadthScore}/100.`);
+  } else if (regimeLabel) {
+    parts.push(`Market regime is ${regimeLabel}. Breadth data unavailable.`);
+  } else if (breadthScore != null) {
+    parts.push(`Breadth at ${breadthScore}/100. Regime data unavailable.`);
+  } else {
+    parts.push("Market regime and breadth data unavailable.");
+  }
 
-  // Derivative
-  if (derivBias !== "NEUTRAL") {
+  // Advances/declines — only when real
+  if (adv != null && dec != null) {
+    parts.push(`${adv} constituents advancing against ${dec} declining.`);
+  }
+
+  // Derivative — only when real and non-neutral
+  if (derivBias && derivBias !== "NEUTRAL") {
     parts.push(`Derivative flow shows ${derivBias.toLowerCase()} positioning.`);
   }
 
-  // OI
-  if (oiBias !== "NEUTRAL") {
+  // OI — only when real and non-neutral
+  if (oiBias) {
     parts.push(`NSE OI spurts indicate ${oiBias.toLowerCase().replace(/_/g, " ")} activity.`);
   }
 
-  // Action
-  if (regimeLabel.includes("BEARISH") && derivBias === "BEARISH") {
-    parts.push("Current preference: WAIT for confirmation or FAVOR PE BUY after structure confirmation.");
-  } else if (regimeLabel.includes("BULLISH") && derivBias === "BULLISH") {
+  // Action — only when we have enough signal to act
+  const realBiases = [regimeLabel, derivBias].filter(Boolean);
+  const bullish = realBiases.filter((b: string) => b.includes("BULL")).length;
+  const bearish = realBiases.filter((b: string) => b.includes("BEAR")).length;
+
+  if (bullish >= 1 && bearish === 0) {
     parts.push("Current preference: FAVOR CE BUY after confirmation with defined risk.");
-  } else {
+  } else if (bearish >= 1 && bullish === 0) {
+    parts.push("Current preference: FAVOR PE BUY after confirmation with defined risk.");
+  } else if (bullish > 0 && bearish > 0) {
     parts.push("Current preference: NO TRADE — conflicting signals. Wait for alignment.");
+  } else {
+    parts.push("Current preference: NO TRADE — insufficient signal to form a view.");
   }
 
   return (
