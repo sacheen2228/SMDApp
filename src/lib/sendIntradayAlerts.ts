@@ -395,7 +395,8 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   const symbolsToScan = symbolList;
   if (symbolsToScan.length === 0) {
     console.log("[scan] end ts=" + new Date(Date.now()).toISOString() + " ran=true newAlerts=" + newAlerts + " skipped=noSymbols");
-    return { ran: true, newAlerts };
+    scanInFlight = false;
+  return { ran: true, newAlerts };
   }
 
   // 3. Fetch SDM V2 recommendations for each symbol (both CE and PE, weekly + monthly)
@@ -680,6 +681,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     }
   }
 
+  scanInFlight = false;
   return { ran: true, newAlerts };
 }
 

@@ -307,7 +307,6 @@ export async function sendTradeAlertInner(params: {
   target1?: number;
   target2?: number;
   tp3?: number;
-  tp3?: number;
   source?: string;
   instrument?: string;  // 'CALL' | 'PUT' | 'FUTURES' | 'EQUITY' — for SELL safety
   spot?: number;        // UNDERLYING level (never the option premium) — enables delta/OTM checks
