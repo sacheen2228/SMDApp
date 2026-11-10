@@ -22,6 +22,7 @@ import {
   pickPremiumExpiry,
   type PremiumCandle,
 } from '@/lib/option-bhavcopy';
+import { getIntradayCandles } from '@/lib/breeze-historical';
 
 // ─── Trade fetching: paging + test-strategy exclusion ─────────────────────
 // The audit sidecar caps pageSize at 500, so a single request can never
@@ -136,7 +137,6 @@ async function fetchBreezeIntradayCandles(
   interval: string
 ): Promise<Candle[]> {
   try {
-    const { getIntradayCandles } = await import("@/lib/breeze-historical");
     const breezeInterval =
       interval === "5m" ? "5minute" : interval === "1h" ? "15minute" : "15minute";
     const res = await getIntradayCandles(symbol, dateStr, breezeInterval as any);
@@ -170,9 +170,22 @@ async function fetchSpotCandles(
   if (interval === "1d") {
     return fetchNSEDailyCandles(symbol, from, to);
   }
-  // Intraday — the broker's own history for the session.
-  const dateStr = to.toISOString().slice(0, 10);
-  return fetchBreezeIntradayCandles(symbol, dateStr, interval);
+  // Intraday — the broker's own history for each session in the range.
+  // Cap `to` at now so we never request a future date (Breeze has nothing).
+  const now = new Date();
+  const end = to < now ? to : now;
+  const allCandles: Candle[] = [];
+  let d = new Date(from);
+  d.setHours(0, 0, 0, 0);
+  while (d <= end) {
+    // Use local (IST) date components — toISOString() returns UTC which can
+    // fall a day behind for IST dates.
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const dayCandles = await fetchBreezeIntradayCandles(symbol, dateStr, interval);
+    allCandles.push(...dayCandles);
+    d.setDate(d.getDate() + 1);
+  }
+  return allCandles.sort((a, b) => a.time - b.time);
 }
 
 // ─── Option premium replay path ──────────────────────────────────────────

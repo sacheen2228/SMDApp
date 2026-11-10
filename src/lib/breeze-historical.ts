@@ -4,22 +4,15 @@
 // Used by backtest-audit.ts to verify every trade against actual market candles.
 // ═══════════════════════════════════════════════════════════════════
 
-import { initSession, getBreezeClient } from "@/lib/icici-breeze/auth";
-import { INDEX_BREEZE_CODES } from "@/lib/icici-scrip-master";
+import { initSession, getBreezeClient, getSessionState } from "@/lib/icici-breeze/auth";
+import {
+  INDEX_BREEZE_CODES,
+  resolveBreezeStockCode,
+} from "@/lib/icici-scrip-master";
 
-// ─── Symbol mapping to Breeze stock codes ─────────────────────────
 // Canonical index codes (ICICI scrip codes, not exchange symbols — plain
 // "FINNIFTY"/"SENSEX" return zero rows from getHistoricalDatav2, verified live).
-const BREEZE_STOCK_CODE: Record<string, string> = INDEX_BREEZE_CODES;
-
-const EXCHANGE_CODE: Record<string, string> = {
-  NIFTY: "NFO",
-  BANKNIFTY: "NFO",
-  FINNIFTY: "NFO",
-  MIDCPNIFTY: "NFO",
-  SENSEX: "BFO",
-  BANKEX: "BFO",
-};
+const INDEX_CODES: Record<string, string> = INDEX_BREEZE_CODES;
 
 // ─── Types ───────────────────────────────────────────────────────
 export interface HistoricalCandle {
@@ -53,15 +46,19 @@ export interface IntradayRequest {
   strikePrice?: string;
 }
 
-export function buildIntradayRequest(
+export async function buildIntradayRequest(
   symbol: string,
   dateStr: string,
   interval: "1minute" | "5minute" | "15minute" = "5minute"
-): IntradayRequest | null {
+): Promise<IntradayRequest | null> {
   const upperSym = symbol.toUpperCase();
-  const stockCode = BREEZE_STOCK_CODE[upperSym];
-  const exchangeCode = EXCHANGE_CODE[upperSym];
-  if (!stockCode || !exchangeCode) return null;
+  // Resolve via scrip master (index codes → cached master → fresh zip → raw ticker).
+  // Equities resolve here (RELIANCE → RELIND, SBIN → STABAN, ITC → ITC, …).
+  const stockCode = await resolveBreezeStockCode(upperSym);
+  const isIndex = upperSym in INDEX_CODES;
+
+  // Equity spot trades on NSE (cash). Index spot trades on NSE/BSE.
+  const exchangeCode = ["SENSEX", "BANKEX"].includes(upperSym) ? "BSE" : "NSE";
 
   // Market hours: 09:15 to 15:30 IST
   const date = new Date(dateStr + "T00:00:00.000Z");
@@ -76,23 +73,19 @@ export function buildIntradayRequest(
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   };
 
-  // Membership in the canonical map == index; derive from the SYMBOL, never from
-  // the scrip code (CNXBAN/NIFFIN/BSESEN are not in the index name list).
-  const isIndex = upperSym in BREEZE_STOCK_CODE;
+  // Both indices and equities are "cash" product for spot/historical candles.
+  // Expiry/right/strike are only needed for F&O options, not spot cash candles.
   const request: IntradayRequest = {
     interval,
     fromDate: formatBreezeDate(fromDate),
     toDate: formatBreezeDate(toDate),
     stockCode,
-    // Index spot candles need NSE/BSE exchange, not NFO/BFO
-    exchangeCode: isIndex ? (["SENSEX", "BANKEX"].includes(upperSym) ? "BSE" : "NSE") : exchangeCode,
-    productType: isIndex ? "cash" : "options",
+    exchangeCode,
+    productType: "cash",
+    expiryDate: "",
+    right: "",
+    strikePrice: "",
   };
-  if (!isIndex) {
-    request.expiryDate = "";
-    request.right = "";
-    request.strikePrice = "";
-  }
   return request;
 }
 
@@ -102,8 +95,8 @@ export async function getIntradayCandles(
   dateStr: string,
   interval: "1minute" | "5minute" | "15minute" = "5minute"
 ): Promise<IntradayCandleResult> {
-  const request = buildIntradayRequest(symbol, dateStr, interval);
-  if (!request) {
+  const request = await buildIntradayRequest(symbol, dateStr, interval);
+  if (!request || !request.stockCode) {
     return {
       candles: [],
       source: "fallback",
@@ -112,8 +105,14 @@ export async function getIntradayCandles(
   }
 
   try {
-    // Ensure Breeze session is valid
-    await initSession();
+    // Ensure Breeze session is valid. getSessionState() reflects a session
+    // activated via /api/breeze-connect (applyBreezeSession calls generateSession
+    // which stores currentApiSession on globalThis). initSession() only checks
+    // disk cache + env token, both of which may be expired — so check state first.
+    const state = getSessionState();
+    if (!state.authenticated) {
+      await initSession();
+    }
     const breeze = getBreezeClient();
 
     const result = await breeze.getHistoricalDatav2(request);

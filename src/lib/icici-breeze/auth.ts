@@ -142,6 +142,20 @@ export async function initSession(): Promise<boolean> {
 
 async function doInitSession(): Promise<boolean> {
   try {
+    // If a session is already active on globalThis (activated via
+    // /api/breeze-connect → applyBreezeSession → generateSession), reuse it.
+    // initSession() is also called from getIntradayCandles which needs the
+    // live session even when disk cache + env token are expired.
+    if (store.currentApiSession) {
+      const breeze = getBreezeClient();
+      if (breeze.sessionKey || breeze.userId) {
+        store.sessionState.status = "LIVE";
+        store.sessionState.authenticated = true;
+        providerHealth.recordSuccess("breeze", 0);
+        return true;
+      }
+    }
+
     // Try loading cached session from disk
     try {
       const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
