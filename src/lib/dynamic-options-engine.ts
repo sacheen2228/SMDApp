@@ -1008,8 +1008,6 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const spotMovement24h = expectedMove * 0.3;
 
-  const currentATM = findATMStrike(strikesToProcess.map(s => s.strike), spot);
-
   // ── Filter strikes: keep only those near ATM with real premium data ──
   const filteredStrikes = strikesNorm.filter(s => {
     const strikeDistPct = Math.abs(s.strike - spot) / spot * 100;
@@ -1019,6 +1017,8 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   });
 
   const strikesToProcess = filteredStrikes.length > 0 ? filteredStrikes : strikesNorm;
+
+  const currentATM = findATMStrike(strikesToProcess.map(s => s.strike), spot);
 
   const strikeAnalyses: DynamicStrikeAnalysis[] = strikesToProcess.map(s => {
     const moneyness = classifyMoneyness(s.strike, currentATM, spot);
