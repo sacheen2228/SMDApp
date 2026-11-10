@@ -10,7 +10,7 @@ import { recordIntradayTrade } from "./intraday-scanner";
 import { isTelegramSendWindow } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
-import { getNextMonthlyExpiry } from "./expiry-calculator";
+import { getNextMonthlyExpiry, NSE_HOLIDAYS } from "./expiry-calculator";
 import {
   checkSLTP, addTrade, formatSLTPHit,
   hasActiveTrade, tickPx, fmtStrike
@@ -649,6 +649,37 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
 
   const scanEndMs = Date.now();
   console.log("[scan] end ts=" + new Date(scanEndMs).toISOString() + " ran=true newAlerts=" + newAlerts + " symbolsScanned=" + symbolsToScan.length + " candidates=" + candidates.length + " alertsSent=" + alertsSent);
+
+  // ── Watchdog: if no alert was sent by 11:30 IST on a trading day, alert via Telegram
+  const watchdogHour = 11;
+  const watchdogMinute = 30;
+  const watchdogMins = watchdogHour * 60 + watchdogMinute;
+  const nowIST = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const nowMins = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+  const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split("T")[0];
+  const todayIsHoliday = NSE_HOLIDAYS.has(todayIst);
+  const isWeekend = nowIST.getUTCDay() === 0 || nowIST.getUTCDay() === 6;
+  const isTradingDayToday = !isWeekend && !todayIsHoliday;
+
+  if (newAlerts === 0 && isTradingDayToday && nowMins >= watchdogMins) {
+    console.warn("[sendIntradayAlerts] WATCHDOG: No alerts sent by 11:30 IST on trading day " + todayIst);
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const tgChatId = process.env.TELEGRAM_CHAT_ID;
+    if (tgToken && tgChatId) {
+      try {
+        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day). Possible causes: market closed, all providers failed, or no qualifying setups. Please check /api/health and /api/sdm-signal logs.";
+        await fetch("https://api.telegram.org/bot" + tgToken + "/sendMessage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: tgChatId, text: watchdogMsg, parse_mode: "HTML" }),
+          signal: AbortSignal.timeout(10000),
+        });
+      } catch (e) {
+        console.error("[sendIntradayAlerts] Watchdog alert failed: " + String(e));
+      }
+    }
+  }
+
   return { ran: true, newAlerts };
 }
 
