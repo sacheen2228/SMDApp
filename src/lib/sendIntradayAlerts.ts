@@ -40,22 +40,35 @@ async function fetchAndPushSignal(
   candidates: { symbol: string; alert: any }[],
   expiry?: string
 ): Promise<void> {
+  const startMs = Date.now();
   try {
     let url = `${BASE}/api/sdm-signal?symbol=${encodeURIComponent(sym)}&dir=${direction}`;
     if (expiry) url += `&expiry=${encodeURIComponent(expiry)}`;
 
     const res = await fetchWithTimeout(url);
-    if (!res.ok) return;
+    if (!res.ok) {
+      console.error("[sdm-signal] " + sym + " " + direction + " HTTP " + res.status);
+      return;
+    }
     const json = await res.json();
-    if (!json.success || !json.signal) return;
+    if (!json.success || !json.signal) {
+      console.error("[sdm-signal] " + sym + " " + direction + " no signal: " + JSON.stringify(json.error || json));
+      return;
+    }
 
     const alert = sdmSignalToAlert(sym, json.signal);
-    if (!alert) return;
+    if (!alert) {
+      console.error("[sdm-signal] " + sym + " " + direction + " null alert from sdmSignalToAlert");
+      return;
+    }
 
     const conf = (alert.confidence || 0) / 100;
     const rr = alert.rrGate || 1;
     const floor = (alert.optionType === "CE") ? CONF_FLOOR_CALL : CONF_FLOOR_PUT;
-    if (conf < floor / 100 || rr < 1.5) return;
+    if (conf < floor / 100 || rr < 1.5) {
+      console.log("[sdm-signal] " + sym + " " + direction + " floor gate: conf=" + conf + " rr=" + rr + " floor=" + floor / 100);
+      return;
+    }
 
     // Gate check: veto + risk limits (same logic as /api/telegram)
     try {
@@ -73,25 +86,27 @@ async function fetchAndPushSignal(
       });
       if (gate.blocked) {
         const intradayGates = process.env.INTRADAY_GATES || "log";
+        const reasonStr = gate.reasons.join(", ");
         if (intradayGates === "enforce") {
-          console.log("[Intraday] GATE BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
+          console.log("[Intraday] GATE BLOCK " + alert.symbol + " " + alert.strike + " " + alert.optionType + " " + reasonStr);
           return;
         }
         // log mode: log but still send
-        console.log("[Intraday] WOULD BLOCK " + alert.symbol + ": " + gate.reasons.join(", "));
+        console.log("[Intraday] WOULD BLOCK " + alert.symbol + " " + alert.strike + " " + alert.optionType + " " + reasonStr);
       }
     } catch (err: any) {
       const intradayGates = process.env.INTRADAY_GATES || "log";
+      const msg = err?.message || String(err);
       if (intradayGates === "enforce") {
-        console.log("[Intraday] GATE ERROR " + alert.symbol + ": " + (err?.message || String(err)));
+        console.log("[Intraday] GATE ERROR " + alert.symbol + " " + alert.strike + " " + alert.optionType + ": " + msg);
         return;
       }
-      console.log("[Intraday] GATE ERROR " + alert.symbol + ": " + (err?.message || String(err)));
+      console.log("[Intraday] GATE ERROR " + alert.symbol + " " + alert.strike + " " + alert.optionType + ": " + msg);
     }
 
     candidates.push({ symbol: sym, alert });
-  } catch {
-    // skip if sdm-signal fails
+  } catch (err: any) {
+    console.error("[sdm-signal] " + sym + " " + direction + " unexpected error: " + (err?.message || String(err)));
   }
 }
 
@@ -271,6 +286,9 @@ export function isChainFresh(chainAsOf?: string, maxMinutes = 15): boolean {
 }
 
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
+  const scanStartMs = Date.now();
+  const startTime = new Date(scanStartMs).toISOString();
+
   if (!isTelegramSendWindow()) {
       console.error("[sendIntradayAlerts] outside 09:10-15:30 IST window — skipping");
     return { ran: false, newAlerts: 0 };
@@ -279,6 +297,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     console.error("[sendIntradayAlerts] TELEGRAM_DIGEST_CHAT_IDS not set — nowhere to send");
     return { ran: false, newAlerts: 0 };
   }
+
+  const symbolList = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
+  console.log("[scan] start ts=" + startTime + " symbols=" + symbolList.length);
 
   // 1. Check active trades for SL/TP hits
   const { hitSL, hitTP1, hitTP2, hitTP3 } = await checkSLTP(
@@ -320,8 +341,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   }
 
   // 2. Filter symbols — skip those with active trades
-  const symbolsToScan = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
+  const symbolsToScan = symbolList;
   if (symbolsToScan.length === 0) {
+    console.log("[scan] end ts=" + Date.now().toISOString() + " ran=true newAlerts=" + newAlerts + " skipped=noSymbols");
     return { ran: true, newAlerts };
   }
 
@@ -350,7 +372,29 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   candidates.sort((a, b) => (b.alert.confidence || 0) - (a.alert.confidence || 0));
   const topCandidates = candidates.slice(0, 12);
 
+  // Log per-strike rejection reasons before sending
+  for (const c of candidates) {
+    const rec = c.alert;
+    if (!rec.entry || rec.entry <= 0) {
+      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"entry missing/zero\" OI=? volume=?");
+      continue;
+    }
+    if (!rec.stopLoss || rec.stopLoss <= 0) {
+      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing stop\" OI=? volume=?");
+      continue;
+    }
+    if (!rec.tp1 || rec.tp1 <= 0) {
+      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing TP1\" OI=? volume=?");
+      continue;
+    }
+    if (rec.sl >= rec.entry) {
+      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"stop not below entry\" OI=? volume=?");
+      continue;
+    }
+  }
+
   // 4. Send index-level SDM alerts
+  let alertsSent = 0;
   for (const c of topCandidates) {
     const signature = buildSignature(c.symbol, c.alert);
     if (alreadySentToday(signature)) continue;
@@ -436,6 +480,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
         }
 
         newAlerts++;
+        alertsSent++;
       }
   }
 
@@ -549,6 +594,8 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     // Non-blocking — stock scanner may time out
   }
 
+  const scanEndMs = Date.now();
+  console.log("[scan] end ts=" + new Date(scanEndMs).toISOString() + " ran=true newAlerts=" + newAlerts + " symbolsScanned=" + symbolsToScan.length + " candidates=" + candidates.length + " alertsSent=" + alertsSent);
   return { ran: true, newAlerts };
 }
 
