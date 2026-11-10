@@ -6,15 +6,21 @@ import { Badge } from "@/components/ui/badge";
 import { BarChart3, TrendingUp, TrendingDown, Gauge, Activity, Volume2 } from "lucide-react";
 import { DataFreshnessBadge, UnavailableCard } from "./DataFreshnessBadge";
 
-export function MarketBreadth() {
-  const { data, isLoading } = useQuery({
+export function MarketBreadth({ breadthData }: { breadthData?: any }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["market-breadth"],
-    queryFn: () => fetch("/api/market/breadth").then(r => r.json()),
+    queryFn: () => fetch("/api/market/breadth").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "breadth failed");
+      return json;
+    }),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  if (isLoading || !data) {
+  const dataWithDefault = breadthData ?? data;
+
+  if (isLoading || !dataWithDefault) {
     return (
       <Card className="bg-[#0f1117] border-zinc-800">
         <CardContent className="p-4">
@@ -28,7 +34,7 @@ export function MarketBreadth() {
   }
 
   // A failed feed must NOT render as "0 breadth / 0 advances".
-  if (!data.breadth || data.status === "UNAVAILABLE") {
+  if (!dataWithDefault.breadth || dataWithDefault.status === "UNAVAILABLE") {
     return (
       <Card className="bg-[#0f1117] border-zinc-800">
         <CardHeader className="pb-2">
@@ -40,15 +46,15 @@ export function MarketBreadth() {
         <CardContent className="p-4 pt-0">
           <UnavailableCard
             title="Market breadth"
-            reason={data.error}
-            meta={data.data}
+            reason={dataWithDefault.error}
+            meta={dataWithDefault.data}
           />
         </CardContent>
       </Card>
     );
   }
 
-  const b = data.breadth || {};
+  const b = dataWithDefault.breadth || {};
   const breadthScore = b.score ?? null;
   const breadthColor = breadthScore == null ? "text-zinc-500" : breadthScore >= 70 ? "text-emerald-400" :
     breadthScore >= 50 ? "text-yellow-400" : "text-red-400";
@@ -62,7 +68,7 @@ export function MarketBreadth() {
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <BarChart3 className="h-3 w-3" />
           MARKET BREADTH
-          <DataFreshnessBadge meta={data.data} className="ml-1" showReason />
+          <DataFreshnessBadge meta={dataWithDefault.data} className="ml-1" showReason />
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
@@ -78,9 +84,9 @@ export function MarketBreadth() {
           }`}>
             {b.label || "NO DATA"}
           </Badge>
-          {data.data?.coverage ? (
+          {dataWithDefault.data?.coverage ? (
             <div className="text-[9px] text-zinc-500 mt-1">
-              {data.data.coverage.technicals}/{data.data.coverage.requested} symbols with real EMA/VWAP history
+              {dataWithDefault.data.coverage.technicals}/{dataWithDefault.data.coverage.requested} symbols with real EMA/VWAP history
             </div>
           ) : null}
         </div>

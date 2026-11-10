@@ -9,24 +9,41 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowUpRight, ArrowDownRight, Minus, Activity } from "lucide-react";
 import { DataFreshnessBadge } from "./DataFreshnessBadge";
 
-export function CASPanel() {
-  const { data: breadth } = useQuery({
+export function CASPanel({ breadthData, sectorData, regimeData }: { breadthData?: any; sectorData?: any; regimeData?: any }) {
+  const { data: bData, isLoading, isError } = useQuery({
     queryKey: ["cas-breadth"],
-    queryFn: () => fetch("/api/market/breadth").then(r => r.json()),
+    queryFn: () => fetch("/api/market/breadth").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "breadth failed");
+      return json;
+    }),
     refetchInterval: 120_000,
+    staleTime: 30_000,
   });
 
-  const { data: sectors } = useQuery({
+  const { data: sData } = useQuery({
     queryKey: ["cas-sectors"],
-    queryFn: () => fetch("/api/market/sectors").then(r => r.json()),
+    queryFn: () => fetch("/api/market/sectors").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "sectors failed");
+      return json;
+    }),
     refetchInterval: 120_000,
   });
 
-  const { data: regime } = useQuery({
+  const { data: rData } = useQuery({
     queryKey: ["cas-regime"],
-    queryFn: () => fetch("/api/market/regime").then(r => r.json()),
+    queryFn: () => fetch("/api/market/regime").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "regime failed");
+      return json;
+    }),
     refetchInterval: 120_000,
   });
+
+  const breadth = breadthData ?? bData;
+  const sectors = sectorData ?? sData;
+  const regime = regimeData ?? rData;
 
   // Derive the CAS signal from the data that actually arrived.
   // Breadth API shape: { breadth: { score, advances, declines, volRatio, ... } }
@@ -48,14 +65,14 @@ export function CASPanel() {
           sectorList.length + 50) * 10,
       ) / 10
     : null;
-  const regimeData = regime?.regime && regime.regime !== "UNKNOWN" ? regime.regime : null;
+  const regimeDataVal = regime?.regime && regime.regime !== "UNKNOWN" ? regime.regime : null;
 
   // CAS score: accumulation vs distribution — only over the inputs we have.
   const casParts: Array<{ w: number; v: number }> = [];
   if (breadthScore != null) casParts.push({ w: 15, v: breadthScore > 70 ? 15 : breadthScore < 30 ? -15 : 0 });
   if (volRatio != null) casParts.push({ w: 10, v: volRatio > 1.5 ? 10 : volRatio < 0.7 ? -10 : 0 });
   if (sectorStrength != null) casParts.push({ w: 10, v: sectorStrength > 60 ? 10 : sectorStrength < 40 ? -10 : 0 });
-  if (regimeData) casParts.push({ w: 10, v: regimeData.includes("BULL") ? 10 : regimeData.includes("BEAR") ? -10 : 0 });
+  if (regimeDataVal) casParts.push({ w: 10, v: regimeDataVal.includes("BULL") ? 10 : regimeDataVal.includes("BEAR") ? -10 : 0 });
 
   const casAvailable = casParts.length > 0;
   const casScore = casAvailable

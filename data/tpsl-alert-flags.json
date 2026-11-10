@@ -13748,5 +13748,44 @@
   },
   "sell-1794327661916-21": {
     "SL_HIT": true
+  },
+  "retry-mon-1794336832042-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794336832108-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794336832142-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794336832158-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794336915509-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794336915753-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794336915895-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794336916009-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794337060734-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794337060818-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794337060863-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794337060882-21": {
+    "SL_HIT": true
   }
 }

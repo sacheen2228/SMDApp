@@ -84,7 +84,7 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
 }) {
   const regimeLabel = regime?.regime || "—";
   const breadthLabel = breadth ? (breadth.label || (breadth.score > 60 ? "BULLISH" : breadth.score < 40 ? "BEARISH" : "NEUTRAL")) : "—";
-  const derivLabel = derivative?.bias || "—";
+  const derivLabel = derivative?.bias || (derivative?.bias === "UNKNOWN" ? "UNKNOWN" : "—");
   const casLabel =
     cas?.casScore == null
       ? "NO DATA"
@@ -94,18 +94,22 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
       ? "DISTRIBUTION"
       : "NEUTRAL";
 
-  // Overall conviction
+  // Overall conviction — only count real (non-neutral/non-unknown) biases.
   let overall = "NEUTRAL";
   let overallScore = 50;
-  const biases = [regimeLabel, breadthLabel, derivLabel].filter(b => b && b !== "—");
+  const biases = [regimeLabel, breadthLabel, derivLabel].filter(b => b && b !== "—" && b !== "UNKNOWN");
   const bullish = biases.filter(b => b.includes("BULL")).length;
   const bearish = biases.filter(b => b.includes("BEAR")).length;
   if (bullish >= 2 && bearish === 0) { overall = "BULLISH"; overallScore = 72; }
   else if (bearish >= 2 && bullish === 0) { overall = "BEARISH"; overallScore = 28; }
   else if (bullish > 0 && bearish > 0) { overall = "CONFLICTING"; overallScore = 50; }
+  else if (bullish === 1 && bearish === 0) { overall = "LEAN BULLISH"; overallScore = 60; }
+  else if (bearish === 1 && bullish === 0) { overall = "LEAN BEARISH"; overallScore = 40; }
 
   const action = overall === "BULLISH" ? "FAVOR CE BUY AFTER CONFIRMATION"
     : overall === "BEARISH" ? "FAVOR PE BUY AFTER CONFIRMATION"
+    : overall === "LEAN BULLISH" ? "LEAN LONG — WAIT FOR CONFIRMATION"
+    : overall === "LEAN BEARISH" ? "LEAN SHORT — WAIT FOR CONFIRMATION"
     : "NO TRADE — WAIT FOR ALIGNMENT";
 
   return (
@@ -138,8 +142,8 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
           </div>
           <div>
             <div className="text-muted-foreground uppercase">Index-Breadth</div>
-            <div className={`font-bold ${bullish > 0 && bearish > 0 ? "text-red-500" : "text-emerald-500"}`}>
-              {bullish > 0 && bearish > 0 ? "DIVERGENCE" : "ALIGNED"}
+            <div className={`font-bold ${bullish > 0 && bearish > 0 ? "text-red-500" : bullish > 0 || bearish > 0 ? "text-yellow-500" : "text-emerald-500"}`}>
+              {bullish > 0 && bearish > 0 ? "DIVERGENCE" : bullish > 0 || bearish > 0 ? "PARTIAL" : "NEUTRAL"}
             </div>
           </div>
           <div className="md:col-span-2">
@@ -388,52 +392,76 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
   const [activeTab, setActiveTab] = useState("overview");
 
   // Fetch all data
-  const { data: regimeData } = useQuery({
+  const { data: regimeData, isError: regimeError } = useQuery({
     queryKey: ["market-regime-intel"],
-    queryFn: () => fetch("/api/market/regime").then(r => r.json()),
+    queryFn: () => fetch("/api/market/regime").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "regime failed");
+      return json;
+    }),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  const { data: breadthData } = useQuery({
+  const { data: breadthData, isError: breadthError } = useQuery({
     queryKey: ["market-breadth-intel"],
-    queryFn: () => fetch("/api/market/breadth").then(r => r.json()),
+    queryFn: () => fetch("/api/market/breadth").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "breadth failed");
+      return json;
+    }),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  const { data: sectorData } = useQuery({
+  const { data: sectorData, isError: sectorError } = useQuery({
     queryKey: ["market-sectors-intel"],
-    queryFn: () => fetch("/api/market/sectors").then(r => r.json()),
+    queryFn: () => fetch("/api/market/sectors").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "sectors failed");
+      return json;
+    }),
     refetchInterval: 120_000,
     staleTime: 60_000,
   });
 
-  const { data: oiData } = useQuery({
+  const { data: oiData, isError: oiError } = useQuery({
     queryKey: ["nse-oi-spurts"],
-    queryFn: () => fetch("/api/nse/oi-spurts").then(r => r.json()),
+    queryFn: () => fetch("/api/nse/oi-spurts").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "oi-spurts failed");
+      return json;
+    }),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  const { data: fiiDiiData } = useQuery({
+  const { data: fiiDiiData, isError: fiiDiiError } = useQuery({
     queryKey: ["fii-dii-intel"],
-    queryFn: () => fetch("/api/fii-dii").then(r => r.json()),
+    queryFn: () => fetch("/api/fii-dii").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "fii-dii failed");
+      return json;
+    }),
     refetchInterval: 300_000,
     staleTime: 120_000,
   });
 
-  const { data: foData } = useQuery({
+  const { data: foData, isError: foError } = useQuery({
     queryKey: ["intel-index-fo"],
-    queryFn: () => fetch("/api/market/heatmap/fo").then(r => r.json()),
+    queryFn: () => fetch("/api/market/heatmap/fo").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "index-fo failed");
+      return json;
+    }),
     refetchInterval: 120_000,
     staleTime: 60_000,
   });
 
-  // Response shapes (verified against live APIs): regime is top-level,
-  // breadth nests under `.breadth` with `score`/`label`, sectors are
-  // top-level, fii-dii is flat — `.data` on these returned undefined and
-  // silently defaulted the whole header to NEUTRAL/0.
+  const anyError = regimeError || breadthError || sectorError || oiError || fiiDiiError || foError;
+
+  // Response shapes: regime is top-level, breadth nests under `.breadth`,
+  // sectors top-level, fii-dii flat, indexFO nested under `.indexFO`.
   const regime = regimeData;
   const breadth = breadthData?.breadth;
   const sectors = sectorData?.sectors || [];
@@ -443,13 +471,10 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
   const vixValue = typeof regime?.vix === "object" ? regime?.vix?.value : regime?.vix;
 
   const derivativeInput = {
-    oiBias: (oi?.overallBias || "NEUTRAL") as any,
-    oiSpurtScore: oi?.spurtScore || 0,
-    longBuildupPct: oi?.totalSpurts > 0 ? (oi.longBuildupCount / oi.totalSpurts) * 100 : 50,
-    shortBuildupPct: oi?.totalSpurts > 0 ? (oi.shortBuildupCount / oi.totalSpurts) * 100 : 50,
-    // Missing inputs stay missing: the old `|| 0` / `|| 50` / `|| 15`
-    // defaults turned a dead feed into "flat flow, neutral breadth, calm
-    // VIX" — a confident-looking reading built on nothing.
+    oiBias: (oi?.overallBias || "UNKNOWN") as any,
+    oiSpurtScore: oi?.spurtScore ?? null,
+    longBuildupPct: oi?.totalSpurts > 0 ? (oi.longBuildupCount / oi.totalSpurts) * 100 : null,
+    shortBuildupPct: oi?.totalSpurts > 0 ? (oi.shortBuildupCount / oi.totalSpurts) * 100 : null,
     fiiNet: fiiDii?.fiiNet ?? null,
     diiNet: fiiDii?.diiNet ?? null,
     fiiBias: (fiiDii?.fiiNet == null
@@ -459,15 +484,15 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
       : fiiDii.fiiNet < 0
       ? "BEARISH"
       : "NEUTRAL") as any,
-    fiiOi: 0,
-    clientOi: 0,
-    participantBias: "NEUTRAL" as any,
+    fiiOi: null,
+    clientOi: null,
+    participantBias: "UNKNOWN" as any,
     pcr: niftyFo?.pcr ?? null,
-    callWall: 0,
-    putWall: 0,
+    callWall: niftyFo?.callWall ?? null,
+    putWall: niftyFo?.putWall ?? null,
     maxPain: niftyFo?.maxPain ?? null,
-    gammaRegime: "NEUTRAL" as any,
-    dealerGammaExposure: 0,
+    gammaRegime: "UNKNOWN" as any,
+    dealerGammaExposure: null,
     vix: vixValue ?? null,
     vixRegime: (vixValue == null ? "UNKNOWN" : vixValue > 25 ? "HIGH" : vixValue > 18 ? "NORMAL" : "LOW") as any,
     breadthScore: breadth?.score ?? null,
@@ -478,17 +503,24 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
   // Compute derivative flow (client-side deterministic)
   const derivativeFlow = computeDerivativeFlow(derivativeInput);
 
-  // CAS score (from existing breadth/sector data)
-  // The CAS score needs real breadth + sector data — without them it is
-  // unknown (null), not a confident 50.
-  const casScore = breadth
-    ? Math.round(
-        (breadth.score ?? 50) * 0.5 +
-        ((breadth.volRatio ?? 1) > 1.2 ? 70 : 50) * 0.15 +
-        (sectors.length > 0 ? sectors.filter((s: any) => (s.avgChangePct || 0) > 0).length / sectors.length * 100 : 50) * 0.15 +
-        (regime?.regime?.includes("BULL") ? 70 : regime?.regime?.includes("BEAR") ? 30 : 50) * 0.2
-      )
-    : null;
+  // CAS score — only over real inputs. Missing breadth/sector/regime
+  // contribute nothing; when no input is available the score is null.
+  let casScore: number | null = null;
+  if (breadth || sectors.length > 0 || regime) {
+    const bScore = breadth?.score ?? null;
+    const volRatio = breadth?.volRatio ?? null;
+    const sectorBullish = sectors.length > 0 ? sectors.filter((s: any) => (s.avgChangePct || 0) > 0).length / sectors.length : null;
+    const casParts: Array<{ w: number; v: number }> = [];
+    if (bScore != null) casParts.push({ w: 0.5, v: bScore });
+    if (volRatio != null) casParts.push({ w: 0.15, v: volRatio > 1.2 ? 70 : 50 });
+    if (sectorBullish != null) casParts.push({ w: 0.15, v: sectorBullish * 100 });
+    if (regime?.regime) casParts.push({ w: 0.2, v: regime.regime.includes("BULL") ? 70 : regime.regime.includes("BEAR") ? 30 : 50 });
+    if (casParts.length > 0) {
+      const wSum = casParts.reduce((s, p) => s + p.w, 0);
+      const vSum = casParts.reduce((s, p) => s + p.v * p.w, 0);
+      casScore = Math.round(vSum / wSum);
+    }
+  }
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -499,6 +531,19 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
           <span className="text-[11px] font-bold text-amber-500">MARKET DECISION INTELLIGENCE CENTER</span>
         </div>
       </div>
+
+      {/* Error banner when any feed failed */}
+      {anyError && (
+        <Card className="border-red-500/30 bg-red-500/5 mb-2">
+          <CardContent className="p-2">
+            <div className="flex items-center gap-1 text-[9px] text-red-400">
+              <AlertTriangle className="h-3 w-3" />
+              <span className="font-bold">Some intel feeds unavailable</span>
+              <span>— market conviction shown only for live data sources; missing inputs are excluded, not guessed.</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex-1 overflow-auto p-2 space-y-2">
         {/* Intel Summary */}
@@ -520,9 +565,9 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
           {/* Overview Tab */}
           <TabsContent value="overview" className="space-y-2">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-              <MarketRegimePanel />
-              <MarketBreadth />
-              <CASPanel />
+              <MarketRegimePanel regimeData={regime} />
+              <MarketBreadth breadthData={breadthData} />
+              <CASPanel breadthData={breadthData} sectorData={sectorData} regimeData={regime} />
               <DerivativeFlowPanel data={derivativeFlow} />
               <OISpurtPanel data={oi} />
               <AlertCenter />
@@ -567,71 +612,93 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
 function computeDerivativeFlow(input: any) {
   const weights = { oi: 0.25, optionPositioning: 0.20, participantOi: 0.15, fiiDii: 0.15, gamma: 0.05, vix: 0.05, breadth: 0.15 };
 
+  // OI score — null/unknown bias stays neutral 50
   let oiScore = 50;
-  if (input.oiBias === "BULLISH") oiScore = 70 + Math.min(30, input.oiSpurtScore * 0.3);
-  else if (input.oiBias === "BEARISH") oiScore = 30 - Math.min(30, input.oiSpurtScore * 0.3);
+  if (input.oiBias === "BULLISH") oiScore = 70 + Math.min(30, (input.oiSpurtScore ?? 0) * 0.3);
+  else if (input.oiBias === "BEARISH") oiScore = 30 - Math.min(30, (input.oiSpurtScore ?? 0) * 0.3);
 
+  // Option positioning (PCR) — null PCR stays neutral 50
   let optionScore = 50;
-  if (input.pcr > 1.2) optionScore = 70 + Math.min(30, (input.pcr - 1.2) * 50);
-  else if (input.pcr < 0.8) optionScore = 30 - Math.min(30, (0.8 - input.pcr) * 50);
+  if (input.pcr != null && input.pcr > 1.2) optionScore = 70 + Math.min(30, (input.pcr - 1.2) * 50);
+  else if (input.pcr != null && input.pcr < 0.8) optionScore = 30 - Math.min(30, (0.8 - input.pcr) * 50);
 
+  // Participant OI — unknown stays neutral
   let participantScore = 50;
   if (input.participantBias === "BULLISH") participantScore = 70;
   else if (input.participantBias === "BEARISH") participantScore = 30;
 
+  // FII/DII — unknown stays neutral
   let fiiDiiScore = 50;
-  if (input.fiiBias === "BULLISH") fiiDiiScore = 70 + Math.min(30, Math.abs(input.fiiNet) / 1000);
-  else if (input.fiiBias === "BEARISH") fiiDiiScore = 30 - Math.min(30, Math.abs(input.fiiNet) / 1000);
+  if (input.fiiBias === "BULLISH") fiiDiiScore = 70 + Math.min(30, Math.abs(input.fiiNet ?? 0) / 1000);
+  else if (input.fiiBias === "BEARISH") fiiDiiScore = 30 - Math.min(30, Math.abs(input.fiiNet ?? 0) / 1000);
 
+  // Gamma — unknown stays neutral
   let gammaScore = 50;
   if (input.gammaRegime === "PINNING") gammaScore = 50;
   else if (input.gammaRegime === "EXPANSION") gammaScore = 60;
 
+  // VIX — unknown stays neutral
   let vixScore = 50;
   if (input.vixRegime === "LOW") vixScore = 65;
   else if (input.vixRegime === "NORMAL") vixScore = 55;
   else if (input.vixRegime === "HIGH") vixScore = 35;
   else if (input.vixRegime === "EXTREME") vixScore = 20;
 
-  const composite = Math.round(
-    oiScore * weights.oi + optionScore * weights.optionPositioning +
-    participantScore * weights.participantOi + fiiDiiScore * weights.fiiDii +
-    gammaScore * weights.gamma + vixScore * weights.vix +
-    input.breadthScore * weights.breadth
-  );
+  // Breadth — only included when real data exists; weight is renormalized below
+  let breadthComponent = null;
+  if (input.breadthScore != null) {
+    breadthComponent = input.breadthScore > 60 ? "BULLISH" : input.breadthScore < 40 ? "BEARISH" : "NEUTRAL";
+  }
+
+  // Build weighted parts only from inputs that have real data
+  const parts: Array<{ w: number; v: number }> = [
+    { w: weights.oi, v: oiScore },
+    { w: weights.optionPositioning, v: optionScore },
+    { w: weights.participantOi, v: participantScore },
+    { w: weights.fiiDii, v: fiiDiiScore },
+    { w: weights.gamma, v: gammaScore },
+    { w: weights.vix, v: vixScore },
+  ];
+  if (breadthComponent != null) {
+    parts.push({ w: weights.breadth, v: input.breadthScore });
+  }
+
+  const wSum = parts.reduce((s, p) => s + p.w, 0);
+  const vSum = parts.reduce((s, p) => s + p.v * p.w, 0);
+  const composite = wSum > 0 ? Math.round(vSum / wSum) : 50;
 
   let bias = "NEUTRAL";
   if (composite >= 65) bias = "BULLISH";
   else if (composite <= 35) bias = "BEARISH";
   else if (Math.abs(composite - 50) < 10) bias = "MIXED";
 
-  const putSupport = input.pcr > 1.1 ? "STRONG" : input.pcr > 0.9 ? "NEUTRAL" : "WEAKENING";
-  const callResistance = input.pcr < 0.9 ? "HIGH" : input.pcr < 1.1 ? "NEUTRAL" : "INCREASING";
+  const putSupport = input.pcr != null && input.pcr > 1.1 ? "STRONG" : input.pcr != null && input.pcr > 0.9 ? "NEUTRAL" : "WEAKENING";
+  const callResistance = input.pcr != null && input.pcr < 0.9 ? "HIGH" : input.pcr != null && input.pcr < 1.1 ? "NEUTRAL" : "INCREASING";
 
-  const biases = [input.oiBias, input.fiiBias, input.participantBias];
+  const biases = [input.oiBias, input.fiiBias, input.participantBias].filter((b: string) => b === "BULLISH" || b === "BEARISH");
   const bullish = biases.filter((b: string) => b === "BULLISH").length;
   const bearish = biases.filter((b: string) => b === "BEARISH").length;
   let confirmation = "INSUFFICIENT_DATA";
   if (bullish >= 2 || bearish >= 2) confirmation = "CONFIRMED";
   else if (bullish === 1 && bearish === 1) confirmation = "CONFLICTING";
-  else confirmation = "PARTIAL";
+  else if (bullish === 1 || bearish === 1) confirmation = "PARTIAL";
 
   return {
     score: Math.max(0, Math.min(100, composite)),
     bias,
     components: {
       oi: { score: Math.round(oiScore), weight: weights.oi, bias: input.oiBias },
-      optionPositioning: { score: Math.round(optionScore), weight: weights.optionPositioning, bias: input.pcr > 1.1 ? "BULLISH" : input.pcr < 0.9 ? "BEARISH" : "NEUTRAL" },
+      optionPositioning: { score: Math.round(optionScore), weight: weights.optionPositioning, bias: input.pcr != null && input.pcr > 1.1 ? "BULLISH" : input.pcr != null && input.pcr < 0.9 ? "BEARISH" : "NEUTRAL" },
       participantOi: { score: Math.round(participantScore), weight: weights.participantOi, bias: input.participantBias },
       fiiDii: { score: Math.round(fiiDiiScore), weight: weights.fiiDii, bias: input.fiiBias },
       gamma: { score: Math.round(gammaScore), weight: weights.gamma, regime: input.gammaRegime },
       vix: { score: Math.round(vixScore), weight: weights.vix, regime: input.vixRegime },
-      breadth: { score: Math.round(input.breadthScore), weight: weights.breadth, bias: input.breadthScore > 60 ? "BULLISH" : input.breadthScore < 40 ? "BEARISH" : "NEUTRAL" },
+      ...(breadthComponent != null ? { breadth: { score: Math.round(input.breadthScore), weight: weights.breadth, bias: breadthComponent } } : {}),
     },
     putSupport,
     callResistance,
     gammaState: input.gammaRegime,
-    interpretation: `OI: ${input.oiBias} | FII: ${input.fiiBias} | VIX: ${input.vixRegime} | Breadth: ${input.breadthScore > 60 ? "Strong" : input.breadthScore < 40 ? "Weak" : "Neutral"}`,
+    interpretation: `OI: ${input.oiBias} | FII: ${input.fiiBias} | VIX: ${input.vixRegime} | Breadth: ${input.breadthScore != null ? (input.breadthScore > 60 ? "Strong" : input.breadthScore < 40 ? "Weak" : "Neutral") : "no data"}`,
     confirmation,
   };
 }

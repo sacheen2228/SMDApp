@@ -22,15 +22,21 @@ function RegimeBadge({ regime }: { regime: string }) {
   );
 }
 
-export function MarketRegimePanel() {
-  const { data, isLoading } = useQuery({
+export function MarketRegimePanel({ regimeData }: { regimeData?: any }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["market-regime"],
-    queryFn: () => fetch("/api/market/regime").then(r => r.json()),
+    queryFn: () => fetch("/api/market/regime").then(async (r) => {
+      const json = await r.json();
+      if (!r.ok || json.success === false) throw new Error(json.error || "regime failed");
+      return json;
+    }),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  if (isLoading || !data) {
+  const regime = regimeData ?? data;
+
+  if (isLoading || !regime) {
     return (
       <Card className="bg-[#0f1117] border-zinc-800">
         <CardContent className="p-4">
@@ -45,7 +51,7 @@ export function MarketRegimePanel() {
 
   // No regime at all (the feed failed) → an explicit unavailable card, not
   // a "NEUTRAL" badge that looks like a real reading.
-  if (!data.regime || data.regime === "UNKNOWN") {
+  if (!regime.regime || regime.regime === "UNKNOWN") {
     return (
       <Card className="bg-[#0f1117] border-zinc-800 overflow-hidden">
         <CardHeader className="pb-2">
@@ -57,8 +63,8 @@ export function MarketRegimePanel() {
         <CardContent className="p-4 pt-0">
           <UnavailableCard
             title="Market regime"
-            reason={data.tradeEnv || data.error}
-            meta={data.data}
+            reason={regime.tradeEnv || regime.error}
+            meta={regime.data}
           />
         </CardContent>
       </Card>
@@ -71,25 +77,25 @@ export function MarketRegimePanel() {
         <CardTitle className="text-xs font-bold text-zinc-400 flex items-center gap-2">
           <Activity className="h-3 w-3" />
           MARKET REGIME
-          <DataFreshnessBadge meta={data.data} className="ml-1" showReason />
+          <DataFreshnessBadge meta={regime.data} className="ml-1" showReason />
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
         <div className="flex items-center gap-3 mb-3">
-          <RegimeBadge regime={data.regime} />
+          <RegimeBadge regime={regime.regime} />
           <Badge variant="outline" className={`text-xs ${
-            data.bias === "BULLISH" ? "text-emerald-400 border-emerald-500/30" :
-            data.bias === "BEARISH" ? "text-red-400 border-red-500/30" :
+            regime.bias === "BULLISH" ? "text-emerald-400 border-emerald-500/30" :
+            regime.bias === "BEARISH" ? "text-red-400 border-red-500/30" :
             "text-yellow-400 border-yellow-500/30"
           }`}>
-            {data.bias}
+            {regime.bias}
           </Badge>
         </div>
 
-        <p className="text-xs text-zinc-500 mb-3">{data.tradeEnv}</p>
+        <p className="text-xs text-zinc-500 mb-3">{regime.tradeEnv}</p>
 
         <div className="grid grid-cols-3 gap-3">
-          {data.indices?.map((idx: any) => (
+          {regime.indices?.map((idx: any) => (
             <div key={idx.key} className="text-center">
               <div className="text-[10px] text-zinc-500">{idx.name}</div>
               <div className={`text-sm font-bold ${idx.changePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
@@ -97,18 +103,18 @@ export function MarketRegimePanel() {
               </div>
             </div>
           ))}
-          {data.coverage && data.coverage.indices < data.coverage.indicesExpected ? (
+          {regime.coverage && regime.coverage.indices < regime.coverage.indicesExpected ? (
             <div className="col-span-3 text-[9px] text-amber-400/80">
-              {data.coverage.indices}/{data.coverage.indicesExpected} indices published by the exchange — the rest are unavailable (not estimated).
+              {regime.coverage.indices}/{regime.coverage.indicesExpected} indices published by the exchange — the rest are unavailable (not estimated).
             </div>
           ) : null}
         </div>
 
-        {data.vix ? (
+        {regime.vix ? (
           <div className="mt-3 flex items-center justify-between text-xs">
             <span className="text-zinc-500">VIX</span>
-            <span className={`font-bold ${data.vix.value > 20 ? "text-red-400" : data.vix.value > 15 ? "text-yellow-400" : "text-emerald-400"}`}>
-              {data.vix.value} ({data.vix.change == null ? "" : `${data.vix.change >= 0 ? "+" : ""}${data.vix.change}%`})
+            <span className={`font-bold ${regime.vix.value > 20 ? "text-red-400" : regime.vix.value > 15 ? "text-yellow-400" : "text-emerald-400"}`}>
+              {regime.vix.value} ({regime.vix.change == null ? "" : `${regime.vix.change >= 0 ? "+" : ""}${regime.vix.change}%`})
             </span>
           </div>
         ) : (
