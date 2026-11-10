@@ -103,8 +103,8 @@ export function SectorRotation() {
 
         {/* Sector List */}
         <div className="space-y-1">
-          {data.sectors?.map((s: any) => (
-            <div key={s.key} className="flex items-center justify-between text-xs py-1 border-b border-zinc-800/50 last:border-0">
+          {data.sectors?.map((s: any, i: number) => (
+            <div key={`sector-${i}`} className="flex items-center justify-between text-xs py-1 border-b border-zinc-800/50 last:border-0">
               <div className="flex items-center gap-2">
                 <span className="text-zinc-300 font-medium w-20">{s.name}</span>
                 <RotationBadge rotation={s.rotation} />

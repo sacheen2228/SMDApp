@@ -270,19 +270,19 @@ async function fetchOptionChain(symbol: string): Promise<OptionChainSummary | nu
     expiry: a?.expiryDate || inner?.selectedExpiry || "",
     spot,
     atmStrike,
-    pcr: a?.pcr || 0,
-    maxPain: a?.maxPain || 0,
-    totalCallOI: a?.totalCallOI || 0,
-    totalPutOI: a?.totalPutOI || 0,
-    pcrVolume: a?.totalPutVolume && a?.totalCallVolume ? a.totalPutVolume / a.totalCallVolume : 0,
-    ivMedian: stats?.ivMedian || 0,
-    ivRank: stats?.ivRank || 0,
-    atmCePremium: stats?.atmCePremium || 0,
-    atmPePremium: stats?.atmPePremium || 0,
+    pcr: a?.pcr ?? null,
+    maxPain: a?.maxPain ?? null,
+    totalCallOI: a?.totalCallOI ?? null,
+    totalPutOI: a?.totalPutOI ?? null,
+    pcrVolume: a?.totalPutVolume && a?.totalCallVolume ? a.totalPutVolume / a.totalCallVolume : null,
+    ivMedian: stats?.ivMedian ?? null,
+    ivRank: stats?.ivRank ?? null,
+    atmCePremium: stats?.atmCePremium ?? null,
+    atmPePremium: stats?.atmPePremium ?? null,
     support: a?.support || [],
     resistance: a?.resistance || [],
-    callWall: a?.callWall || 0,
-    putFloor: a?.putFloor || 0,
+    callWall: a?.callWall ?? null,
+    putFloor: a?.putFloor ?? null,
   };
 }
 
@@ -320,18 +320,18 @@ async function fetchBreadth(): Promise<MarketBreadthData> {
   }
   const b = data.breadth;
   return {
-    advances: b.advances || 0,
-    declines: b.declines || 0,
-    unchanged: b.unchanged || 0,
+    advances: b.advances ?? 0,
+    declines: b.declines ?? 0,
+    unchanged: b.unchanged ?? 0,
     totalStocks: b.totalStocks || 50,
-    advanceDeclineRatio: b.advanceDeclineRatio || 1,
-    breadthScore: b.breadthScore || b.score || 50,
-    newHighs: b.newHighs || 0,
-    newLows: b.newLows || 0,
-    ema20Participation: b.ema20Participation || 50,
-    ema50Participation: b.ema50Participation || 50,
-    vwapParticipation: b.vwapParticipation || 50,
-    relativeVolume: b.relativeVolume || 1,
+    advanceDeclineRatio: b.advanceDeclineRatio ?? null,
+    breadthScore: b.breadthScore ?? b.score ?? null,
+    newHighs: b.newHighs ?? 0,
+    newLows: b.newLows ?? 0,
+    ema20Participation: b.ema20Participation ?? null,
+    ema50Participation: b.ema50Participation ?? null,
+    vwapParticipation: b.vwapParticipation ?? null,
+    relativeVolume: b.relativeVolume ?? null,
   };
 }
 
@@ -340,7 +340,7 @@ async function fetchSectors(): Promise<SectorData[]> {
   if (!data?.sectors) return [];
   return data.sectors.map((s: any) => ({
     sector: s.sector || s.name || "",
-    strength: s.strength || s.score || 50,
+    strength: s.strength ?? s.score ?? null,
     change: s.change || s.changePercent || 0,
     leadingStocks: s.leadingStocks || [],
     laggards: s.laggards || [],
@@ -355,14 +355,14 @@ async function fetchRegime(): Promise<RegimeData & { vix?: number }> {
   // API returns: { regime: "NEUTRAL", bias: "NEUTRAL", tradeEnv: "...", regimeScore: 50, factors: {...}, vix: { value: 10.68 }, ... }
   const regimeStr = typeof data.regime === "string" ? data.regime : data.regime?.regime || "UNKNOWN";
   const factors = data.factors || {};
-  const vix = data.vix?.value || 0;
+  const vix = data.vix?.value ?? null;
   // Map bias → trend (API returns "bias", analyzers expect "trend")
   const bias = data.bias || data.trend || data.direction || "NEUTRAL";
   const trend = bias === "BULLISH" ? "BULLISH" : bias === "BEARISH" ? "BEARISH" : "SIDEWAYS";
   return {
     regime: regimeStr,
     trend,
-    confidence: data.regimeScore || data.confidence || 50,
+    confidence: data.regimeScore ?? data.confidence ?? null,
     factors,
     vix,
   };
