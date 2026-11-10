@@ -747,7 +747,7 @@ function passesQualityGates(
   if (candidate.premium < 1) reasons.push('Premium < ₹1');
   if (Math.abs(candidate.delta) < 0.05) reasons.push('Delta too low (<0.05)');
   if (candidate.premium > 0 && candidate.spread > candidate.premium * 0.5) reasons.push('Spread >50% of premium');
-  if (candidate.theta < -5) reasons.push('Theta decay too high');
+  if (candidate.theta < -100) reasons.push('Theta decay too high (>₹100/day)');
   if (candidate.iv > 60) reasons.push('IV too high (>60%)');
   if (candidate.iv < 1 && candidate.iv > 0) reasons.push('IV too low (<1%)');
   if (candidate.volume <= 0 && candidate.oi <= 0) reasons.push('Zero volume and OI');
@@ -1008,9 +1008,19 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const spotMovement24h = expectedMove * 0.3;
 
-  const currentATM = findATMStrike(strikesNorm.map(s => s.strike), spot);
+  const currentATM = findATMStrike(strikesToProcess.map(s => s.strike), spot);
 
-  const strikeAnalyses: DynamicStrikeAnalysis[] = strikesNorm.map(s => {
+  // ── Filter strikes: keep only those near ATM with real premium data ──
+  const filteredStrikes = strikesNorm.filter(s => {
+    const strikeDistPct = Math.abs(s.strike - spot) / spot * 100;
+    const hasPremium = s.ce.ltp > 0 || s.pe.ltp > 0;
+    // Keep strikes within ±8% of spot that have at least one leg with real premium
+    return strikeDistPct <= 8 && hasPremium;
+  });
+
+  const strikesToProcess = filteredStrikes.length > 0 ? filteredStrikes : strikesNorm;
+
+  const strikeAnalyses: DynamicStrikeAnalysis[] = strikesToProcess.map(s => {
     const moneyness = classifyMoneyness(s.strike, currentATM, spot);
     const distanceFromATM = Math.abs(s.strike - spot);
 
@@ -1146,7 +1156,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     otm: otmCandidate || { strike: currentATM + 100, type: 'OTM', optionType: 'CE', premium: 0, delta: 0, gamma: 0, theta: 0, vega: 0, iv: 0, meltRisk: 'LOW', expectedMove: 0, spread: 0, capitalRequired: 0, maxLoss: 0, breakevenMove: 0, edgeScore: 0, rank: 0 },
   };
 
-  const directionResult = evaluateDirection(strikesNorm, spot, currentATM, vix, pcr, vix / 100, trend, timeToExpiry);
+  const directionResult = evaluateDirection(strikesToProcess, spot, currentATM, vix, pcr, vix / 100, trend, timeToExpiry);
 
   // ── V2: Enforce directional consistency ──
   directionResult.recommendedDirection = enforceDirectionalConsistency(
@@ -1157,7 +1167,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     ? evaluateHeroZero(otmCandidate.strike, spot, 'CE', otmCandidate.delta, otmCandidate.gamma, otmCandidate.iv, otmCandidate.premium, otmCandidate.premium, 0, otmCandidate.premium, otmCandidate.premium, otmCandidate.premium, vix, trend, expiryMode)
     : { qualifies: false, reasons: [], rejectionReasons: ['No OTM candidate'], momentumStrength: 0, gammaStrength: 0, deltaAdequacy: false, volumeConfirmation: false, oiConfirmation: false, ivConfirmation: false, liquidityOk: false, spreadOk: false };
 
-  const straddleAnalysis = analyzeStraddleStrangle(symbol, spot, strikesNorm, currentATM, expectedMove, lotSize, vix);
+  const straddleAnalysis = analyzeStraddleStrangle(symbol, spot, strikesToProcess, currentATM, expectedMove, lotSize, vix);
 
   let bestStrike = currentATM;
   let bestEdge = 0;
@@ -1238,7 +1248,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     spotMovement24h
   );
 
-  const gammaAlert = detectGammaAlert(strikes, currentATM, expiryMode, spot);
+  const gammaAlert = detectGammaAlert(strikesToProcess, currentATM, expiryMode, spot);
 
   const finalEntry = bestLeg ? bestLeg.premium : 0;
   const finalSL = bestLeg ? finalEntry * 0.5 : 0;
