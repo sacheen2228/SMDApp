@@ -183,6 +183,10 @@ export async function sendTradeEvent(params: TradeEventInput): Promise<TradeEven
       source: params.source ?? 'trade-event-coordinator',
       requireSpot: params.spot != null,
       requireExpiry: false, // event already validated
+      entryClaim: false, // NotificationEvent is the at-most-once owner for TP/SL
+      expiry: params.expiry,
+      strategy: params.source,
+      message: msg,
       entryZone: params.target1 && params.target2 && params.target3
         ? { low: params.target1, high: params.target3 }
         : undefined,

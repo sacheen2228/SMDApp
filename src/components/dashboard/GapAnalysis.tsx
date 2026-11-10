@@ -244,9 +244,9 @@ export const GapAnalysis = memo(function GapAnalysis({
         {/* ═══════ TOP METRICS BAR ═══════ */}
         <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-13 gap-1.5">
           <MetricPill label="Spot" value={fmtFull(spotPrice)} />
-          <MetricPill label="Gift Nifty" value={giftNifty ? fmtFull(giftNifty.price) : "—"}
+          <MetricPill label="NIFTY 50 (Gift proxy)" value={giftNifty ? fmtFull(giftNifty.price) : "—"}
             color={gap != null ? (gap > 0 ? "text-emerald-500" : "text-red-500") : "text-muted-foreground"}
-            sub={gap != null ? `${gap > 0 ? "+" : ""}${gap.toFixed(0)} pts` : ""} />
+            sub={giftNifty?.isProxy ? "NSE spot · proxy" : gap != null ? `${gap > 0 ? "+" : ""}${gap.toFixed(0)} pts` : ""} />
           <MetricPill label="PCR" value={pcr.toFixed(2)} color={pcr > 1.2 ? "text-emerald-500" : pcr < 0.8 ? "text-red-500" : ""} />
           <MetricPill label="VIX" value={gapInput.indiaVIX != null ? gapInput.indiaVIX.toFixed(1) : "—"} color={vixLive ? "text-violet-400" : "text-muted-foreground"} sub={vixLive ? "live" : "est"} />
           <MetricPill label="Max Pain" value={maxPain != null ? fmtFull(maxPain) : "—"} color="text-amber-500" sub={maxPain != null ? `${spotPrice > maxPain ? "+" : ""}${((spotPrice - maxPain) / maxPain * 100).toFixed(2)}%` : ""} />

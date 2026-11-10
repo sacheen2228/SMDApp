@@ -51,7 +51,8 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
 
   test("the stop is capped at 35% of the premium and the rupee risk shrinks with it", () => {
     const p = buildOptionPlan({
-      symbol: "NIFTY", optionType: "CE", entryPremium: 100, lotSize: 65, lots: 1,
+      // 10 units: the ₹2,000 risk cap allows a 200-pt stop, well past the 35% cap
+      symbol: "NIFTY", optionType: "CE", entryPremium: 100, lotSize: 10, lots: 1,
       deployedAmount: 10_000, riskAmount: 6_000, // wants a 92% stop — must be capped
     })!;
     expect(p.stopLoss).toBeCloseTo(100 * 0.65, 1);
@@ -116,7 +117,8 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
   test("PE and CE of the same premium produce the SAME geometry (audit regression: ADANIPORTS 1840 PE)", () => {
     // The reported defect: "Buy ADANIPORTS 1840 PE @ ₹39.1 | SL ₹46.9 |
     // T1 ₹23.45 | T2 ₹15.65 | T3 ₹7.8" — SL above entry, targets below.
-    // risk = 20% of the premium = ₹7.82 → correct: SL 31.30, T1 54.75…
+    // 1 lot = 500 units; the FIXED ₹2,000 risk cap → ₹4 premium points:
+    // SL 35.10, T1 47.10… (the old 20%-of-deployed model gave ₹7.82 → SL 31.28)
     const pe = buildOptionPlan({
       symbol: "ADANIPORTS", optionType: "PE", entryPremium: 39.1, lotSize: 500, lots: 1,
     })!;
@@ -124,7 +126,7 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
       symbol: "ADANIPORTS", optionType: "CE", entryPremium: 39.1, lotSize: 500, lots: 1,
     })!;
     expect(pe.stopLoss).toBeLessThan(39.1);
-    expect(pe.stopLoss).toBeCloseTo(39.1 - 39.1 * 0.2, 0); // ≈ 31.28 (±tick)
+    expect(pe.stopLoss).toBeCloseTo(39.1 - 2_000 / 500, 0); // ≈ 35.10 (±tick)
     expect(pe.targets[0]).toBeGreaterThan(39.1);
     // identical levels for CE and PE of the same premium
     expect(pe.stopLoss).toBe(ce.stopLoss);

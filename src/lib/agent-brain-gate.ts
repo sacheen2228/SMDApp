@@ -12,13 +12,16 @@ export const GATE_CONFIG = {
   minLayersAgree: 3,
   maxLayersAgainst: 1,
   minUnderlyingRR: 2,      // chart R:R ≥ 1:2
-  minOptionRR: 1.5,        // option R:R after repricing ≥ 1.5
+  minOptionRR: 2,          // option R:R after repricing ≥ 1:2 (minimum)
   // PER-TRADE capital model (user-defined, 2026-10-20):
   //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
   // → the risk is a RUPEE amount = riskPctOfTrade % of the amount DEPLOYED in the
   //   trade, NOT 1% of a large account. The old 1%-of-₹2L model made every NIFTY
   //   lot unaffordable (1 lot risks ₹2.8–3.4k > 1% of ₹2L) → 0 lots → NO TRADE.
   riskPctOfTrade: 20,      // risk = 20% of the amount deployed (₹10k deployed → ₹2k risk)
+  // FIXED ₹ risk per trade (user-defined, 2026-11-10): sizing must keep the
+  // stop loss within this cap; 1 lot that already risks more is skipped.
+  maxRiskPerTrade: 2_000,
   tradeBudget: 20_000,     // ₹ DEPLOYED per trade (matches AUDIT_TRADE_BUDGET)
   defaultRiskPct: 20,      // kept for compatibility: now % of the deployed amount
   maxRiskPct: 20,
@@ -268,7 +271,9 @@ export function positionSize(input: {
   const entry = Number(input.entry);
   const sl = Number(input.sl);
   const lotSize = Number(input.lotSize);
-  const riskAmount = (budget * riskPct) / 100;
+  // The risk is capped at the FIXED per-trade amount — never scaled up by a
+  // bigger deployment. 20% of deployed is the soft target; the cap is the rule.
+  const riskAmount = Math.min(GATE_CONFIG.maxRiskPerTrade, (budget * riskPct) / 100);
   if (!(entry > 0) || !(lotSize > 0) || !Number.isFinite(entry - sl) || Math.abs(entry - sl) <= 0) {
     return {
       ok: false, lots: 0, qty: 0, riskAmount, riskPerLot: 0, maxLoss: 0, capitalRequired: 0,
@@ -283,8 +288,8 @@ export function positionSize(input: {
   const maxLoss = riskPerLot * lots;
   const capitalRequired = entry * lotSize * lots;
   const guidance = lots >= 1
-    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
-    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
+    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")}) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
+    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")}), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
   return { ok: lots >= 1, lots, qty: lots * lotSize, riskAmount, riskPerLot, maxLoss, capitalRequired, guidance };
 }
 
@@ -390,7 +395,7 @@ export function evaluateTradeGate(input: GateInput): GateResult {
 
   // 7. Option R:R
   const orr = Number(input.optionRR);
-  if (!Number.isFinite(orr) || orr < GATE_CONFIG.minOptionRR) {
+  if (!Number.isFinite(orr) || orr < GATE_CONFIG.minOptionRR - 0.01) {
     checks.push({ id: "option_rr", label: `Option R:R ≥ ${GATE_CONFIG.minOptionRR}`, status: "fail", detail: `got ${Number.isFinite(orr) ? orr.toFixed(2) : "unknown"} after repricing` });
   } else {
     checks.push({ id: "option_rr", label: `Option R:R ≥ ${GATE_CONFIG.minOptionRR}`, status: "pass", detail: orr.toFixed(2) });

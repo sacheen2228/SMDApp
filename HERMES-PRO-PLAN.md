@@ -117,8 +117,9 @@ Unified interface: `fetchMarketData<T>(instrument, dataType, options)` → `Mark
 
 Provider fallback chain:
 ```
-Breeze → MOAPI → NSE → Yahoo (delayed标记)
+ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol
 ```
+(Moneycontrol is NOT Yahoo — Yahoo is banned by the data policy.)
 
 Each provider call wrapped in try/catch with freshness tagging. Never fabricate data.
 

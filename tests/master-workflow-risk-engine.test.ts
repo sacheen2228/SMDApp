@@ -31,9 +31,9 @@ describe("the workflow risk engine", () => {
     // NOT ₹10,00,000 — the ₹ DEPLOYED per trade
     expect(r.maxPositionSize).toBe(RISK_LIMITS.perTradeBudget);
     expect(r.maxPositionSize).toBe(20_000);
-    // the ₹ at risk on one trade = 20% of the deployment
+    // the ₹ at risk on one trade = the FIXED ₹2,000 cap
     expect(r.var95).toBe(RISK_LIMITS.maxRiskPerTrade);
-    expect(r.var95).toBe(4_000);
+    expect(r.var95).toBe(2_000);
   });
 
   test("a blown daily loss is NOT approved", () => {

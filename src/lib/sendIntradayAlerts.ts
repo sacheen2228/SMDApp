@@ -5,21 +5,24 @@
 // Uses the SDM V2 engine (via /api/sdm-signal) for trade generation so
 // Telegram alerts match the SMD bot's recommendations exactly.
 
-import { sendTelegramMessage } from "./telegramSend";
 import { recordIntradayTrade } from "./intraday-scanner";
-import { isTelegramSendWindow } from "./marketHours";
+import { isTelegramSendWindow, isTradingDay } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
 import { getNextMonthlyExpiry, NSE_HOLIDAYS } from "./expiry-calculator";
 import {
-  checkSLTP, addTrade, formatSLTPHit,
+  checkSLTP, addTrade,
   hasActiveTrade, tickPx, fmtStrike
 } from "./activeTradeTracker";
 import { registerAgent, getAgentByName, createSignal } from "@/lib/agents/registry";
 import { transitionSignal } from "@/lib/agents/signal-lifecycle";
-import { evaluateTradeGate } from "@/lib/telegram";
+import { evaluateTradeGate, sendTradeAlert } from "@/lib/telegram";
+import { sendTradeEvent } from "@/lib/trade-event-coordinator";
+import { isAlertsOwner } from "@/lib/alerts-owner";
 import { CONF_FLOOR_CALL, CONF_FLOOR_PUT } from "@/lib/signal-persistence";
 import { providerHealth } from "@/lib/provider-health";
+import { getIntradayGateMode, recordGateDecision } from "@/lib/intraday-gates";
+import { toIsoExpiry } from "@/lib/expiry-date";
 
 const BASE = process.env.INTERNAL_API_BASE || "http://localhost:3000";
 
@@ -89,22 +92,24 @@ async function fetchAndPushSignal(
         tp1: alert.tp1,
         confidence: alert.confidence,
         spot: alert.spot,
-        expiry: alert.expiry,
+        expiry: alert.expiryDate,
       });
+      const mode = getIntradayGateMode();
+      recordGateDecision(gate.blocked, mode);
       if (gate.blocked) {
-        const intradayGates = process.env.INTRADAY_GATES || "log";
         const reasonStr = gate.reasons.join(", ");
-        if (intradayGates === "enforce") {
+        if (mode === "enforce") {
           console.log("[Intraday] GATE BLOCK " + alert.symbol + " " + alert.strike + " " + alert.optionType + " " + reasonStr);
           return;
         }
-        // log mode: log but still send
+        // log mode: log but still send; the counter is the would-have-blocked tally
         console.log("[Intraday] WOULD BLOCK " + alert.symbol + " " + alert.strike + " " + alert.optionType + " " + reasonStr);
       }
     } catch (err: any) {
-      const intradayGates = process.env.INTRADAY_GATES || "log";
+      const mode = getIntradayGateMode();
+      recordGateDecision(true, mode);
       const msg = err?.message || String(err);
-      if (intradayGates === "enforce") {
+      if (mode === "enforce") {
         console.log("[Intraday] GATE ERROR " + alert.symbol + " " + alert.strike + " " + alert.optionType + ": " + msg);
         return;
       }
@@ -134,10 +139,24 @@ export async function getCurrentOptionPrice(
   expiry?: string
 ): Promise<number> {
   try {
-    const res = await fetchWithTimeout(`${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}`);
+    const expiryParam = expiry ? `&expiry=${encodeURIComponent(expiry)}` : "";
+    const res = await fetchWithTimeout(
+      `${BASE}/api/option-chain?symbol=${encodeURIComponent(symbol)}${expiryParam}&readonly=1`
+    );
     if (!res.ok) return 0;
     const json = await res.json();
     const data = json?.data?.data || [];
+
+    // Fail closed on a stale chain: a 15-minute monitor cannot price a stop off
+    // a chain that was collected more than 10 minutes ago.
+    const asOfRaw = json?.data?.asOf || json?.data?.timestamp || json?.data?.fetchedAt || json?.data?.chainAsOf;
+    if (asOfRaw) {
+      const asOfMs = Date.parse(asOfRaw);
+      if (Number.isFinite(asOfMs) && Date.now() - asOfMs > 10 * 60 * 1000) {
+        console.warn(`[sendIntradayAlerts] ${symbol} chain is ${Math.round((Date.now() - asOfMs) / 60000)}m old — no LTP`);
+        return 0;
+      }
+    }
 
     // The chain must be the expiry we opened (when both are known).
     const chainExpiry = json?.data?.expiry || json?.data?.selectedExpiry || "";
@@ -231,13 +250,14 @@ function sdmSignalToAlert(symbol: string, signal: any): any {
     sl: signal.sl,
     tp1: signal.tp1,
     tp2: signal.tp2 || 0,
+    tp3: signal.tp3,
     rr,
     rrGate,
     confidence: Math.round(signal.confidence || 50),
     rationale: reasons + extra || "SDM V2 engine recommendation",
     expiry: expiryLabel,
     // Real calendar expiry for the journal/gate (label is display-only above)
-    expiryDate: signal.expiryDate || signal.selectedExpiry || undefined,
+    expiryDate: toIsoExpiry(signal.expiryDate || signal.selectedExpiry) || undefined,
     spot: spot || undefined,
     generatedAt: new Date().toISOString(),
     greeks: signal.greeks || null,
@@ -267,7 +287,8 @@ Strike: ${fmtStrike(alert.strike)} ${alert.optionType} ${alert.expiry ? `| ${ale
 Entry: ₹${tickPx(alert.entry)}
 Stop: ₹${tickPx(alert.sl)} (${pnlRisk}% risk)
 Target 1: ₹${tickPx(alert.tp1)} (${pnlReward}% gain)
-Target 2: ₹${tickPx(alert.tp2)}
+${alert.tp2 ? `Target 2: ₹${tickPx(alert.tp2)}` : ''}
+${alert.tp3 ? `Target 3: ₹${tickPx(alert.tp3)}` : ''}
 R:R 1:${alert.rr}${greeksLine}
 
 ${alert.rationale}
@@ -323,11 +344,23 @@ async function boundedConcurrency<T>(items: any[], concurrency: number, fn: (ite
 }
 
 export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: number }> {
+  if (!isAlertsOwner()) {
+    console.log('[alerts-owner] sendIntradayAlerts suppressed — ALERTS_OWNER is not "true"');
+    return { ran: false, newAlerts: 0 };
+  }
   if (scanInFlight) {
     console.log("[scan] already in flight, skipping");
     return { ran: false, newAlerts: 0 };
   }
   scanInFlight = true;
+  try {
+    return await sendIntradayAlertsInner();
+  } finally {
+    scanInFlight = false;
+  }
+}
+
+async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: number }> {
   const scanStartMs = Date.now();
   const startTime = new Date(scanStartMs).toISOString();
   const SCAN_DEADLINE_MS = 100000; // 100 seconds
@@ -339,6 +372,13 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     }
     return false;
   };
+
+  // Milliseconds left of the single scan budget. Every sub-step that can block
+  // on the network (the stock scanner, the watchdog) draws from this, so the
+  // whole request stays inside SCAN_DEADLINE_MS instead of each step carrying
+  // its own independent timeout.
+  const remainingBudgetMs = (): number =>
+    Math.max(0, SCAN_DEADLINE_MS - (Date.now() - scanStartMs));
 
   if (!isTelegramSendWindow()) {
       console.error("[sendIntradayAlerts] outside 09:10-15:30 IST window — skipping");
@@ -352,51 +392,65 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   const symbolList = ALL_SYMBOLS.filter(sym => !hasActiveTrade(sym));
   console.log("[scan] start ts=" + startTime + " symbols=" + symbolList.length);
 
-  // 1. Check active trades for SL/TP hits
-  const { hitSL, hitTP1, hitTP2, hitTP3 } = await checkSLTP(
-    (sym, strike, type, expiry) => getCurrentOptionPrice(sym, strike, type, expiry)
-  );
+  // Scan statistics for structured logging
+  const scanStats = {
+    symbolsScanned: symbolList.length,
+    candidates: 0,
+    deduped: 0,
+    sent: 0,
+    errors: 0,
+    perSymbolMs: [] as number[],
+    rejected: [] as { symbol: string; strike: number; type: string; expiry: string | null; source: string; oi: number | null; volume: number | null; reason: string }[],
+  };
 
+  // 1. Check active trades for SL/TP hits. The event is claimed/sent BEFORE
+  // the status update; a failed send leaves the trade monitored for retry.
   let newAlerts = 0;
-
-  for (const trade of hitSL) {
-    const text = formatSLTPHit(trade, "SL");
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
-    if (results.some(Boolean)) newAlerts++;
-  }
-
-  for (const trade of hitTP1) {
-    const text = formatSLTPHit(trade, "TP1");
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
-    if (results.some(Boolean)) newAlerts++;
-  }
-
-  for (const trade of hitTP2) {
-    const text = formatSLTPHit(trade, "TP2");
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
-    if (results.some(Boolean)) newAlerts++;
-  }
-
-  for (const trade of hitTP3) {
-    const text = formatSLTPHit(trade, "TP3");
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
-    if (results.some(Boolean)) newAlerts++;
-  }
+  await checkSLTP(
+    (sym, strike, type, expiry) => getCurrentOptionPrice(sym, strike, type, expiry),
+    async (trade, hit, fill) => {
+      const result = await sendTradeEvent({
+        tradeId: trade.id,
+        eventType: hit,
+        targetLevel: fill,
+        symbol: trade.symbol,
+        action: trade.side,
+        strike: trade.strike,
+        optionType: trade.optionType,
+        entry: trade.entry,
+        stopLoss: trade.sl,
+        target1: trade.tp1,
+        target2: trade.tp2,
+        target3: trade.tp3,
+        confidence: trade.confidence,
+        source: trade.source,
+        expiry: trade.expiry,
+      });
+      if (result.sent && !result.alreadySent) newAlerts++;
+      return result.sent;
+    }
+  );
 
   // 2. Filter symbols — skip those with active trades
   const symbolsToScan = symbolList;
   if (symbolsToScan.length === 0) {
     console.log("[scan] end ts=" + new Date(Date.now()).toISOString() + " ran=true newAlerts=" + newAlerts + " skipped=noSymbols");
     scanInFlight = false;
-  return { ran: true, newAlerts };
+    // Log scan summary for no-symbols case
+    console.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      event: "scan_summary",
+      marketOpen: isTradingDay(new Date()),
+      symbolsScanned: scanStats.symbolsScanned,
+      perSymbolMs: scanStats.perSymbolMs,
+      candidates: scanStats.candidates,
+      deduped: scanStats.deduped,
+      sent: newAlerts,
+      errors: scanStats.errors,
+      rejected: scanStats.rejected,
+    }));
+    scanInFlight = false;
+    return { ran: true, newAlerts };
   }
 
   // 3. Fetch SDM V2 recommendations for each symbol (both CE and PE, weekly + monthly)
@@ -419,30 +473,49 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
       console.log("[scan] deadline reached, stopping scan");
       return;
     }
+    const taskStartMs = Date.now();
     await fetchAndPushSignal(task.symbol, task.direction, candidates, task.expiry);
+    scanStats.perSymbolMs.push(Date.now() - taskStartMs);
   });
 
   // Sort by confidence descending
   candidates.sort((a, b) => (b.alert.confidence || 0) - (a.alert.confidence || 0));
+  scanStats.candidates = candidates.length;
   const topCandidates = candidates.slice(0, 12);
 
   // Log per-strike rejection reasons before sending
   for (const c of candidates) {
     const rec = c.alert;
     if (!rec.entry || rec.entry <= 0) {
-      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"entry missing/zero\" OI=? volume=?");
+      const strike = c.alert.strike || 0;
+      const type = c.alert.optionType || '?';
+      const expiry = c.alert.expiry || null;
+      scanStats.rejected.push({ symbol: c.symbol, strike, type, expiry, source: 'sdm-signal', oi: null, volume: null, reason: 'entry missing/zero' });
+      console.log("[reject] " + c.symbol + " " + strike + " " + type + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"entry missing/zero\" OI=? volume=?");
       continue;
     }
     if (!rec.stopLoss || rec.stopLoss <= 0) {
-      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing stop\" OI=? volume=?");
+      const strike = c.alert.strike || 0;
+      const type = c.alert.optionType || '?';
+      const expiry = c.alert.expiry || null;
+      scanStats.rejected.push({ symbol: c.symbol, strike, type, expiry, source: 'sdm-signal', oi: null, volume: null, reason: 'missing stop' });
+      console.log("[reject] " + c.symbol + " " + strike + " " + type + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing stop\" OI=? volume=?");
       continue;
     }
     if (!rec.tp1 || rec.tp1 <= 0) {
-      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing TP1\" OI=? volume=?");
+      const strike = c.alert.strike || 0;
+      const type = c.alert.optionType || '?';
+      const expiry = c.alert.expiry || null;
+      scanStats.rejected.push({ symbol: c.symbol, strike, type, expiry, source: 'sdm-signal', oi: null, volume: null, reason: 'missing TP1' });
+      console.log("[reject] " + c.symbol + " " + strike + " " + type + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"missing TP1\" OI=? volume=?");
       continue;
     }
     if (rec.sl >= rec.entry) {
-      console.log("[reject] " + c.symbol + " " + (c.alert.strike || '?') + " " + (c.alert.optionType || '?') + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"stop not below entry\" OI=? volume=?");
+      const strike = c.alert.strike || 0;
+      const type = c.alert.optionType || '?';
+      const expiry = c.alert.expiry || null;
+      scanStats.rejected.push({ symbol: c.symbol, strike, type, expiry, source: 'sdm-signal', oi: null, volume: null, reason: 'stop not below entry' });
+      console.log("[reject] " + c.symbol + " " + strike + " " + type + " expiry=" + (c.alert.expiry || '?') + " source=sdm-signal reason=\"stop not below entry\" OI=? volume=?");
       continue;
     }
   }
@@ -454,30 +527,46 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     if (alreadySentToday(signature)) continue;
 
     const text = formatSDMMessage(c.alert);
-    const results = await Promise.all(
-      DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-    );
+    const sent = await sendTradeAlert({
+      symbol: c.symbol,
+      action: c.alert.side || "BUY",
+      strike: c.alert.strike || 0,
+      type: c.alert.optionType || "CE",
+      confidence: c.alert.confidence,
+      entry: c.alert.entry,
+      stopLoss: c.alert.sl,
+      target1: c.alert.tp1,
+      target2: c.alert.tp2,
+      source: "sdm-v2-engine",
+      instrument: c.alert.optionType === "PE" ? "PUT" : "CALL",
+      expiry: c.alert.expiryDate,
+      spot: c.alert.spot,
+      requireExpiry: true,
+      strategy: "sdm-v2-engine",
+      expectsTrade: true,
+      message: text,
+      register: async () => addTrade({
+        id: c.alert.id,
+        symbol: c.symbol,
+        side: c.alert.side,
+        instrument: c.alert.instrument,
+        strike: c.alert.strike || 0,
+        optionType: c.alert.optionType || "",
+        entry: c.alert.entry,
+        sl: c.alert.sl,
+        tp1: c.alert.tp1,
+        tp2: c.alert.tp2,
+        status: "ACTIVE",
+        sentAt: new Date().toISOString(),
+        source: "sdm-v2-engine",
+        confidence: c.alert.confidence,
+        expiry: c.alert.expiryDate || undefined,
+        spotPrice: c.alert.spot || undefined,
+      }, true),
+    });
 
-      if (results.some(Boolean)) {
+    if (sent) {
         markSentToday(signature);
-        await addTrade({
-          id: c.alert.id,
-          symbol: c.symbol,
-          side: c.alert.side,
-          instrument: c.alert.instrument,
-          strike: c.alert.strike || 0,
-          optionType: c.alert.optionType || "",
-          entry: c.alert.entry,
-          sl: c.alert.sl,
-          tp1: c.alert.tp1,
-          tp2: c.alert.tp2,
-          status: "ACTIVE",
-          sentAt: new Date().toISOString(),
-          source: "sdm-v2-engine",
-          confidence: c.alert.confidence,
-          expiry: c.alert.expiryDate || undefined,
-          spotPrice: c.alert.spot || undefined,
-        }, true); // skipAlert=true — SDM message already sent above
         // Migration: also record executed intraday trades to Trade Audit sidecar.
         await recordIntradayTrade({
           id: c.alert.id,
@@ -539,10 +628,17 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
   }
 
   // 5. Stock scanner alerts — monthly expiry, confidence ≥ 80%
+  // Shares the single scan budget: it gets whatever is LEFT of the 100s
+  // deadline instead of its own 120s timeout. Worst case stays ≈100s, so the
+  // request can never approach the 15-minute cron's service timeout.
   try {
+    const stockBudgetMs = remainingBudgetMs();
+    if (stockBudgetMs < 5000) {
+      console.log("[scan] stock scanner skipped — only " + stockBudgetMs + "ms left of the scan budget");
+    } else {
     const scannerRes = await fetch(
       `${BASE}/api/scanner?symbol=NIFTY`,
-      { cache: "no-store", signal: AbortSignal.timeout(120000) }
+      { cache: "no-store", signal: AbortSignal.timeout(stockBudgetMs) }
     );
     if (scannerRes.ok) {
       const scannerJson = await scannerRes.json();
@@ -597,15 +693,27 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
             ...(scanData?.dataSources || {}),
             chain: chainSrc ? `${chainSrc}${chainAge}` : undefined,
           });
-          const results = await Promise.all(
-            DIGEST_CHAT_IDS.map((chatId) => sendTelegramMessage(chatId, text))
-          );
-
-          if (results.some(Boolean)) {
-            markSentToday(sig);
-            const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
-            const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? 'NOEXP'}-${ymd}`;
-            await addTrade({
+          const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+          const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? 'NOEXP'}-${ymd}`;
+          const sent = await sendTradeAlert({
+            symbol: stock.symbol,
+            action: "BUY",
+            strike: opt.strike,
+            type: opt.optionType,
+            confidence: stock.totalScore ?? 0,
+            entry: opt.premium,
+            stopLoss: opt.stopLoss,
+            target1: opt.targets[0] || opt.premium,
+            target2: opt.targets[1] || opt.targets[0] || opt.premium,
+            source: "stock-scanner",
+            instrument: opt.optionType === "PE" ? "PUT" : "CALL",
+            expiry: expiryKey(opt.expiry) || undefined,
+            spot: Number(stock.spot || stock.ltp || 0) || undefined,
+            requireExpiry: true,
+            strategy: "stock-scanner",
+            expectsTrade: true,
+            message: text,
+            register: async () => addTrade({
               id: tradeId,
               symbol: stock.symbol,
               side: "BUY",
@@ -616,14 +724,18 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               sl: opt.stopLoss,
               tp1: opt.targets[0] || opt.premium,
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
-              tp3: opt.targets[2] || opt.targets[1] || opt.targets[0] || opt.premium,
+              tp3: opt.tp3 ?? opt.targets[2],
               status: "ACTIVE",
               sentAt: new Date().toISOString(),
               source: "stock-scanner",
               expiry: expiryKey(opt.expiry) || undefined,
               confidence: stock.totalScore,
               spotPrice: Number(stock.spot || stock.ltp || 0) || undefined,
-            }, true); // skipAlert=true — stock alert already sent above
+            }, true),
+          });
+
+          if (sent) {
+            markSentToday(sig);
             // Migration: also record executed intraday trades to Trade Audit sidecar.
             await recordIntradayTrade({
               id: tradeId,
@@ -634,7 +746,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
               stopLoss: opt.stopLoss,
               tp1: opt.targets[0] || opt.premium,
               tp2: opt.targets[1] || opt.targets[0] || opt.premium,
-              tp3: opt.targets[2] || opt.targets[1] || opt.targets[0] || opt.premium,
+              tp3: opt.tp3 ?? opt.targets[2],
               confidence: stock.totalScore,
               reason: (stock.reasons || []).slice(0, 3).join(" · "),
               source: "stock-scanner",
@@ -644,12 +756,24 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
         }
       }
     }
+    }
   } catch {
     // Non-blocking — stock scanner may time out
   }
 
   const scanEndMs = Date.now();
-  console.log("[scan] end ts=" + new Date(scanEndMs).toISOString() + " ran=true newAlerts=" + newAlerts + " symbolsScanned=" + symbolsToScan.length + " candidates=" + candidates.length + " alertsSent=" + alertsSent);
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event: "scan_summary",
+    marketOpen: isTradingDay(new Date()),
+    symbolsScanned: scanStats.symbolsScanned,
+    candidates: scanStats.candidates,
+    deduped: scanStats.deduped,
+    sent: newAlerts,
+    errors: scanStats.errors,
+    rejected: scanStats.rejected,
+    perSymbolMs: scanStats.perSymbolMs,
+  }));
 
   // ── Watchdog: if no alert was sent by 11:30 IST on a trading day, alert via Telegram
   const watchdogHour = 11;
@@ -673,7 +797,9 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chat_id: tgChatId, text: watchdogMsg, parse_mode: "HTML" }),
-          signal: AbortSignal.timeout(10000),
+          // Draw from the scan budget (floor 3s so the watchdog still fires
+          // when the budget is exhausted) — never an extra independent 10s.
+          signal: AbortSignal.timeout(Math.min(10000, Math.max(3000, remainingBudgetMs()))),
         });
       } catch (e) {
         console.error("[sendIntradayAlerts] Watchdog alert failed: " + String(e));

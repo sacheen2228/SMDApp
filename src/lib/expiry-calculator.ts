@@ -182,19 +182,30 @@ function toLocalIsoDate(d: Date): string {
   return `${y}-${m}-${dd}`;
 }
 
-// Known NSE/BSE trading holidays 2025-2027 (subset — extend as needed).
-// The 2026-11-10 / 2026-11-24 / 2027-01-26 entries are OBSERVED from the
-// exchange's own contract list: NSE publishes the Oct/Nov-2026 monthly as
-// 23-Nov-2026 and the Jan-2027 monthly as 25-Jan-2027 — i.e. those Tuesdays
-// are non-trading days and the expiry sits on the previous trading day.
-const NSE_HOLIDAYS = new Set([
+/**
+ * Exchange trading holidays, ISO calendar dates — THE single source of truth.
+ *
+ * Four other modules used to keep their own copy and all four had the same
+ * typo: `2026-11-11` for Diwali-Balipratipada (the real holiday is 2026-11-10,
+ * and 2026-11-24 was missing everywhere but here). With their own copy each
+ * module could silently disagree with the expiry logic, which is exactly how
+ * the session clock opened the market for business on a holiday.
+ *
+ * Extend THIS set; import `NSE_HOLIDAYS` / `isExchangeHoliday()` elsewhere.
+ *
+ * The 2026-11-10 / 2026-11-24 / 2027-01-26 entries are OBSERVED from the
+ * exchange's own contract list: NSE publishes the Oct/Nov-2026 monthly as
+ * 23-Nov-2026 and the Jan-2027 monthly as 25-Jan-2027 — i.e. those Tuesdays
+ * are non-trading days and the expiry sits on the previous trading day.
+ */
+export const NSE_HOLIDAYS = new Set([
   // 2025
   '2025-01-26', '2025-03-14', '2025-03-31', '2025-04-10', '2025-04-14',
   '2025-04-18', '2025-05-01', '2025-06-27', '2025-08-15', '2025-10-02',
   '2025-10-21', '2025-10-22', '2025-11-05', '2025-12-25',
   // 2026
-  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-10',
+  '2026-01-26', '2026-04-14',
+  '2026-05-01', '2026-06-26', '2026-09-14', '2026-10-02', '2026-10-20', '2026-11-10',
   '2026-11-24', '2026-12-25',
   // 2027
   '2027-01-26', '2027-03-06', '2027-04-14', '2027-08-15', '2027-10-02', '2027-12-25',
@@ -205,6 +216,11 @@ export function isHoliday(d: Date): boolean {
   // midnight Date is 18:30 UTC the PREVIOUS day, so the UTC form checked
   // the wrong date (every holiday lookup was off by one day).
   return NSE_HOLIDAYS.has(toLocalIsoDate(d));
+}
+
+/** Holiday lookup for callers that already hold an IST calendar date string. */
+export function isExchangeHoliday(isoDate: string | null | undefined): boolean {
+  return NSE_HOLIDAYS.has(String(isoDate || '').slice(0, 10));
 }
 
 function isWeekend(d: Date): boolean {

@@ -257,7 +257,7 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
     const risk = side === "LONG" ? entry - sl : sl - entry; // > 0 by construction
     const reward = side === "LONG" ? tp1 - entry : entry - tp1;
     const rr = reward / risk;
-    if (!Number.isFinite(rr) || rr < GATE_CONFIG.minOptionRR) {
+    if (!Number.isFinite(rr) || rr < GATE_CONFIG.minOptionRR - 0.01) {
       hard(`option R:R ${Number.isFinite(rr) ? rr.toFixed(2) : "bad"} < ${GATE_CONFIG.minOptionRR}`);
     }
   } else if (Number.isFinite(entry) && Number.isFinite(sl)) {

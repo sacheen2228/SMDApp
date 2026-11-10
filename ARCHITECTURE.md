@@ -48,11 +48,15 @@ for module ownership, data flow, and services. It supersedes any earlier ad-hoc 
 
 ```
 Option chain / live quotes
-  NIFTY · BANKNIFTY · FINNIFTY · MIDCPNIFTY + NSE equities ─▶ NSE (primary)
-  SENSEX · BANKEX                                        ─▶ BSE (primary)
-  fallback ─▶ MOAPI ─▶ ICICI Breeze (opt-in, last resort) ─▶ NO_DATA (503)
-Candles       ─▶ Breeze ─▶ MO API ─▶ NO_DATA
-India VIX     ─▶ NSE indiaVIX ─▶ NO_DATA
+  ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol
+  NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY + NSE equities ─▶ ICICI Breeze primary
+  SENSEX · BANKEX                                        ─▶ ICICI Breeze primary → BSE fallback
+  NSE equities (RELIANCE, …)                 → ICICI Breeze primary
+  Fallback: MOAPI → NSE → BSE → Moneycontrol → NO_DATA
+  Yahoo             →  NOT a data source anywhere — unavailable data ⇒ NO_DATA
+
+Candles       ─▶ ICICI Breeze ─▶ MO API ─▶ NSE index chart ─▶ NO_DATA
+India VIX     ─▶ NSE indiaVIX ─▶ ICICI Breeze ─▶ MOAPI ─▶ NO_DATA
 ```
 **Yahoo is not a data source anywhere** — unavailable data means `NO_DATA`/503, never a fabricated
 or Yahoo quote.
@@ -60,7 +64,7 @@ or Yahoo quote.
 ## Data Flow
 
 ```
-NSE / BSE / MOAPI / Breeze
+ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol
         │  (raw quotes, option chain, candles, breadth)
         ▼
 /api/market-recorder/record   ◄──── systemd timer (every market minute)

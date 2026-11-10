@@ -466,57 +466,99 @@ export async function getOptionChain(
     };
   }
 
-  // BSE indices: BSE is primary
-  if (exchange === 'BSE') {
-    const { bseProvider } = await import('@/lib/data-layer/providers/bse');
-    // BSE expects "22 Oct 2026"; without a request we pick the nearest
-    // contract that is still trading ourselves.
-    const bseExpiry = requestedIso
-      ? toBseExpiry(requestedIso) || undefined
-      : await pickBseLiveExpiry(symbol);
-    const result = (await bseProvider.getOptionChain(symbol, bseExpiry)) as ProviderResult<CanonicalOptionChain>;
-    if (result.data) return settle(result, requestedIso, requestedRaw);
-    // BSE live chain failed (the endpoint answers 403/302) — fall back to the
-    // exchange bhavcopy (EOD close + real OI), clearly labelled BHAVCOPY.
-    const { bhavcopyProvider } = await import('@/lib/data-layer/providers/bhavcopy');
-    const eod = (await bhavcopyProvider.getOptionChain(symbol, requestedIso ?? undefined)) as ProviderResult<CanonicalOptionChain>;
-    if (eod.data) return settle(eod, requestedIso, requestedRaw);
-    if (isExpiryUnavailableReason(eod.fallbackReason)) {
-      return { data: null, fallbackUsed: true, source: 'NO_DATA', fallbackReason: eod.fallbackReason };
-    }
-    return result;
+    // Fetch via the central engine: parallel provider race
+  // (Breeze → MOAPI → NSE → BSE, first complete valid fresh chain wins,
+  // NseGate-protected, circuit-breaker aware). Never merge providers; never
+  // label stale/delayed data as live.
+  const mds = await import('@/lib/market-data-service');
+  const env = await mds.fetchMarketData({
+    symbol,
+    category: "option-chain",
+    exchange,
+    instrument: undefined,
+    expiry: requestedIso,
+    nowMs: Date.now(),
+  });
+
+  if (env.available && env.data) {
+    const raw: any = env.data;
+    const strikes: OptionStrike[] = (raw.strikes || []).map((s: any) => ({
+      strike: Number(s.strike),
+      ce: s.ce ? {
+        ltp: s.ce.ltp == null ? null : Number(s.ce.ltp),
+        oi: s.ce.oi == null ? null : Number(s.ce.oi),
+        oiChg: s.ce.oiChg == null ? null : Number(s.ce.oiChg),
+        volume: s.ce.volume == null ? null : Number(s.ce.volume),
+        iv: s.ce.iv == null ? null : Number(s.ce.iv),
+        bid: s.ce.bid == null ? null : Number(s.ce.bid),
+        ask: s.ce.ask == null ? null : Number(s.ce.ask),
+      } : null,
+      pe: s.pe ? {
+        ltp: s.pe.ltp == null ? null : Number(s.pe.ltp),
+        oi: s.pe.oi == null ? null : Number(s.pe.oi),
+        oiChg: s.pe.oiChg == null ? null : Number(s.pe.oiChg),
+        volume: s.pe.volume == null ? null : Number(s.pe.volume),
+        iv: s.pe.iv == null ? null : Number(s.pe.iv),
+        bid: s.pe.bid == null ? null : Number(s.pe.bid),
+        ask: s.pe.ask == null ? null : Number(s.pe.ask),
+      } : null,
+    }));
+    const spotPrice = Number(raw.spotPrice) || 0;
+    const chainExpiry = raw.selectedExpiry || raw.expiry || null;
+    const chain: any = {
+      underlying: symbol,
+      spot: spotPrice,
+      exchange,
+      strikes,
+      expiry: chainExpiry,
+      providerTimestamp: env.providerTimestamp ?? null,
+      source: env.provider,
+      fetchedAt: env.fetchedAt,
+      sourceType: env.source,
+      fallbackUsed: env.fallbackUsed,
+      freshness: env.freshness,
+    };
+    const result: ProviderResult<CanonicalOptionChain> = {
+      data: chain,
+      fallbackUsed: env.fallbackUsed,
+      source: engineSourceToLayer(env.provider),
+      fallbackReason: env.fallbackReason,
+    };
+    return settle(result, requestedIso, requestedRaw);
   }
 
-  // NSE indices and equities: NSE is primary
-  const { nseProvider } = await import('@/lib/data-layer/providers/nse');
-  const nseResult = (await nseProvider.getOptionChain(symbol, requestedIso ?? undefined)) as ProviderResult<CanonicalOptionChain>;
-  if (nseResult.data) return settle(nseResult, requestedIso, requestedRaw);
-  // The exchange does not carry the requested contract — an explicit failure.
-  // Falling through to another provider here would silently swap the expiry.
-  if (isExpiryUnavailableReason(nseResult.fallbackReason)) {
-    return { data: null, fallbackUsed: true, source: 'NO_DATA', fallbackReason: nseResult.fallbackReason };
-  }
-
-  // NSE failed — try MOAPI (currently a stub, returns null)
-  const { moProvider } = await import('@/lib/data-layer/providers/mo');
-  const moResult = (await moProvider.getOptionChain(symbol, requestedIso ?? undefined)) as ProviderResult<CanonicalOptionChain>;
-  if (moResult.data) return settle(moResult, requestedIso, requestedRaw);
-
-  // Last resort: the exchange bhavcopy (EOD close + real OI), labelled BHAVCOPY.
+  // Last resort: end-of-day bhavcopy (clearly labelled, never a live chain).
   const { bhavcopyProvider } = await import('@/lib/data-layer/providers/bhavcopy');
-  const eod = (await bhavcopyProvider.getOptionChain(symbol, requestedIso ?? undefined)) as ProviderResult<CanonicalOptionChain>;
-  if (eod.data) return settle(eod, requestedIso, requestedRaw);
+  const eod = await bhavcopyProvider.getOptionChain(symbol, requestedIso ?? undefined);
+  if (eod.data) {
+    const result: ProviderResult<CanonicalOptionChain> = {
+      data: eod.data,
+      fallbackUsed: true,
+      source: 'BHAVCOPY',
+      fallbackReason: eod.fallbackReason ?? 'live chain unavailable; serving EOD bhavcopy',
+    };
+    return settle(result, requestedIso, requestedRaw);
+  }
   if (isExpiryUnavailableReason(eod.fallbackReason)) {
     return { data: null, fallbackUsed: true, source: 'NO_DATA', fallbackReason: eod.fallbackReason };
   }
-
-  // All providers failed
   return {
     data: null,
     fallbackUsed: true,
     source: 'NO_DATA',
-    fallbackReason: `NSE + MOAPI + BHAVCOPY unavailable for ${symbol}`,
+    fallbackReason: `live option chain unavailable for ${symbol}`,
   };
+}
+
+/** Map an engine provider name to the data-layer source label. */
+function engineSourceToLayer(p: string): 'NSE' | 'BSE' | 'MOAPI' | 'BREEZE' | 'BHAVCOPY' | 'NO_DATA' {
+  switch (p) {
+    case 'nse-api': return 'NSE';
+    case 'bse-api': return 'BSE';
+    case 'motilal-api': return 'MOAPI';
+    case 'icici-breeze': return 'BREEZE';
+    default: return 'NO_DATA';
+  }
 }
 
 /**

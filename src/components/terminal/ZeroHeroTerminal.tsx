@@ -15,7 +15,7 @@ import { InstitutionalGreeksPanel } from "@/components/terminal/InstitutionalGre
 import GreekFlowHeatmap from "@/components/terminal/GreekFlowHeatmap";
 import EnhancedOptionChain from "@/components/terminal/EnhancedOptionChain";
 import { getInstrument } from "@/stores/useTerminalStore";
-import { isFNO, getExpiryTypeForDate, getStandardizedExpiry } from "@/lib/expiry-calculator";
+import { isFNO, getExpiryTypeForDate, getStandardizedExpiry, NSE_HOLIDAYS } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
 import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
@@ -137,17 +137,18 @@ function getISTTime(): Date {
   return new Date(now.getTime() + istOffset + now.getTimezoneOffset() * 60 * 1000);
 }
 
-const NSE_HOLIDAYS_2026 = new Set([
-  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
-]);
-
+// NSE holidays come from the canonical calendar (expiry-calculator) — the
+// local copy here said `2026-11-11` for Diwali-Balipratipada (real: 2026-11-10)
+// and had no 2026-11-24, so the header badge read OPEN on a holiday.
 function isMarketOpen(): boolean {
   const ist = getISTTime();
   const day = ist.getDay();
   if (day === 0 || day === 6) return false;
-  const iso = ist.toISOString().split('T')[0];
-  if (NSE_HOLIDAYS_2026.has(iso)) return false;
+  // Local getters — `getISTTime()` is built so that its LOCAL reading is the
+  // IST wall-clock, so toISOString() (UTC) would be the previous day 00:00-05:30.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const iso = `${ist.getFullYear()}-${pad(ist.getMonth() + 1)}-${pad(ist.getDate())}`;
+  if (NSE_HOLIDAYS.has(iso)) return false;
   const mins = ist.getHours() * 60 + ist.getMinutes();
   return mins >= 555 && mins <= 930;
 }
@@ -3008,14 +3009,19 @@ function PayoffChart({ result, spot }: { result: ExpCalcResult; spot: number }) 
   const xScale = (v: number) => margin.left + ((v - xMin) / (xMax - xMin)) * chartW;
   const yScale = (v: number) => margin.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
 
-  const line = result.scenarioTable
-    .map((r) => `${xScale(r.settlement)},${yScale(r.pnlPerLot)}`)
-    .join(" ");
+  // SVG path data needs a moveto ('M') followed by lineto ('L') commands —
+  // a bare comma-separated point list is a <polyline points> value, and passing
+  // it to <path d> makes the browser reject the whole path.
+  const line = result.scenarioTable.length
+    ? result.scenarioTable
+        .map((r, i) => `${i === 0 ? "M" : "L"}${xScale(r.settlement)},${yScale(r.pnlPerLot)}`)
+        .join(" ")
+    : "";
 
   return (
     <svg width={width} height={height} className="w-full max-w-md mx-auto">
       <defs>
-        <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerWidth="6" markerHeight="6">
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
           <path d="M0,0 L0,6 L9,3 z" fill="#2dd4a7" />
         </marker>
       </defs>
@@ -3023,7 +3029,7 @@ function PayoffChart({ result, spot }: { result: ExpCalcResult; spot: number }) 
       <line x1={margin.left} y1={yScale(0)} x2={margin.left + chartW} y2={yScale(0)} stroke="#334155" strokeWidth={1} />
       <line x1={xScale(result.settlementUsed)} y1={margin.top} x2={xScale(result.settlementUsed)} y2={margin.top + chartH} stroke="#334155" strokeWidth={1} strokeDasharray="4" />
       {/* Payoff line */}
-      <path d={line} stroke="#2dd4a7" strokeWidth={2} fill="none" />
+      {line && <path d={line} stroke="#2dd4a7" strokeWidth={2} fill="none" strokeLinejoin="round" />}
       {/* Zero line label */}
       <text x={margin.left + 5} y={yScale(0) - 5} fill="#94a3b8" fontSize={10}>0</text>
       {/* Strike label */}

@@ -186,21 +186,23 @@ describe("the 1-lot case — NO REGRESSION in the plan maths", () => {
     expect(p.lotCost).toBeCloseTo(153.85 * 65, 5);
   });
 
-  test("the default sizing is unchanged (₹20,000 budget → 2 NIFTY lots)", () => {
+  test("the default sizing still takes 2 NIFTY lots and caps the rupee risk at ₹2,000", () => {
     const p = buildOptionPlan({ symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65 })!;
     expect(p.lots).toBe(2);
     expect(p.units).toBe(130);
     expect(p.deployed).toBe(19_500);
-    expect(p.riskAmount).toBeCloseTo(3_900, 0);   // 20% of the amount deployed
-    expect(p.stopLoss).toBeCloseTo(120, 1);
-    expect(p.targets[0]).toBeCloseTo(210, 1);      // 2R
-    expect(p.targets[1]).toBeCloseTo(240, 1);      // 3R
-    expect(p.targets[2]).toBeCloseTo(270, 1);      // 4R
+    expect(p.riskAmount).toBeCloseTo(2_000, 0);   // FIXED cap (20% would be ₹3,900)
+    // ₹2,000 over 130 units = 15.38 pts of premium → stop and 2R/3R/4R ladder
+    expect(p.stopLoss).toBeCloseTo(150 - 2_000 / 130, 1);
+    expect(p.targets[0]).toBeCloseTo(150 + 2 * 2_000 / 130, 1);
+    expect(p.targets[1]).toBeCloseTo(150 + 3 * 2_000 / 130, 1);
+    expect(p.targets[2]).toBeCloseTo(150 + 4 * 2_000 / 130, 1);
   });
 
   test("the guardrails still hold (35% premium cap + 8-tick floor)", () => {
     const capped = buildOptionPlan({
-      symbol: "NIFTY", optionType: "CE", entryPremium: 100, lotSize: 65, lots: 1,
+      // 10 units so the ₹2,000 risk cap allows a stop past the 35% premium cap
+      symbol: "NIFTY", optionType: "CE", entryPremium: 100, lotSize: 10, lots: 1,
       deployedAmount: 10_000, riskAmount: 6_000,
     })!;
     expect(capped.stopLoss).toBeCloseTo(100 * 0.65, 1);
@@ -314,7 +316,7 @@ describe("the callers bail on 0 lots (no trade, no alert, no tracker row)", () =
     expect(p.lots).toBe(1);
     expect(p.totalPremium).toBeLessThanOrEqual(CAP);
     expect(p.totalPremium).toBe(15_000);
-    expect(p.maxRisk).toBeCloseTo(3_000, 0);   // 20% of the amount deployed
+    expect(p.maxRisk).toBeCloseTo(2_000, 0);   // FIXED ₹2,000 risk cap (20% would be ₹3,000)
   });
 
   test("morning scan: an unaffordable contract is skipped", () => {

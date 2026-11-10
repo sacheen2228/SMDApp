@@ -4,6 +4,9 @@
 
 import { NSEClient } from 'nse-bse-api/nse';
 import { isTradingDay } from '@/lib/expiry-liquidity/market-session-config';
+import { isExpiryExpired, selectNearestLiveExpiry } from '@/lib/data-layer/chains/option-chain';
+import { isBSEIndex } from '@/lib/bse-api';
+import { isIndexSymbol } from '@/lib/nse-api';
 
 let nseClient: NSEClient | null = null;
 
@@ -323,10 +326,39 @@ export async function runDOMAnalysis(signal?: AbortSignal): Promise<DOMSummary[]
 
 export async function getSingleStockDOM(symbol: string): Promise<DOMSummary | null> {
   const client = getClient();
+  const sym = String(symbol || '').trim().toUpperCase();
   try {
-    const data = await client.optionChainV3({ symbol, type: 'Equity' });
+    // Indices are not equity chains: NIFTY/BANKNIFTY/… must be requested as
+    // 'Indices' and SENSEX/BANKEX as 'BSE' — the same mapping the canonical
+    // NSE chain path uses (nse-api.getNSEOptionChain).
+    const type = isBSEIndex(sym) ? 'BSE' : isIndexSymbol(sym) ? 'Indices' : 'Equity';
+
+    // Resolve the nearest contract that is STILL TRADING. The SDK's default is
+    // `expiryDates[0]`, which after a contract settles is the dead one — that
+    // is how this tab came to render yesterday's expired premiums (25000 CE
+    // ₹44.50 = its settlement value) beside the live chain showing 17-Nov.
+    let exp: string | undefined;
+    try {
+      const expiries = (await client.getExpiryDatesV3(sym)) || [];
+      exp = selectNearestLiveExpiry(expiries) ?? undefined;
+    } catch {
+      exp = undefined;
+    }
+
+    const data = await client.optionChainV3({ symbol: sym, type, ...(exp ? { expiry: exp } : {}) } as any);
     if (!data?.records?.data?.length) return null;
-    
+
+    // Never serve a contract that has already settled — an expired chain is
+    // not a "stale" chain, it is a different (dead) instrument.
+    const servedExpiry: string | null =
+      (data.records?.data ?? []).find((r: any) => r?.expiryDates)?.expiryDates
+      ?? data.records?.selectedExpiry
+      ?? (Array.isArray(data.records?.expiryDates) ? data.records.expiryDates[0] : null);
+    if (servedExpiry && isExpiryExpired(servedExpiry)) {
+      console.warn(`[DOM] ${sym}: only an expired contract (${servedExpiry}) is available`);
+      return null;
+    }
+
     const strikes = parseNSEOptionChain(data);
     const spot = data.records.underlyingValue;
     const atmStrike = data.records.strikePrices?.find((s: number) => s >= spot) || spot;
@@ -343,7 +375,7 @@ export async function getSingleStockDOM(symbol: string): Promise<DOMSummary | nu
     const totalPutVol = strikes.reduce((sum, s) => sum + (s.pe?.volume || 0), 0);
     
     return {
-      symbol,
+      symbol: sym,
       spot,
       atmStrike,
       timestamp: data.records.timestamp,

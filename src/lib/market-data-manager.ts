@@ -1,19 +1,30 @@
-// Market Data Manager — unified data source orchestration with provider fallback
+// Market Data Manager — unified data source orchestration with provider fallback.
 //
-// Provider hierarchy (canonical, see AGENTS.md "Provider hierarchy"):
-//   NSE/BSE primary → MOAPI fallback → NO_DATA
-//   Breeze = explicit opt-in fallback only (session-gated)
-//   There is NO Yahoo provider: it is banned by the data policy (AGENTS.md)
+// ALL fetching now delegates to the central engine (src/lib/market-data-service.ts),
+// which owns the single provider-priority order per category, the shared NseGate,
+// in-flight dedup, the process-wide cache and the provider-health circuit breaker.
+// This module keeps its legacy `MarketDataResponse` / `ProviderState` API surface
+// so existing consumers (/api/health, Hermes paper worker) keep working unchanged.
 //
-// Circuit breaking / cooldowns are NOT implemented here. They live in
-// `provider-health.ts`, which is the single source of truth for every
-// external provider (LLM SDKs, Breeze, NSE, BSE, MOAPI, website).
-// This module only mirrors that state into a legacy-shaped `ProviderState`
-// so existing consumers (/api/health, Hermes paper worker) keep working.
+// Provider hierarchy (enforced by the engine, per category):
+//   LIVE data: ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol
+//   PRE/POST market: NSE → BSE → Moneycontrol (exchange archives only)
+//   There is NO Yahoo provider: it is banned by the data policy (AGENTS.md).
+//
+// Circuit breaking / cooldowns live in `provider-health.ts` (single source of
+// truth). This module only mirrors that state into a legacy-shaped `ProviderState`.
 
 import type { DataProvider, DataFreshness, MarketDataResponse } from "./hermes/types";
 import { classifyFreshness } from "./hermes/freshness";
 import { providerHealth, type ProviderType, type CircuitState } from "./provider-health";
+import {
+  fetchMarketData as engineFetchMarketData,
+  fetchOptionChain as engineFetchOptionChain,
+  fetchSpot as engineFetchSpot,
+  type MarketDataEnvelope,
+  type ProviderName,
+} from "./market-data-service";
+import { normalizeCategory, type DataCategory } from "./market-data-types";
 
 // ── Provider State (legacy-shaped view over provider-health) ──────────
 
@@ -30,82 +41,58 @@ export interface ProviderState {
   consecutiveFailures: number;
 }
 
-// ── Provider Fallback Chain ────────────────────────────────────────────
-
-// NSE/BSE first: they are the primary exchanges for every symbol this chain
-// serves. MOAPI is the fallback; Breeze only when a session is explicitly
-// applied; the website scraper is the last resort.
-//
-// There is NO Yahoo entry: Yahoo is banned by the data policy (AGENTS.md) —
-// a banned source must not even sit in the tree as a "last resort".
-const PROVIDER_PRIORITY: DataProvider[] = ["nse", "bse-api", "moapi", "breeze", "website"];
-
-// MCX has no NSE/BSE coverage — MOAPI → Breeze → website scrape.
-const MCX_PROVIDER_PRIORITY: DataProvider[] = ["moapi", "breeze", "website"];
-
-// ── Market Data Manager ────────────────────────────────────────────────
-
-/** Map a hermes DataProvider onto a provider-health ProviderType. */
-function toProviderType(provider: DataProvider): ProviderType {
-  switch (provider) {
-    case "icici-breeze":
-      return "breeze";
-    case "nse-api":
-      return "nse";
-    case "bse-api":
-      return "bse";
-    case "motilal-api":
-      return "moapi";
-    default:
-      return provider as ProviderType;
-  }
-}
-
 const FRESHNESS_LEVELS = new Set([
   "LIVE", "FRESH", "DELAYED", "STALE", "BACKFILLED", "UNAVAILABLE",
 ]);
 
 class MarketDataManagerImpl {
-  private providers = new Map<DataProvider, ProviderState>();
   private cache = new Map<string, { data: any; timestamp: number }>();
   private cacheTTL = 5_000; // 5s cache for live data
 
-  constructor() {
-    for (const p of PROVIDER_PRIORITY) {
-      this.providers.set(p, this.makeState(p));
+  /** Map a hermes DataProvider onto a provider-health ProviderType. */
+  private toProviderType(provider: DataProvider): ProviderType {
+    switch (provider) {
+      case "icici-breeze":
+        return "breeze";
+      case "nse-api":
+        return "nse";
+      case "bse-api":
+        return "bse";
+      case "motilal-api":
+        return "moapi";
+      default:
+        return provider as ProviderType;
     }
   }
 
-  private makeState(name: DataProvider): ProviderState {
-    return {
-      name,
-      status: "UNKNOWN",
-      lastSuccess: null,
-      lastFailure: null,
-      latencyMs: null,
-      errorCount: 0,
-      retryCount: 0,
-      cooldownUntil: 0,
-      circuitState: "CLOSED",
-      consecutiveFailures: 0,
-    };
+  /** Engine provider name → hermes DataProvider label for response envelopes. */
+  private mapProvider(p: ProviderName): DataProvider {
+    switch (p) {
+      case "icici-breeze": return "icici-breeze";
+      case "motilal-api": return "motilal-api";
+      case "nse-api": return "nse-api";
+      case "bse-api": return "bse-api";
+      case "moneycontrol": return "website";
+      case "fii-dii": return "nse-api";
+      default: return "website";
+    }
   }
 
   /** Rebuild the legacy ProviderState view from the authoritative health record. */
   private syncFromHealth(provider: DataProvider): ProviderState | undefined {
-    const state = this.providers.get(provider);
-    if (!state) return undefined;
-
-    const h = providerHealth.getHealth(toProviderType(provider));
-    state.circuitState = h.circuitState as CircuitState;
-    state.cooldownUntil = h.cooldownUntil;
-    state.consecutiveFailures = h.consecutiveFailures;
-    state.lastSuccess = h.lastSuccessAt;
-    state.lastFailure = h.lastFailureAt;
-    state.latencyMs = h.lastLatencyMs;
-    state.errorCount = h.totalFailures;
-    state.retryCount = h.totalFailures;
-    state.status = this.mapStatus(h.status, h.circuitState, h.consecutiveFailures, h.healthy);
+    const h = providerHealth.getHealth(this.toProviderType(provider));
+    const state: ProviderState = {
+      name: provider,
+      status: this.mapStatus(h.status, h.circuitState, h.consecutiveFailures, h.healthy),
+      lastSuccess: h.lastSuccessAt,
+      lastFailure: h.lastFailureAt,
+      latencyMs: h.lastLatencyMs,
+      errorCount: h.totalFailures,
+      retryCount: h.totalFailures,
+      cooldownUntil: h.cooldownUntil,
+      circuitState: h.circuitState as CircuitState,
+      consecutiveFailures: h.consecutiveFailures,
+    };
     return state;
   }
 
@@ -125,97 +112,75 @@ class MarketDataManagerImpl {
   }
 
   // ── Main Fetch with Fallback ─────────────────────────────────────────
+  //
+  // Delegates to the engine, which runs the parallel provider race per category
+  // (bounded timeouts, first valid answer wins, tie-break Breeze → MOAPI → NSE → BSE,
+  // no merging of providers). The `fetchFn` per-provider callback is retained for
+  // signature compatibility but is no longer invoked — the engine handles fallback
+  // internally.
 
   async fetchWithFallback<T>(
     dataType: string,
-    fetchFn: (provider: DataProvider) => Promise<T | null>,
+    _fetchFn: (provider: DataProvider) => Promise<T | null>,
     options: {
       exchange?: string;
       instrument?: string;
       symbol?: string;
       preferFresh?: boolean;
       maxAgeMs?: number;
-    } = {}
+      config?: Partial<import("./market-data-types").MarketDataServiceConfig>;
+      bypassCache?: boolean;
+    } = {},
   ): Promise<MarketDataResponse<T> | null> {
-    const isMCX = options.exchange === "MCX";
-    const priority = isMCX ? MCX_PROVIDER_PRIORITY : PROVIDER_PRIORITY;
+    const category = normalizeCategory(dataType) as DataCategory;
+    const env = await engineFetchMarketData<T>({
+      symbol: options.symbol ?? "",
+      category,
+      exchange: options.exchange,
+      instrument: options.instrument,
+      nowMs: options.nowMs,
+      config: options.config,
+      bypassCache: options.bypassCache,
+    });
+    return this.envelopeToResponse(env, options.exchange ?? "NSE", options.instrument ?? options.symbol ?? "UNKNOWN");
+  }
 
-    let lastError: string | undefined;
-
-    for (const provider of priority) {
-      if (!this.providers.has(provider)) continue;
-
-      // Circuit breaker + cooldown live in provider-health.
-      if (providerHealth.shouldSkip(toProviderType(provider))) {
-        this.syncFromHealth(provider);
-        const h = providerHealth.getHealth(toProviderType(provider));
-        lastError = lastError ?? `${provider}: circuit ${h.circuitState} (${h.lastError ?? "unknown"})`;
-        continue;
-      }
-
-      try {
-        const start = Date.now();
-        const data = await fetchFn(provider);
-        const latencyMs = Date.now() - start;
-
-        if (data === null || data === undefined) {
-          this.recordFailure(provider, "null response");
-          lastError = `${provider}: null response`;
-          continue;
-        }
-
-        if (!this.validateResponse(data, dataType)) {
-          this.recordFailure(provider, "validation failed");
-          lastError = `${provider}: validation failed`;
-          continue;
-        }
-
-        this.recordSuccess(provider, latencyMs);
-
-        const timestamp = this.extractTimestamp(data);
-        const freshness = this.resolveFreshness(data, timestamp, dataType);
-
-        const effectiveFreshness = freshness;
-        const isDelayed = effectiveFreshness === "DELAYED";
-
-        return {
-          data,
-          provider,
-          source: `${provider}`,
-          exchange: options.exchange || "NSE",
-          instrument: options.instrument || options.symbol || "UNKNOWN",
-          timestamp: timestamp || new Date().toISOString(),
-          ageMs: timestamp ? Date.now() - new Date(timestamp).getTime() : 0,
-          freshness: effectiveFreshness,
-          reliability: this.getProviderReliability(provider),
-          delayed: isDelayed,
-          fallbackUsed: provider !== priority[0],
-          fallbackReason: provider !== priority[0] ? lastError : undefined,
-        };
-      } catch (error: any) {
-        this.recordFailure(provider, error?.message ?? String(error));
-        lastError = `${provider}: ${error?.message ?? error}`;
-      }
-    }
-
-    // All providers failed
-    return null;
+  private envelopeToResponse<T>(
+    env: MarketDataEnvelope<T>,
+    exchange: string,
+    instrument: string,
+  ): MarketDataResponse<T> | null {
+    if (!env || !env.available || env.data == null) return null;
+    const freshness: DataFreshness =
+      typeof env.freshness === "string" && FRESHNESS_LEVELS.has(env.freshness)
+        ? env.freshness
+        : classifyFreshness(env.providerTimestamp ?? env.fetchedAt, "optionChain");
+    return {
+      data: env.data,
+      provider: this.mapProvider(env.provider),
+      source: env.source,
+      exchange,
+      instrument,
+      timestamp: env.fetchedAt,
+      ageMs: env.ageMs,
+      freshness,
+      reliability: this.getProviderReliability(env.provider),
+      delayed: env.delayed,
+      fallbackUsed: env.fallbackUsed,
+      fallbackReason: env.fallbackReason,
+    };
   }
 
   // ── Provider Health (delegates to provider-health) ───────────────────
 
   recordSuccess(provider: DataProvider, latencyMs: number): void {
-    providerHealth.recordSuccess(toProviderType(provider), latencyMs);
-    const state = this.syncFromHealth(provider);
-    if (state) state.status = "UP";
+    providerHealth.recordSuccess(this.toProviderType(provider), latencyMs);
   }
 
   recordFailure(provider: DataProvider, reason: string): void {
     const msg = String(reason ?? "");
-    // statusCode 0 → body-pattern classification (timeout/network/…)
     const errorType = providerHealth.classifyError(0, msg);
-    providerHealth.recordFailure(toProviderType(provider), errorType, msg);
-    this.syncFromHealth(provider);
+    providerHealth.recordFailure(this.toProviderType(provider), errorType, msg);
   }
 
   getProviderState(provider: DataProvider): ProviderState | undefined {
@@ -223,13 +188,15 @@ class MarketDataManagerImpl {
   }
 
   getAllProviderStates(): ProviderState[] {
-    return PROVIDER_PRIORITY
+    const order: DataProvider[] = ["nse-api", "bse-api", "motilal-api", "icici-breeze", "website"];
+    return order
       .map((p) => this.syncFromHealth(p))
       .filter((s): s is ProviderState => !!s);
   }
 
   getActiveProvider(): DataProvider | null {
-    for (const provider of PROVIDER_PRIORITY) {
+    const order: DataProvider[] = ["nse-api", "bse-api", "motilal-api", "icici-breeze", "website"];
+    for (const provider of order) {
       const state = this.syncFromHealth(provider);
       if (state && state.status === "UP") return provider;
     }
@@ -237,8 +204,7 @@ class MarketDataManagerImpl {
   }
 
   isProviderUsable(provider: DataProvider): boolean {
-    if (!this.providers.has(provider)) return false;
-    const pt = toProviderType(provider);
+    const pt = this.toProviderType(provider);
     if (providerHealth.shouldSkip(pt)) return false;
     const state = this.syncFromHealth(provider);
     return state?.status !== "AUTH_REQUIRED" && state?.status !== "RATE_LIMITED";
@@ -247,51 +213,46 @@ class MarketDataManagerImpl {
   // ── Option Chain (canonical entry point) ─────────────────────────────
   //
   // The Hermes paper worker prices open paper trades through this call.
-  // It goes straight to the canonical exchange-aware chain (NSE/BSE primary)
-  // instead of the legacy provider switch, and re-labels the canonical
-  // lowercase `ce`/`pe` keys as `CE`/`PE` so legacy readers keep working.
+  // Delegates to the engine's option-chain category (exchange-aware: NSE primary
+  // for NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + equities, BSE primary for SENSEX/
+  // BANKEX), then re-labels the lowercase `ce`/`pe` keys as `CE`/`PE` so legacy
+  // readers keep working.
 
   async fetchOptionChain(
     symbol: string,
     expiry?: string,
     _options?: { mode?: string },
   ): Promise<MarketDataResponse<any> | null> {
-    try {
-      const { getOptionChain } = await import("@/lib/data-layer/chains/option-chain");
-      const started = Date.now();
-      const res = await getOptionChain(symbol, expiry);
-      if (!res.data) return null;
+    const env = await engineFetchOptionChain({ symbol, expiry, nowMs: Date.now() });
+    if (!env?.available || !env.data) return null;
 
-      const chain = {
-        ...res.data,
-        strikes: res.data.strikes.map((s: any) => ({
-          ...s,
-          strikePrice: s.strike,
-          CE: this.aliasLeg(s.ce),
-          PE: this.aliasLeg(s.pe),
-        })),
-      };
+    const chain = env.data as any;
+    const mapped = {
+      ...chain,
+      strikes: chain.strikes.map((s: any) => ({
+        ...s,
+        strikePrice: s.strike,
+        CE: this.aliasLeg(s.ce),
+        PE: this.aliasLeg(s.pe),
+      })),
+    };
 
-      const ts = chain.timestamp || new Date().toISOString();
-      return {
-        data: chain,
-        provider: (res.source as any) || "nse",
-        source: res.source,
-        exchange: res.source === "BSE" ? "BSE" : "NSE",
-        instrument: symbol,
-        timestamp: ts,
-        ageMs: Math.max(0, Date.now() - new Date(ts).getTime()),
-        freshness: chain.freshness ?? classifyFreshness(ts, "optionChain"),
-        reliability: this.getProviderReliability((res.source as any) || "nse"),
-        delayed: (chain.freshness ?? "") === "DELAYED",
-        fallbackUsed: !!res.fallbackUsed,
-        fallbackReason: res.fallbackReason,
-        latencyMs: Date.now() - started,
-      } as MarketDataResponse<any>;
-    } catch (e: any) {
-      this.recordFailure("nse", e?.message ?? String(e));
-      return null;
-    }
+    const ts = mapped.timestamp || new Date().toISOString();
+    return {
+      data: mapped,
+      provider: this.mapProvider(env.provider),
+      source: env.source,
+      exchange: env.exchange ?? "NSE",
+      instrument: symbol,
+      timestamp: ts,
+      ageMs: env.ageMs,
+      freshness: env.freshness,
+      reliability: this.getProviderReliability(env.provider),
+      delayed: env.delayed,
+      fallbackUsed: env.fallbackUsed,
+      fallbackReason: env.fallbackReason,
+      latencyMs: env.ageMs,
+    } as MarketDataResponse<any>;
   }
 
   /** Legacy readers do `option.lastPrice || option.ltp`. */
@@ -300,9 +261,28 @@ class MarketDataManagerImpl {
     return { ...leg, lastPrice: leg.ltp, ltpPrice: leg.ltp };
   }
 
+  // ── Spot with fallback ───────────────────────────────────────────────
+
+  async fetchSpotWithFallback(
+    symbol: string,
+    exchange: string = "NSE",
+  ): Promise<MarketDataResponse<any> | null> {
+    const env = await engineFetchSpot({ symbol, exchange, nowMs: Date.now() });
+    return this.envelopeToResponse(env, exchange, symbol);
+  }
+
+  // ── Option chain with fallback ───────────────────────────────────────
+
+  async fetchOptionChainWithFallback(
+    symbol: string,
+    exchange: string = "NSE",
+  ): Promise<MarketDataResponse<any> | null> {
+    return this.fetchOptionChain(symbol, undefined, { mode: "fallback", exchange });
+  }
+
   // ── Data Quality Gate ────────────────────────────────────────────────
 
-  validateResponse(data: any, dataType: string): boolean {
+  validateResponse(data: any, _dataType: string): boolean {
     if (data === null || data === undefined) return false;
     if (typeof data === "object" && Object.keys(data).length === 0) return false;
     return true;
@@ -350,33 +330,14 @@ class MarketDataManagerImpl {
 
   // ── Helpers ──────────────────────────────────────────────────────────
 
-  /**
-   * Prefer a freshness the provider itself already computed (derived from
-   * the provider's published timestamp). Only fall back to classifying the
-   * raw timestamp when the payload carries none.
-   */
-  private resolveFreshness(data: any, timestamp: string | null, dataType: string): DataFreshness {
-    const own = data?.freshness;
-    if (typeof own === "string" && FRESHNESS_LEVELS.has(own)) return own as DataFreshness;
-    if (timestamp) return classifyFreshness(timestamp, dataType);
-    // No timestamp at all → we cannot claim LIVE; it is at best unverified.
-    return "FRESH";
-  }
-
-  private extractTimestamp(data: any): string | null {
-    if (data.timestamp) return data.timestamp;
-    if (data.lastUpdate) return data.lastUpdate;
-    if (data.receivedAt) return data.receivedAt;
-    return null;
-  }
-
-  private getProviderReliability(provider: DataProvider): number {
+  private getProviderReliability(provider: ProviderName): number {
     const reliabilityMap: Record<string, number> = {
-      breeze: 0.95,
-      moapi: 0.90,
-      nse: 0.85,
-      bse: 0.85,
-      website: 0.70,
+      "icici-breeze": 0.95,
+      "motilal-api": 0.90,
+      "nse-api": 0.85,
+      "bse-api": 0.85,
+      moneycontrol: 0.70,
+      "fii-dii": 0.75,
     };
     return reliabilityMap[provider] || 0.5;
   }
@@ -407,56 +368,12 @@ export async function fetchSpotWithFallback(
   symbol: string,
   exchange: string = "NSE"
 ): Promise<MarketDataResponse<any> | null> {
-  return marketDataManager.fetchWithFallback(
-    "spot",
-    async (provider) => {
-      switch (provider) {
-        case "moapi": {
-          const { getLTPBySymbol, getCurrentAuthToken } = await import("@/lib/motilal/market");
-          const token = getCurrentAuthToken();
-          if (!token) return null;
-          return getLTPBySymbol(symbol, token);
-        }
-        case "breeze": {
-          const { getQuotes } = await import("@/lib/icici-breeze/option-chain");
-          return getQuotes(symbol, "NSE");
-        }
-        case "nse": {
-          const { getNSEOptionChain } = await import("@/lib/nse-api");
-          const chain = await getNSEOptionChain(symbol);
-          return chain?.priceInfo ? { ltp: chain.priceInfo.lastPrice, ...chain.priceInfo } : null;
-        }
-        case "bse-api": {
-          // BSE is a DESIGNATED PRIMARY for its own indices (SENSEX/BANKEX).
-          const { getBSEIndexData, isBSEIndex } = await import("@/lib/bse-api");
-          if (!isBSEIndex(symbol)) return null;
-          const d = await getBSEIndexData(symbol);
-          if (!d?.spotPrice) return null;
-          return {
-            ltp: d.spotPrice,
-            change: d.previousClose ? d.spotPrice - d.previousClose : 0,
-            changePct: d.previousClose ? ((d.spotPrice - d.previousClose) / d.previousClose) * 100 : 0,
-            prevClose: d.previousClose,
-            name: symbol,
-          };
-        }
-        case "website": {
-          // No dedicated web quote source — an explicit no-op so the chain
-          // reports "no provider" instead of faking data.
-          return null;
-        }
-        default:
-          return null;
-      }
-    },
-    { symbol, exchange, instrument: "spot" }
-  );
+  return marketDataManager.fetchSpotWithFallback(symbol, exchange);
 }
 
 export async function fetchOptionChainWithFallback(
   symbol: string,
   exchange: string = "NSE"
 ): Promise<MarketDataResponse<any> | null> {
-  // Canonical exchange-aware chain — same path the option-chain route uses.
-  return marketDataManager.fetchOptionChain(symbol, undefined, { mode: "fallback" });
+  return marketDataManager.fetchOptionChainWithFallback(symbol, exchange);
 }

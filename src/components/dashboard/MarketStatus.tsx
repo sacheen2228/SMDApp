@@ -7,43 +7,34 @@ import React, { useEffect, useState } from 'react';
 import { useTradingStore } from '@/stores/useTradingStore';
 import { Badge } from '@/components/ui/badge';
 import { Wifi, WifiOff, Clock, TrendingUp, TrendingDown } from 'lucide-react';
-
-const NSE_HOLIDAYS_2026 = new Set([
-  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
-]);
+import { getTradingSession } from '@/lib/expiry-liquidity/market-session-config';
 
 export function MarketStatus() {
   const { spotPrice, selectedSymbol, isConnected } = useTradingStore();
-  const [marketOpen, setMarketOpen] = useState(false);
+  const [session, setSession] = useState<ReturnType<typeof getTradingSession>>('CLOSED');
   const [currentTime, setCurrentTime] = useState('');
-  
+
   useEffect(() => {
     const checkMarketStatus = () => {
       const now = new Date();
-      const hours = now.getHours();
-      const minutes = now.getMinutes();
-      const day = now.getDay();
-      
-      // Convert to IST
-      const istMs = now.getTime() + 5.5 * 3600000;
-      const ist = new Date(istMs);
-      const iso = ist.toISOString().split('T')[0];
-      
-      const isWeekday = day >= 1 && day <= 5;
-      const isHoliday = NSE_HOLIDAYS_2026.has(iso);
-      const timeMinutes = hours * 60 + minutes;
-      const marketOpenTime = 9 * 60 + 15;
-      const marketCloseTime = 15 * 60 + 30;
-      
-      setMarketOpen(isWeekday && !isHoliday && timeMinutes >= marketOpenTime && timeMinutes <= marketCloseTime);
+      // getTradingSession() reads the holiday calendar + IST clock — the same
+      // source every other session consumer uses, so this badge can never
+      // disagree with the rest of the app about whether the exchange is open.
+      setSession(getTradingSession(now));
       setCurrentTime(now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     };
-    
+
     checkMarketStatus();
     const interval = setInterval(checkMarketStatus, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  const marketOpen = session === 'OPEN' || session === 'REGULAR';
+  const sessionLabel =
+    session === 'PRE_OPEN' ? 'PRE-OPEN'
+      : session === 'POST_MARKET' ? 'POST-MARKET'
+        : marketOpen ? 'MARKET OPEN'
+          : 'MARKET CLOSED';
   
   return (
     <div className="flex items-center gap-3 flex-wrap">
@@ -67,8 +58,8 @@ export function MarketStatus() {
         <span className="text-[10px] font-medium tabular-nums">{currentTime}</span>
       </div>
       
-      <Badge className={`text-[9px] ${marketOpen ? 'bg-emerald-600' : 'bg-red-600'}`}>
-        {marketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
+      <Badge className={`text-[9px] ${marketOpen ? 'bg-emerald-600' : session === 'CLOSED' ? 'bg-red-600' : 'bg-amber-600'}`}>
+        {sessionLabel}
       </Badge>
       
       <div className="w-px h-4 bg-border" />

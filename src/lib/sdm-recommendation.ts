@@ -57,6 +57,7 @@ import {
 } from './market-session';
 import { getLotSizeStrict } from './symbol-config';
 import { isExpiryToday, parseExpiryDateLoose } from './greeks';
+import { toIsoExpiry } from './expiry-date';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
 // THE house plan + the ONE sizing model (2026-10-20):
 //   option-plan.ts  → the stop is a RUPEE risk (20% of the amount DEPLOYED) and the
@@ -1366,6 +1367,10 @@ export async function generateTradeRecommendation(
 
   return {
     direction,
+    optionType: finalIsCall ? "CE" : "PE",
+    // REAL contract expiry (ISO). The display label is derived separately;
+    // the veto/gate/claim must never receive "Expiry Today" / "2d to expiry".
+    expiryDate: toIsoExpiry(expiryDate) ?? expiryDate,
     strike: finalSelectedStrike,
     strikeType: finalStrikeType,
     entry: finalEntry,

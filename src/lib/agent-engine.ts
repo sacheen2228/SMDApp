@@ -397,8 +397,12 @@ const intents: Intent[] = [
       }
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
       const ps = positionSize({ capital: GATE_CONFIG.capital, entry: price, sl, lotSize: lot });
+      const riskBudget = Math.min(
+        GATE_CONFIG.maxRiskPerTrade,
+        (GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade) / 100,
+      );
 
-      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule (per trade):**\n• Deploy at most ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in ONE trade\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the amount DEPLOYED (₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} deployed → ₹${Math.round(GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade / 100).toLocaleString("en-IN")} at risk)\n• Max lots = min( ₹${Math.round(GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade / 100).toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n💡 Never risk more than ${GATE_CONFIG.riskPctOfTrade}% of what you put into a trade, and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in one trade.`;
+      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule (per trade):**\n• Deploy at most ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in ONE trade\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the amount DEPLOYED, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")} (₹${riskBudget.toLocaleString("en-IN")} at risk)\n• Max lots = min( ₹${riskBudget.toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n💡 Never risk more than ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")} per trade (${GATE_CONFIG.riskPctOfTrade}% of what you deploy), and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in one trade.`;
     },
   },
 

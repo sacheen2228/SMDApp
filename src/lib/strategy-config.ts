@@ -102,12 +102,13 @@ export interface RiskConfig {
   tp3Multiplier: number;
   /**
    * Maximum risk per trade — a % of the amount DEPLOYED in that trade
-   * (NOT a % of the account). 20 → deploy ₹20,000 ⇒ ₹4,000 at risk.
+   * (NOT a % of the account), hard-capped at ₹2,000. 20 → deploy ₹20,000
+   * ⇒ ₹4,000 wanted, ₹2,000 taken.
    */
   maxRiskPerTrade: number;
   /** Maximum concurrent positions */
   maxPositions: number;
-  /** Maximum daily loss (% of the ₹25,000 account — 32% = ₹8,000 = two stops) */
+  /** Maximum daily loss (% of the ₹25,000 account — 16% = ₹4,000 = two stops) */
   maxDailyLoss: number;
   /** Trailing stop activation (% profit) */
   trailingStopActivation: number;
@@ -262,11 +263,11 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
     tp1Multiplier: 2,
     tp2Multiplier: 3,
     tp3Multiplier: 4,
-    // 20% of the amount DEPLOYED (₹20,000 deployed ⇒ ₹4,000 at risk)
+    // 20% of the amount DEPLOYED, capped at ₹2,000 (₹20,000 deployed ⇒ ₹2,000)
     maxRiskPerTrade: 20,
     maxPositions: 3,
-    // 32% of the ₹25,000 account = ₹8,000 = two stops
-    maxDailyLoss: 32,
+    // 16% of the ₹25,000 account = ₹4,000 = two stops
+    maxDailyLoss: 16,
     trailingStopActivation: 40,
     moveToCostAfter: 20,
     bookPartialAt1: 50,

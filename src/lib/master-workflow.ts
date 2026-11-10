@@ -604,7 +604,7 @@ function analyzeIvGreeks(derivatives: any[]): IvGreeksAnalysis {
  *
  * It now evaluates the REAL per-trade model:
  *   - the maximum position is the ₹ DEPLOYED per trade (≤ ₹20,000, ≤ the account)
- *   - the risk budget is 20% of the deployed amount (₹4,000)
+ *   - the risk budget is a FIXED ₹2,000 cap (20% of the deployed amount)
  *   - the daily loss cap and the loss streak are checked against the live journal
  *   - it REFUSES to approve when the caps are breached or the state is unreadable
  */
@@ -614,7 +614,7 @@ export function evaluateWorkflowRisk(state: RiskStateSnapshot | null): RiskEngin
   let approved = true;
 
   const maxPositionSize = limits.perTradeBudget; // ₹ DEPLOYED in one trade
-  const var95 = limits.maxRiskPerTrade;           // ₹ at risk on one trade (20% of the deployment)
+  const var95 = limits.maxRiskPerTrade;           // ₹ at risk on one trade (fixed ₹2,000 cap)
   const maxDrawdown = limits.capital / 100;        // 1% of the account per unit of drawdown
 
   // The live journal decides whether a NEW trade may be taken at all.

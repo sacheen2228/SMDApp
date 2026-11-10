@@ -483,7 +483,7 @@ export default function TradingDashboard() {
     const rr = entry && sl && entry !== sl ? Math.abs((tp1 - entry) / (entry - sl)) : 0;
     const score = rec.sdmScore ?? 0;
     const raw: SignalRec = {
-      direction: rec.direction,
+      direction: rec.optionType === "CE" ? "CALL" : rec.optionType === "PE" ? "PUT" : rec.direction,
       confidence: Math.round(rec.confidence || 0),
       entry,
       sl,
@@ -499,6 +499,7 @@ export default function TradingDashboard() {
     const { rec: confirmedRec, showDirection } = updateSignal(raw);
     return {
       direction: showDirection ? confirmedRec.direction : "WAIT",
+      optionType: rec.optionType ?? undefined,
       strike: confirmedRec.strike,
       strikeType: "ATM" as any,
       entry: confirmedRec.entry,
@@ -506,7 +507,7 @@ export default function TradingDashboard() {
       tp2: confirmedRec.tp2,
       tp3: confirmedRec.tp3,
       sl: confirmedRec.sl,
-      confidence: showDirection ? confirmedRec.confidence : 0,
+      confidence: confirmedRec.confidence,
       riskReward: confirmedRec.riskReward,
       isExpiryDay: false,
       daysToExpiry: a?.expiry?.daysToExpiry ?? 0,
@@ -532,7 +533,7 @@ export default function TradingDashboard() {
       smartExit: {} as any,
       premiumFairValue: {} as any,
       probabilities: {} as any,
-      tradeGrade: showDirection ? confirmedRec.tradeGrade : ("C" as any),
+      tradeGrade: confirmedRec.tradeGrade,
       dataHealth: {} as any,
       positionSizing: {} as any,
       marketRegime: {} as any,
@@ -950,7 +951,7 @@ export default function TradingDashboard() {
             </Badge>
             <div className="w-px h-3 bg-border" />
             <span className="text-muted-foreground">VIX</span>
-            <span className="font-semibold tabular-nums">{fmt(summary.indiaVIX)}</span>
+            <span className="font-semibold tabular-nums">{summary.indiaVIX != null ? fmt(summary.indiaVIX) : '—'}</span>
             <div className="w-px h-3 bg-border" />
             <span className="text-muted-foreground">PCR</span>
             <span className={`font-semibold tabular-nums ${summary.pcr > 1.2 ? 'text-emerald-500' : summary.pcr < 0.7 ? 'text-red-500' : ''}`}>

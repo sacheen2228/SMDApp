@@ -36,7 +36,8 @@ export async function GET(request: NextRequest) {
         const isIndex = INDEX_SYMBOLS.has(symbol.toUpperCase()) || symbol.startsWith('^');
         const limit = Math.min(days, 60);
 
-        // Indices: Yahoo free path only (nse-bse-api historical is broken for them)
+        // Indices: NSE historical path only (index daily history beyond this
+        // source is a known gap — no fabricated substitute is offered)
         if (isIndex) {
           const raw = await getNSEHistoricalData(symbol, limit);
           const candles = raw.map((c) => ({
@@ -48,14 +49,13 @@ export async function GET(request: NextRequest) {
             volume: c.volume,
           })).filter((c) => c.close > 0);
           if (candles.length > 0) {
-            return NextResponse.json({ success: true, data: candles, source: 'yahoo' });
+            return NextResponse.json({ success: true, data: candles, source: 'nse' });
           }
           return NextResponse.json({ success: false, error: 'No historical data available' }, { status: 404 });
         }
 
-        // Equities: try NSE first, fall back to Yahoo
+        // Equities: NSE historical (both branches are NSE-sourced)
         try {
-          const { getNSEHistoricalData } = await import('@/lib/nse-api');
           const to = new Date();
           const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
           const raw = await getNSEHistoricalData(symbol, from, to);
@@ -92,22 +92,15 @@ export async function GET(request: NextRequest) {
           volume: c.volume,
         })).filter((c) => c.close > 0);
         if (candles.length > 0) {
-          return NextResponse.json({ success: true, data: candles, source: 'yahoo' });
+          return NextResponse.json({ success: true, data: candles, source: 'nse' });
         }
         return NextResponse.json({ success: false, error: 'No historical data available' }, { status: 404 });
       }
       case 'vix': {
+        // NSE-only: the exchange's allIndices INDIA VIX row. No fabricated
+        // fallback — without a real reading the caller gets 404.
         const data = await getNSEIndiaVIX();
         if (data) return NextResponse.json({ success: true, data, source: 'nse' });
-        try {
-          const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?interval=1d&range=5d', {
-            signal: AbortSignal.timeout(8000),
-          });
-          const json = await res.json();
-          const meta = json?.chart?.result?.[0]?.meta;
-          const v = Number(meta?.regularMarketPrice || 0);
-          if (v > 0) return NextResponse.json({ success: true, data: { value: v, change: 0 }, source: 'yahoo' });
-        } catch {}
         return NextResponse.json({ success: false, error: 'VIX unavailable' }, { status: 404 });
       }
       default:

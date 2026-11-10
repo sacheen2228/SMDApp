@@ -4,7 +4,8 @@
 //
 //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
 //     → deployed  = the ₹ put into THIS trade   (≤ ₹20,000 — the per-trade cap)
-//     → risk      = 20% of the amount DEPLOYED  (₹10,000 deployed ⇒ ₹2,000 risk)
+//     → risk      = 20% of the amount DEPLOYED, HARD-CAPPED at ₹2,000
+//                   (₹10,000 deployed ⇒ ₹2,000 risk; ₹20,000 deployed ⇒ still ₹2,000)
 //     → targets   = 2R / 3R / 4R                (R:R 1:2 / 1:3 / 1:4)
 //
 // The OLD model was "risk = 1–2% of a ₹1L/₹2L ACCOUNT", which made every
@@ -16,11 +17,12 @@
 //
 // Every engine below must satisfy the SAME two invariants:
 //   (a) the ₹ committed to the trade never exceeds the ₹20,000 per-trade budget
-//   (b) the ₹ at risk never exceeds 20% of that committed amount
+//   (b) the ₹ at risk never exceeds min(20% of that committed amount, ₹2,000)
 // ═══════════════════════════════════════════════════════════════════════════
 import { describe, test, expect } from "bun:test";
 import { GATE_CONFIG, positionSize } from "@/lib/agent-brain-gate";
-import { calculatePositionSize } from "@/lib/risk-management";
+import { calculatePositionSize, perTradeRiskBudget } from "@/lib/risk-management";
+import { buildOptionPlan } from "@/lib/option-plan";
 import { analyzeBTST, type BTSTStockInput } from "@/lib/btst-engine";
 import { evaluatePlaybookCheck, PLAYBOOK_MAX_RISK_PCT } from "@/lib/agents/playbook-check";
 import { positionSizeCalculator } from "@/lib/zero-hero-ai/position-size-calculator";
@@ -32,7 +34,7 @@ import { formatAlertMessage, type TradeAlert } from "@/lib/tradeAlertEngine";
 
 const DEPLOY_BUDGET = GATE_CONFIG.tradeBudget;      // ₹20,000
 const RISK_PCT = GATE_CONFIG.riskPctOfTrade;        // 20
-const RISK_BUDGET = (DEPLOY_BUDGET * RISK_PCT) / 100; // ₹4,000
+const RISK_BUDGET = Math.min(GATE_CONFIG.maxRiskPerTrade, (DEPLOY_BUDGET * RISK_PCT) / 100); // ₹2,000
 
 describe("the per-trade model itself", () => {
   test("GATE_CONFIG carries the live numbers", () => {
@@ -41,9 +43,9 @@ describe("the per-trade model itself", () => {
     expect(GATE_CONFIG.capital).toBe(25_000);
   });
 
-  test("positionSize: risk = 20% of the DEPLOYED budget, never 1% of an account", () => {
+  test("positionSize: risk = min(20% of DEPLOYED, ₹2,000), never 1% of an account", () => {
     const r = positionSize({ entry: 100, sl: 90, lotSize: 65 });
-    expect(r.riskAmount).toBe(RISK_BUDGET);          // 20% of ₹20,000 — NOT 1% of ₹2L
+    expect(r.riskAmount).toBe(RISK_BUDGET);          // capped at ₹2,000 — NOT 1% of ₹2L
     expect(r.lots).toBeGreaterThanOrEqual(1);
     expect(r.capitalRequired).toBeLessThanOrEqual(DEPLOY_BUDGET);
     expect(r.maxLoss).toBeLessThanOrEqual(RISK_BUDGET);
@@ -52,10 +54,35 @@ describe("the per-trade model itself", () => {
 
   test("positionSize: a legacy 'capital' argument can only SHRINK the budget", () => {
     const big = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 200_000 });
-    const small = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 10_000 });
-    expect(big.riskAmount).toBe(RISK_BUDGET);         // capped at the per-trade budget
-    expect(small.riskAmount).toBe(2_000);             // 20% of the smaller account
+    const small = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 5_000 });
+    expect(big.riskAmount).toBe(RISK_BUDGET);         // capped at the fixed ₹2,000 risk
+    expect(small.riskAmount).toBe(1_000);             // 20% of the smaller deployment
     expect(big.lots).toBeGreaterThanOrEqual(small.lots);
+  });
+});
+
+describe("the FIXED ₹2,000 per-trade risk cap (2026-11-10)", () => {
+  test("the cap does not scale with the deployment", () => {
+    const full = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 25_000 });  // ₹20k budget
+    const half = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 10_000 });  // ₹10k budget
+    const small = positionSize({ entry: 100, sl: 90, lotSize: 65, capital: 5_000 });  // ₹5k budget
+    expect(full.riskAmount).toBe(2_000);
+    expect(half.riskAmount).toBe(2_000);
+    expect(small.riskAmount).toBe(1_000);
+  });
+
+  test("perTradeRiskBudget applies the same cap", () => {
+    expect(perTradeRiskBudget(20_000)).toBe(2_000);
+    expect(perTradeRiskBudget(10_000)).toBe(2_000);
+    expect(perTradeRiskBudget(4_000)).toBe(800);
+  });
+
+  test("an option plan may never report more than the cap at risk", () => {
+    const p = buildOptionPlan({
+      symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65, lots: 1, riskAmount: 6_000,
+    })!;
+    expect(p.riskAmount).toBeLessThanOrEqual(2_000 + 5); // tick rounding
+    expect(p.riskPoints).toBeCloseTo(2_000 / 65, 1);
   });
 });
 
@@ -129,12 +156,12 @@ describe("playbook-check risk budget", () => {
     expect(PLAYBOOK_MAX_RISK_PCT).toBe(RISK_PCT);
   });
 
-  test("a maxLoss inside the ₹4,000 risk budget passes (1% of ₹1L would have failed)", () => {
+  test("a maxLoss inside the ₹2,000 risk budget passes (1% of ₹1L would have failed)", () => {
     const r = evaluatePlaybookCheck(candidate({ maxLoss: 1_500 }), ALL, { capital: 100_000 } as any);
     expect(r.failedItems).not.toContain(7);
   });
 
-  test("a maxLoss above the ₹4,000 risk budget fails", () => {
+  test("a maxLoss above the ₹2,000 risk budget fails", () => {
     const r = evaluatePlaybookCheck(candidate({ maxLoss: 4_500 }), ALL, { capital: 100_000 } as any);
     expect(r.failedItems).toContain(7);
     expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);

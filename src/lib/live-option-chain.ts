@@ -47,6 +47,48 @@ export interface OptionChainResult {
   error?: string;
 }
 
+/**
+ * Volatility to feed the pricing/scoring engines.
+ *
+ * `summary.indiaVIX` is null whenever NSE's allIndices call fails (blocked IP,
+ * holiday, cookie churn) and several callers used `indiaVIX || 0` — which turns
+ * "we don't know" into a real-looking 0% VIX. A 0 VIX then collapses every
+ * VIX-derived number to zero: `expectedMove` becomes ±0.0, "IV low — options
+ * cheap" fires, and the mood gauge reads calm. Never emit 0.
+ *
+ * Order of preference: the exchange's INDIA VIX → the chain's own ATM IV
+ * (real provider data, not an estimate) → 15 as a stated assumption.
+ */
+export function resolveVix(
+  summary: { indiaVIX?: number | null } | null | undefined,
+  strikes?: any[],
+  spot?: number | null,
+): { vix: number | null; source: 'india-vix' | 'atm-iv' | 'none' } {
+  const published = summary?.indiaVIX;
+  if (typeof published === 'number' && Number.isFinite(published) && published > 0) {
+    return { vix: published, source: 'india-vix' };
+  }
+
+  const rows = (Array.isArray(strikes) ? strikes : []).filter(
+    (r) => r && Number.isFinite(Number(r.strike)),
+  );
+  if (rows.length) {
+    const ref = Number.isFinite(Number(spot)) ? Number(spot) : Number(rows[0].strike);
+    const nearest = rows
+      .slice()
+      .sort((a, b) => Math.abs(Number(a.strike) - ref) - Math.abs(Number(b.strike) - ref))[0];
+    const ivs = [Number(nearest?.ce?.iv), Number(nearest?.pe?.iv)].filter(
+      (v) => Number.isFinite(v) && v > 0 && v < 200,
+    );
+    if (ivs.length) {
+      const avg = ivs.reduce((a, b) => a + b, 0) / ivs.length;
+      return { vix: Math.round(avg * 100) / 100, source: 'atm-iv' };
+    }
+  }
+
+  return { vix: null, source: 'none' };
+}
+
 // Canonical OptionLeg uses `oiChange`/`rho`; legacy consumers read `oiChg`/`vega`.
 // `vega` is not in the canonical schema — derive it from Black-Scholes so the
 // downstream Greeks consumers keep working without the canonical type growing.

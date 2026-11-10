@@ -14,6 +14,7 @@ import { buildSMDContext, summarizeContext, type SMDContext } from "@/lib/smd-co
 import { recordTrade, getMemorySummary } from "@/lib/agent-memory";
 import { logToolCall, logLLMCall, logAgentError, logConversation } from "@/lib/agent-logger";
 import { fetchFiiDiiData } from "@/lib/fii-dii";
+import { getNSEIndiaVIX, getNSEIndices } from "@/lib/nse-api";
 import { maybeHandleKillSwitch, killSwitchMessage } from "@/lib/agents/kill-switch";
 import { hermesPro } from "@/lib/hermes/agent";
 import { formatHermesDecision } from "@/lib/hermes/response";
@@ -297,15 +298,11 @@ export async function POST(req: NextRequest) {
       } catch {}
     }
 
-    // EARLY EXIT: VIX data (direct, no LLM) — fetch from Yahoo Finance directly
+    // EARLY EXIT: VIX data (direct, no LLM) — exchange (NSE allIndices) only
     if (!knowledgeGate && /vix|volatil/i.test(queryLower)) {
       try {
-        const vixRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?interval=1d&range=1d", {
-          headers: { "User-Agent": "Mozilla/5.0" },
-          signal: AbortSignal.timeout(8000),
-        });
-        const vixJson = await vixRes.json();
-        const vix = vixJson?.chart?.result?.[0]?.meta?.regularMarketPrice || 0;
+        const vixData = await getNSEIndiaVIX();
+        const vix = vixData?.value || 0;
         if (vix > 0) {
           const regime = vix > 25 ? "HIGH VOLATILITY" : vix > 15 ? "NORMAL" : "LOW VOLATILITY";
           const pctile = vix > 30 ? "EXTREME" : vix > 20 ? "ELEVATED" : vix > 12 ? "NORMAL" : "LOW";

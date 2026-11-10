@@ -6,7 +6,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateTradeRecommendation } from "@/lib/sdm-recommendation";
 import { calculateGreeks, parseExpiryDateLoose } from "@/lib/greeks";
 import { getSymbolConfig } from "@/lib/symbol-config";
-import { sendTradeAlert } from "@/lib/telegram";
 import { getOptionChain, getOptionChainExpiries } from "@/lib/icici-breeze/option-chain";
 import { getNSEOptionChain } from "@/lib/nse-api";
 import { isBSEIndex } from "@/lib/bse-api";
@@ -329,40 +328,6 @@ export async function GET(request: NextRequest) {
       }
     } catch (mtfErr) {
       console.warn("[SDM Signal] MTF engine failed:", mtfErr);
-    }
-
-    // Send Telegram alert when data is real (not simulation) and confidence is high
-    const rec = signal.recommendation || signal;
-    const alertAction = rec.action || signal.action;
-    const isTradeAction = alertAction && !["HOLD", "NEUTRAL", "WAIT", "NO_TRADE"].includes(alertAction);
-    const conf = typeof signal.confidence === "object" ? signal.confidence?.total ?? 0 : signal.confidence ?? 0;
-    const hasConfidence = conf >= 60;
-    if (isTradeAction && hasConfidence && source !== "simulation") {
-      const strike = rec.strike || signal.strike || spotPrice;
-      const optionType = rec.strikeType || rec.optionType || "OPTION";
-      sendTradeAlert({
-        symbol,
-        action: alertAction,
-        strike,
-        type: optionType,
-        confidence: conf,
-        entry: rec.entry || signal.entry,
-        stopLoss: rec.stopLoss || signal.stopLoss,
-        target1: rec.target1 || signal.target1,
-        target2: rec.target2 || signal.target2,
-        source: `SDM Engine (${source})`,
-        instrument: optionType === 'PE' ? 'PUT' : 'CALL',
-        // Expiry-day gate + delta/OTM — was omitted, so the hard check never ran.
-        expiry: selectedExpiry || undefined,
-        spot: spotPrice || undefined,
-        mtf: mtf ? {
-          direction: mtf.direction,
-          compositeScore: mtf.compositeScore,
-          confidence: mtf.confidence,
-          trendDirection: mtf.trend.trendDirection,
-          reasons: mtf.reasons,
-        } : null,
-      }).catch(() => {});
     }
 
     return NextResponse.json({

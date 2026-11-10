@@ -8,7 +8,7 @@ import {
   StrikeInput,
   MarketContext,
 } from "@/lib/option-acceleration-engine";
-import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { fetchLiveOptionChain, resolveVix } from "@/lib/live-option-chain";
 import { getNearestExpiry, isExpiryDay } from "@/lib/expiry-calculator";
 import { getNSEATR14 } from "@/lib/nse-api";
 import { getGreeksAssumptions } from "@/lib/greeks";
@@ -68,13 +68,15 @@ export async function GET(request: Request) {
     // The VIX is either the live India VIX or UNKNOWN. The old `|| 0` made a
     // missing VIX read as a 0-volatility market (and the expected move 0).
     const indiaVIX = data.summary.indiaVIX ?? null;
-    const vix = indiaVIX ?? 0;
+    // The engine must never see a 0 VIX (it is an impossible reading, not "no
+    // volatility"): fall back to the chain's own ATM IV, then a stated 15.
+    const { vix, source: vixSource } = resolveVix(data.summary, rawStrikes, spot);
     const pcr = data.summary.pcr;
     const maxPain = data.summary.maxPain;
     const atmStrike = data.summary.atmStrike;
 
-    const expectedMove = vix > 0 ? spot * (vix / 100) * Math.sqrt(1 / 365) : 0;
-    const expectedMoveAvailable = vix > 0;
+    const expectedMove = spot * (vix / 100) * Math.sqrt(1 / 365);
+    const expectedMoveAvailable = vixSource !== "assumption";
 
     const now = new Date();
     const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
@@ -145,7 +147,7 @@ export async function GET(request: Request) {
         chain: strikes.length > 0 ? "AVAILABLE" : "UNAVAILABLE",
         strikesAnalysed: strikes.length,
         legsUnavailable,
-        vix: { value: indiaVIX, available: indiaVIX != null },
+        vix: { value: indiaVIX, available: indiaVIX != null, used: vix, source: vixSource },
         expectedMove: { value: expectedMoveAvailable ? Math.round(expectedMove * 100) / 100 : null, available: expectedMoveAvailable },
         atr: { value: atrAvailable ? atr : null, available: atrAvailable, source: atrSource },
       },

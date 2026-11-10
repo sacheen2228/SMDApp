@@ -54,7 +54,11 @@ export function positionSizeCalculator(input: PositionSizeInput): PositionSizeOu
     GATE_CONFIG.riskPctOfTrade,
     Math.max(0.1, Number(riskPercent) || GATE_CONFIG.riskPctOfTrade)
   );
-  const maxLossAmount = (deployedBudget * riskPct) / 100;
+  // Fixed ₹ risk cap: a bigger deployment may not raise the rupee risk.
+  const maxLossAmount = Math.min(
+    GATE_CONFIG.maxRiskPerTrade,
+    (deployedBudget * riskPct) / 100,
+  );
   const riskPerUnit = Math.max(0.01, entryPremium - stopLossPremium) * lotSize;
 
   // Lots: the risk budget AND the deployment budget both bind.

@@ -29,14 +29,14 @@ describe("the loss caps fit a ₹25,000 account and a 20% per-trade risk", () =>
     expect(RISK_LIMITS.capital).toBe(25_000);
     expect(RISK_LIMITS.perTradeBudget).toBe(20_000);
     expect(RISK_LIMITS.riskPctOfTrade).toBe(20);
-    // one stop = 20% of the ₹20,000 deployed = ₹4,000
-    expect(RISK_LIMITS.maxRiskPerTrade).toBe(4_000);
+    // one stop is the FIXED ₹2,000 cap (20% of deployed, never more)
+    expect(RISK_LIMITS.maxRiskPerTrade).toBe(2_000);
     // the daily cap is the 2-stop limit — reachable, and never above the account
-    expect(RISK_LIMITS.maxDailyLoss).toBe(8_000);
-    expect(RISK_LIMITS.maxWeeklyLoss).toBe(16_000);
+    expect(RISK_LIMITS.maxDailyLoss).toBe(4_000);
+    expect(RISK_LIMITS.maxWeeklyLoss).toBe(8_000);
     // the MONTHLY cap must never exceed the account (it used to be ₹50,000)
     expect(RISK_LIMITS.maxMonthlyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
-    expect(RISK_LIMITS.maxMonthlyLoss).toBe(25_000);
+    expect(RISK_LIMITS.maxMonthlyLoss).toBe(16_000);
     // monotone: a bigger bucket allows a bigger loss
     expect(RISK_LIMITS.maxDailyLoss).toBeLessThan(RISK_LIMITS.maxWeeklyLoss);
     expect(RISK_LIMITS.maxWeeklyLoss).toBeLessThanOrEqual(RISK_LIMITS.maxMonthlyLoss);
@@ -54,9 +54,9 @@ describe("the loss caps fit a ₹25,000 account and a 20% per-trade risk", () =>
 
   test("updateRiskState blocks trading once the daily cap is hit", () => {
     let s = getDefaultRiskConfig();
-    s = updateRiskState(s, -5_000);
+    s = updateRiskState(s, -2_000);
     expect(s.canTrade).toBe(true);
-    s = updateRiskState(s, -3_500);       // −₹8,500 → past the ₹8,000 cap
+    s = updateRiskState(s, -2_500);       // −₹4,500 → past the ₹4,000 cap
     expect(s.canTrade).toBe(false);
     expect(s.blockReason).toMatch(/daily loss limit/i);
   });
@@ -71,22 +71,22 @@ describe("evaluateLossCaps — a loss beyond the cap blocks the next trade", () 
 
   test("a loss beyond the daily cap blocks", () => {
     const v = evaluateLossCaps({
-      dailyPnl: -8_001, weeklyPnl: -8_001, monthlyPnl: -8_001, consecutiveLosses: 0,
+      dailyPnl: -4_001, weeklyPnl: -4_001, monthlyPnl: -4_001, consecutiveLosses: 0,
     });
     expect(v.blocked).toBe(true);
     expect(v.reasons.join(" ")).toMatch(/daily loss/);
   });
 
   test("hitting the cap exactly blocks (one rupee less does not)", () => {
-    expect(evaluateLossCaps({ dailyPnl: -7_999 }).blocked).toBe(false);
-    expect(evaluateLossCaps({ dailyPnl: -8_000 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: -3_999 }).blocked).toBe(false);
+    expect(evaluateLossCaps({ dailyPnl: -4_000 }).blocked).toBe(true);
   });
 
   test("the weekly and monthly caps block on their own", () => {
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: -16_001 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -25_001 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -25_000 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -24_999 }).blocked).toBe(false);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: -8_001 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -16_001 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -16_000 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -15_999 }).blocked).toBe(false);
   });
 
   test("two consecutive losses end the session (the streak rule)", () => {
@@ -100,7 +100,7 @@ describe("evaluateLossCaps — a loss beyond the cap blocks the next trade", () 
 describe("evaluateConcurrentExposure — Σ deployed and Σ risk", () => {
   test("a single full-size trade fits the account", () => {
     const v = evaluateConcurrentExposure({
-      openDeployed: 0, openRisk: 0, newDeployed: 20_000, newRisk: 4_000,
+      openDeployed: 0, openRisk: 0, newDeployed: 20_000, newRisk: 2_000,
     });
     expect(v.blocked).toBe(false);
   });
@@ -115,7 +115,7 @@ describe("evaluateConcurrentExposure — Σ deployed and Σ risk", () => {
 
   test("the risk sum may not exceed the risk budget (the daily cap)", () => {
     const v = evaluateConcurrentExposure({
-      openDeployed: 20_000, openRisk: 8_000, newDeployed: 4_000, newRisk: 1_000,
+      openDeployed: 20_000, openRisk: 4_000, newDeployed: 4_000, newRisk: 1_000,
     });
     expect(v.blocked).toBe(true);
     expect(v.reasons.join(" ")).toMatch(/risk budget/i);
@@ -152,7 +152,7 @@ describe("evaluateSignalRiskLimits — the whole signal-path verdict", () => {
   test("a clean book with room trades", () => {
     const v = evaluateSignalRiskLimits({
       state: { dailyPnl: 0, weeklyPnl: 0, monthlyPnl: 0, consecutiveLosses: 0, openDeployed: 0, openRisk: 0 },
-      newDeployed: 11_000, newRisk: 2_200,
+      newDeployed: 11_000, newRisk: 2_000,
     });
     expect(v.blocked).toBe(false);
   });
@@ -169,7 +169,7 @@ describe("evaluateSignalRiskLimits — the whole signal-path verdict", () => {
   test("a full exposure blocks even when the day is clean", () => {
     const v = evaluateSignalRiskLimits({
       state: { dailyPnl: 0, weeklyPnl: 0, monthlyPnl: 0, consecutiveLosses: 0, openDeployed: 20_000, openRisk: 4_000 },
-      newDeployed: 20_000, newRisk: 4_000,
+      newDeployed: 20_000, newRisk: 2_000,
     });
     expect(v.blocked).toBe(true);
   });
@@ -178,9 +178,9 @@ describe("evaluateSignalRiskLimits — the whole signal-path verdict", () => {
 describe("modelTradeExposure — the candidate's own ₹ exposure", () => {
   test("a NIFTY lot at ₹100 with a 20% stop risks ₹1,300 and deploys ₹6,500", () => {
     const e = modelTradeExposure({ entry: 100, stopLoss: 80, lotSize: 65 });
-    expect(e.lots).toBe(3);
-    expect(e.deployed).toBeCloseTo(3 * 65 * 100, 0);
-    expect(e.risk).toBeCloseTo(3 * 65 * 20, 0);
+    expect(e.lots).toBe(1);                 // ₹2,000 cap / ₹1,300 per lot = 1 lot
+    expect(e.deployed).toBeCloseTo(65 * 100, 0);
+    expect(e.risk).toBeCloseTo(65 * 20, 0);
     expect(e.unknown).toBe(false);
   });
 

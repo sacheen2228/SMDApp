@@ -5,16 +5,12 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { initSession, getBreezeClient } from "@/lib/icici-breeze/auth";
+import { INDEX_BREEZE_CODES } from "@/lib/icici-scrip-master";
 
 // ─── Symbol mapping to Breeze stock codes ─────────────────────────
-const BREEZE_STOCK_CODE: Record<string, string> = {
-  NIFTY: "NIFTY",
-  BANKNIFTY: "BANKNIFTY",
-  FINNIFTY: "FINNIFTY",
-  MIDCPNIFTY: "MIDCPNIFTY",
-  SENSEX: "SENSEX",
-  BANKEX: "BANKEX",
-};
+// Canonical index codes (ICICI scrip codes, not exchange symbols — plain
+// "FINNIFTY"/"SENSEX" return zero rows from getHistoricalDatav2, verified live).
+const BREEZE_STOCK_CODE: Record<string, string> = INDEX_BREEZE_CODES;
 
 const EXCHANGE_CODE: Record<string, string> = {
   NIFTY: "NFO",
@@ -41,23 +37,31 @@ export interface IntradayCandleResult {
   warning?: string;
 }
 
-// ─── Get intraday candles for a specific date ────────────────────
-export async function getIntradayCandles(
+// ─── Request builder (pure — the mapping is what broke live capture) ──
+// Index spot bars are requested as productType "cash" on the NSE/BSE exchange;
+// ICICI scrip codes (CNXBAN/NIFFIN/…) are mandatory — the exchange symbol
+// returns zero rows. Non-index symbols carry the empty option legs Breeze wants.
+export interface IntradayRequest {
+  interval: "1minute" | "5minute" | "15minute";
+  fromDate: string;
+  toDate: string;
+  stockCode: string;
+  exchangeCode: string;
+  productType: "cash" | "options";
+  expiryDate?: string;
+  right?: string;
+  strikePrice?: string;
+}
+
+export function buildIntradayRequest(
   symbol: string,
   dateStr: string,
   interval: "1minute" | "5minute" | "15minute" = "5minute"
-): Promise<IntradayCandleResult> {
+): IntradayRequest | null {
   const upperSym = symbol.toUpperCase();
   const stockCode = BREEZE_STOCK_CODE[upperSym];
   const exchangeCode = EXCHANGE_CODE[upperSym];
-
-  if (!stockCode || !exchangeCode) {
-    return {
-      candles: [],
-      source: "fallback",
-      warning: `Unknown symbol ${symbol} for Breeze historical`,
-    };
-  }
+  if (!stockCode || !exchangeCode) return null;
 
   // Market hours: 09:15 to 15:30 IST
   const date = new Date(dateStr + "T00:00:00.000Z");
@@ -72,36 +76,45 @@ export async function getIntradayCandles(
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   };
 
-  const fromDateStr = formatBreezeDate(fromDate);
-  const toDateStr = formatBreezeDate(toDate);
+  // Membership in the canonical map == index; derive from the SYMBOL, never from
+  // the scrip code (CNXBAN/NIFFIN/BSESEN are not in the index name list).
+  const isIndex = upperSym in BREEZE_STOCK_CODE;
+  const request: IntradayRequest = {
+    interval,
+    fromDate: formatBreezeDate(fromDate),
+    toDate: formatBreezeDate(toDate),
+    stockCode,
+    // Index spot candles need NSE/BSE exchange, not NFO/BFO
+    exchangeCode: isIndex ? (["SENSEX", "BANKEX"].includes(upperSym) ? "BSE" : "NSE") : exchangeCode,
+    productType: isIndex ? "cash" : "options",
+  };
+  if (!isIndex) {
+    request.expiryDate = "";
+    request.right = "";
+    request.strikePrice = "";
+  }
+  return request;
+}
 
-  // For indices (NIFTY, SENSEX, etc.), use productType "cash" without strike/right/expiry
-  const isIndex = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"].includes(stockCode.toUpperCase());
-  const productType = isIndex ? "cash" : "options";
-  // Index spot candles need NSE/BSE exchange, not NFO/BFO
-  const cashExchange = isIndex ? (["SENSEX", "BANKEX"].includes(stockCode.toUpperCase()) ? "BSE" : "NSE") : exchangeCode;
+// ─── Get intraday candles for a specific date ────────────────────
+export async function getIntradayCandles(
+  symbol: string,
+  dateStr: string,
+  interval: "1minute" | "5minute" | "15minute" = "5minute"
+): Promise<IntradayCandleResult> {
+  const request = buildIntradayRequest(symbol, dateStr, interval);
+  if (!request) {
+    return {
+      candles: [],
+      source: "fallback",
+      warning: `Unknown symbol ${symbol} for Breeze historical`,
+    };
+  }
 
   try {
     // Ensure Breeze session is valid
     await initSession();
     const breeze = getBreezeClient();
-
-    // Call Breeze getHistoricalDatav2 (intraday)
-    const request: any = {
-      interval: interval,
-      fromDate: fromDateStr,
-      toDate: toDateStr,
-      stockCode: stockCode,
-      exchangeCode: cashExchange,
-      productType: productType,
-    };
-
-    // For options, add required fields
-    if (!isIndex) {
-      request.expiryDate = "";
-      request.right = "";
-      request.strikePrice = "";
-    }
 
     const result = await breeze.getHistoricalDatav2(request);
 

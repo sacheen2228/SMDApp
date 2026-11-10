@@ -13,6 +13,14 @@ import { cachedLayers } from "./tech-cache";
 import { structureLayer, triggerLayer } from "./tech-read";
 import { BRAIN_FLAGS } from "./brain-flags";
 import { checkSignalRiskLimits } from "./risk-state.server";
+import { isAlertsOwner } from "./alerts-owner";
+import {
+  claimAlert,
+  markAlertClaimSent,
+  markAlertClaimFailed,
+  markAlertClaimBlocked,
+  markAlertClaimTradeRegistered,
+} from "./alert-claim";
 
 /** Option R:R from the alert's own levels (never from a ledger field). */
 function rrOf(entry?: number, sl?: number, tp?: number, action?: string): number | null {
@@ -328,6 +336,14 @@ export async function sendTradeAlertInner(params: {
   deployedAmount?: number;
   riskAmount?: number;
   nowMs?: number;            // clock seam for session rules (replay/tests pin it)
+  /** Entry claim controls. TP/SL events use NotificationEvent instead. */
+  entryClaim?: boolean;      // default true — atomic AlertClaim before send
+  expectsTrade?: boolean;    // true when a Trade row MUST exist before sending
+  strategy?: string;         // stable producer id for the claim key
+  /** Rendered message override (keeps producer-specific formatting). */
+  message?: string;
+  /** Register the trade BEFORE the send. false/throw ⇒ no alert is sent. */
+  register?: () => Promise<boolean>;
   mtf?: {
     direction: string;
     compositeScore: number;
@@ -336,6 +352,11 @@ export async function sendTradeAlertInner(params: {
     reasons: string[];
   } | null;
 }): Promise<boolean> {
+  if (!isAlertsOwner()) {
+    console.log(`[alerts-owner] sendTradeAlert suppressed for ${params.symbol} — ALERTS_OWNER is not "true"`);
+    return false;
+  }
+
   // SAFETY: Option selling blocked — instrument-aware (options only)
   // SELL is valid for EQUITY and FUTURES
   const isOption = params.instrument === 'CALL' || params.instrument === 'PUT';
@@ -482,7 +503,7 @@ export async function sendTradeAlertInner(params: {
   const mtfLine = (params.mtf
     ? `\n📐 MTF: ${escapeHtml(params.mtf.direction)} (${escapeHtml(params.mtf.trendDirection)} trend, score ${params.mtf.compositeScore})`
     : '') + vetoWarn;
-  const msg = `
+  const msg = params.message?.trim() || `
 ${emoji} <b>${sourceLabel}</b>
 
 📊 <b>${escapeHtml(params.symbol)}</b> — ${isCashEquity ? "EQUITY" : escapeHtml(params.type)}
@@ -502,7 +523,78 @@ ${isCashEquity && params.lots && params.deployedAmount
 ⏰ ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
   `.trim();
 
-  const sent = await sendTelegramMessage(msg);
+  // ── ATOMIC ENTRY CLAIM ────────────────────────────────────────────────
+  // The create() is the at-most-once decision. Only the winner may send.
+  // TP/SL updates pass entryClaim:false (they use NotificationEvent instead).
+  let claimId: string | null = null;
+  if (params.entryClaim !== false) {
+    const claim = await claimAlert({
+      expiry: params.expiry ?? null,
+      symbol: params.symbol,
+      strike: params.strike,
+      optionType: params.type,
+      side: params.action,
+      strategy: params.strategy || params.source || "unknown",
+      payload: {
+        message: msg,
+        symbol: params.symbol,
+        strike: params.strike,
+        type: params.type,
+        action: params.action,
+        entry: params.entry,
+        stopLoss: params.stopLoss,
+        target1: params.target1,
+        target2: params.target2,
+        confidence: params.confidence,
+        source: params.source,
+        expiry: params.expiry,
+        spot: params.spot,
+      },
+      nowMs: params.nowMs,
+    });
+    if (!claim.ok) {
+      console.log(`[alert-claim] no send for ${params.symbol} ${params.strike} ${params.type}: ${claim.reason}`);
+      return false;
+    }
+    claimId = claim.claim.id;
+
+    // Step 7: the trade must be registered BEFORE the alert counts as sent.
+    if (params.register) {
+      let registered = false;
+      let registrationError = "";
+      try {
+        registered = await params.register();
+        if (!registered) registrationError = "register callback returned false";
+      } catch (err: any) {
+        registrationError = err?.message || String(err);
+      }
+      if (!registered) {
+        await markAlertClaimTradeRegistered(claimId, false, registrationError);
+        await markAlertClaimBlocked(claimId, `trade not registered: ${registrationError}`);
+        console.log(`[alert-claim] NO SEND ${params.symbol} — ${registrationError}`);
+        return false;
+      }
+      await markAlertClaimTradeRegistered(claimId, true);
+    } else if (params.expectsTrade) {
+      await markAlertClaimBlocked(claimId, "expectsTrade but no register callback");
+      console.log(`[alert-claim] NO SEND ${params.symbol} — expectsTrade without register callback`);
+      return false;
+    } else {
+      await markAlertClaimTradeRegistered(claimId, true);
+    }
+  }
+
+  let sent = false;
+  try {
+    sent = await sendTelegramMessage(msg);
+  } catch (err: any) {
+    if (claimId) await markAlertClaimFailed(claimId, err?.message || String(err));
+    throw err;
+  }
+  if (claimId) {
+    if (sent) await markAlertClaimSent(claimId);
+    else await markAlertClaimFailed(claimId, "send returned false");
+  }
   // every candidate that reached the send stage is logged (sent or not) — this is the
   // out-of-sample population the replay measures. Dedup-skipped duplicates are NOT
   // logged: they are the same signal, and would double-count the sample.
@@ -563,6 +655,10 @@ export async function sendSignalAlert(params: {
   symbol: string;
   reasons: string[];
 }): Promise<boolean> {
+  if (!isAlertsOwner()) {
+    console.log(`[alerts-owner] sendSignalAlert suppressed for ${params.symbol}`);
+    return false;
+  }
   const sig = buildSignalSignature({
     symbol: params.symbol,
     direction: params.direction,

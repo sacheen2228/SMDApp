@@ -42,3 +42,9 @@ export function markSentToday(signature: string): void {
   ensureFreshDay();
   sentSignatures.add(signature);
 }
+
+/** Reset dedupe state (for tests). */
+export function resetDedupeForTest(): void {
+  currentDateKey = "";
+  sentSignatures = new Set();
+}

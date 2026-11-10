@@ -50,7 +50,9 @@ export interface AuditOptionCandidate {
  *
  * PER-TRADE MODEL (user rule, 2026-10-20): the deployed amount IS the premium
  * (premium × units), so "risk = 20% of the amount DEPLOYED" means 1R = 20% of
- * the premium. The targets are the model's R ladder: 2R / 3R / 4R.
+ * the premium. This is the PER-UNIT geometry — the candidate carries no lot, so
+ * the ₹2,000 cap cannot be applied here; the production plan (option-plan.ts)
+ * applies it when the lot is known. The targets are the model's R ladder: 2R / 3R / 4R.
  *
  * The old defaults were stop = 22% and TP1 = 22% → R:R 1:1, which needs >50%
  * win-rate BEFORE costs. That is the exact bug the option plan fixed.

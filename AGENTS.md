@@ -10,6 +10,8 @@ bun run db:push    # sync SQLite schema
 bun run dev        # starts on :3000
 ```
 
+
+**Holiday calendar consolidated** — Single source of truth `NSE_HOLIDAYS` in `src/lib/expiry-calculator.ts` (was 5 duplicated copies with `2026-11-11` for Diwali‑Balipratipada, real: `2026-11-10`; no `2026-11-24`). All modules import from this canonical set instead of maintaining private copies.
 ## Package manager
 
 **bun** — not npm or yarn. Lockfile is `bun.lock`.
@@ -33,7 +35,7 @@ bun run dev        # starts on :3000
 - **Database**: SQLite via Prisma (`db/custom.db`), schema has Trade model (active), User/Post (unused)
 - **UI**: shadcn/ui (new-york style), Tailwind CSS v4, lucide icons
 - **State**: React Query for server state, Zustand for global state (`src/stores/useTradingStore.ts`), React useState for local UI state
-- **Data flow**: Exchange-aware — NSE primary (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY + NSE equities), BSE primary (SENSEX/BANKEX), MOAPI fallback → Breeze (opt-in) → NO_DATA. **No Yahoo anywhere** — when data is unavailable the answer is `NO_DATA`/503, never a Yahoo quote. **Canonical document: [`SOP.md`](./SOP.md)** (provider hierarchy, live-verified endpoints/headers, freshness rules, circuit breaker, session clocks, pre-market readiness, cron schedule)
+- **Data flow**: ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol (live data: quotes, option chain, candles, greeks, OI-PCR, spot). Exchange archives only for pre/post-market (pre-open, bhavcopy): NSE → BSE → Moneycontrol. **No Yahoo anywhere** — when data is unavailable the answer is `NO_DATA`/503, never a Yahoo quote. **Canonical document: [`SOP.md`](./SOP.md)** (provider hierarchy, live-verified endpoints/headers, freshness rules, circuit breaker, session clocks, pre-market readiness, cron schedule)
 - **Analysis**: SDM Options Intelligence Engine (`src/lib/sdm-engine.ts`)
 - **Market Intelligence**: Technical analysis engines, sector heatmap, breadth, regime, F&O scanner, expiry liquidity engine
 - **Trade Backtest**: Real trade backtest against real historical candles (99/100 trades backtestable)
@@ -110,9 +112,9 @@ bun run dev        # starts on :3000
 
 | Component | Data Source | Real or Fake? |
 |---|---|---|
-| Option chain (live) | NSE / BSE primary → MOAPI → Breeze (opt-in) | **REAL** — exchange-aware; `NO_DATA`/503 when unavailable |
-| Candle data (live) | Breeze / MO API | **REAL** when session active |
-| SDM signals | `api/sdm-signal/route.ts` | **REAL** — NSE/BSE → MOAPI → Breeze chain |
+| Option chain (live) | ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol | **REAL** — exchange-aware; `NO_DATA`/503 when unavailable |
+| Candle data (live) | ICICI Breeze → MOAPI → NSE index chart | **REAL** when session active |
+| SDM signals | `api/sdm-signal/route.ts` | **REAL** — ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol chain |
 | Scanner data | `api/scanner/route.ts` | **REAL** — live stock quotes, Breeze for option chain context |
 | Breakout data | `api/breakout/route.ts` + Breeze | **REAL** — Breeze for spot price, real candles when available |
 | Backtest candles | `backtest-engine.ts` + Breeze historical | **REAL** — skips days with no Breeze data, no fake candle generation |
@@ -510,7 +512,7 @@ Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidate
 ### Core
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/option-chain` | GET | Option chain data (NSE/BSE → MOAPI → Breeze) |
+| `/api/option-chain` | GET | Option chain data (ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol) |
 | `/api/agent` | POST | AI Agent with LLM + 57 tools |
 | `/api/agent-memory` | GET/POST/PATCH | Agent Memory — CRUD for trades, setups, predictions, preferences |
 | `/api/breeze-connect` | GET/POST | Breeze session management |

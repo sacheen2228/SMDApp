@@ -11,6 +11,7 @@ import {
   isThrottled,
   markThrottle,
   sendTelegramMessage,
+  escapeHtml,
 } from "@/lib/telegram";
 
 afterEach(() => {
@@ -80,5 +81,27 @@ describe("HTML parse error retry", () => {
   afterEach(() => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_CHAT_ID;
+  });
+});
+
+describe("markdown escaping", () => {
+  it("escapes markdown special characters in symbol names", () => {
+    // Symbols like M&M, B&W, S&P contain markdown special chars
+    const testCases = [
+      { input: "M&M", expected: "M&amp;M" },
+      { input: "B&W", expected: "B&amp;W" },
+      { input: "S&P", expected: "S&amp;P" },
+      { input: "A(B)C", expected: "A(B)C" },
+      { input: "A[B]C", expected: "A\\[B\\]C" },
+    ];
+
+    for (const { input, expected } of testCases) {
+      expect(escapeHtml(input)).toBe(expected);
+    }
+  });
+
+  it("escapeHtml does not double-escape already escaped text", () => {
+    // Already escaped text should not be double-escaped
+    expect(escapeHtml("&amp;")).toBe("&amp;amp;");
   });
 });

@@ -1,17 +1,19 @@
-// quant-candles.ts — the ONLY quant module allowed to import the candle
-// chain (whitelisted in tests/candle-chain.test.ts import scan). Kept a
-// one-function module on purpose so the whitelist surface stays minimal.
-// ISOLATION: live-capture chain only — no backtest path, no substitution.
+// quant-candles.ts — the quant layer reads candles ONLY through the sanctioned
+// accessor in market/capture.ts. The candle chain itself may be imported by that
+// module alone (architecture test: tests/candle-chain.test.ts import scan).
+// ISOLATION: no direct chain import, no backtest path, no substitution.
 
-import { fetchCandlesWithFallback, normalizeInterval, type CandleChainResult } from "@/lib/market/candle-chain";
+import { getLiveCandles, normalizeInterval } from "@/lib/market/capture";
+
+type LiveCandles = Awaited<ReturnType<typeof getLiveCandles>>;
 
 /** Thin passthrough — the quant layer adds provenance/freshness in quant-data.ts. */
 export async function quantFetchCandles(
   symbol: string,
   date: string,
   interval: string,
-): Promise<CandleChainResult> {
-  return fetchCandlesWithFallback(symbol, date, interval);
+): Promise<LiveCandles> {
+  return getLiveCandles(symbol, interval, date);
 }
 
 /** Re-exported so no other quant module needs to import the chain. */

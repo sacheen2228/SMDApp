@@ -81,16 +81,18 @@ export async function collectResearchInputs(opts: ResearchInputOptions): Promise
     }
   }
 
-  // MOAPI option chain — PCR / OI imbalance only (no fabricated options)
+  // Option chain PCR / OI imbalance via the central engine
+  // (Breeze → MOAPI → NSE → BSE parallel race; exchange archives only off-hours).
   let options: ResearchInputs["options"] = null;
   if (opts.includeOptions !== false) {
     try {
-      const fn = deps.getMotilalOptionChain || (await import("@/lib/motilal-option-chain")).getMotilalOptionChain;
-      const chain = await fn(opts.symbol);
-      if (chain?.data?.length) {
+      const { getOptionChain } = await import("@/lib/data-layer/chains/option-chain");
+      const result = await getOptionChain(opts.symbol);
+      const chain = result.data;
+      if (chain?.strikes?.length) {
         let ceOi = 0;
         let peOi = 0;
-        for (const row of chain.data) {
+        for (const row of chain.strikes) {
           ceOi += row.ce?.oi || 0;
           peOi += row.pe?.oi || 0;
         }
@@ -101,21 +103,21 @@ export async function collectResearchInputs(opts: ResearchInputOptions): Promise
           ceOi: ceOi || null,
           peOi: peOi || null,
           quality: pcr != null ? "OK" : "DEGRADED",
-          source: "MOAPI_OPTION_CHAIN",
-          asOf,
+          source: result.source,
+          asOf: chain.providerTimestamp || chain.fetchedAt || asOf,
         };
       } else {
         missing.push("options");
         options = {
           symbol: opts.symbol, pcr: null, ceOi: null, peOi: null,
-          quality: "MISSING", source: "MOAPI_OPTION_CHAIN", asOf,
+          quality: "MISSING", source: result.source || "NO_DATA", asOf,
         };
       }
     } catch {
       missing.push("options");
       options = {
         symbol: opts.symbol, pcr: null, ceOi: null, peOi: null,
-        quality: "MISSING", source: "MOAPI_OPTION_CHAIN", asOf,
+        quality: "MISSING", source: "NO_DATA", asOf,
       };
     }
   }

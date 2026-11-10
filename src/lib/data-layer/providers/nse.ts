@@ -11,6 +11,7 @@
 
 import { TtlCache } from '@/lib/data-layer/cache';
 import { classifyFreshness, collectedFreshness, providerTimestamp } from '@/lib/api-freshness';
+import { nseGate } from '@/lib/market/nse-gate';
 import type { FreshnessLevel, OptionStrike, OptionLeg, OptionChainData, QuoteData, DataProvenance, ProviderResult, ProviderModule, HistoricalCandle, GainersLosers, MostActiveEquity, OISpurt } from '@/lib/data-layer/types';
 import {
   EXPIRY_UNAVAILABLE,
@@ -36,10 +37,17 @@ let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
 async function getNseCookie(): Promise<string> {
   if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
   try {
-    const res = await fetch('https://www.nseindia.com', {
-      headers: { 'User-Agent': NSE_UA, Accept: 'text/html' },
-      signal: AbortSignal.timeout(8_000),
-    });
+    // The cookie warm-up is an NSE request too — it goes through the shared
+    // gate so it cannot add to the request burst that gets us blocked.
+    const res = await nseGate.call<any>(
+      "nse-cookie-warm",
+      async () =>
+        await fetch('https://www.nseindia.com', {
+          headers: { 'User-Agent': NSE_UA, Accept: 'text/html' },
+          signal: AbortSignal.timeout(8_000),
+        }),
+      { snapshot: false },
+    );
     const cookie = res.headers.get('set-cookie')?.split(';')[0] || '';
     nseCookieCache = { cookie, expiresAt: Date.now() + 5 * 60 * 1000 };
     return cookie;
@@ -50,17 +58,17 @@ async function getNseCookie(): Promise<string> {
 
 async function nseGet(path: string, referer = 'https://www.nseindia.com/option-chain'): Promise<any> {
   const cookie = await getNseCookie();
-  const res = await fetch(`${NSE_BASE}${path}`, {
+  // Shared gate: one rate limit, one circuit, one single-flight per path.
+  return nseGate.fetchJson(`${NSE_BASE}${path}`, {
+    key: `nse-get|${path}`,
+    timeoutMs: 12_000,
     headers: {
       'User-Agent': NSE_UA,
       Cookie: cookie,
       Referer: referer,
       Accept: 'application/json',
     },
-    signal: AbortSignal.timeout(12_000),
   });
-  if (!res.ok) throw new Error(`NSE ${path} ${res.status}`);
-  return res.json();
 }
 
 // V3 requires an explicit expiry — fetch the list first (never guess a date).

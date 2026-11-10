@@ -46,7 +46,7 @@ function baseInput(over: Partial<GateInput> = {}): GateInput {
     stamps: [nowIso()],
     allLive: true,
     delta: 0.52,
-    optionRR: 1.8,
+    optionRR: 2.0,     // meets the 1:2 minimum floor
     lots: 2,
     strikeDistanceSteps: 0,
     underlyingRR: 2.1,
@@ -82,7 +82,7 @@ describe("GATE_CONFIG / STRIKE_STEP", () => {
     expect(C.minLayersAgree).toBe(3);
     expect(C.maxLayersAgainst).toBe(1);
     expect(C.minUnderlyingRR).toBeGreaterThanOrEqual(2);
-    expect(C.minOptionRR).toBeGreaterThanOrEqual(1.5);
+    expect(C.minOptionRR).toBe(2);   // 1:2 minimum
     expect(C.maxRiskPct).toBeGreaterThanOrEqual(C.defaultRiskPct);
     expect(C.maxOtmSteps).toBeLessThanOrEqual(3);
     expect(C.minAbsDelta).toBeGreaterThanOrEqual(0.3);
@@ -147,11 +147,11 @@ describe("positionSize", () => {
     expect(r.guidance).toMatch(/tighten|cheaper|spread/i);
   });
   test("fits when stop is tight enough (per-trade budget model)", () => {
-    // ₹20,000 deployed, risk = 20% of it (₹4,000); 1 NIFTY lot at a ₹60 stop
-    // risks ₹3,900 and commits ₹19,500 → 1 lot fits.
-    const r = positionSize({ entry: 300, sl: 240, lotSize: 65 });
+    // ₹20,000 deployed, risk capped at the FIXED ₹2,000; 1 NIFTY lot at a
+    // ₹20 stop risks ₹1,300 and commits ₹19,500 → 1 lot fits.
+    const r = positionSize({ entry: 300, sl: 280, lotSize: 65 });
     expect(r.lots).toBe(1);
-    expect(r.riskAmount).toBe(4000);
+    expect(r.riskAmount).toBe(2000);
     expect(r.capitalRequired).toBe(19500);
   });
 

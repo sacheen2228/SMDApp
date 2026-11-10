@@ -187,32 +187,112 @@ export function attachPendingOutcomes(opts: {
   return results;
 }
 
-/** Fetch candles for a symbol from the candle chain (real data only). */
+/**
+ * What interval buckets we can honestly serve for an outcome run.
+ * >30m (i.e. daily) is refused: there is no intraday daily source here and
+ * substituting a different timeframe would fabricate the label.
+ */
+export function outcomeCandlePlan(intervalMin?: number): { bucketMin: number } | null {
+  const n = Number(intervalMin);
+  const bucketMin = Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+  if (bucketMin > 30) return null;
+  return { bucketMin };
+}
+
+/** 09:15 IST of a "YYYY-MM-DD" trade date, as epoch ms (timezone-independent math). */
+export function sessionAnchorMs(tradeDate: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(tradeDate || "").trim());
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], 9, 15, 0) - (5 * 3600 + 30 * 60) * 1000;
+}
+
+/** Bar time → epoch ms. ISO/offset strings are absolute; naive ones are IST. */
+export function parseBarTimeMs(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw < 1e12 ? Math.round(raw * 1000) : Math.round(raw);
+  const s = String(raw ?? "").trim().replace(" ", "T");
+  if (!s) return null;
+  const withOffset = /([Zz]|[+-]\d{2}:?\d{2})$/.test(s) ? s : `${s}+05:30`;
+  const ms = Date.parse(withOffset);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** Rows (recorder `timestamp` ISO or Breeze `time` naive-IST) → numeric-time CandleBars. */
+export function toCandleBars(rows: readonly any[] | null | undefined): CandleBar[] {
+  const out: CandleBar[] = [];
+  for (const r of rows || []) {
+    if (!r || typeof r !== "object") continue;
+    const t = parseBarTimeMs(r.time ?? r.timestamp ?? r.date);
+    const open = Number(r.open), high = Number(r.high), low = Number(r.low), close = Number(r.close);
+    if (t == null || ![open, high, low, close].every(Number.isFinite)) continue;
+    const volume = Number(r.volume ?? 0);
+    out.push({ time: t, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 });
+  }
+  out.sort((a, b) => a.time - b.time);
+  return out;
+}
+
+/**
+ * Aggregate finer bars into `bucketMin` buckets anchored at the session open
+ * (09:15 IST). Bucket start = anchor + k*bucket, so `closeAtMinutes` in
+ * outcomes.ts (minutes after open) lines up and never reads past the target.
+ */
+export function aggregateBars(bars: readonly CandleBar[], bucketMin: number, anchorMs: number): CandleBar[] {
+  const bucketMs = Math.max(1, Math.floor(bucketMin)) * 60_000;
+  const map = new Map<number, CandleBar>();
+  for (const b of bars) {
+    if (!Number.isFinite(b.time) || b.time < anchorMs) continue;
+    const start = anchorMs + Math.floor((b.time - anchorMs) / bucketMs) * bucketMs;
+    const ex = map.get(start);
+    if (!ex) {
+      map.set(start, { ...b, time: start });
+      continue;
+    }
+    ex.high = Math.max(ex.high, b.high);
+    ex.low = Math.min(ex.low, b.low);
+    ex.close = b.close;
+    ex.volume = (ex.volume ?? 0) + (b.volume ?? 0);
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Real candles for an outcome evaluation, WITHOUT the live candle chain
+ * (its failures mutate session-health/recorder state — forbidden here).
+ *
+ * 1. recorded session bars (recorder sidecar DB, 1m) — covers recorded days
+ * 2. Breeze intraday history (5m) — covers days the recorder missed
+ * Then aggregate up to the requested bucket. Never substitutes a timeframe.
+ */
 export async function fetchCandlesForOutcome(
   symbol: string,
   tradeDate: string,
   intervalMin = 5,
 ): Promise<CandleBar[] | null> {
+  const plan = outcomeCandlePlan(intervalMin);
+  if (!plan) return null;
   try {
-    const { fetchCandlesWithFallback } = await import("@/lib/market/candle-chain");
-    const interval =
-      intervalMin <= 5 ? "5minute" : intervalMin <= 15 ? "15minute" : intervalMin <= 30 ? "30minute" : "1day";
-    const from = `${tradeDate}T00:00:00+05:30`;
-    const to = `${tradeDate}T23:59:59+05:30`;
-    const res: any = await fetchCandlesWithFallback(symbol, interval as any, { from, to } as any);
-    const raw = res?.candles || res?.data || [];
-    if (!Array.isArray(raw) || raw.length === 0) return null;
-    return raw.map((c: any) => ({
-      time: c.time ?? c.timestamp ?? c.date,
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volume ?? 0),
-    })).filter((c: CandleBar) =>
-      Number.isFinite(c.open) && Number.isFinite(c.close) &&
-      Number.isFinite(c.high) && Number.isFinite(c.low),
-    );
+    const anchorMs = sessionAnchorMs(tradeDate);
+    if (!Number.isFinite(anchorMs)) return null;
+
+    let sourceMin = 1;
+    let bars: CandleBar[] = [];
+    try {
+      const { getSessionCandles } = await import("@/lib/market-history-client");
+      bars = toCandleBars(await getSessionCandles(symbol, "1minute", tradeDate));
+    } catch {
+      bars = [];
+    }
+
+    if (!bars.length) {
+      const { getIntradayCandles } = await import("@/lib/breeze-historical");
+      const res = await getIntradayCandles(symbol, tradeDate, "5minute");
+      bars = toCandleBars(res?.candles ?? []);
+      sourceMin = 5;
+    }
+
+    if (!bars.length) return null;
+    if (plan.bucketMin < sourceMin) return null; // cannot serve finer than the source
+    return plan.bucketMin === sourceMin ? bars : aggregateBars(bars, plan.bucketMin, anchorMs);
   } catch {
     return null;
   }

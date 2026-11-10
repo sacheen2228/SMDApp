@@ -161,7 +161,7 @@ export interface StrategyConfig {
   expiryType: ExpiryType;
   /** the account capital used by the backtest (₹25,000 — the real account) */
   initialCapital: number;
-  /** risk as a % of the amount DEPLOYED in the trade (20 → ₹20,000 ⇒ ₹4,000) */
+  /** risk as a % of the amount DEPLOYED, capped at ₹2,000 (20 → ₹20,000 ⇒ ₹2,000) */
   maxRiskPct: number;
   entryTime: string;
   exitTime: string;

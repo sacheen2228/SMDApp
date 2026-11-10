@@ -208,6 +208,8 @@ export interface TradeRecord {
 // ─── SDM Recommendation ─────────────────────────────────────────
 export interface SDMRecommendation {
   direction: TradeDirection;
+  /** Real contract expiry (YYYY-MM-DD). Never a display label. */
+  expiryDate?: string;
   /** CE/PE of the recommended leg — populated even when direction is WAIT
    *  (gates may override direction after levels are computed). */
   optionType?: "CE" | "PE";

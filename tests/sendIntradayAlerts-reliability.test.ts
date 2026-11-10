@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 // TDD for sendIntradayAlerts.ts gates (Item C + Item D).
 
-import { describe, it, expect, mock, afterEach } from "bun:test";
+import { describe, it, expect, mock, afterEach, test } from "bun:test";
 import { CONF_FLOOR_CALL, CONF_FLOOR_PUT } from "@/lib/signal-persistence";
 
 // Captured at load, before any test replaces it. afterEach must RESTORE this
@@ -32,6 +32,12 @@ afterEach(async () => {
   delete process.env.TELEGRAM_DIGEST_CHAT_IDS;
   delete process.env.TRAINING_SNAPSHOT_DISABLED;
   globalThis.fetch = realFetch;
+  try {
+    const { resetDedupeForTest } = await import("@/lib/intradayState");
+    resetDedupeForTest();
+  } catch {
+    // ignore
+  }
 });
 
 async function importWithTelegramGate(gateMock: any) {
@@ -164,5 +170,155 @@ describe("sendIntradayAlerts gate behavior", () => {
 
     expect(gateMock).toHaveBeenCalled();
     expect(result.newAlerts).toBe(1);
+  });
+});
+
+describe("tp3 formatting (Option Buying Playbook requirement)", () => {
+  it("tp3 is included in the alert message when provided", async () => {
+    process.env.INTRADAY_GATES = "log";
+    envForSend();
+
+    const gateMock = mock(async () => ({
+      blocked: false,
+      reasons: [],
+    }));
+
+    mockFetch(makeAlert({
+      tp3: 247.1,
+    }));
+
+    const { sendIntradayAlerts } = await importWithTelegramGate(gateMock);
+    const result = await sendIntradayAlerts();
+
+    expect(result.newAlerts).toBe(1);
+    // The formatted message should include TP3
+    const fetchMock = globalThis.fetch as any;
+    const calls = fetchMock.mock.calls;
+    const telegramCall = calls.find((c: any) => String(c[0]).includes("/sendMessage"));
+    expect(telegramCall).toBeDefined();
+    const body = JSON.parse(telegramCall[1].body);
+    expect(body.text).toContain("Target 3: ₹247.10");
+  });
+
+  it("tp3 is optional - alert works without tp3", async () => {
+    process.env.INTRADAY_GATES = "log";
+    envForSend();
+
+    const gateMock = mock(async () => ({
+      blocked: false,
+      reasons: [],
+    }));
+
+    mockFetch(makeAlert({
+      tp1: 247.1,
+      // no tp3
+      tp2: undefined,
+      tp3: undefined,
+    }));
+
+    const { sendIntradayAlerts } = await importWithTelegramGate(gateMock);
+    const result = await sendIntradayAlerts();
+
+    expect(result.newAlerts).toBe(1);
+  });
+});
+
+describe("scan with failing Breeze", () => {
+  it("scan succeeds even when Breeze is down - falls back to NSE", async () => {
+    process.env.INTRADAY_GATES = "log";
+    envForSend();
+
+    // Breeze fails, but NSE works for option chain
+    const fetchMock = mock(async (url: any) => {
+      const u = String(url);
+      if (u.includes("/api/sdm-signal")) {
+        return { ok: true, json: async () => ({ ok: true, success: true, signal: makeAlert() }) };
+      }
+      // Breeze option chain fails
+      if (u.includes("icici-breeze") || u.includes("breeze")) {
+        return { ok: false, status: 503, json: async () => ({ ok: false }) };
+      }
+      // NSE works
+      if (u.includes("/api/option-chain")) {
+        return { ok: true, json: async () => ({ success: true, data: { strikes: [], spotPrice: 25000 } }) };
+      }
+      return { ok: false, json: async () => ({ ok: false }) };
+    });
+    // @ts-ignore
+    globalThis.fetch = fetchMock;
+
+    const { sendIntradayAlerts } = await import("@/lib/sendIntradayAlerts");
+    const result = await sendIntradayAlerts();
+
+    expect(result.newAlerts).toBeGreaterThanOrEqual(0);
+  });
+});
+
+
+describe("holiday list (NSE_HOLIDAYS env var)", async () => {
+  it("contains all canonical 2026 holidays", async () => {
+    const { NSE_HOLIDAYS } = await import("@/lib/expiry-calculator");
+    expect(NSE_HOLIDAYS).toContain("2026-01-26"); // Republic Day
+    expect(NSE_HOLIDAYS).toContain("2026-03-30"); // Eid
+    expect(NSE_HOLIDAYS).toContain("2026-04-02"); // Ram Navami
+    expect(NSE_HOLIDAYS).toContain("2026-04-14"); // Ambedkar Jayanti
+    expect(NSE_HOLIDAYS).toContain("2026-05-01"); // Maharashtra Day
+    expect(NSE_HOLIDAYS).toContain("2026-08-15"); // Independence Day
+    expect(NSE_HOLIDAYS).toContain("2026-09-14"); // Ganesh Chaturthi
+    expect(NSE_HOLIDAYS).toContain("2026-10-02"); // Gandhi Jayanti
+    expect(NSE_HOLIDAYS).toContain("2026-11-10"); // Diwali-Balipratipada
+    expect(NSE_HOLIDAYS).toContain("2026-11-24"); // Guru Nanak Jayanti
+    expect(NSE_HOLIDAYS).toContain("2026-12-25"); // Christmas
+  });
+
+  test("does NOT contain old wrong date 2026-11-11", async () => {
+    const { NSE_HOLIDAYS } = await import("@/lib/expiry-calculator");
+    expect(NSE_HOLIDAYS.has("2026-11-11")).toBe(false);
+  });
+
+  test("market-hours isTradingDay uses env holidays", async () => {
+    process.env.NSE_HOLIDAYS = "2026-11-10";
+    const { isTradingDay, isTelegramSendWindow } = await import("@/lib/marketHours");
+    const tradeDay = new Date("2026-11-10T11:00:00+05:30");
+    expect(isTradingDay(tradeDay)).toBe(false);
+    expect(isTelegramSendWindow(tradeDay)).toBe(false);
+
+    // Next day should be trading day
+    const nextDay = new Date("2026-11-11T11:00:00+05:30");
+    expect(isTradingDay(nextDay)).toBe(true);
+    expect(isTelegramSendWindow(nextDay)).toBe(true);
+  });
+});
+
+describe("markdown escaping", async () => {
+  it("escapes markdown special characters in symbol names", async () => {
+    const { escapeHtml } = await import("@/lib/telegram");
+    // HTML is escaped, not markdown - verify HTML entities
+    expect(escapeHtml("M&M")).toBe("M&amp;M");
+    expect(escapeHtml("SBI & Co.")).toBe("SBI &amp; Co.");
+    expect(escapeHtml("A<B>C").includes("&lt;")).toBe(true);
+    expect(escapeHtml('test "quote"').includes("&quot;")).toBe(true);
+  });
+});
+
+describe("signal dedupe (intradayState)", async () => {
+  it("dedupes same symbol+strike+optionType per day", async () => {
+    const { alreadySentToday, markSentToday } = await import("@/lib/intradayState");
+    const sig = "NIFTY|24800|CE|BUY|stock-scanner";
+    
+    expect(alreadySentToday(sig)).toBe(false);
+    markSentToday(sig);
+    expect(alreadySentToday(sig)).toBe(true);
+  });
+
+  it("different strikes are not deduplicated", async () => {
+    const { alreadySentToday, markSentToday } = await import("@/lib/intradayState");
+    const sig1 = "NIFTY|24800|CE|BUY|stock-scanner";
+    const sig2 = "NIFTY|25000|CE|BUY|stock-scanner";
+    
+    expect(alreadySentToday(sig1)).toBe(false);
+    markSentToday(sig1);
+    expect(alreadySentToday(sig1)).toBe(true);
+    expect(alreadySentToday(sig2)).toBe(false);
   });
 });

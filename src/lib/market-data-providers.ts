@@ -8,7 +8,69 @@
 // No Yahoo Finance anywhere — banned by SOP §1.
 
 import type { MarketDataProvider, ProviderName, DataCategory, ValidationResult } from "./market-data-types";
-import { validateEnvelope } from "./market-data-types";
+import { validateEnvelope, normalizeCategory } from "./market-data-types";
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Map the ICICI Breeze option chain into the engine's canonical shape.
+ * The Breeze SDK returns flat call/put arrays; the engine expects one row per
+ * strike with a `ce` and a `pe` leg. Exported for tests (pure function).
+ */
+export function mapBreezeOptionChain(chain: any): {
+  strikes: Array<{ strike: number; ce: any | null; pe: any | null }>;
+  spotPrice: number;
+  expiry: string | null;
+  timestamp: string | undefined;
+} | null {
+  if (!chain) return null;
+  const strikesRaw: number[] = Array.isArray(chain.strikes) && chain.strikes.length
+    ? chain.strikes.map(Number).filter(Number.isFinite)
+    : [];
+  const calls: any[] = Array.isArray(chain.calls) ? chain.calls : [];
+  const puts: any[] = Array.isArray(chain.puts) ? chain.puts : [];
+  if (!strikesRaw.length && !calls.length && !puts.length) return null;
+
+  const leg = (q: any) => ({
+    ltp: Number(q?.ltp) || 0,
+    oi: Number(q?.openInterest) || 0,
+    oiChg: Number(q?.oiChange) || 0,
+    volume: Number(q?.volume) || 0,
+    iv: Number(q?.iv) || 0,
+    delta: Number(q?.delta) || 0,
+    gamma: Number(q?.gamma) || 0,
+    theta: Number(q?.theta) || 0,
+    vega: Number(q?.vega) || 0,
+  });
+
+  const byStrike = new Map<number, { strike: number; ce: any | null; pe: any | null }>();
+  for (const s of strikesRaw) byStrike.set(s, { strike: s, ce: null, pe: null });
+  for (const c of calls) {
+    const s = Number(c?.strikePrice);
+    if (!Number.isFinite(s)) continue;
+    const row = byStrike.get(s) ?? { strike: s, ce: null, pe: null };
+    row.ce = leg(c);
+    byStrike.set(s, row);
+  }
+  for (const p of puts) {
+    const s = Number(p?.strikePrice);
+    if (!Number.isFinite(s)) continue;
+    const row = byStrike.get(s) ?? { strike: s, ce: null, pe: null };
+    row.pe = leg(p);
+    byStrike.set(s, row);
+  }
+
+  const strikes = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+  if (!strikes.length) return null;
+  return {
+    strikes,
+    spotPrice: Number(chain.spotPrice) || 0,
+    expiry: chain.expiryDate || null,
+    timestamp: chain.timestamp,
+  };
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // NSE API adapters
@@ -18,10 +80,11 @@ export const nseApiProvider: MarketDataProvider = {
   name: "nse-api",
   categories: ["quotes", "option-chain", "candles", "greeks", "oi-pcr", "max-pain", "spot", "index-quote", "fii-dii", "vix", "market-status", "bhavcopy", "pre-open"],
   async fetch(opts) {
-    const { symbol, category, exchange, instrument, expiry, nowMs } = opts;
+    const { symbol, category: rawCategory, exchange, instrument, expiry, nowMs } = opts;
+    const category = normalizeCategory(rawCategory);
 
     // ── Option chain ──
-    if (category === "optionChain") {
+    if (category === "option-chain") {
       const { getNSEOptionChain } = await import("@/lib/nse-api");
       const iso = expiry;
       const data = await getNSEOptionChain(symbol, iso ?? undefined);
@@ -173,21 +236,99 @@ export const nseApiProvider: MarketDataProvider = {
       };
     }
 
+    // ── Pre-open (NSE CM + F&O pre-open book) ──
+    // Reuses the premarket-lab fetcher — the same NSE endpoints the daily
+    // collector already uses. No new scraper, no new dependency.
+    if (category === "pre-open") {
+      const { fetchCmPreopen, fetchFnoPreopen } = await import("@/lib/premarket-lab/fetchers");
+      const cm = await fetchCmPreopen();
+      const fno = await fetchFnoPreopen();
+      const rows = [...cm.rows, ...fno.rows];
+      if (!rows.length) return null;
+      return {
+        data: {
+          rows,
+          cmRows: cm.rows.length,
+          fnoRows: fno.rows.length,
+          marketStatus: cm.marketStatus ?? null,
+          quality: cm.quality === "OK" && fno.quality === "OK" ? "OK" : "DEGRADED",
+          source: "NSE_PREOPEN",
+        },
+        providerTimestamp: cm.timestamp || fno.timestamp || undefined,
+        validation: validateEnvelope({
+          symbol, provider: "nse-api", source: "PRIMARY",
+          data: { rows: [] },
+          providerTimestamp: cm.timestamp || fno.timestamp || undefined,
+          fetchedAt: new Date(nowMs ?? Date.now()).toISOString(),
+          ageMs: 0,
+          freshness: "FRESH",
+          delayed: false,
+          providerErrors: [],
+          available: true,
+        }),
+      };
+    }
+
+    // ── Bhavcopy (end-of-day exchange file) ──
+    // Reuses the production bhavcopy provider (NSE/BSE archives) — the same
+    // implementation the option-chain route uses as its last resort.
+    if (category === "bhavcopy") {
+      const { bhavcopyProvider } = await import("@/lib/data-layer/providers/bhavcopy");
+      const res = await bhavcopyProvider.getOptionChain(symbol, expiry);
+      const chain: any = res?.data;
+      if (!chain?.strikes?.length) return null;
+      return {
+        data: {
+          strikes: chain.strikes.map((s: any) => ({
+            strike: Number(s.strike),
+            ce: s.ce ? {
+              ltp: Number(s.ce.ltp) || 0,
+              oi: Number(s.ce.oi) || 0,
+              oiChg: Number(s.ce.oiChange) || 0,
+              volume: Number(s.ce.volume) || 0,
+              iv: Number(s.ce.iv) || 0,
+            } : null,
+            pe: s.pe ? {
+              ltp: Number(s.pe.ltp) || 0,
+              oi: Number(s.pe.oi) || 0,
+              oiChg: Number(s.pe.oiChange) || 0,
+              volume: Number(s.pe.volume) || 0,
+              iv: Number(s.pe.iv) || 0,
+            } : null,
+          })),
+          spotPrice: Number(chain.spot) || 0,
+          expiry: chain.expiry || null,
+          asOf: chain.asOf || null,
+          source: "BHAVCOPY",
+          isEod: true,
+        },
+        providerTimestamp: chain.asOf || undefined,
+        validation: validateEnvelope({
+          symbol, provider: "nse-api", source: "FALLBACK",
+          data: { strikes: [] },
+          providerTimestamp: chain.asOf || undefined,
+          fetchedAt: new Date(nowMs ?? Date.now()).toISOString(),
+          ageMs: 0,
+          freshness: "STALE",
+          delayed: true,
+          providerErrors: [],
+          available: true,
+        }),
+      };
+    }
+
     return null;
   },
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// BSE API adapters
-// ────────────────────────────────────────────────────────────────────────────
 
 export const bseApiProvider: MarketDataProvider = {
   name: "bse-api",
   categories: ["quotes", "option-chain", "candles", "spot", "index-quote"],
   async fetch(opts) {
-    const { symbol, category } = opts;
+    const { symbol, category: rawCategory, expiry } = opts;
+    const category = normalizeCategory(rawCategory);
 
-    if (category === "optionChain") {
+    if (category === "option-chain") {
       const { getBSEOptionChain, getBSEExpiryDates } = await import("@/lib/bse-api");
       const expiries = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
       const selectedExpiry = expiry ?? (expiries[0] || "");
@@ -248,7 +389,8 @@ export const moApiProvider: MarketDataProvider = {
   name: "motilal-api",
   categories: ["quotes", "option-chain", "candles", "greeks", "oi-pcr", "max-pain", "spot", "index-quote"],
   async fetch(opts) {
-    const { symbol, category } = opts;
+    const { symbol, category: rawCategory, expiry } = opts;
+    const category = normalizeCategory(rawCategory);
 
     // ── Candles (EOD only) ──
     if (category === "candles") {
@@ -280,7 +422,7 @@ export const moApiProvider: MarketDataProvider = {
     }
 
     // ── Option chain ──
-    if (category === "optionChain") {
+    if (category === "option-chain") {
       const { getMotilalOptionChain } = await import("@/lib/motilal-option-chain");
       const chain = await getMotilalOptionChain(symbol, expiry);
       if (!chain?.data?.length) return null;
@@ -339,20 +481,28 @@ export const breezeApiProvider: MarketDataProvider = {
   name: "icici-breeze",
   categories: ["quotes", "option-chain", "candles", "greeks", "spot", "index-quote"],
   async fetch(opts) {
-    const { symbol, category } = opts;
+    const { symbol, category: rawCategory, expiry } = opts;
+    const category = normalizeCategory(rawCategory);
 
     // ── Option chain ──
-    if (category === "optionChain") {
+    if (category === "option-chain") {
       const { getOptionChain } = await import("@/lib/icici-breeze/option-chain");
       const chain = await getOptionChain(symbol, expiry);
-      if (!chain) return null;
+      const mapped = mapBreezeOptionChain(chain);
+      if (!mapped) return null;
       return {
-        data: { strikes: [], spotPrice: 0, expiry },
-        providerTimestamp: undefined,
+        data: {
+          strikes: mapped.strikes,
+          spotPrice: mapped.spotPrice,
+          expiry: mapped.expiry || expiry || null,
+          expiryDates: [],
+          selectedExpiry: mapped.expiry || expiry || null,
+        },
+        providerTimestamp: mapped.timestamp,
         validation: validateEnvelope({
-          symbol, provider: "icici-breeze", source: "FALLBACK",
-          data: { strikes: [], spotPrice: 0 },
-          providerTimestamp: undefined,
+          symbol, provider: "icici-breeze", source: "PRIMARY",
+          data: { strikes: mapped.strikes, spotPrice: mapped.spotPrice },
+          providerTimestamp: mapped.timestamp,
           fetchedAt: new Date(opts.nowMs ?? Date.now()).toISOString(),
           ageMs: 0,
           freshness: "FRESH",
@@ -398,7 +548,8 @@ export const moneycontrolProvider: MarketDataProvider = {
   name: "moneycontrol",
   categories: ["quotes", "spot", "index-quote", "fii-dii", "news"],
   async fetch(opts) {
-    const { symbol, category } = opts;
+    const { symbol, category: rawCategory } = opts;
+    const category = normalizeCategory(rawCategory);
 
     if (category === "quotes" || category === "spot") {
       const { fetchStockQuotes } = await import("@/lib/nse-stock-data");

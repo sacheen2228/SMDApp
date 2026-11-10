@@ -143,13 +143,13 @@ describe("item 6 — strike selector (option R:R >= 1:2, lots >= 1)", () => {
 });
 
 describe("item 7 — stop/RR/risk limits (R:R >= 1:2, risk <= 20% of the deployed amount)", () => {
-  it("maxLoss 4500 > the ₹4,000 risk budget (20% of ₹20,000 deployed) → item 7 fails", () => {
+  it("maxLoss 4500 > the ₹2,000 risk budget (20% of deployed, capped) → item 7 fails", () => {
     const r = evaluatePlaybookCheck(candidate({ target1: 130, maxLoss: 4_500 }), FRESH8, { capital: 100_000 } as any);
     expect(r.failedItems).toContain(7);
     expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);
   });
 
-  it("maxLoss 1500 <= the ₹4,000 risk budget → passes (the old 1%-of-₹1L budget would have failed it)", () => {
+  it("maxLoss 1500 <= the ₹2,000 risk budget → passes (the old 1%-of-₹1L budget would have failed it)", () => {
     const r = evaluatePlaybookCheck(candidate({ maxLoss: 1_500 }), FRESH8, { capital: 100_000 } as any);
     expect(r.pass).toBe(true);
   });

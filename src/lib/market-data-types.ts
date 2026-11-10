@@ -28,6 +28,9 @@ export type SourceType = "PRIMARY" | "FALLBACK" | "CACHE";
 // Universal freshness classification.
 export type FreshnessLevel = "LIVE" | "FRESH" | "DELAYED" | "STALE" | "UNAVAILABLE";
 
+// Data-quality verdict for one envelope.
+export type DataQuality = "OK" | "DEGRADED" | "STALE" | "UNKNOWN";
+
 // Data category — each has its own provider-priority order.
 export type DataCategory =
   | "quotes"
@@ -45,6 +48,28 @@ export type DataCategory =
   | "bhavcopy"
   | "pre-open"
   | "default";
+
+// Runtime aliases: the engine historically used camelCase category names
+// ("optionChain", "oiPcr", "maxPain", "indexQuote") while the type (and every
+// config table) uses kebab-case. The mismatch was silent: `priorities["option-chain"]`
+// was undefined, so every category silently fell back to the `default` order and
+// the per-category cache TTLs never applied. `normalizeCategory()` is the single
+// place that reconciles the two spellings.
+const CATEGORY_ALIASES: Record<string, DataCategory> = {
+  optionChain: "option-chain",
+  oiPcr: "oi-pcr",
+  maxPain: "max-pain",
+  indexQuote: "index-quote",
+};
+
+/** Normalize any accepted spelling of a category to its canonical kebab-case name. */
+export function normalizeCategory(category: string | DataCategory | undefined | null): DataCategory {
+  const raw = String(category ?? "").trim();
+  if (!raw) return "default";
+  if (CATEGORY_ALIASES[raw]) return CATEGORY_ALIASES[raw];
+  const kebab = raw.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+  return (kebab as DataCategory) || "default";
+}
 
 // Validation result for a provider response.
 export interface ValidationResult {
@@ -73,12 +98,15 @@ export interface MarketDataEnvelope<T = any> {
 
   // Timestamps
   providerTimestamp?: string;   // the provider's own publication time (ISO)
+  publicationTimestamp?: string;// alias of providerTimestamp, explicit name
   fetchedAt: string;            // when we fetched it (ISO)
   ageMs: number;                // fetchedAt − providerTimestamp (or 0 if undated)
+  lastSuccessfulUpdate?: string;// last time this source answered successfully (ISO)
 
   // Quality
   freshness: FreshnessLevel;
   delayed: boolean;
+  quality?: DataQuality;        // OK | DEGRADED | STALE | UNKNOWN
   validation: ValidationResult;
 
   // Provider errors (from any provider we tried and failed)
@@ -161,22 +189,29 @@ export interface MarketDataServiceConfig {
 }
 
 export const DEFAULT_CONFIG: MarketDataServiceConfig = {
+  // Provider priority per category (first valid answer wins).
+  //
+  // LIVE data (quotes / chain / candles / greeks / OI / spot): ICICI Breeze first
+  // (authenticated broker feed), then Motilal Oswal, then the exchange scrapers
+  // (NSE → BSE), then Moneycontrol.
+  // PRE/POST market data (pre-open, bhavcopy): the exchange archives only —
+  // no broker feed carries a pre-open book or the end-of-day bhavcopy.
   priorities: {
-    quotes: ["motilal-api", "icici-breeze", "nse-api", "moneycontrol"],
-    optionChain: ["motilal-api", "nse-api", "bse-api", "icici-breeze"],
-    candles: ["motilal-api", "icici-breeze", "nse-api"],
-    greeks: ["motilal-api", "icici-breeze", "nse-api"],
-    "oi-pcr": ["motilal-api", "nse-api", "bse-api"],
-    "max-pain": ["motilal-api", "nse-api", "bse-api"],
-    spot: ["motilal-api", "icici-breeze", "nse-api", "bse-api"],
-    "index-quote": ["motilal-api", "icici-breeze", "nse-api", "bse-api"],
+    "quotes": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
+    "option-chain": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
+    "candles": ["icici-breeze", "motilal-api", "nse-api"],
+    "greeks": ["icici-breeze", "motilal-api", "nse-api"],
+    "oi-pcr": ["icici-breeze", "motilal-api", "nse-api", "bse-api"],
+    "max-pain": ["icici-breeze", "motilal-api", "nse-api", "bse-api"],
+    "spot": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
+    "index-quote": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
     "fii-dii": ["fii-dii"],
-    news: ["moneycontrol"],
-    vix: ["nse-api"],
-    "market-status": ["nse-api"],
-    bhavcopy: ["nse-api", "bse-api"],
-    "pre-open": ["nse-api", "bse-api"],
-    default: ["motilal-api", "icici-breeze", "nse-api", "bse-api", "moneycontrol"],
+    "news": ["moneycontrol", "nse-api"],
+    "vix": ["nse-api", "icici-breeze", "motilal-api"],
+    "market-status": ["nse-api", "bse-api"],
+    "bhavcopy": ["nse-api", "bse-api"],
+    "pre-open": ["nse-api", "bse-api", "moneycontrol"],
+    "default": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
   },
   timeouts: {
     "motilal-api": 15_000,
@@ -189,21 +224,21 @@ export const DEFAULT_CONFIG: MarketDataServiceConfig = {
     unavailable: 0,
   },
   cacheTtl: {
-    quotes: 30_000,
-    optionChain: 60_000,
-    candles: 300_000,
-    greeks: 30_000,
+    "quotes": 30_000,
+    "option-chain": 60_000,
+    "candles": 300_000,
+    "greeks": 30_000,
     "oi-pcr": 60_000,
     "max-pain": 60_000,
-    spot: 15_000,
+    "spot": 15_000,
     "index-quote": 15_000,
     "fii-dii": 3_600_000,
-    news: 300_000,
-    vix: 60_000,
+    "news": 300_000,
+    "vix": 60_000,
     "market-status": 60_000,
-    bhavcopy: 86_400_000,
+    "bhavcopy": 86_400_000,
     "pre-open": 60_000,
-    default: 60_000,
+    "default": 60_000,
   },
   allowStaleCache: true,
   maxConsecutiveFailures: 5,

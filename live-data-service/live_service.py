@@ -35,10 +35,15 @@ DEFAULTS = {
     "provider": "nse", "symbols": ["NIFTY", "BANKNIFTY"], "port": 8765,
     "output_file": "live_data.json",
     "intervals": {"spot_vix": 10, "chain": 60, "eod_check": 1800, "closed_multiplier": 10},
-    "max_age_sec": {"spot_vix": 45, "chain": 180},
+    # NSE allIndices carries a minute-precision timestamp that lags 60-150s behind the
+    # wall clock, so a 45s ceiling made spot_vix STALE on every poll and never all_live.
+    "max_age_sec": {"spot_vix": 180, "chain": 180},
     "market_open": "09:15", "market_close": "15:30", "holidays": [],
     "chain_strikes_each_side": 8, "force_market_open": False,
     "nse_base": "https://www.nseindia.com", "nse_archive_base": "https://nsearchives.nseindia.com",
+    # NSE politeness: one request at a time, a minimum gap between requests and
+    # a cooldown after repeated 403s (NSE blocks bursts, not single calls).
+    "nse_politeness": {"min_interval_sec": 0.6, "block_threshold": 3, "block_cooldown_sec": 60},
 }
 INDEX_NAME = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK", "FINNIFTY": "NIFTY FINANCIAL SERVICES"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -64,6 +69,17 @@ def parse_ts(s):
         except ValueError:
             pass
     return None
+
+
+def parse_iso(s):
+    """Parse the ISO timestamps this service writes (snapshot meta)."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s))
+        return dt if dt.tzinfo else dt.replace(tzinfo=IST)
+    except ValueError:
+        return parse_ts(s)
 
 
 def num(x, default=0.0):
@@ -167,14 +183,34 @@ def parse_participant(text, d):
 
 
 # ----------------------------------------------------------------- providers
+class NseBlocked(RuntimeError):
+    """NSE is blocking us (HTTP 403 streak) — the caller must wait, not retry."""
+
+
 class NSEProvider:
-    """Free, unofficial NSE endpoints. Needs a browser-like cookie warm-up; polite polling only."""
+    """Free, unofficial NSE endpoints. Needs a browser-like cookie warm-up; polite polling only.
+
+    Politeness gate (mirrors src/lib/market/nse-gate.ts on the TypeScript side):
+      • one request at a time, with a minimum gap between requests
+      • a 403 streak opens a cooldown — no more requests until it expires
+      • the cookie is re-warmed once on the FIRST 403 only (not on every 403)
+      • the last valid snapshot is kept by the caller (Feed) and restored on restart
+    """
     def __init__(self, cfg):
         self.cfg = cfg
         self.base, self.arch = cfg["nse_base"], cfg["nse_archive_base"]
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self.warm_at = 0.0
         self.lock = threading.Lock()
+        pol = cfg.get("nse_politeness") or {}
+        self.min_interval = float(pol.get("min_interval_sec", 0.6))
+        self.block_threshold = int(pol.get("block_threshold", 3))
+        self.block_cooldown = float(pol.get("block_cooldown_sec", 60))
+        self.next_slot = 0.0
+        self.forbidden_streak = 0
+        self.block_until = 0.0
+        self.last_ok_at = 0.0
+        self.requests = 0
 
     def _open(self, url, accept="application/json, text/plain, */*", timeout=15):
         req = urllib.request.Request(url, headers={
@@ -188,17 +224,53 @@ class NSEProvider:
         self._open(self.base + "/option-chain", accept="text/html,application/xhtml+xml,*/*")
         self.warm_at = time.time()
 
+    def _gap(self):
+        """Keep a minimum gap between NSE requests (politeness)."""
+        wait = self.next_slot - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        self.next_slot = time.time() + self.min_interval
+
     def _get(self, url):
         with self.lock:
+            now = time.time()
+            if now < self.block_until:
+                raise NseBlocked(f"NSE blocked after repeated 403 — cooling down {self.block_until - now:.0f}s")
             if time.time() - self.warm_at > 240:
+                self._gap()
                 self._warm()
+            self._gap()
+            self.requests += 1
             try:
-                return self._open(url)
+                raw = self._open(url)
             except urllib.error.HTTPError as e:
-                if e.code in (401, 403):          # cookie expired or blocked: re-warm once
-                    self._warm()
-                    return self._open(url)
-                raise
+                if e.code in (401, 403):
+                    # A block, not an auth failure. Re-warm ONCE (the cookie may
+                    # have expired); after that, count the streak and cool down.
+                    self.forbidden_streak += 1
+                    if self.forbidden_streak >= self.block_threshold:
+                        self.block_until = time.time() + self.block_cooldown
+                        log.warning("NSE 403 streak %d — cooling down %.0fs (last url: %s)",
+                                    self.forbidden_streak, self.block_cooldown, url)
+                        raise NseBlocked(f"NSE 403 streak {self.forbidden_streak} — cooling down "
+                                         f"{self.block_cooldown:.0f}s")
+                    if self.forbidden_streak == 1:
+                        self._gap()
+                        self._warm()
+                        raw = self._open(url)   # may raise again — the caller sees it
+                    else:
+                        raise
+                else:
+                    raise
+            self.forbidden_streak = 0
+            self.last_ok_at = time.time()
+            return raw
+
+    def gate_state(self):
+        return {"requests": self.requests, "forbidden_streak": self.forbidden_streak,
+                "blocked": time.time() < self.block_until,
+                "block_remaining_sec": round(max(0.0, self.block_until - time.time())),
+                "last_ok_at": iso(datetime.fromtimestamp(self.last_ok_at, IST)) if self.last_ok_at else None}
 
     def fetch_indices(self):
         return json.loads(self._get(self.base + "/api/allIndices"))
@@ -309,7 +381,13 @@ class Feed:
         if self.value is None:
             return "ERROR" if self.fail else "NO_DATA"
         if self.eod:
-            return "EOD_OK" if self.data_ts and self.data_ts.date() == expected_eod_date(now) else "EOD_OLD"
+            if not self.data_ts:
+                return "EOD_OLD"
+            # NSE stamps fiidiiTradeReact with its publication date (e.g. a Sunday),
+            # not the trade date, so exact equality with expected_eod_date() always
+            # failed. Accept anything between the last trading day and today.
+            d = self.data_ts.date()
+            return "EOD_OK" if expected_eod_date(now) <= d <= now.date() else "EOD_OLD"
         if not open_:
             return "CLOSED"
         if self.data_ts is None:
@@ -376,12 +454,53 @@ class Service:
         all_live = (not self.demo) and op and all(feeds[n]["status"] == "LIVE" for n in req)
         overall = "DEMO" if self.demo else "LIVE" if all_live else ("CLOSED" if not op else "DEGRADED")
         sv = self.feeds["spot_vix"].value or {}
+        gate = self.p.gate_state() if hasattr(self.p, "gate_state") else None
         return {"meta": {"generated_at": iso(now), "market_open": op, "overall": overall, "all_live": all_live,
                          "provider": src, "force_market_open": bool(self.cfg.get("force_market_open")),
+                         "nse_gate": gate,
                          "rule": "Use for trading analysis only when all_live is true. Check your PC clock is synced."},
                 "feeds": feeds, "spot": sv.get("spot", {}), "vix": sv.get("vix", {}),
                 "chains": {s: self.feeds["chain_" + s].value for s in self.cfg["symbols"]},
                 "fii_dii": self.feeds["fii_dii"].value, "participant": self.feeds["participant"].value}
+
+    def restore_previous(self):
+        """Seed the feeds from the last written snapshot, so a restart keeps the last
+        valid data instead of starting blind. Status stays honest: the restored feed
+        is STALE (or CLOSED) as soon as it ages out of its max_age window."""
+        path = os.path.join(HERE, self.cfg["output_file"])
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception as e:
+            log.warning("restore skipped (%s)", e)
+            return False
+        vals = {"spot_vix": {"spot": d.get("spot") or {}, "vix": d.get("vix") or {}}}
+        for s in self.cfg["symbols"]:
+            ch = (d.get("chains") or {}).get(s)
+            if ch:
+                vals["chain_" + s] = ch
+        if d.get("fii_dii"):
+            vals["fii_dii"] = d["fii_dii"]
+        if d.get("participant"):
+            vals["participant"] = d["participant"]
+        restored = 0
+        for name, val in vals.items():
+            feed = self.feeds.get(name)
+            if not feed or feed.value is not None:
+                continue
+            meta = (d.get("feeds") or {}).get(name) or {}
+            ts = parse_iso(meta.get("data_ts"))
+            with feed.lock:
+                feed.value = val
+                feed.data_ts = ts
+                feed.fetched_at = parse_iso(meta.get("fetched_at")) or now_ist()
+                feed.last_ok = parse_iso(meta.get("last_ok")) or feed.fetched_at
+                feed.err = "restored from previous snapshot"
+            restored += 1
+        log.info("restored %d feed(s) from %s", restored, path)
+        return restored > 0
 
     def selector(self, q):
         sym = (q.get("symbol", ["NIFTY"])[0]).upper()
@@ -537,6 +656,7 @@ def main():
                         handlers=[logging.handlers.RotatingFileHandler(os.path.join(HERE, "live_service.log"), maxBytes=500000, backupCount=2),
                                   logging.StreamHandler(sys.stdout) if sys.stdout else logging.NullHandler()])
     svc = build(cfg, a.demo)
+    svc.restore_previous()
     if a.check:
         jobs = [("spot_vix", svc.job_spot_vix)] + [("chain_" + s, svc.job_chain, s) for s in cfg["symbols"]] + \
                [("fii_dii", svc.job_fii_dii), ("participant", svc.job_participant)]

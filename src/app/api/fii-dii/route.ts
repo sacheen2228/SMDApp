@@ -55,18 +55,29 @@ export async function GET() {
       fallbackReason: envelope.fallbackReason,
     });
 
+    // FII/DII is a once-a-day EOD feed: the freshest published figure IS the
+    // current one until the next session publishes. The card status is derived
+    // from the SAME age/TTL + session classification as `freshness`, so the two
+    // labels can never contradict (previously status=STALE while freshness=FRESH).
+    const status = freshness.freshness === "STALE" || freshness.freshness === "UNAVAILABLE"
+      ? "STALE"
+      : "AVAILABLE";
+
     const meta = buildCardMeta({
       source: envelope.provider,
       providerTimestamp: providerStamp,
       ttlMs: 24 * 3600_000,
-      live: clock.isOpen,
-      reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
+      freshness: freshness.freshness,
+      reason: clock.isOpen
+        ? undefined
+        : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
     });
 
     const resp: any = {
       success: true,
-      status: meta.status,
-      data: meta,
+      status,
+      timestamp: providerStamp ? providerStamp.toISOString() : new Date(0).toISOString(),
+      data: { ...meta, status },
       fiiNet: data.fiiNet,
       diiNet: data.diiNet,
       fiiBuy: data.fiiBuy,

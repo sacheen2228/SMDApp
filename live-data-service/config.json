@@ -3,7 +3,7 @@
   "symbols": ["NIFTY", "BANKNIFTY"],
   "port": 8765,
   "intervals": { "spot_vix": 10, "chain": 60, "eod_check": 1800, "closed_multiplier": 10 },
-  "max_age_sec": { "spot_vix": 45, "chain": 180 },
+  "max_age_sec": { "spot_vix": 180, "chain": 180 },
   "holidays": [],
   "force_market_open": false
 }

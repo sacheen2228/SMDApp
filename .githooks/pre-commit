@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Cheap compile gate: refuses commits that contain a broken TS/TSX file
+# (unmatched braces, stray export, duplicate declarations). This is the exact
+# class of edit that silently took every route down.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+bun run check

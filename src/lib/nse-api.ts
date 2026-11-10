@@ -1,5 +1,6 @@
 import { NSEClient } from 'nse-bse-api/nse';
 import { reportSessionFailure, classifySourceError } from '@/lib/session-health';
+import { nseGate } from '@/lib/market/nse-gate';
 import {
   EXPIRY_UNAVAILABLE,
   expiryUnavailableReason,
@@ -31,7 +32,10 @@ function getNSEClient(): NSEClient {
 export async function refreshNSEExpiryList(symbol: string): Promise<string[] | null> {
   try {
     const client: any = getNSEClient();
-    const info = await client.options.getOptionChainContractInfo(symbol.toUpperCase());
+    const info = await nseGate.call(
+      `nse-contract-info|${symbol.toUpperCase()}`,
+      async () => await client.options.getOptionChainContractInfo(symbol.toUpperCase()),
+    );
     const dates: string[] = Array.isArray(info?.expiryDates) ? info.expiryDates : [];
     if (!dates.length) return null;
     setExchangeExpiries(symbol, dates);
@@ -69,7 +73,7 @@ export async function getNSEOptionChain(symbol: string, expiry?: string) {
   // The exchange's contract list (needed to pick and to validate).
   let expiries: string[] = [];
   try {
-    expiries = (await client.getExpiryDatesV3(symbol)) || [];
+    expiries = (await nseGate.call(`nse-expiries-v3|${symbol}`, async () => await client.getExpiryDatesV3(symbol))) || [];
   } catch {
     expiries = [];
   }
@@ -93,8 +97,16 @@ export async function getNSEOptionChain(symbol: string, expiry?: string) {
     exp = selectNearestLiveExpiry(expiries) ?? undefined;
   }
 
+  // The SDK calls go through the shared NSE gate: one rate limit, one
+  // single-flight per contract, one circuit. The BUSINESS errors below
+  // (EXPIRY_UNAVAILABLE etc.) are thrown outside the gate, so a dead contract
+  // never poisons the provider's retry state.
   const fetchChain = async (expiryArg?: string) =>
-    client.optionChainV3({ symbol, type, ...(expiryArg ? { expiry: expiryArg } : {}) } as any);
+    nseGate.call(
+      `nse-chain-v3|${symbol}|${type}|${expiryArg ?? "nearest"}`,
+      async () =>
+        await client.optionChainV3({ symbol, type, ...(expiryArg ? { expiry: expiryArg } : {}) } as any),
+    );
 
   let data: any;
   try {
@@ -106,8 +118,8 @@ export async function getNSEOptionChain(symbol: string, expiry?: string) {
     // own contract list then drives the live-contract correction below).
     try {
       data = exp
-        ? await client.optionChainV3({ symbol, type: 'Indices', expiry: exp } as any)
-        : await client.optionChainV3({ symbol, type: 'Indices' } as any);
+        ? await nseGate.call(`nse-chain-v3|${symbol}|Indices|${exp}`, async () => await client.optionChainV3({ symbol, type: 'Indices', expiry: exp } as any))
+        : await nseGate.call(`nse-chain-v3|${symbol}|Indices|nearest`, async () => await client.optionChainV3({ symbol, type: 'Indices' } as any));
     } catch (err2: any) {
       console.error('[NSE API] Option chain error:', err2.message);
       // NSE has no token auth — a failure here is availability/cookie/block, never
@@ -222,11 +234,15 @@ export async function getNSEHistoricalData(symbol: string, from: Date, to: Date)
     // nse-bse-api requires Date objects (validateDateRange/splitDateRange call
     // from.getFullYear()) — ISO strings used to crash with
     // "from.getFullYear is not a function" and every caller got null.
-    const data = await client.fetch_equity_historical_data({
-      symbol,
-      from_date: from,
-      to_date: to,
-    });
+    const data = await nseGate.call(
+      `nse-historical|${symbol}`,
+      async () =>
+        await client.fetch_equity_historical_data({
+          symbol,
+          from_date: from,
+          to_date: to,
+        }),
+    );
     return data;
   } catch (err: any) {
     console.error('[NSE API] Historical data error:', err.message);
@@ -241,7 +257,10 @@ export async function getNSEGainers() {
   if (viaQuotes.length > 0) return viaQuotes;
   const client = getNSEClient();
   try {
-    const data = await client.listEquityStocksByIndex('NIFTY 50');
+    const data = await nseGate.call(
+      `nse-index-stocks|NIFTY 50`,
+      async () => await client.listEquityStocksByIndex('NIFTY 50'),
+    );
     const stocks = Array.isArray(data) ? data : [];
     return stocks.sort((a: any, b: any) => (b.pChange || 0) - (a.pChange || 0)).slice(0, 10);
   } catch (err: any) {
@@ -268,7 +287,10 @@ export async function getNSELosers() {
   if (viaQuotes.length > 0) return viaQuotes;
   const client = getNSEClient();
   try {
-    const data = await client.listEquityStocksByIndex('NIFTY 50');
+    const data = await nseGate.call(
+      `nse-index-stocks|NIFTY 50`,
+      async () => await client.listEquityStocksByIndex('NIFTY 50'),
+    );
     const stocks = Array.isArray(data) ? data : [];
     return stocks.sort((a: any, b: any) => (a.pChange || 0) - (b.pChange || 0)).slice(0, 10);
   } catch (err: any) {
@@ -309,10 +331,17 @@ let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
 async function getNSECookie(): Promise<string> {
   if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
   try {
-    const res = await fetch("https://www.nseindia.com", {
-      headers: { "User-Agent": NSE_UA, Accept: "text/html" },
-      signal: AbortSignal.timeout(8000),
-    });
+    // Cookie warm-up is an NSE request too — the shared gate keeps it inside
+    // the global rate limit so it never adds to a blocking burst.
+    const res = await nseGate.call<any>(
+      "nse-cookie-warm",
+      async () =>
+        await fetch("https://www.nseindia.com", {
+          headers: { "User-Agent": NSE_UA, Accept: "text/html" },
+          signal: AbortSignal.timeout(8000),
+        }),
+      { snapshot: false },
+    );
     const cookie = res.headers.get("set-cookie")?.split(";")[0] || "";
     nseCookieCache = { cookie, expiresAt: Date.now() + 5 * 60 * 1000 };
     return cookie;
@@ -322,12 +351,11 @@ async function getNSECookie(): Promise<string> {
 export async function getNSEIndiaVIX(): Promise<{ value: number; change: number } | null> {
   try {
     const cookie = await getNSECookie();
-    const res = await fetch("https://www.nseindia.com/api/allIndices", {
+    const json = await nseGate.fetchJson<any>("https://www.nseindia.com/api/allIndices", {
+      key: "nse-all-indices",
+      timeoutMs: 8000,
       headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
-      signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return null;
-    const json = await res.json();
     const vix = (json?.data || []).find((i: any) => i.index === "INDIA VIX");
     if (!vix) return null;
     // No fabricated fallback: without a real last price there is no VIX.
@@ -346,12 +374,11 @@ export async function getNSEIndiaVIX(): Promise<{ value: number; change: number 
 export async function getNSEIndices(): Promise<Array<{ key: string; name: string; ltp: number; change: number; changePct: number; prevClose: number }>> {
   try {
     const cookie = await getNSECookie();
-    const res = await fetch("https://www.nseindia.com/api/allIndices", {
+    const json = await nseGate.fetchJson<any>("https://www.nseindia.com/api/allIndices", {
+      key: "nse-all-indices",
+      timeoutMs: 8000,
       headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
-      signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return [];
-    const json = await res.json();
     return mapNSEIndices(json?.data || []);
   } catch { return []; }
 }
@@ -446,15 +473,19 @@ export async function getNSEIndexChart(indexName: string): Promise<NSEChartPoint
     "https://www.nseindia.com/api/chart-databyindex?index=" +
     encodeURIComponent(indexName) +
     "&indices=true";
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": NSE_UA,
-      Cookie: cookie,
-      Referer: "https://www.nseindia.com/market-data/live-market-indices",
-      Accept: "application/json, text/plain, */*",
-    },
-    signal: AbortSignal.timeout(8000),
-  });
+  const res = await nseGate.call<any>(
+    `nse-chart|${indexName}`,
+    async () =>
+      await fetch(url, {
+        headers: {
+          "User-Agent": NSE_UA,
+          Cookie: cookie,
+          Referer: "https://www.nseindia.com/market-data/live-market-indices",
+          Accept: "application/json, text/plain, */*",
+        },
+        signal: AbortSignal.timeout(8000),
+      }),
+  );
   const text = await res.text();
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* fallthrough */ }

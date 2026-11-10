@@ -27,7 +27,10 @@ export type TradeActiveState =
   | 'PENDING'
   | 'ACTIVE'
   | 'MONITORING'
-  | 'TP1_HIT';
+  | 'TP1_HIT'
+  // TP2_HIT is a RUNNER when TP3 is still pending — it holds the lock but is
+  // never forwarded to this module's terminal path by the tracker.
+  | 'TP2_HIT';
 
 export interface ActiveTradeLock {
   tradeId: string;
@@ -80,7 +83,7 @@ export async function restoreLocksFromDB(): Promise<void> {
   try {
     const activeTrades = await db.trade.findMany({
       where: {
-        status: { in: ['OPEN', 'ACTIVE', 'PENDING', 'TP1_HIT'] },
+        status: { in: ['OPEN', 'ACTIVE', 'PENDING', 'TP1_HIT', 'TP2_HIT'] },
       },
     });
 
@@ -99,7 +102,8 @@ export async function restoreLocksFromDB(): Promise<void> {
           stopLoss: trade.stopLoss,
           target1: trade.target1 ?? 0,
           target2: trade.target2 ?? undefined,
-          status: trade.status === 'TP1_HIT' ? 'TP1_HIT' : 'ACTIVE',
+          status: trade.status === 'TP2_HIT' ? 'TP2_HIT'
+            : trade.status === 'TP1_HIT' ? 'TP1_HIT' : 'ACTIVE',
           createdAt: trade.entryTime?.toISOString() ?? trade.createdAt.toISOString(),
           lastCheckedAt: new Date().toISOString(),
         });
@@ -116,7 +120,7 @@ export function isTradeActive(underlying: string, exchange: string): ActiveTrade
   const key = lockKey(underlying, exchange);
   const lock = memLocks.get(key);
   if (!lock) return null;
-  if (ACTIVE_STATES.has(lock.status)) return lock;
+  if (ACTIVE_STATES.has(lock.status) || lock.status === 'TP2_HIT') return lock;
   // Terminal state in cache — clean up
   memLocks.delete(key);
   return null;
@@ -172,7 +176,7 @@ async function doAcquire(trade: {
 
   // 1. Check in-memory cache first (fast path)
   const existingMem = memLocks.get(key);
-  if (existingMem && ACTIVE_STATES.has(existingMem.status)) {
+  if (existingMem && (ACTIVE_STATES.has(existingMem.status) || existingMem.status === 'TP2_HIT')) {
     return { blocked: true, activeTrade: existingMem };
   }
 
@@ -182,7 +186,7 @@ async function doAcquire(trade: {
       where: {
         symbol: trade.underlying,
         exchange: trade.exchange,
-        status: { in: ['OPEN', 'ACTIVE', 'PENDING', 'TP1_HIT'] },
+        status: { in: ['OPEN', 'ACTIVE', 'PENDING', 'TP1_HIT', 'TP2_HIT'] },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -200,7 +204,8 @@ async function doAcquire(trade: {
         stopLoss: dbTrade.stopLoss,
         target1: dbTrade.target1 ?? 0,
         target2: dbTrade.target2 ?? undefined,
-        status: dbTrade.status === 'TP1_HIT' ? 'TP1_HIT' : 'ACTIVE',
+        status: dbTrade.status === 'TP2_HIT' ? 'TP2_HIT'
+          : dbTrade.status === 'TP1_HIT' ? 'TP1_HIT' : 'ACTIVE',
         createdAt: dbTrade.entryTime?.toISOString() ?? dbTrade.createdAt.toISOString(),
         lastCheckedAt: new Date().toISOString(),
       };

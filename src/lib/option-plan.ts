@@ -48,6 +48,8 @@ export const PLAN_CONFIG = {
   /** Rupee risk as a fraction of the amount DEPLOYED in the trade (0.20 → ₹10k ⇒ ₹2k).
    *  Sourced from GATE_CONFIG.riskPctOfTrade so there is exactly ONE definition. */
   riskPctOfDeployed: GATE_CONFIG.riskPctOfTrade / 100,
+  /** FIXED ₹ risk per trade — the hard cap (user-defined). */
+  maxRiskPerTrade: GATE_CONFIG.maxRiskPerTrade,
   /** Target ladder in R multiples: TP1 2R, TP2 3R, TP3 4R (R:R 1:2 / 1:3 / 1:4). */
   targetMultipliers: [2, 3, 4] as number[],
   /** Hard cap: the stop may never exceed this % of the premium. */
@@ -200,7 +202,10 @@ export function sizeOptionTrade(input: {
     costPerLot,
     budget,
     deployed,
-    riskAmount: deployed * PLAN_CONFIG.riskPctOfDeployed,
+    riskAmount: Math.min(
+      PLAN_CONFIG.maxRiskPerTrade,
+      deployed * PLAN_CONFIG.riskPctOfDeployed,
+    ),
     tradable: true,
     sizedFromBudget,
   };
@@ -232,9 +237,12 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   const minStopTicks = input.minStopTicks ?? PLAN_CONFIG.minStopTicks;
 
   // Rupee risk → premium points per unit
-  const wantedRisk = Number(input.riskAmount) > 0
-    ? Number(input.riskAmount)
-    : (tradable ? actualDeployed : entry * lotSize) * PLAN_CONFIG.riskPctOfDeployed;
+  const wantedRisk = Math.min(
+    PLAN_CONFIG.maxRiskPerTrade,
+    Number(input.riskAmount) > 0
+      ? Number(input.riskAmount)
+      : (tradable ? actualDeployed : entry * lotSize) * PLAN_CONFIG.riskPctOfDeployed,
+  );
   let riskPoints = wantedRisk / sizingUnits;
 
   // Guardrail 1: never let the stop exceed maxStopPct of the premium.

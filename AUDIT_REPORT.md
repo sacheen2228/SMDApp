@@ -61,7 +61,7 @@ CRITICAL FINDINGS:
 ## 4. Complete Trade Flow
 
 ```
-DATA COLLECTION (MOAPI → Breeze → NSE → BSE → Yahoo)
+DATA COLLECTION (ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol)
     ↓
 DATA NORMALIZATION (option-chain-normalizer, data-health, data-validation)
     ↓
@@ -205,7 +205,7 @@ No internal Node cron exists. All scheduling is external (systemd timers or manu
 6. Breadth (10 pts): sector breadth
 
 **Grades:** A+ (≥80), A (≥65), B (≥50), C (≥35), SKIP
-**Data:** Yahoo Finance (real candles), Breeze (spot price)
+**Data:** ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol (real candles via Breeze/MOAPI, spot via Breeze/MOAPI)
 **Risk:** Separate from intraday — uses ATR-based SL (1.5x ATR)
 **Telegram:** Only via explicit POST /api/btst?alert=1
 **Trade Registration:** YES — validateCandidateTrade → acquireTradeLock → recordSignal → createTrade
@@ -213,7 +213,7 @@ No internal Node cron exists. All scheduling is external (systemd timers or manu
 ## 12. Master Bot Architecture
 
 **Engine:** master-bot-engine.ts — NIFTY-SENSEX correlation trading
-**Data:** Yahoo Finance (daily/hourly/15m/5m/3m candles for both indices)
+**Data:** ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE (daily/hourly/15m/5m/3m candles for both indices)
 **Strategies:**
 1. Correlation Breakdown (corr5 < 0.94) → mean reversion
 2. Gap Fade (daily/1h only) → fade gaps > 0.5%
@@ -247,11 +247,11 @@ No internal Node cron exists. All scheduling is external (systemd timers or manu
 **Files:** src/lib/mcx/ (15 files) — scanner, intelligence, scorer, regime, structure, volatility, volume-oi, option-intel, session, types, market-data, instrument-master, nse-commodity-scraper, bhaavbrief, option-chain
 
 **Instruments:** CRUDEOIL, GOLD, SILVER, NATURALGAS
-**Data Source:** Yahoo Finance (primary), NSE commodity scraper (secondary)
+**Data Source:** ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol (commodity data via ICICI Breeze/MOAPI)
 **Scoring:** Unified scoring engine with MCX_COMMODITY profile
 **Telegram:** YES (via MCX intelligence API)
 **Risk:** Uses unified-scoring-engine's risk profile
-**No NSE/BSE logic incorrectly used** — MCX uses its own Yahoo Finance data path
+**No NSE/BSE logic incorrectly used** — MCX uses the canonical data provider chain
 
 ## 15. Data Source Map
 
@@ -261,12 +261,12 @@ No internal Node cron exists. All scheduling is external (systemd timers or manu
 | ICICI Breeze | Option chain + historical | 0.95 |
 | NSE India | Option chain + market status | 0.85 |
 | BSE India | SENSEX/BANKEX option chain | 0.80 |
-| Yahoo Finance | Stock prices, VIX, candles | 0.60 (research) |
+| Moneycontrol | Stock prices, VIX, candles | 0.60 (fallback) |
 | MrChartist | FII/DII 60-day history | 0.65 (delayed) |
 | NSE Commodity | MCX data | 0.85 |
 | RSS Feeds | News sentiment | 0.50 |
 
-**Fallback chain (option chain):** MOAPI → Breeze → NSE → BSE → 503 UNAVAILABLE
+**Fallback chain (option chain):** ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol → 503 UNAVAILABLE
 
 ## 16. Data Normalization
 

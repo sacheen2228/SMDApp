@@ -81,3 +81,28 @@ describe("parseExpiryDate / parseExpiryDateLoose", () => {
     expect(strict).toBeNull();
   });
 });
+
+describe("expiry-calculator.ts NSE_HOLIDAYS — canonical holiday list", () => {
+  test("contains all canonical 2026 holidays", async () => {
+    const { NSE_HOLIDAYS } = await import("@/lib/expiry-calculator");
+    const keyDates = [
+      "2026-01-26", // Republic Day
+      "2026-03-30", // Eid
+      "2026-04-02", // Ram Navami
+      "2026-04-14", // Ambedkar Jayanti
+      "2026-05-01", // Maharashtra Day
+      "2026-08-15", // Independence Day
+      "2026-09-14", // Ganesh Chaturthi
+      "2026-10-02", // Gandhi Jayanti
+      "2026-11-10", // Diwali-Balipratipada (real date, not 11-11)
+      "2026-11-24", // Guru Nanak Jayanti
+      "2026-12-25", // Christmas
+    ];
+    keyDates.forEach(d => expect(NSE_HOLIDAYS.has(d)).toBe(true));
+  });
+
+  test("does NOT contain the old wrong date 2026-11-11", async () => {
+    const { NSE_HOLIDAYS } = await import("@/lib/expiry-calculator");
+    expect(NSE_HOLIDAYS.has("2026-11-11")).toBe(false);
+  });
+});

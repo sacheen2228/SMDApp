@@ -88,7 +88,7 @@ After green only. Remove duplication. Improve names. Keep tests green.
 |---|---|---|
 | **Scoring engines** (SDM, CAS) | Score calculation, regime detection, thresholds | Unit tests with fixed inputs |
 | **Detection engines** (breakout, pullback, etc.) | Signal classification, scoring | Unit tests with known patterns |
-| **Data fallback chains** | NSE → BSE → MOAPI → Breeze → `NO_DATA` fallback order | Mock fetch, verify chain order |
+| **Data fallback chains** | ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol (live data); NSE → BSE → Moneycontrol (pre/post market); Yahoo banned | Mock fetch, verify chain order |
 | **Greeks calculator** | Black-Scholes math, edge cases | Known analytical values |
 | **Backtest engines** | Trade replay, P&L calculation, MFE/MAE | Fixed trade + candle data |
 | **CAS time engine** | Window detection, confirmation scoring | Fixed time + config inputs |

@@ -797,8 +797,15 @@ export interface SLTPCheckResult {
   hitTP3: ActiveTrade[];
 }
 
+export type SLTPHitHandler = (
+  trade: ActiveTrade,
+  hit: "SL_HIT" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT",
+  fill: number
+) => Promise<boolean>;
+
 export async function checkSLTP(
-  getCurrentPrice: (symbol: string, strike: number, optionType: string, expiry?: string) => Promise<number>
+  getCurrentPrice: (symbol: string, strike: number, optionType: string, expiry?: string) => Promise<number>,
+  onHit?: SLTPHitHandler
 ): Promise<SLTPCheckResult> {
   const hitSL: ActiveTrade[] = [];
   const hitTP1: ActiveTrade[] = [];
@@ -828,6 +835,20 @@ export async function checkSLTP(
         ? stopFillPrice(trade, currentPrice)
         : targetLevel(trade, hit);
 
+      // The event must be claimed/sent BEFORE the trade is marked closed.
+      // A failed alert leaves the trade monitored so the next scan retries.
+      if (onHit) {
+        let delivered = false;
+        try {
+          delivered = await onHit(trade, hit, fill);
+        } catch (err: any) {
+          console.warn(`[ActiveTrade] onHit failed for ${trade.symbol} (${trade.id}) on ${hit}: ${err?.message || String(err)}`);
+        }
+        if (!delivered) {
+          console.warn(`[ActiveTrade] ${hit} not delivered for ${trade.symbol} (${trade.id}) — status unchanged, will retry`);
+          continue;
+        }
+      }
       try {
         await updateTradeStatus(trade.id, hit, fill);
       } catch (err: any) {

@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
       strikeSelection = "AUTO",
       expiryType = "weekly",
       // THE PER-TRADE MODEL: the real account is ₹25,000 and the risk is 20% of
-      // the amount DEPLOYED (₹20,000 per trade ⇒ ₹4,000 at risk).
+      // the amount DEPLOYED, hard-capped at ₹2,000 (≤ ₹20,000 per trade).
       initialCapital = DEFAULT_CONFIG.initialCapital,
       maxRiskPct = DEFAULT_CONFIG.maxRiskPct,
       entryTime = "09:20",

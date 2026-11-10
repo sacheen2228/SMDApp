@@ -8,15 +8,18 @@ opencode --continue
 /compact
 # Morning
 cd ~/Desktop/SMDApp
-opencode --continue
+
+
 
 
 # Check model
 /models  → select MiMo V2.5 Free
 
 # Continue working...
+continue where I left off
 
-opencode --continue
+
+why 
 Ask	Gets
 QUICK COMMANDS
 

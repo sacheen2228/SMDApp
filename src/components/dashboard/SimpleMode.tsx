@@ -200,9 +200,14 @@ export const SimpleMode = memo(function SimpleMode({
 
   // Live data from summary (falls back to recommendation, then defaults)
   const livePCR = summary?.pcr ?? rec?.marketContext?.pcr ?? 0;
-  const liveVIX = summary?.indiaVIX ?? rec?.marketContext?.vix ?? 15;
+  // `liveVIXRaw` is numeric for computation; `vixLive` gates DISPLAY — never
+  // fabricate a live VIX reading when the exchange didn't publish one.
+  const liveVIXRaw = summary?.indiaVIX ?? (rec?.marketContext?.vix > 0 ? rec.marketContext.vix : undefined);
+  const vixLive = liveVIXRaw != null && Number.isFinite(liveVIXRaw) && liveVIXRaw > 0;
+  const liveVIX = liveVIXRaw ?? 15;
   const liveMaxPain = rec?.marketContext?.maxPain;
   const liveATM = summary?.atmStrike ?? rec?.strike ?? 0;
+  const liveATMValid = liveATM != null && Number.isFinite(liveATM) && liveATM > 0;
   const liveCEOI = summary?.totalCallOI ?? 0;
   const livePEOI = summary?.totalPutOI ?? 0;
   const isLive = dataSource && dataSource !== 'simulation';
@@ -210,9 +215,12 @@ export const SimpleMode = memo(function SimpleMode({
   const pivots = computePivots(spotPrice);
   const mood = computeMood(livePCR, liveVIX);
 
-  const isCall = rec?.direction === "CALL";
-  const isPut = rec?.direction === "PUT";
-  const isWait = rec?.direction === "WAIT";
+  // Derive direction from optionType (populated even when direction is WAIT
+  // by gates) so the trade card always reflects the actual leg type.
+  const hasValidTrade = rec?.entry > 0 && rec?.riskReward > 0;
+  const isCall = rec?.optionType === "CE" || rec?.direction === "CALL";
+  const isPut = rec?.optionType === "PE" || rec?.direction === "PUT";
+  const isWait = rec?.direction === "WAIT" && !hasValidTrade;
   const isLoading = !rec;
 
   const gradeColors: Record<string, string> = {
@@ -223,15 +231,17 @@ export const SimpleMode = memo(function SimpleMode({
     D: "bg-red-500 text-white",
   };
 
-  const actionLabel = isLoading ? "ANALYZING" : isWait ? "NO TRADE" : isCall ? "BUY CALL" : "BUY PUT";
-  const actionIcon = isLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : isWait ? <Pause className="w-5 h-5" /> : isCall ? <ArrowUp className="w-5 h-5" /> : <ArrowDown className="w-5 h-5" />;
+  const actionLabel = isLoading ? "ANALYZING" : isWait ? "NO TRADE" : isCall ? "BUY CALL" : isPut ? "BUY PUT" : "NO TRADE";
+  const actionIcon = isLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : isWait ? <Pause className="w-5 h-5" /> : isCall ? <ArrowUp className="w-5 h-5" /> : isPut ? <ArrowDown className="w-5 h-5" /> : <Pause className="w-5 h-5" />;
   const actionColor = isLoading
     ? "border-muted bg-muted/20"
     : isWait
     ? "border-muted bg-muted/30"
     : isCall
     ? "border-emerald-500/50 bg-emerald-500/10"
-    : "border-red-500/50 bg-red-500/10";
+    : isPut
+    ? "border-red-500/50 bg-red-500/10"
+    : "border-muted bg-muted/30";
 
   return (
     <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto overflow-auto">
@@ -283,7 +293,7 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">ATM</span>
-            <span className="font-bold tabular-nums text-primary">{liveATM}</span>
+            <span className="font-bold tabular-nums text-primary">{liveATMValid ? liveATM : "—"}</span>
           </div>
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
@@ -351,7 +361,7 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="space-y-1.5">
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">Strike</span>
-              <span className="font-bold tabular-nums text-base">{liveATM}</span>
+              <span className="font-bold tabular-nums text-base">{liveATMValid ? liveATM : "—"}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">Entry Prem</span>
@@ -359,10 +369,10 @@ export const SimpleMode = memo(function SimpleMode({
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">IV</span>
-              <span className="font-bold tabular-nums text-base">{liveVIX.toFixed(1)}%</span>
+              <span className="font-bold tabular-nums text-base">{vixLive ? `${liveVIX.toFixed(1)}%` : "—"}</span>
             </div>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
-              {liveVIX > 20 ? "IV elevated — options expensive" : liveVIX < 12 ? "IV low — options cheap" : "IV normal range"}
+              {!vixLive ? "" : liveVIX > 20 ? "IV elevated — options expensive" : liveVIX < 12 ? "IV low — options cheap" : "IV normal range"}
             </p>
           </div>
         </div>
@@ -374,7 +384,7 @@ export const SimpleMode = memo(function SimpleMode({
             <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Max Pain</span>
           </div>
           <div className="space-y-1.5">
-            {liveMaxPain != null ? (
+            {liveMaxPain != null && Number.isFinite(liveMaxPain) ? (
               <>
                 <div className="text-2xl font-black tabular-nums">{fmt(liveMaxPain)}</div>
                 <div className="flex justify-between text-sm">
@@ -390,7 +400,7 @@ export const SimpleMode = memo(function SimpleMode({
                 <p className="text-[10px] text-muted-foreground/70 mt-1">Market often gravitates here</p>
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">Awaiting SDM analysis...</p>
+              <p className="text-sm text-muted-foreground">—</p>
             )}
           </div>
         </div>
@@ -447,7 +457,7 @@ export const SimpleMode = memo(function SimpleMode({
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">VIX</span>
-              <span className="font-bold tabular-nums text-base">{liveVIX.toFixed(1)}</span>
+              <span className="font-bold tabular-nums text-base">{vixLive ? liveVIX.toFixed(1) : "—"}</span>
             </div>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
               {livePCR > 1.2 ? "Bullish — put writing dominates" : livePCR < 0.8 ? "Bearish — call writing dominates" : "Balanced market"}
@@ -533,9 +543,9 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="text-xs text-muted-foreground">{symbol} {spotPrice.toLocaleString("en-IN")}</div>
         </div>
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-xs">
-          <div><span className="text-muted-foreground">VIX</span><div className="font-bold">{liveVIX.toFixed(1)}%</div></div>
+          <div><span className="text-muted-foreground">VIX</span><div className="font-bold">{vixLive ? `${liveVIX.toFixed(1)}%` : "—"}</div></div>
           <div><span className="text-muted-foreground">PCR</span><div className="font-bold">{livePCR.toFixed(2)}</div></div>
-          <div><span className="text-muted-foreground">ATM</span><div className="font-bold">{liveATM}</div></div>
+          <div><span className="text-muted-foreground">ATM</span><div className="font-bold">{liveATMValid ? liveATM : "—"}</div></div>
           <div><span className="text-muted-foreground">CE OI</span><div className="font-bold text-red-500">{formatIndian(liveCEOI)}</div></div>
           <div><span className="text-muted-foreground">PE OI</span><div className="font-bold text-emerald-500">{formatIndian(livePEOI)}</div></div>
           <div><span className="text-muted-foreground">Max Pain</span><div className="font-bold">{liveMaxPain ? fmt(liveMaxPain) : '—'}</div></div>
@@ -546,7 +556,7 @@ export const SimpleMode = memo(function SimpleMode({
       <OIChangePanel
         symbol={symbol}
         spot={spotPrice}
-        vix={liveVIX}
+        vix={vixLive ? liveVIX : null}
         pcr={livePCR}
         expiries={expiries}
         selectedExpiry={selectedExpiry}

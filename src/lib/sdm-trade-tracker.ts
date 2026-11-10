@@ -111,12 +111,6 @@ export async function addTrade(
   confidence: number = 50,
   reason: string = ""
 ): Promise<TradeRecord | null> {
-  // SAFETY: Option selling is forbidden — reject sell directions at runtime
-  const direction = trade.side === 'BUY' ? 'BUY_CALL' : 'BUY_PE';
-  if (direction === 'BUY_CE' || direction === 'BUY_PE') {
-    console.error(`[SDM Trade Tracker] REJECTED: ${direction} — option selling is not allowed`);
-    return null;
-  }
   if (isExpiryDay && trades.length >= MAX_TRADES_EXPIRY) {
     return null;
   }

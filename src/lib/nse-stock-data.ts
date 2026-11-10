@@ -6,6 +6,7 @@
 
 import { fetchWithFallback, FallbackSource } from "./fetch-with-fallback";
 import { isIndexSymbol } from "./nse-api";
+import { nseGate } from "@/lib/market/nse-gate";
 
 const NSE_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -108,10 +109,17 @@ let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
 async function getNSECookie(): Promise<string> {
   if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
   try {
-    const res = await fetch("https://www.nseindia.com", {
-      headers: NSE_HEADERS,
-      signal: AbortSignal.timeout(8000),
-    });
+    // Cookie warm-up is an NSE request too — the shared gate keeps it inside
+    // the global rate limit (it used to add its own burst).
+    const res = await nseGate.call<any>(
+      "nse-cookie-warm",
+      async () =>
+        await fetch("https://www.nseindia.com", {
+          headers: NSE_HEADERS,
+          signal: AbortSignal.timeout(8000),
+        }),
+      { snapshot: false },
+    );
     const setCookie = res.headers.get("set-cookie") || "";
     const cookie = setCookie.split(";")[0] || "";
     nseCookieCache = { cookie, expiresAt: Date.now() + 5 * 60 * 1000 };
@@ -127,13 +135,12 @@ const NSE_INDEX_LISTS = ["NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 100", "NIFTY
 async function fetchFromNSEIndexList(indexName = "NIFTY 50"): Promise<NSEStockQuote[]> {
   try {
     const cookie = await getNSECookie();
-    const res = await fetch("https://www.nseindia.com/api/equity-stockIndices?index=" + encodeURIComponent(indexName), {
+    const res = await nseGate.fetchJson<any>("https://www.nseindia.com/api/equity-stockIndices?index=" + encodeURIComponent(indexName), {
+      key: `nse-index-list|${indexName}`,
+      timeoutMs: 10000,
       headers: { ...NSE_HEADERS, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
-      signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return [];
-    const json = await res.json();
-    const data = json?.data || [];
+    const data = res?.data || [];
     return data
       .filter((d: any) => d.symbol && d.lastPrice > 0)
       .map((d: any) => ({

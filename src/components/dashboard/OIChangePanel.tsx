@@ -108,7 +108,8 @@ export function OIChangePanel({
 }: {
   symbol: string;
   spot: number;
-  vix: number;
+  // null = the exchange published no VIX — render "—", never a made-up number.
+  vix: number | null;
   pcr: number;
   expiries?: ExpiryInfo[];
   selectedExpiry?: string;
@@ -416,7 +417,7 @@ export function OIChangePanel({
           ))}
         </div>
         <div className="text-[10px] text-muted-foreground">
-          INDIA VIX {Number(vix).toFixed(1)} PCR {Number(pcr).toFixed(2)}
+          INDIA VIX {vix != null && Number.isFinite(Number(vix)) && Number(vix) > 0 ? Number(vix).toFixed(1) : '—'} PCR {Number(pcr).toFixed(2)}
         </div>
       </div>
 

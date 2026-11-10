@@ -26,10 +26,10 @@ const DEFAULT_RISK_PER_TRADE_PCT = GATE_CONFIG.riskPctOfTrade; // 20% of the DEP
 // ─── Loss caps (2026-10-20) ─────────────────────────────────────────
 // THE CAPS ARE DERIVED FROM THE PER-TRADE MODEL, not from a % of a big account:
 //
-//   maxRiskPerTrade = ₹20,000 deployed × 20%          = ₹4,000  (one stop)
-//   maxDailyLoss    = min(capital × 40%, 2 stops)      = ₹8,000  (32% of ₹25,000)
-//   maxWeeklyLoss   = min(capital, daily × 2)         = ₹16,000 (64% of ₹25,000)
-//   maxMonthlyLoss  = min(capital, weekly × 2)        = ₹25,000 (the ACCOUNT — never more)
+//   maxRiskPerTrade = FIXED ₹2,000 (20% of deployed, hard-capped)  (one stop)
+//   maxDailyLoss    = min(capital × 40%, 2 stops)      = ₹4,000  (16% of ₹25,000)
+//   maxWeeklyLoss   = min(capital, daily × 2)         = ₹8,000  (32% of ₹25,000)
+//   maxMonthlyLoss  = min(capital, weekly × 2)        = ₹16,000 (64% of ₹25,000 — never more)
 //
 // The old numbers (daily ₹10,000 / weekly ₹20,000 / monthly ₹50,000) let the MONTHLY
 // cap exceed the whole ₹25,000 account, and the 40% daily cap was unreachable because
@@ -43,13 +43,13 @@ const DEFAULT_RISK_PER_TRADE_PCT = GATE_CONFIG.riskPctOfTrade; // 20% of the DEP
 //      app may hardcode a cap.
 //   2. RISK_LIMITS (below) is the DERIVED view: every cap is a pure function
 //      of GATE_CONFIG, so moving GATE_CONFIG moves every cap at once.
-//   3. The CONSECUTIVE-LOSS RULE IS THE BINDING ONE: one stop is ₹4,000 =
-//      16% of the ₹25,000 account, two stops = ₹8,000 = 32%. The 40% daily
+//   3. The CONSECUTIVE-LOSS RULE IS THE BINDING ONE: one stop is ₹2,000 =
+//      8% of the ₹25,000 account, two stops = ₹4,000 = 16%. The 40% daily
 //      cap (₹10,000) can never be reached first — the streak ends the
 //      session at two losses, which is exactly where the daily cap sits.
 //   4. EVERY cap is ≤ the account. The old monthly cap (₹50,000) was 2× the
 //      whole account and could therefore never bind.
-const RISK_PER_TRADE_AMOUNT = Math.round((GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade) / 100);
+const RISK_PER_TRADE_AMOUNT = GATE_CONFIG.maxRiskPerTrade;
 const DAILY_LOSS_FROM_PCT = Math.round((DEFAULT_CAPITAL * GATE_CONFIG.maxDailyLossPct) / 100);
 const DAILY_LOSS_FROM_STREAK = RISK_PER_TRADE_AMOUNT * GATE_CONFIG.maxConsecutiveLosses;
 const DAILY_LOSS_CAP = Math.min(DAILY_LOSS_FROM_PCT, DAILY_LOSS_FROM_STREAK);
@@ -63,7 +63,7 @@ export const RISK_LIMITS = {
   perTradeBudget: GATE_CONFIG.tradeBudget,
   /** risk = 20% of the amount deployed */
   riskPctOfTrade: GATE_CONFIG.riskPctOfTrade,
-  /** ₹ at risk on ONE trade (₹20,000 × 20% = ₹4,000) */
+  /** ₹ at risk on ONE trade — FIXED ₹2,000 cap (20% of deployed, never more) */
   maxRiskPerTrade: RISK_PER_TRADE_AMOUNT,
   /** ₹ loss that ends the day (two stops) */
   maxDailyLoss: DAILY_LOSS_CAP,
@@ -81,7 +81,7 @@ export const RISK_LIMITS = {
    * deployments, so this is the real concurrent-exposure cap.
    */
   maxOpenDeployed: GATE_CONFIG.tradeBudget,
-  /** Σ ₹ AT RISK of the OPEN trades (₹8,000 — the day's risk budget = 2 stops) */
+  /** Σ ₹ AT RISK of the OPEN trades (₹4,000 — the day's risk budget = 2 stops) */
   maxOpenRisk: DAILY_LOSS_CAP,
 } as const;
 
@@ -98,11 +98,11 @@ export function perTradeDeploymentBudget(capital?: number): number {
   return Math.min(GATE_CONFIG.tradeBudget, acct);
 }
 
-/** ₹ at risk on ONE trade — 20% of the amount deployed. */
+/** ₹ at risk on ONE trade — 20% of the amount deployed, capped at the fixed per-trade risk. */
 export function perTradeRiskBudget(deployedAmount: number, riskPct = DEFAULT_RISK_PER_TRADE_PCT): number {
   const deployed = Number(deployedAmount) || 0;
   const pct = Math.min(GATE_CONFIG.riskPctOfTrade, Math.max(0.1, Number(riskPct) || DEFAULT_RISK_PER_TRADE_PCT));
-  return (deployed * pct) / 100;
+  return Math.min(GATE_CONFIG.maxRiskPerTrade, (deployed * pct) / 100);
 }
 
 // ─── Default Risk Config ──────────────────────────────────────────
@@ -246,7 +246,7 @@ export function updateRiskState(state: RiskState, tradePnL: number): RiskState {
 // path now runs BEFORE an alert leaves the app.
 //
 //   1. evaluateLossCaps()        — daily / weekly / monthly loss + loss streak
-//   2. evaluateConcurrentExposure() — Σ deployed ≤ ₹20,000, Σ risk ≤ ₹8,000
+//   2. evaluateConcurrentExposure() — Σ deployed ≤ ₹20,000, Σ risk ≤ ₹4,000
 //   3. evaluateSignalRiskLimits() — both, in one verdict
 //   4. loadJournalRiskState()    — the real numbers: the journal (realised
 //      P&L + streak) + the open book (the in-memory tracker + the journal's
@@ -341,10 +341,10 @@ export function evaluateLossCaps(
  * Concurrent exposure: the money committed and the money at risk.
  *
  *   Σ deployed ≤ the open-deployment budget (₹20,000 — the per-trade budget)
- *   Σ risk     ≤ the open-risk budget (₹8,000 — the day's risk budget = 2 stops)
+ *   Σ risk     ≤ the open-risk budget (₹4,000 — the day's risk budget = 2 stops)
  *
  * The account is ₹25,000, so two full-size ₹20,000 deployments (₹40,000
- * committed, ₹8,000 = 32% at risk) can never be funded: the deployment cap
+ * committed, ₹4,000 = 16% at risk) can never be funded: the deployment cap
  * binds first and the second trade is refused.
  *
  * FAIL CLOSED:
@@ -390,6 +390,13 @@ export function evaluateConcurrentExposure(
   if (totalRisk > riskCap) {
     reasons.push(
       `risk ${inr(totalRisk)} exceeds the ${inr(riskCap)} risk budget (open ${inr(openRisk)} + new ${inr(newRisk)})`,
+    );
+  }
+  // ONE trade may never risk more than the fixed per-trade cap — regardless
+  // of how much headroom the open book has.
+  if (newRisk > limits.maxRiskPerTrade) {
+    reasons.push(
+      `risk ${inr(newRisk)} exceeds the ${inr(limits.maxRiskPerTrade)} per-trade risk cap — tighten the stop or use a spread`,
     );
   }
   return { blocked: reasons.length > 0, reasons, limits };

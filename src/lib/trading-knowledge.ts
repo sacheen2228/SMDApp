@@ -489,15 +489,15 @@ An option is a BET on where the price will go. You pay a small amount (premium) 
 ## ═══════════════════════════════════════════════════════════════
 
 ### THE PER-TRADE RULE (2026-10-20 — THIS REPLACES THE OLD PER-ACCOUNT RULE)
-- Risk is a RUPEE amount: **20% of the amount DEPLOYED in that trade**
+- Risk is a RUPEE amount: **20% of the amount DEPLOYED in that trade, capped at ₹2,000**
 - Deploy at most **₹20,000 in one trade** (the per-trade cap)
 - Example: deploy ₹10,000 → risk ₹2,000 → stop ₹2,000 below entry (in points)
-- Deploy ₹20,000 → risk ₹4,000 → the stop is the premium × 20%
-- The account is **₹25,000**. Two stops end the day (₹8,000 loss cap).
-- NEVER risk more than 20% of what you put into a trade. NEVER deploy more than ₹20,000 in one trade.
+- Deploy ₹20,000 → risk **₹2,000** (20% would be ₹4,000 — the cap takes ₹2,000)
+- The account is **₹25,000**. Two stops end the day (₹4,000 loss cap).
+- NEVER risk more than ₹2,000 per trade. NEVER deploy more than ₹20,000 in one trade.
 
 ### STOP LOSS FORMULA
-- SL points = (₹ deployed × 20%) ÷ (units bought) — the rupee risk per unit
+- SL points = min(₹ deployed × 20%, ₹2,000) ÷ (units bought) — the rupee risk per unit
 - Cap: the stop may never be more than 35% of the premium (the rupee risk shrinks, never grows)
 - Floor: the stop is never tighter than 8 ticks (₹0.40) — a cheap option is not stopped out by noise
 - ALWAYS set SL before entering. NEVER remove it.
@@ -509,17 +509,17 @@ An option is a BET on where the price will go. You pay a small amount (premium) 
 
 ### POSITION SIZING FORMULA
 - Deployed budget = min(₹20,000 per-trade cap, ₹25,000 account) = ₹20,000
-- Risk budget = 20% of the DEPLOYED amount = ₹4,000
-- Lots = min( ₹4,000 ÷ (risk per lot) , ₹20,000 ÷ (premium per lot) )
+- Risk budget = min(20% of the DEPLOYED amount, ₹2,000) = ₹2,000 (the hard cap)
+- Lots = min( ₹2,000 ÷ (risk per lot) , ₹20,000 ÷ (premium per lot) )
 - Risk per lot = (Entry - SL) × Lot Size
 - Example: Entry ₹100, SL ₹80 (1R = ₹20), Lot 65 → risk per lot = ₹1,300
-- Lots = min( 4,000 ÷ 1,300 , 20,000 ÷ (100 × 65) ) = min(3, 3) = 3 lots (₹19,500 deployed, ₹3,900 at risk)
+- Lots = min( 2,000 ÷ 1,300 , 20,000 ÷ (100 × 65) ) = min(1, 3) = 1 lot (₹6,500 deployed, ₹1,300 at risk)
 
 ### DAILY RULES
 1. MAX 2 trades per day. No exceptions.
-2. Risk 20% of the amount deployed per trade (≤ ₹20,000 deployed).
+2. Risk 20% of the amount deployed per trade, capped at ₹2,000 (≤ ₹20,000 deployed).
 3. Set SL and TP BEFORE entering. Use GTT orders.
-4. Two losing trades in a row → stop for the day (₹8,000 daily loss cap).
+4. Two losing trades in a row → stop for the day (₹4,000 daily loss cap = two stops).
 5. Close all positions by 3:15 PM (avoid expiry chaos).
 6. If no setup matches, DO NOT FORCE a trade.
 7. Keep a journal. Review every weekend.
@@ -763,7 +763,7 @@ When responding:
 1. Be DIRECT. Use bullet points. No fluff.
 2. Always include: Strike, Entry, SL, TP, Confidence, R:R if giving a trade.
 3. Use Indian market terms: CE/PE, lot size, premium, OI, PCR, max pain.
-4. Risk warning: "Risk 20% of the amount deployed (≤ ₹20,000 per trade) — ₹4,000 at risk on a full-size trade."
+ 4. Risk warning: "Risk 20% of the amount deployed, capped at ₹2,000 (≤ ₹20,000 per trade) — never risk more than ₹2,000 on any trade."
 5. If confidence < 85%, say NO TRADE. Never force a trade.
 6. Format: **bold** for key values, bullet points for lists.
 7. Keep responses under 250 words unless asked for detail.

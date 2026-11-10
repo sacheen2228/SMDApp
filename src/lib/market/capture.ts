@@ -6,13 +6,15 @@ import { getNSEIndiaVIX } from "@/lib/nse-api";
 import { getNSEGainers, getNSELosers, getNSEOptionChain } from "@/lib/nse-api";
 import { getBSEOptionChain, getBSEExpiryDates } from "@/lib/bse-api";
 import { calculateGreeks } from "@/lib/greeks";
-import { fetchCandlesWithFallback, type CandleChainFailure } from "@/lib/market/candle-chain";
+import { fetchCandlesWithFallback, normalizeInterval, type CandleChainFailure } from "@/lib/market/candle-chain";
 import { reportSessionRecovery, classifySourceError, getSessionHealth, type FailureKind } from "@/lib/session-health";
 import { buildCanonicalSnapshot, type CanonicalMarketSnapshot, type OptionLeg, type Candle } from "@/lib/market/canonical";
 import { recordSnapshot, recordCandles } from "@/lib/market-history-client";
 import { getRecorderMode, getIntervalSeconds, RECORDER_SYMBOLS, type RecorderMode } from "@/lib/market/recorder-config";
 
-export { RECORDER_SYMBOLS };
+// Re-exported here so quant/premarket modules can normalize intervals without
+// importing the chain itself (import scan: only this module may touch it).
+export { RECORDER_SYMBOLS, normalizeInterval };
 
 // Recorder runtime state (in-memory, per server process). Surfaced by the Status endpoint.
 interface RecorderState {
@@ -301,9 +303,9 @@ export async function captureAndStore(symbol: string, raw: RawMarketData, bucket
  * only be imported by this module (architecture test: backtest/evaluation modules
  * must stay isolated from live capture), so live signal cards read candles here.
  */
-export async function getLiveCandles(symbol: string, interval: string) {
+export async function getLiveCandles(symbol: string, interval: string, date = new Date().toISOString().slice(0, 10)) {
   const { fetchCandlesWithFallback } = await import("./candle-chain");
-  const res = await fetchCandlesWithFallback(symbol, new Date().toISOString().slice(0, 10), interval);
+  const res = await fetchCandlesWithFallback(symbol, date, interval);
   return {
     candles: res.candles || [],
     source: res.source,

@@ -134,6 +134,36 @@ model NotificationEvent {
   @@index([createdAt])
 }
 
+// ── Entry alert claim (atomic, persistent, cross-process) ────────────────────
+// One row per trade date + contract + side + strategy. The create() is the
+// atomic claim: P2002 means another process already owns this exact entry.
+// PENDING rows are retryable; SENT rows are never re-sent.
+model AlertClaim {
+  id                 String   @id @default(cuid())
+  tradeDate          String   // IST trading date YYYY-MM-DD (never null)
+  expiry             String   // contract expiry YYYY-MM-DD (NA for cash equity)
+  symbol             String
+  strike             Float
+  optionType         String   // CE | PE | EQ
+  side               String   // BUY | SELL
+  strategy           String   // stable producer id, e.g. sdm-v2-engine
+  status             String   @default("PENDING") // PENDING | PROCESSING | SENT | FAILED
+  attempts           Int      @default(0)
+  maxAttempts        Int      @default(3)
+  payload            String   // JSON: rendered message + alert params for retry
+  tradeId            String?
+  tradeRegistered    Boolean  @default(false)
+  registrationError  String?
+  lastError          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  sentAt             DateTime?
+
+  @@unique([tradeDate, expiry, symbol, strike, optionType, side, strategy])
+  @@index([status, updatedAt])
+  @@index([tradeDate, symbol, optionType, side])
+}
+
 model DomAnalysis {
   id                String   @id @default(cuid())
   symbol            String

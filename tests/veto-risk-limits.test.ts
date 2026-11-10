@@ -74,9 +74,9 @@ describe("the caps are derived from GATE_CONFIG and fit the ₹25,000 account", 
     expect(GATE_CONFIG.maxDailyLossPct).toBe(40);
   });
 
-  test("one stop is 20% of the deployed amount (₹4,000 ≈ 16% of the account)", () => {
-    expect(RISK_LIMITS.maxRiskPerTrade).toBe(4_000);
-    expect(RISK_LIMITS.maxRiskPerTrade / RISK_LIMITS.capital).toBeCloseTo(0.16, 4);
+  test("one stop is the fixed ₹2,000 cap (≈ 8% of the account)", () => {
+    expect(RISK_LIMITS.maxRiskPerTrade).toBe(2_000);
+    expect(RISK_LIMITS.maxRiskPerTrade / RISK_LIMITS.capital).toBeCloseTo(0.08, 4);
   });
 
   test("the daily / weekly / monthly caps are all ≤ the account", () => {
@@ -84,7 +84,7 @@ describe("the caps are derived from GATE_CONFIG and fit the ₹25,000 account", 
     expect(RISK_LIMITS.maxWeeklyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
     // the monthly cap used to be ₹50,000 — 2× the whole account
     expect(RISK_LIMITS.maxMonthlyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
-    expect(RISK_LIMITS.maxMonthlyLoss).toBe(25_000);
+    expect(RISK_LIMITS.maxMonthlyLoss).toBe(16_000);
   });
 
   test("the caps are monotone (a bigger bucket allows a bigger loss)", () => {
@@ -93,7 +93,7 @@ describe("the caps are derived from GATE_CONFIG and fit the ₹25,000 account", 
   });
 
   test("the streak rule is the BINDING one — it stops the day before the 40% cap", () => {
-    // two stops = ₹8,000 = 32% of the account; the 40% daily cap (₹10,000)
+    // two stops = ₹4,000 = 16% of the account; the 40% daily cap (₹10,000)
     // can never be reached first.
     expect(RISK_LIMITS.maxDailyLoss).toBe(RISK_LIMITS.maxRiskPerTrade * GATE_CONFIG.maxConsecutiveLosses);
     expect(RISK_LIMITS.maxDailyLoss).toBeLessThan((RISK_LIMITS.capital * GATE_CONFIG.maxDailyLossPct) / 100);
@@ -180,7 +180,7 @@ describe("the veto enforces the CONCURRENT EXPOSURE", () => {
     const r = evaluateSignalVeto({
       ...base,
       deployedAmount: 20_000,
-      riskAmount: 4_000,
+      riskAmount: 2_000,
       riskState: cleanBook,
     });
     expect(r.verdict).toBe("PASS");
@@ -225,7 +225,7 @@ describe("the veto enforces the CONCURRENT EXPOSURE", () => {
       openDeployed: 40_000,
       openRisk: 8_000,
       newDeployed: 20_000,
-      newRisk: 4_000,
+      newRisk: 2_000,
     });
     expect(v.blocked).toBe(true);
     expect(v.reasons.join(" ")).toMatch(/deployed/i);

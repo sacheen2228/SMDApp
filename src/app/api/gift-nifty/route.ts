@@ -1,56 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getNSEIndices } from '@/lib/nse-api';
 
-// GIFT NIFTY (SGX) is no longer quoted by any free source — the documented
-// proxy is the NSE NIFTY 50 spot (AGENTS.md: Gift NIFTY → `^NSEI`).
-const YAHOO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-
-interface YahooQuote {
-  regularMarketPrice: number;
-  previousClose: number;
-  change: number;
-  changePct: number;
-  name: string;
-}
-
-/**
- * NIFTY 50 spot from Yahoo (`^NSEI`). Secondary source: NSE can be
- * IP-blocked (Akamai 403), in which case the primary returns nothing.
- */
-async function fetchYahooNifty(): Promise<YahooQuote | null> {
-  try {
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?range=1d&interval=1d';
-    const res = await fetch(url, {
-      headers: { 'User-Agent': YAHOO_UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const meta = json?.chart?.result?.[0]?.meta;
-    const price = Number(meta?.regularMarketPrice);
-    const prevClose = Number(meta?.chartPreviousClose ?? meta?.previousClose);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(prevClose) || prevClose <= 0) return null;
-    const change = price - prevClose;
-    return {
-      regularMarketPrice: price,
-      previousClose: prevClose,
-      change,
-      changePct: (change / prevClose) * 100,
-      name: 'NIFTY 50',
-    };
-  } catch {
-    return null;
-  }
-}
+// GIFT NIFTY (SGX) is no longer quoted by any free source. The ONLY honest
+// source this route can use is the NSE NIFTY 50 spot, which is a PROXY for the
+// overnight GIFT NIFTY gap — NOT the SGX contract itself. Every response is
+// therefore labelled `isProxy: true` so no caller can present it as the real
+// GIFT NIFTY. There is no Yahoo fallback (Yahoo is not a data source here).
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const spotPrice = parseFloat(searchParams.get('spot') || '0');
+    // `spot` is accepted for backwards-compatible callers but the exchange
+    // spot below is always authoritative.
+    const _spot = parseFloat(searchParams.get('spot') || '0');
 
-    // Primary: exchange (NSE) spot.
-    let data: YahooQuote | null = null;
-    let source = 'live';
+    // Single source: exchange (NSE) NIFTY 50 spot.
+    let data: {
+      regularMarketPrice: number;
+      previousClose: number;
+      change: number;
+      changePct: number;
+      name: string;
+    } | null = null;
     try {
       const nseIdx = await getNSEIndices();
       const nifty = nseIdx?.find((i: any) => String(i.key).toUpperCase() === 'NIFTY');
@@ -64,13 +35,7 @@ export async function GET(request: NextRequest) {
         };
       }
     } catch {
-      // fall through to Yahoo
-    }
-
-    // Secondary: Yahoo `^NSEI` (the documented proxy).
-    if (!data) {
-      data = await fetchYahooNifty();
-      source = 'yahoo';
+      // no data — fall through to the honest 503 below
     }
 
     if (data && data.regularMarketPrice && data.previousClose) {
@@ -83,14 +48,22 @@ export async function GET(request: NextRequest) {
         previousClose: data.previousClose,
         gap,
         gapPct: data.previousClose > 0 ? (gap / data.previousClose) * 100 : 0,
-        source,
+        source: 'nse',
+        // Honest provenance: the GIFT NIFTY (SGX) contract is not available;
+        // this is the NSE NIFTY 50 spot used as an overnight-gap proxy.
+        isProxy: true,
+        proxyFor: 'GIFTNIFTY',
+        proxySource: 'NSE NIFTY 50 spot',
+        label: 'NIFTY 50 spot (GIFT NIFTY proxy)',
+        timestamp: new Date().toISOString(),
+        freshness: 'LIVE',
       });
     }
 
-    // Do NOT fabricate data. If both sources fail, return 503 so callers know
-    // data is unavailable.
+    // Do NOT fabricate data. If NSE is unavailable, return 503 so callers know
+    // the (proxy) data is unavailable.
     return NextResponse.json(
-      { success: false, error: 'Gift Nifty data unavailable — NSE and Yahoo both failed' },
+      { success: false, error: 'Gift Nifty proxy unavailable — NSE NIFTY 50 spot did not load' },
       { status: 503 },
     );
   } catch (error: any) {

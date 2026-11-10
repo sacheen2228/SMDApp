@@ -520,8 +520,8 @@ export async function buildMarketIntelligenceContext(
   if (regimeData.regime !== "UNKNOWN") sourcesUsed.push("Regime:Engine");
   if (newsData.headlines.length > 0) sourcesUsed.push("RSS:News");
   if (fiiData.fii.net !== 0 || fiiData.dii.net !== 0) sourcesUsed.push("NSE:FII-DII");
-  if (giftNiftyData) sourcesUsed.push("Yahoo:GiftNifty");
-  if (stockQuotesData.length > 0) sourcesUsed.push("Yahoo:StockQuotes");
+  if (giftNiftyData) sourcesUsed.push("NSE:NIFTY50-Proxy(gift)");
+  if (stockQuotesData.length > 0) sourcesUsed.push("NSE:StockQuotes");
 
   // Determine data quality
   let dataQuality: "REAL" | "PARTIAL" | "DEGRADED" = "REAL";

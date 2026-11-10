@@ -97,10 +97,10 @@ describe("veto regression — frozen ledger snapshot", () => {
     // If the veto configuration changes, this hash changes and the frozen
     // expectations above must be re-checked on purpose.
     //
-    // Re-pinned 2026-10-20 for the PER-TRADE capital model (GATE_CONFIG:
-    // capital ₹25,000, riskPctOfTrade 20, tradeBudget ₹20,000, maxConsecutive
-    // Losses 2, maxDailyLossPct 40). The frozen verdict counts above were
-    // re-checked against the new config and are UNCHANGED.
-    expect(configHash()).toBe("c317ce55972728ce");
+    // Re-pinned 2026-11-10 for the FIXED ₹2,000 per-trade risk cap + min R:R 1:2
+    // (GATE_CONFIG: capital ₹25,000, riskPctOfTrade 20, tradeBudget ₹20,000,
+    // maxRiskPerTrade ₹2,000, minOptionRR 2, maxConsecutive Losses 2). The frozen
+    // verdict counts above were re-checked against the new config and are UNCHANGED.
+    expect(configHash()).toBe("128cb2a42e13fa63");
   });
 });

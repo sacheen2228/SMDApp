@@ -9,6 +9,7 @@ import type {
 } from "./types";
 import { classifyFreshness, classifyFreshnessMs } from "./freshness";
 import { getRequiredTools } from "./tool-registry";
+import { NSE_HOLIDAYS } from "../expiry-calculator";
 
 const BASE = ""; // Same-origin API calls
 
@@ -45,7 +46,7 @@ function wrapFresh<T>(
   if (value === null) {
     return {
       value: null as any,
-      source: "yahoo",
+      source: "unknown",
       timestamp: new Date().toISOString(),
       ageMs: 0,
       freshness: "UNAVAILABLE",
@@ -160,7 +161,7 @@ export async function collectHermesContext(
       low: summary?.low || spotPrice,
       volume: summary?.volume || 0,
     },
-    source: toProvider(chainProv.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "yahoo"),
+    source: toProvider(chainProv.source || data.optionChain?.data?.dataSource, data.optionChain ? "nse" : "unknown"),
     timestamp: data.optionChain?.lastUpdate || now.toISOString(),
     ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
     freshness: spotPrice > 0 ? (chainProv.freshness as any || "LIVE") : "UNAVAILABLE",
@@ -280,7 +281,7 @@ export async function collectHermesContext(
   const vixValue = summary?.indiaVIX || data.regime?.vix || 15;
   const vix: FreshData<number> = {
     value: vixValue,
-    source: toProvider(chainProv.source, data.optionChain ? "nse" : "yahoo"),
+    source: toProvider(chainProv.source, data.optionChain ? "nse" : "unknown"),
     timestamp: data.optionChain?.lastUpdate || now.toISOString(),
     ageMs: data.optionChain?.lastUpdate ? Date.now() - new Date(data.optionChain.lastUpdate).getTime() : 0,
     freshness: vixValue > 0 ? ((chainProv.freshness as any) || "LIVE") : "UNAVAILABLE",
@@ -319,14 +320,14 @@ export async function collectHermesContext(
       headlines: (newsData.articles || []).slice(0, 5).map((a: any) => a.title?.substring(0, 100) || ""),
       highImpactEvents: [],
     },
-    source: "yahoo",
+    source: "website",
     timestamp: newsData?.lastUpdate || now.toISOString(),
     ageMs: newsData?.lastUpdate ? Date.now() - new Date(newsData.lastUpdate).getTime() : 0,
     freshness: classifyFreshnessMs(newsData?.lastUpdate ? Date.now() - new Date(newsData.lastUpdate).getTime() : 0, "news"),
     status: "SUCCESS",
     delayed: false,
     fallbackUsed: newsProv.fallbackUsed,
-  } : wrapFresh(null, "yahoo", "news");
+  } : wrapFresh(null, "website", "news");
 
   // Regime
   const regimeProv = provenanceOf(data.regime);
@@ -458,14 +459,14 @@ export async function collectHermesContext(
       avgWin: data.backtest.summary?.avgWin || 0,
       avgLoss: data.backtest.summary?.avgLoss || 0,
     },
-    source: "yahoo",
+    source: "nse",
     timestamp: data.backtest?.retrievedAt || now.toISOString(),
     ageMs: 0,
     freshness: "BACKFILLED",
     status: "SUCCESS",
     delayed: false,
     fallbackUsed: btProv.fallbackUsed,
-  } : wrapFresh(null, "yahoo", "backtest");
+  } : wrapFresh(null, "nse", "backtest");
 
   // MCX Intelligence (only for MCX commodities)
   const mcxFresh = isMCX && data.mcxIntel ? {
@@ -543,11 +544,9 @@ function getRequiredToolsForMode(mode: HermesMode): string[] {
   }
 }
 
-// NSE/BSE trading holidays 2026
-const NSE_HOLIDAYS = new Set([
-  '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-  '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
-]);
+// NSE/BSE trading holidays — canonical list in expiry-calculator (this file's
+// own copy said `2026-11-11` for Diwali-Balipratipada, real: 2026-11-10, and
+// had no 2026-11-24).
 
 function determineMarketStatus(now: Date): any {
   // Shift epoch by +5:30 then read with UTC getters → correct IST wall-clock

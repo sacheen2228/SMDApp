@@ -2,6 +2,8 @@
 // Controls when monitors should run and when to sleep
 // No unnecessary polling when market is closed
 
+import { NSE_HOLIDAYS } from '../expiry-calculator';
+
 // ─── Session Types ────────────────────────────────────────────────
 export type MarketSession =
   | 'PRE_MARKET'        // 06:00-09:15 NSE / before MCX open
@@ -14,24 +16,12 @@ export type MarketSession =
 
 export type MarketId = 'NSE' | 'MCX' | 'BSE';
 
-// ─── NSE 2026 Holidays ───────────────────────────────────────────
-const NSE_HOLIDAYS_2026 = new Set([
-  '2026-01-26', // Republic Day
-  '2026-03-10', // Holi
-  '2026-03-30', // Eid
-  '2026-04-02', // Ram Navami
-  '2026-04-14', // Ambedkar Jayanti
-  '2026-05-01', // Maharashtra Day
-  '2026-08-15', // Independence Day
-  '2026-09-14', // Ganesh Chaturthi
-  '2026-10-02', // Gandhi Jayanti
-  '2026-11-11', // Diwali Balipratipada
-  '2026-12-25', // Christmas
-]);
-
-// MCX has additional holidays (commodity-specific)
-const MCX_HOLIDAYS_2026 = new Set([
-  ...NSE_HOLIDAYS_2026,
+// MCX has additional holidays (commodity-specific). NSE list is the canonical
+// calendar in expiry-calculator — this file's own copy said `2026-11-11` for
+// Diwali-Balipratipada (real: 2026-11-10) and had no 2026-11-24, so the
+// scheduler kept polling on the holiday.
+const MCX_HOLIDAYS = new Set([
+  ...NSE_HOLIDAYS,
   '2026-01-01', // New Year
   '2026-11-03', // Diwali (Laxmi Pujan) - special MCX session
 ]);
@@ -118,8 +108,8 @@ export function getCurrentSession(now?: Date): {
   const dateKey = formatDateKey(ist);
   const day = getDayOfWeek(ist);
   const isWeekend = day === 0 || day === 6;
-  const isNSEHoliday = NSE_HOLIDAYS_2026.has(dateKey);
-  const isMCXHoliday = MCX_HOLIDAYS_2026.has(dateKey);
+  const isNSEHoliday = NSE_HOLIDAYS.has(dateKey);
+  const isMCXHoliday = MCX_HOLIDAYS.has(dateKey);
   const expiry = isExpiryDay(now);
 
   // Holiday

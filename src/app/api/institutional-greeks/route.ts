@@ -9,9 +9,10 @@ import {
   type StrikeInput,
   type MarketContext,
 } from "@/lib/option-acceleration-engine";
-import { fetchLiveOptionChain } from "@/lib/live-option-chain";
+import { fetchLiveOptionChain, resolveVix } from "@/lib/live-option-chain";
 import { getNearestExpiry, isExpiryDay } from "@/lib/expiry-calculator";
 import { getNSEATR14 } from "@/lib/nse-api";
+import { getTradingSession } from "@/lib/expiry-liquidity/market-session-config";
 
 export async function GET(request: NextRequest) {
   try {
@@ -54,7 +55,9 @@ export async function GET(request: NextRequest) {
     }));
 
     const spot = summary.spotPrice;
-    const vix = summary.indiaVIX || 0;
+    // Never `indiaVIX || 0`: a missing VIX used to become a real-looking 0% and
+    // collapsed expectedMove to ±0.0 and every IV-driven score with it.
+    const { vix, source: vixSource } = resolveVix(summary, rawStrikes, spot);
     const pcr = summary.pcr;
     const maxPain = summary.maxPain;
     const atmStrike = summary.atmStrike;
@@ -62,16 +65,16 @@ export async function GET(request: NextRequest) {
     const callOI = summary.totalCallOI;
     const putOI = summary.totalPutOI;
     const callOiChg = summary.callOiChange;
-    const putOiChg = summary.putOiChange;
+    const putOiChg = summary.putOiChg;
 
-    const expectedMove = spot * (vix / 100) * Math.sqrt(1 / 365);
+    const expectedMove = spot * ((vix ?? 0) / 100) * Math.sqrt(1 / 365);
+    const expectedMoveAvailable = vixSource !== 'none';
 
     const now = new Date();
-    const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
-    const ist = new Date(istMs);
-    const istMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-    const istWeekday = ist.getUTCDay(); // 0 = Sunday
-    const isMarketOpen = istWeekday >= 1 && istWeekday <= 5 && istMinutes >= 555 && istMinutes <= 930;
+    // Weekday+time alone said "open" on exchange holidays — the shared session
+    // clock also consults the holiday calendar, so this can never disagree.
+    const tradingSession = getTradingSession(now);
+    const isMarketOpen = tradingSession === "OPEN" || tradingSession === "REGULAR";
 
     const marketOpenDate = new Date(now);
     marketOpenDate.setHours(9, 15, 0, 0);
@@ -118,6 +121,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       source: result.source,
+      vixSource,
       data: engineResult,
     });
   } catch (error: any) {

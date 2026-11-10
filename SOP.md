@@ -13,27 +13,47 @@ documents the *data contract*.
 
 ## 1. Provider hierarchy (authoritative)
 
+**Live data candles & quotes** — broker feeds first, then exchange archives:
 ```
-Option chain (indices + equities)
-  NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY  →  NSE primary
-  SENSEX / BANKEX                            →  BSE primary  (NSE has no contract)
-  NSE equities (RELIANCE, …)                 →  NSE primary
-  Fallback: MOAPI  →  Breeze (opt-in, last resort)  →  NO_DATA
-  Yahoo             →  NOT a data source anywhere — unavailable data ⇒ NO_DATA
-
-  Canonical evaluation order in every chain path:
-    1. NSE (if not a BSE index)   2. BSE (if a BSE index)
-    3. MOAPI                       4. Breeze
+Option chain / candles / greeks / spot / OI-PCR
+  ICICI Breeze (authenticated broker feed) → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol
+  NSE equities / indices → NSE primary   SENSEX / BANKEX → BSE primary
+  Yahoo → NOT a data source anywhere — unavailable data ⇒ NO_DATA
 ```
 
-| Data | Primary | Fallback | Terminal state |
+**PRE / POST market data** (pre-open book, bhavcopy, FII/DII, gainers/losers):
+```
+Exchange archives only — NSE → BSE → Moneycontrol
+(Broker feeds do not carry pre-open books or end-of-day bhavcopy.)
+```
+
+**News**: Moneycontrol → NSE India  
+**VIX**: NSE `indiaVIX` → ICICI Breeze → MOAPI  
+**FII/DII**: NSE India → MrChartist history  
+**Market status**: NSE → BSE  
+
+**Canonical evaluation order per category** (first valid answer wins, never merged):
+| Category | Provider order |
+|---|---|
+| Quotes / Option chain / Candles / Greeks / OI-PCR / Max-pain / Spot / Index quote | ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol |
+| Candles (indices) | ICICI Breeze → MOAPI → NSE index chart |
+| Candles (stocks) | ICICI Breeze → MOAPI |
+| News | Moneycontrol → NSE India |
+| VIX | NSE `indiaVIX` → ICICI Breeze → MOAPI |
+| FII/DII | NSE India → MrChartist history |
+| Market status | NSE → BSE |
+| Pre-open / Bhavcopy | NSE → BSE → Moneycontrol |
+
+| Data | Primary | Fallback chain | Terminal state |
 |---|---|---|---|
-| Option chain | NSE / BSE (exchange-aware) | MOAPI → Breeze (last resort) | `NO_DATA` |
-| Candles (live) | Breeze (broker feed — NSE has no candle API) | MO | `NO_DATA` |
-| Spot quotes | NSE | MOAPI → Breeze | `null` |
-| VIX | NSE `indiaVIX` | — | `null` |
+| Option chain | ICICI Breeze → MOAPI | NSE → BSE → Moneycontrol | `NO_DATA` |
+| Candles (live) | ICICI Breeze → MOAPI | NSE index chart | `NO_DATA` |
+| Spot quotes | ICICI Breeze → MOAPI | NSE → BSE → Moneycontrol | `null` |
+| VIX | NSE `indiaVIX` | ICICI Breeze → MOAPI | `null` |
 | FII/DII | NSE India | MrChartist history | `null` |
 | Gain/losers | NSE `live-analysis-variations` | — | `null` |
+| News | Moneycontrol | NSE India | `null` |
+| Pre-open / bhavcopy | NSE → BSE | Moneycontrol | `null` |
 
 **Rules that never change**
 
@@ -98,16 +118,23 @@ Spot = `Table[0].UlaValue` (top-level `UlaValue` does not exist).
 
 ### MOAPI
 
-Report endpoints exist **only under `/rest/report/v3/*`**. Every
+Motilal Oswal report endpoints exist **only under `/rest/report/v3/*`**. Every
 `/rest/report/v1/*` path returns `MO8001 "Invalid Token"` *even on a valid
 session* — that auth-shaped error would fake a session-expiry alert, so v1 must
 never be called. No option chain; candles are daily-only (no intraday on the
-platform).
+platform). MOAPI is second in the live-data provider chain (after Breeze).
 
 ### Breeze
 
-Opt-in fallback only. Token exchange times out until a fresh browser OTP login
+ICICI Breeze is the **first** provider for all live data (quotes, option chain,
+candles, greeks, OI-PCR). Token exchange times out until a fresh browser OTP login
 at `api.icicidirect.com/apiuser/login?api_key=…`, then `set breeze session <token>`.
+
+### Moneycontrol
+
+Moneycontrol `priceapi` is used for NIFTY 50 stock priceapi integration
+(48/50 stocks mapped) and as a fallback provider for quotes, spot, index-quote,
+pre-open and news. It is **not** used for option-chain data.
 
 ---
 
@@ -164,11 +191,11 @@ were a primary provider. Both are corrected:
 
 | Path | Was | Now |
 |---|---|---|
-| `/api/option-chain` | **MOAPI → Breeze → NSE → BSE** (MOAPI labelled "preferred primary") | **NSE → BSE → MOAPI → Breeze** |
-| `breeze-fno-data.fetchOptionChainSnapshot` | raced Breeze ∥ NSE — a doomed Breeze call on **every** fetch | NSE first; Breeze only if NSE fails **and** it is not in cooldown |
-| `sdm-signal` | MOAPI → Breeze → NSE → BSE | BSE (if BSE index) → NSE → MOAPI → Breeze (opt-in, last) |
-| `data-layer/chains/option-chain` | already correct | BSE → NSE → MO (unchanged) |
-| `market-data-manager.PROVIDER_PRIORITY` | already correct | `nse → moapi → breeze → website` (code still appends `yahoo` — residual, not part of the §1 contract) |
+| `/api/option-chain` | **MOAPI → Breeze → NSE → BSE** (MOAPI labelled "preferred primary") | **ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol** |
+| `breeze-fno-data.fetchOptionChainSnapshot` | raced Breeze ∥ NSE — a doomed Breeze call on **every** fetch | Breeze → MOAPI → NSE → BSE → Moneycontrol (first valid answer wins) |
+| `sdm-signal` | MOAPI → Breeze → NSE → BSE | BSE (if BSE index) → NSE → MOAPI → Breeze → Moneycontrol |
+| `data-layer/chains/option-chain` | already correct | BSE → NSE → MO → Moneycontrol (unchanged) |
+| `market-data-manager.PROVIDER_PRIORITY` | already correct | `icici-breeze → motilal-api → nse-api → bse-api → moneycontrol` (code still appends `yahoo` — residual, not part of the §1 contract) |
 
 Verified live across all seven instruments — every one routes to its
 designated primary, with `fallbackUsed: false`:

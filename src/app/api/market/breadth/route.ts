@@ -58,10 +58,22 @@ export async function GET() {
         success: false,
         status: "UNAVAILABLE",
         error: meta.reason,
+        source: meta.source,
+        timestamp: meta.collectedAt,
+        providerTimestamp: meta.providerTimestamp,
+        freshness: {
+          provider: meta.source,
+          source: meta.source,
+          timestamp: meta.providerTimestamp ?? meta.collectedAt,
+          ageMs: meta.ageMs,
+          freshness: "UNAVAILABLE",
+          delayed: true,
+          fallbackUsed: false,
+        },
+        quality: "UNKNOWN",
         data: meta,
         breadth: null,
         stocks: [],
-        timestamp: new Date().toISOString(),
       });
     }
 
@@ -204,6 +216,22 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       status: data.status,
+      // Top-level contract (was missing): which feed won, when it was collected,
+      // how fresh it is, and an overall quality label derived from the same
+      // card meta so the summary never contradicts `data`.
+      source: data.source,
+      timestamp: data.collectedAt,
+      providerTimestamp: data.providerTimestamp,
+      freshness: {
+        provider: data.source,
+        source: data.source,
+        timestamp: data.providerTimestamp ?? data.collectedAt,
+        ageMs: data.ageMs,
+        freshness: data.status === "STALE" ? "STALE" : "FRESH",
+        delayed: data.stale,
+        fallbackUsed: data.source !== "nse",
+      },
+      quality: data.stale ? "DEGRADED" : "OK",
       data,
       breadth: {
         score: breadthScore,

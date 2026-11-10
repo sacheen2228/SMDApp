@@ -66,7 +66,7 @@ console.log("[DEBUG] MOAPI fallback:", moData ? "OK" : "FAILED");
 Check in order:
 1. Is Breeze session valid? → check /tmp/smdapp.log for "initSession error"
 2. Did the NSE/BSE primary fire? → check log for "[API] NSE API data fetched"
-3. Did a fallback fire? → check log for provider order (NSE → BSE → MOAPI → Breeze → NO_DATA)
+3. Did a fallback fire? → check log for provider order (ICICI Breeze → MOAPI → NSE → BSE → Moneycontrol → NO_DATA)
 4. Is the endpoint responding? → curl -s http://localhost:3000/api/<endpoint>
 5. Is the data shape correct? → check API response JSON
 ```
@@ -104,7 +104,7 @@ Check in order:
 ### Breeze Auth Failures
 
 ```
-Expected behavior — falls back to NSE / MOAPI → `NO_DATA` (never a Yahoo quote).
+Expected behavior — falls back to ICICI Breeze → MOAPI → NSE → BSE → `NO_DATA` (never a Yahoo quote).
 Check:
 1. Are API keys valid? → .env BREEZE_API_KEY, BREEZE_SECRET_KEY
 2. Is session expired? → log shows "Could not authenticate credentials"

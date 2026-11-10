@@ -10,7 +10,6 @@ import { MCX_APPROVED_CONTRACTS } from './types';
 import { MCX_CONTRACT_SPECS } from './instrument-master';
 import { fetchBhaavBriefChain, isBhaavBriefSupported, type BhaavBriefChain } from './bhaavbrief';
 
-// Yahoo Finance tickers for MCX spot fallback
 const MCX_YAHOO: Record<string, string> = {
   CRUDEOIL: 'CL=F',
   GOLD: 'GC=F',
@@ -198,25 +197,7 @@ export async function loadMCXOptionChain(
       spotPrice = futLtp?.ltp || 0;
     }
 
-    // Fallback: Yahoo Finance for spot price
-    if (spotPrice <= 0 && MCX_YAHOO[symbol]) {
-      try {
-        const yahooTicker = MCX_YAHOO[symbol];
-        const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&range=1d`, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const meta = data?.chart?.result?.[0]?.meta;
-          if (meta?.regularMarketPrice) {
-            // Convert USD to INR for crude/gold/silver
-            const usdInr = 83.5; // approximate
-            spotPrice = Math.round(meta.regularMarketPrice * usdInr * 100) / 100;
-          }
-        }
-      } catch {}
-    }
+    // Remove Yahoo Finance fallback for MCX spot price
 
     // First pass: build all strikes to find ATM
     const allStrikeMap = new Map<number, MCXOptionStrike>();
@@ -376,23 +357,6 @@ export async function loadAllMCXOptionChains(): Promise<Map<MCXCommodity, MCXOpt
       if (futureScrip) {
         const futLtp = await getLTP('MCX', futureScrip.scripcode, token);
         spotPrice = futLtp?.ltp || 0;
-      }
-      if (spotPrice <= 0 && MCX_YAHOO[symbol]) {
-        try {
-          const yahooTicker = MCX_YAHOO[symbol];
-          const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&range=1d`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            signal: AbortSignal.timeout(8000),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const meta = data?.chart?.result?.[0]?.meta;
-            if (meta?.regularMarketPrice) {
-              const usdInr = 83.5;
-              spotPrice = Math.round(meta.regularMarketPrice * usdInr * 100) / 100;
-            }
-          }
-        } catch {}
       }
 
       const allStrikeMap = new Map<number, MCXOptionStrike>();

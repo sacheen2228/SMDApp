@@ -72,7 +72,7 @@ describe("veto — the plan side comes from the levels, not the action string", 
     expect(r.hardFail).toBe(true);
     expect(r.suppress).toBe(true);
     expect(r.sizeFactor).toBe(0);
-    expect(r.reasons.join(" ")).toMatch(/R:R 1\.00 < 1\.5/);
+    expect(r.reasons.join(" ")).toMatch(/R:R 1.00 < 2/);
   });
 
   test("a long plan with R:R 1.0 still BLOCKS", () => {
@@ -82,7 +82,7 @@ describe("veto — the plan side comes from the levels, not the action string", 
     });
     expect(r.verdict).toBe("BLOCK");
     expect(r.hardFail).toBe(true);
-    expect(r.reasons.join(" ")).toMatch(/R:R 1\.00 < 1\.5/);
+    expect(r.reasons.join(" ")).toMatch(/R:R 1.00 < 2/);
   });
 
   test("a long-style plan with R:R 2.0 still PASSES", () => {
@@ -181,13 +181,13 @@ describe("veto — the other hard gates did not move", () => {
     expect(r.fails).toHaveLength(0);
   });
 
-  test("the minimum R:R gate is still the configured one", () => {
-    expect(GATE_CONFIG.minOptionRR).toBe(1.5);
-    // R:R exactly 1.5 → allowed (the gate is "below 1.5 blocks")
+  test("the minimum R:R gate is still the configured one (now 1:2)", () => {
+    expect(GATE_CONFIG.minOptionRR).toBe(2);
+    // R:R exactly 2 → allowed (the gate is "below 2 blocks")
     // NIFTY (lot 65) at ₹100 = ₹6,500 → inside the ₹20,000 per-trade budget.
-    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 85 });
+    const r = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 80 });
     expect(r.verdict).toBe("PASS");
-    const bad = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 85.01 });
+    const bad = evaluateSignalVeto({ ...MIRRORED_PE, symbol: "NIFTY", entry: 100, stopLoss: 110, tp1: 85 });
     expect(bad.verdict).toBe("BLOCK");
   });
 });

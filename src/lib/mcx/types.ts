@@ -138,17 +138,3 @@ export const MCX_APPROVED_CONTRACTS: MCXCommodity[] = [
 
 export const MCX_ENERGY: MCXCommodity[] = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI'];
 export const MCX_PRECIOUS_METALS: MCXCommodity[] = ['GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'];
-
-// Yahoo Finance US futures tickers for MCX backtest fallback
-export const MCX_YAHOO_SYMBOLS: Record<MCXCommodity, string> = {
-  CRUDEOIL: 'CL=F',
-  CRUDEOILM: 'CL=F',
-  NATURALGAS: 'NG=F',
-  NATGASMINI: 'NG=F',
-  GOLD: 'GC=F',
-  GOLDM: 'GC=F',
-  GOLDGUINEA: 'GC=F',
-  SILVER: 'SI=F',
-  SILVERM: 'SI=F',
-  SILVERMIC: 'SI=F',
-};

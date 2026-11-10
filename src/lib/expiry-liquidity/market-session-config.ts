@@ -2,6 +2,8 @@
 // Centralized session timings for CAS, F&O, and cash segments.
 // Single source of truth — no hardcoded timings anywhere else.
 
+import { NSE_HOLIDAYS } from '../expiry-calculator';
+
 export interface SessionWindow {
   start: number;    // minutes from midnight IST
   end: number;      // minutes from midnight IST
@@ -108,14 +110,11 @@ export const NSE_SESSION_CONFIG: MarketSessionConfig = {
     monthlyLastWeekday: 2,  // Last Tuesday
     holidayShift: 'PREVIOUS_TRADING_DAY',
   },
-  holidayCalendar: [
-    // 2025-2026 holidays (extend as needed)
-    '2025-01-26', '2025-03-14', '2025-03-31', '2025-04-10', '2025-04-14',
-    '2025-04-18', '2025-05-01', '2025-06-27', '2025-08-15', '2025-10-02',
-    '2025-10-21', '2025-10-22', '2025-11-05', '2025-12-25',
-    '2026-01-26', '2026-03-10', '2026-03-30', '2026-04-02', '2026-04-14',
-    '2026-05-01', '2026-08-15', '2026-09-14', '2026-10-02', '2026-11-11', '2026-12-25',
-  ],
+  // Derived from the canonical calendar in expiry-calculator — this file used
+  // to keep its own copy and had `2026-11-11` for Diwali-Balipratipada (the
+  // real holiday is 2026-11-10) and no 2026-11-24, so the session clock
+  // reported the exchange OPEN on a holiday.
+  holidayCalendar: [...NSE_HOLIDAYS],
 };
 
 // ─── Helper: Get Current IST Minutes ─────────────────────────────────

@@ -37,7 +37,7 @@ of the top scan picks, and **intraday alerts** fired every 15 minutes during mar
 | State | **Zustand** (global trading store) + **React Query** (server state) + local `useState` |
 | Package manager | **bun** (lockfile = `bun.lock`) |
 | Database | **SQLite** via **Prisma** (`db/custom.db`) — `Trade` model = live trade journal |
-| Live market data | **NSE India** (indices/equities, primary) → **BSE** (SENSEX/BANKEX) → **MOAPI** → **ICICI Breeze** (opt-in) → `NO_DATA` (503). **No Yahoo** — unavailable data is `NO_DATA`, never a Yahoo quote |
+| Live market data | ICICI Breeze → Motilal Oswal MOAPI → NSE → BSE → Moneycontrol (primary → fallback chain). **No Yahoo** — unavailable data is `NO_DATA`, never a Yahoo quote |
 | AI / LLM | **Groq** (`llama-3.3-70b`, `llama-3.1-8b-instant`) + **OpenRouter** + optional **Ollama**, routed through a single `callLLM` helper |
 | Scheduling | **systemd timers** (morning-signals 9:20, intraday-scan */15, daily-digest 15:25, market-recorder) + `scripts/dailyScanCron.ts` (`node-cron` + `tsx`) |
 | Analysis engines | `sdm-engine.ts` (14-factor SDM), `ml-engine.ts` (RSI/Bollinger/VWAP/EMA/ADX), `intraday-scanner.ts` (stock scanner), `signal-engine.ts` (market structure / smart money / 0DTE) |
@@ -51,8 +51,8 @@ fallback**: if a data source is unavailable the APIs return `503` instead of fab
 Option chain / live quotes
   NIFTY · BANKNIFTY · FINNIFTY · MIDCPNIFTY + NSE equities ─▶ NSE (primary)
   SENSEX · BANKEX                                        ─▶ BSE (primary)
-  fallback ─▶ MOAPI ─▶ ICICI Breeze (opt-in, last resort) ─▶ NO_DATA (503)
-Candles       ─▶ Breeze ─▶ MO API ─▶ NO_DATA
+  fallback ─▶ MOAPI ─▶ NSE ─▶ BSE ─▶ Moneycontrol ─▶ NO_DATA (503)
+Candles       ─▶ ICICI Breeze ─▶ MO API ─▶ NSE index chart ─▶ NO_DATA
 India VIX     ─▶ NSE indiaVIX ─▶ NO_DATA
 FII/DII       ─▶ NSE India ─▶ MrChartist history
 ```
@@ -65,12 +65,12 @@ fabricated quote.
 ## 3. Architecture at a glance
 
 ```
-Browser (React)  ──React Query──▶  /api/option-chain   ──▶ NSE / BSE → MOAPI → Breeze → 503 (NO_DATA)
-                                      /api/scanner        ──▶ live stock quotes + candle chain (Breeze/MO)
-                                      /api/sdm-signal     ──▶ signal-engine (SDM/0DTE)
-                                      /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
-                                      /api/intraday-scan  ──▶ Telegram (secret-gated cron)
-                                       /api/daily-digest   ──▶ Telegram morning digest
+Browser (React)  ──React Query──▶  /api/option-chain   ──▶ ICICI Breeze → MOAPI → NSE / BSE → Moneycontrol → 503 (NO_DATA)
+                                       /api/scanner        ──▶ live stock quotes + candle chain (Breeze/MO/NSE)
+                                       /api/sdm-signal     ──▶ signal-engine (SDM/0DTE)
+                                       /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
+                                       /api/intraday-scan  ──▶ Telegram (secret-gated cron)
+                                        /api/daily-digest   ──▶ Telegram morning digest
 
 Zustand store  ◀── option chain / spot / selection
 SQLite (Prisma) ◀── trade journal written by SDM engine

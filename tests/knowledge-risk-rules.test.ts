@@ -45,14 +45,14 @@ describe("the injected knowledge base", () => {
 
   test("the daily rules use the new caps", () => {
     expect(TRADING_KNOWLEDGE).toMatch(/Two losing trades in a row/i);
-    expect(TRADING_KNOWLEDGE).toMatch(/₹8,000 daily loss cap/);
+    expect(TRADING_KNOWLEDGE).toMatch(/₹4,000 daily loss cap/);
   });
 });
 
 describe("the strategy config (the admin sliders)", () => {
   test("the risk sliders are the per-trade model, not '% of capital'", () => {
     expect(DEFAULT_STRATEGY_CONFIG.risk.maxRiskPerTrade).toBe(20);   // % of the deployed amount
-    expect(DEFAULT_STRATEGY_CONFIG.risk.maxDailyLoss).toBe(32);      // % of the ₹25,000 account
+    expect(DEFAULT_STRATEGY_CONFIG.risk.maxDailyLoss).toBe(16);      // % of the ₹25,000 account = two ₹2,000 stops
     expect(DEFAULT_STRATEGY_CONFIG.risk.slPercent).toBe(20);         // the rupee-risk stop
     expect(DEFAULT_STRATEGY_CONFIG.risk.tp1Multiplier).toBe(2);
     expect(DEFAULT_STRATEGY_CONFIG.risk.tp2Multiplier).toBe(3);

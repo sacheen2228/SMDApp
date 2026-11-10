@@ -234,8 +234,6 @@ async function fetchAllMCXFromYahoo(): Promise<Map<MCXCommodity, MCXQuote>> {
         open: q?.open?.[0] ? Math.round(q.open[0] * fxRate * 100) / 100 : null,
         high: q?.high?.[0] ? Math.round(q.high[0] * fxRate * 100) / 100 : null,
         low: q?.low?.[0] ? Math.round(q.low[0] * fxRate * 100) / 100 : null,
-        high: q?.high?.[0] ?? null,
-        low: q?.low?.[0] ?? null,
         previousClose: prevClose,
         change,
         changePercent,
@@ -279,20 +277,25 @@ async function fetchMCXFromYahoo(
     if (!result?.meta?.regularMarketPrice) return null;
 
     const meta = result.meta;
-    const ltp = meta.regularMarketPrice;
-    const prevClose = meta.chartPreviousClose || ltp;
+    const fxRate = await fetchUsdInrRate();
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    const ltpUSD = meta.regularMarketPrice;
+    const ltp = round2(ltpUSD * fxRate);
+    const prevCloseUSD = meta.chartPreviousClose || ltpUSD;
+    const prevClose = round2(prevCloseUSD * fxRate);
     const spec = MCX_CONTRACT_SPECS[symbol];
+    const q = result.indicators?.quote?.[0];
 
     return {
       symbol,
       exchange: 'MCX',
       assetClass: 'COMMODITY',
       ltp,
-      open: result.indicators?.quote?.[0]?.open?.[0] ?? null,
-      high: result.indicators?.quote?.[0]?.high?.[0] ?? null,
-      low: result.indicators?.quote?.[0]?.low?.[0] ?? null,
+      open: q?.open?.[0] ? round2(q.open[0] * fxRate) : null,
+      high: q?.high?.[0] ? round2(q.high[0] * fxRate) : null,
+      low: q?.low?.[0] ? round2(q.low[0] * fxRate) : null,
       previousClose: prevClose,
-      change: ltp - prevClose,
+      change: round2(ltp - prevClose),
       changePercent: prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0,
       volume: meta.regularMarketVolume ?? null,
       openInterest: null,
@@ -429,9 +432,10 @@ export async function fetchAllMCXQuotes(): Promise<Map<MCXCommodity, MCXQuote>> 
         quoteCache.set(sym, { quote, ts: now });
       }
     }
+    uncachedSymbols = uncachedSymbols.filter(s => !cachedQuotes.has(s));
   }
 
-  // Fill any remaining with unavailable
+  // After tiers, fill any MCX-approved symbols still missing with NONE (no made-up data).
   for (const sym of MCX_APPROVED_CONTRACTS) {
     if (!cachedQuotes.has(sym)) {
       const unavailable = createUnavailableQuote(sym, 'NONE');

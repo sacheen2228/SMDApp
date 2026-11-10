@@ -55,7 +55,8 @@ describe("per-trade capital model in the agent tools", () => {
 
   it("calculate_position_size uses 20% of the deployed amount, not 1% of a big account", async () => {
     const out = await executeTool("calculate_position_size", {
-      entry: 202.52, sl: 145.38, lotSize: 65, riskPct: 1, capital: 200000,
+      // ₹20 stop × 65 = ₹1,300 risk/lot → inside the fixed ₹2,000 cap
+      entry: 202.52, sl: 182.52, lotSize: 65, riskPct: 1, capital: 200000,
     }, ctx);
     expect(out).toMatch(/risk 20% of the amount deployed/);
     expect(out).toMatch(/1 lot\(s\)/);

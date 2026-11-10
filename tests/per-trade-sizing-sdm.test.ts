@@ -78,9 +78,9 @@ describe("per-trade model — the house plan", () => {
     expect(levels.plan).not.toBeNull();
 
     const plan = levels.plan!;
-    // 1R = 20% of the premium (₹20,000 deployed ⇒ ₹4,000 at risk ⇒ ₹4,000/65 units)
-    expect(plan.riskPoints).toBeCloseTo(169.9 * 0.2, 1);
-    expect(plan.riskAmount).toBeCloseTo(plan.deployed * 0.2, 0);
+    // FIXED ₹2,000 risk cap (20% of ₹11,043 deployed would be ₹2,209) → /65 units
+    expect(plan.riskPoints).toBeCloseTo(2_000 / NIFTY_LOT, 1);
+    expect(plan.riskAmount).toBeCloseTo(2_000, 0);
     expect(plan.stopLoss).toBeCloseTo(169.9 - plan.riskPoints, 1);
     // the ladder: TP1 2R, TP2 3R, TP3 4R
     expect(plan.targets[0]).toBeCloseTo(169.9 + 2 * plan.riskPoints, 1);
@@ -120,10 +120,10 @@ describe("per-trade model — the /api/sdm-signal sizing", () => {
 
     expect(rec.positionSizing.lots).toBe(1);
     expect(rec.positionSizing.quantity).toBe(NIFTY_LOT);
-    // the rupee risk = the committed premium × 20% (≈ ₹2,209 for one NIFTY lot;
-    // the stop is rounded to the ₹0.05 tick grid, so the risk moves by ≤ 1 tick)
-    expect(rec.positionSizing.riskAmount).toBeGreaterThan(ATM_PREMIUM * NIFTY_LOT * 0.2 - 70);
-    expect(rec.positionSizing.riskAmount).toBeLessThan(ATM_PREMIUM * NIFTY_LOT * 0.2 + 70);
+    // the rupee risk = the FIXED ₹2,000 cap (20% of one lot would be ₹2,209);
+    // the stop is rounded to the ₹0.05 tick grid, so the risk moves by ≤ 1 tick
+    expect(rec.positionSizing.riskAmount).toBeGreaterThan(2_000 - 70);
+    expect(rec.positionSizing.riskAmount).toBeLessThan(2_000 + 70);
     expect(rec.positionSizing.maxLoss).toBeCloseTo(rec.positionSizing.riskAmount, 0);
     // the deployment stays inside the per-trade cap
     expect(rec.positionSizing.positionValue).toBeLessThanOrEqual(GATE_CONFIG.tradeBudget);
@@ -156,18 +156,18 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
       sl: 80,
       lotSize: NIFTY_LOT,
     });
-    // risk budget = 20% of ₹20,000 = ₹4,000 → 3 lots by risk; affordable = 3 lots
-    expect(ps.lots).toBe(3);
-    expect(ps.qty).toBe(3 * NIFTY_LOT);
-    expect(ps.maxLoss).toBeCloseTo(3 * 1300, 0);
-    expect(ps.capitalRequired).toBeCloseTo(3 * 100 * NIFTY_LOT, 0);
+    // risk budget = FIXED ₹2,000 → 1 lot by risk; affordable = 3 lots
+    expect(ps.lots).toBe(1);
+    expect(ps.qty).toBe(NIFTY_LOT);
+    expect(ps.maxLoss).toBeCloseTo(1300, 0);
+    expect(ps.capitalRequired).toBeCloseTo(100 * NIFTY_LOT, 0);
   });
 
   test("an unaffordable contract is 0 lots — never a 1-lot trade", () => {
     const ps = positionSize({
       capital: GATE_CONFIG.capital,
       entry: 300,
-      sl: 240,
+      sl: 280,                            // ₹1,300 risk/lot → inside the ₹2,000 cap
       lotSize: NIFTY_LOT,
     });
     expect(ps.lots).toBe(1);              // ₹19,500 per lot → exactly 1 lot fits
