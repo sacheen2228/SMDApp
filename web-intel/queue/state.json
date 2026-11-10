@@ -1,10 +1,10 @@
 {
   "lastRun": {
-    "collectedAt": "2026-11-10T19:03:18.624971Z",
-    "fetched": 831,
+    "collectedAt": "2026-11-10T19:08:34.905015Z",
+    "fetched": 832,
     "flushedFromQueue": 0,
     "inserted": 31,
-    "duplicates": 800,
+    "duplicates": 801,
     "queueLength": 0,
     "sourcesOk": 17,
     "sourcesFail": 0,

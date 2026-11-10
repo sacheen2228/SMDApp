@@ -2,11 +2,11 @@
 // Preserves all existing panels + adds NSE OI, Derivative Flow, relative strength, research commentary
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Brain, TrendingUp, TrendingDown, AlertTriangle, Activity, BarChart3,
-  RefreshCw, Shield, Target, Zap, ChevronDown, ChevronUp, Minus
+  Zap
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataFreshnessBadge } from "./DataFreshnessBadge";
@@ -84,7 +84,10 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
 }) {
   const regimeLabel = regime?.regime || "—";
   const breadthLabel = breadth ? (breadth.label || (breadth.score > 60 ? "BULLISH" : breadth.score < 40 ? "BEARISH" : "NEUTRAL")) : "—";
-  const derivLabel = derivative?.bias || (derivative?.bias === "UNKNOWN" ? "UNKNOWN" : "—");
+  // Only show directional derivative signals; NEUTRAL/MIXED/UNKNOWN mean no signal.
+  const derivLabel = derivative?.bias === "BULLISH" || derivative?.bias === "BEARISH"
+    ? derivative.bias
+    : "—";
   const casLabel =
     cas?.casScore == null
       ? "NO DATA"
@@ -164,6 +167,23 @@ function IntelSummary({ regime, breadth, derivative, cas }: {
 function DerivativeFlowPanel({ data }: { data: any }) {
   if (!data) return null;
   const { score, bias, components, putSupport, callResistance, gammaState, interpretation, confirmation } = data;
+
+  // No real data at all → show unavailable instead of a fake neutral score
+  if (score == null) {
+    return (
+      <Card className="border-border/50">
+        <CardHeader className="p-2 pb-1">
+          <CardTitle className="text-[10px] font-bold flex items-center gap-1">
+            <Zap className="h-3 w-3 text-amber-500" />
+            NSE DERIVATIVE FLOW
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-2 pt-0">
+          <div className="text-[9px] text-muted-foreground">No derivative data available</div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-border/50">
@@ -307,9 +327,10 @@ function OISpurtPanel({ data }: { data: any }) {
 function DivergencePanel({ regime, breadth }: { regime: any; breadth: any }) {
   if (!regime || !breadth) return null;
 
-  const indexChange = regime?.niftyChange ?? 0;
-  const adv = breadth.advances || 0;
-  const dec = breadth.declines || 0;
+  const indexChange = regime?.niftyChange;
+  const adv = breadth.advances;
+  const dec = breadth.declines;
+  if (indexChange == null || adv == null || dec == null) return null;
   const isDivergent = (indexChange > 0.3 && dec > adv) || (indexChange < -0.3 && adv > dec);
 
   if (!isDivergent) return null;
@@ -634,65 +655,88 @@ export default function IntelTab({ onStockClick }: { onStockClick?: (s: string) 
 function computeDerivativeFlow(input: any) {
   const weights = { oi: 0.25, optionPositioning: 0.20, participantOi: 0.15, fiiDii: 0.15, gamma: 0.05, vix: 0.05, breadth: 0.15 };
 
-  // OI score — null/unknown bias stays neutral 50
-  let oiScore = 50;
+  // OI score — null when bias unknown
+  let oiScore: number | null = null;
   if (input.oiBias === "BULLISH") oiScore = 70 + Math.min(30, (input.oiSpurtScore ?? 0) * 0.3);
   else if (input.oiBias === "BEARISH") oiScore = 30 - Math.min(30, (input.oiSpurtScore ?? 0) * 0.3);
 
-  // Option positioning (PCR) — null PCR stays neutral 50
-  let optionScore = 50;
+  // Option positioning (PCR) — null when PCR unavailable
+  let optionScore: number | null = null;
   if (input.pcr != null && input.pcr > 1.2) optionScore = 70 + Math.min(30, (input.pcr - 1.2) * 50);
   else if (input.pcr != null && input.pcr < 0.8) optionScore = 30 - Math.min(30, (0.8 - input.pcr) * 50);
 
-  // Participant OI — unknown stays neutral
-  let participantScore = 50;
+  // Participant OI — null when unknown
+  let participantScore: number | null = null;
   if (input.participantBias === "BULLISH") participantScore = 70;
   else if (input.participantBias === "BEARISH") participantScore = 30;
 
-  // FII/DII — unknown stays neutral
-  let fiiDiiScore = 50;
+  // FII/DII — null when unknown
+  let fiiDiiScore: number | null = null;
   if (input.fiiBias === "BULLISH") fiiDiiScore = 70 + Math.min(30, Math.abs(input.fiiNet ?? 0) / 1000);
   else if (input.fiiBias === "BEARISH") fiiDiiScore = 30 - Math.min(30, Math.abs(input.fiiNet ?? 0) / 1000);
 
-  // Gamma — unknown stays neutral
-  let gammaScore = 50;
+  // Gamma — null when unknown
+  let gammaScore: number | null = null;
   if (input.gammaRegime === "PINNING") gammaScore = 50;
   else if (input.gammaRegime === "EXPANSION") gammaScore = 60;
 
-  // VIX — unknown stays neutral
-  let vixScore = 50;
+  // VIX — null when unknown
+  let vixScore: number | null = null;
   if (input.vixRegime === "LOW") vixScore = 65;
   else if (input.vixRegime === "NORMAL") vixScore = 55;
   else if (input.vixRegime === "HIGH") vixScore = 35;
   else if (input.vixRegime === "EXTREME") vixScore = 20;
 
-  // Breadth — only included when real data exists; weight is renormalized below
+  // Breadth — only included when real data exists
+  let breadthScore: number | null = null;
   let breadthComponent = null;
   if (input.breadthScore != null) {
+    breadthScore = input.breadthScore;
     breadthComponent = input.breadthScore > 60 ? "BULLISH" : input.breadthScore < 40 ? "BEARISH" : "NEUTRAL";
   }
 
   // Build weighted parts only from inputs that have real data
-  const parts: Array<{ w: number; v: number }> = [
-    { w: weights.oi, v: oiScore },
-    { w: weights.optionPositioning, v: optionScore },
-    { w: weights.participantOi, v: participantScore },
-    { w: weights.fiiDii, v: fiiDiiScore },
-    { w: weights.gamma, v: gammaScore },
-    { w: weights.vix, v: vixScore },
-  ];
-  if (breadthComponent != null) {
-    parts.push({ w: weights.breadth, v: input.breadthScore });
+  const parts: Array<{ w: number; v: number }> = [];
+  const componentScores: Record<string, { score: number; weight: number; bias?: string; regime?: string }> = {};
+
+  if (oiScore != null) {
+    parts.push({ w: weights.oi, v: oiScore });
+    componentScores.oi = { score: Math.round(oiScore), weight: weights.oi, bias: input.oiBias };
+  }
+  if (optionScore != null) {
+    parts.push({ w: weights.optionPositioning, v: optionScore });
+    componentScores.optionPositioning = { score: Math.round(optionScore), weight: weights.optionPositioning, bias: input.pcr != null && input.pcr > 1.1 ? "BULLISH" : input.pcr != null && input.pcr < 0.9 ? "BEARISH" : "NEUTRAL" };
+  }
+  if (participantScore != null) {
+    parts.push({ w: weights.participantOi, v: participantScore });
+    componentScores.participantOi = { score: Math.round(participantScore), weight: weights.participantOi, bias: input.participantBias };
+  }
+  if (fiiDiiScore != null) {
+    parts.push({ w: weights.fiiDii, v: fiiDiiScore });
+    componentScores.fiiDii = { score: Math.round(fiiDiiScore), weight: weights.fiiDii, bias: input.fiiBias };
+  }
+  if (gammaScore != null) {
+    parts.push({ w: weights.gamma, v: gammaScore });
+    componentScores.gamma = { score: Math.round(gammaScore), weight: weights.gamma, regime: input.gammaRegime };
+  }
+  if (vixScore != null) {
+    parts.push({ w: weights.vix, v: vixScore });
+    componentScores.vix = { score: Math.round(vixScore), weight: weights.vix, regime: input.vixRegime };
+  }
+  if (breadthScore != null) {
+    parts.push({ w: weights.breadth, v: breadthScore });
+    componentScores.breadth = { score: Math.round(breadthScore), weight: weights.breadth, bias: breadthComponent };
   }
 
   const wSum = parts.reduce((s, p) => s + p.w, 0);
-  const vSum = parts.reduce((s, p) => s + p.v * p.w, 0);
-  const composite = wSum > 0 ? Math.round(vSum / wSum) : 50;
+  const composite = wSum > 0 ? Math.round(parts.reduce((s, p) => s + p.v * p.w, 0) / wSum) : null;
 
-  let bias = "NEUTRAL";
-  if (composite >= 65) bias = "BULLISH";
-  else if (composite <= 35) bias = "BEARISH";
-  else if (Math.abs(composite - 50) < 10) bias = "MIXED";
+  let bias = "UNKNOWN";
+  if (composite != null) {
+    if (composite >= 65) bias = "BULLISH";
+    else if (composite <= 35) bias = "BEARISH";
+    else bias = "NEUTRAL";
+  }
 
   const putSupport = input.pcr != null && input.pcr > 1.1 ? "STRONG" : input.pcr != null && input.pcr > 0.9 ? "NEUTRAL" : "WEAKENING";
   const callResistance = input.pcr != null && input.pcr < 0.9 ? "HIGH" : input.pcr != null && input.pcr < 1.1 ? "NEUTRAL" : "INCREASING";
@@ -706,17 +750,9 @@ function computeDerivativeFlow(input: any) {
   else if (bullish === 1 || bearish === 1) confirmation = "PARTIAL";
 
   return {
-    score: Math.max(0, Math.min(100, composite)),
+    score: composite,
     bias,
-    components: {
-      oi: { score: Math.round(oiScore), weight: weights.oi, bias: input.oiBias },
-      optionPositioning: { score: Math.round(optionScore), weight: weights.optionPositioning, bias: input.pcr != null && input.pcr > 1.1 ? "BULLISH" : input.pcr != null && input.pcr < 0.9 ? "BEARISH" : "NEUTRAL" },
-      participantOi: { score: Math.round(participantScore), weight: weights.participantOi, bias: input.participantBias },
-      fiiDii: { score: Math.round(fiiDiiScore), weight: weights.fiiDii, bias: input.fiiBias },
-      gamma: { score: Math.round(gammaScore), weight: weights.gamma, regime: input.gammaRegime },
-      vix: { score: Math.round(vixScore), weight: weights.vix, regime: input.vixRegime },
-      ...(breadthComponent != null ? { breadth: { score: Math.round(input.breadthScore), weight: weights.breadth, bias: breadthComponent } } : {}),
-    },
+    components: componentScores,
     putSupport,
     callResistance,
     gammaState: input.gammaRegime,
