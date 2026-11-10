@@ -407,7 +407,7 @@ export async function sendIntradayAlerts(): Promise<{ ran: boolean; newAlerts: n
     const monthlyExpiry = getNextMonthlyExpiry(sym);
     for (const direction of ['CALL', 'PUT'] as const) {
       for (const expiryOpt of [null, monthlyExpiry?.date]) {
-        scanTasks.push({ symbol: sym, direction, expiry: expiryOpt });
+        scanTasks.push({ symbol: sym, direction, expiry: expiryOpt ?? undefined });
       }
     }
   }
