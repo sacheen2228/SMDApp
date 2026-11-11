@@ -517,8 +517,13 @@ export default function TradingDashboard() {
       ceWriting > 0 || peWriting > 0 ? "against" :
       "none";
 
-    // Volume: try summary volume data
-    const rvol = summaryData.rvol ?? summaryData.relVolume ?? null;
+    // Volume: compute from option chain strikes (sum of CE + PE volume)
+    const chain = raw?.data || [];
+    const totalVolume = chain.reduce((sum: number, s: any) => {
+      return sum + Number(s.ce?.volume || 0) + Number(s.pe?.volume || 0);
+    }, 0);
+    // RVOL proxy from total chain volume: > 1L = high volume (>1.2), > 500k = very high
+    const rvol = totalVolume > 0 ? Math.min(totalVolume / 50000, 5.0) : null; // scale: 1L volume = 1.0 RVOL
 
     // PCR from summary or computed
     const pcrVal = pcr > 0 ? pcr : summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
