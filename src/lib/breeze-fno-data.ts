@@ -435,10 +435,11 @@ export async function fetchAllOptionChains(
     new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000)),
   ]);
   chains.set(symbols[0], probe);
-  if (!probe) {
-    for (const sym of symbols.slice(1)) chains.set(sym, null);
-    return chains;
-  }
+  // NOTE: a null probe only means the FIRST symbol has no chain (or Breeze
+  // is slow for it) — it does NOT mean Breeze is dead for every symbol.
+  // Keep fetching the remaining symbols individually so one bad symbol
+  // doesn't poison the whole batch (previously every stock was set to null
+  // and every options score was stuck at neutral 50).
 
   const DEADLINE = Date.now() + 12_000;
   const CONCURRENCY = 5;
