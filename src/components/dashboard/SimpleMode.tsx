@@ -205,6 +205,7 @@ export const SimpleMode = memo(function SimpleMode({
   dataSource,
   selectedExpiry,
   onExpiryChange,
+  oiSummary,
 }: SimpleModeProps) {
   const rec = recommendation;
 
