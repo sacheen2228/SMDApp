@@ -20,7 +20,7 @@ export const BRAIN_FLAGS = {
   /** No NEW option premium buys after 13:00 IST.
    *  Ledger evidence: option entries at 13:00-14:59 went 0 wins / 34 trades
    *  (option-chain-api 13h 0/12, 14h 0/22) while the same engine at 10:00 was 63%. */
-  noOptionBuysAfter13: true,
+  noOptionBuysAfter13: false,
   /** Apply the cost model when resolving candidate outcomes (off = gross R). */
   resolverCosts: false,
   /** Promotion rule: a tier-C candidate may only be promoted (sent) after this many

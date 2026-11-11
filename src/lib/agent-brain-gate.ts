@@ -8,7 +8,7 @@
 // Config — single source of truth. The prompt rules block is generated from this.
 // ─────────────────────────────────────────────────────────────
 export const GATE_CONFIG = {
-  minConfidence: 60,      // Hermes intel tab can alert on 60–64 scores; scanner keeps its own 65 floor
+  minConfidence: 50,      // Hermes intel tab and scanner alert floor — 50 allows calibrated 54+ through
   minLayersAgree: 3,
   maxLayersAgainst: 1,
   minUnderlyingRR: 2,      // chart R:R ≥ 1:2
