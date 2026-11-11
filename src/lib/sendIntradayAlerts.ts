@@ -9,7 +9,7 @@ import { recordIntradayTrade } from "./intraday-scanner";
 import { isTelegramSendWindow, isTradingDay } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
-import { getNextMonthlyExpiry, NSE_HOLIDAYS } from "./expiry-calculator";
+import { getNextMonthlyExpiry } from "./expiry-calculator";
 import {
   checkSLTP, addTrade,
   hasActiveTrade, tickPx, fmtStrike
@@ -315,22 +315,6 @@ export function isChainFresh(chainAsOf?: string, maxMinutes = 15): boolean {
 
 /** Single-flight lock: only one scan at a time. */
 let scanInFlight = false;
-
-/** Watchdog fires at most once per trading day. Resets on IST date change. */
-let watchdogSentToday = false;
-let watchdogDateKey = "";
-
-function watchdogShouldSend(key: string): boolean {
-  if (watchdogDateKey !== key) {
-    watchdogDateKey = key;
-    watchdogSentToday = false;
-  }
-  return !watchdogSentToday;
-}
-
-function markWatchdogSent(): void {
-  watchdogSentToday = true;
-}
 
 /** Run up to `concurrency` async tasks concurrently. Each item is processed
  * exactly once; results are returned in the same order as items. */
@@ -790,40 +774,6 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
     rejected: scanStats.rejected,
     perSymbolMs: scanStats.perSymbolMs,
   }));
-
-  // ── Watchdog: if no alert was sent by 11:30 IST on a trading day, alert via Telegram
-  const watchdogHour = 11;
-  const watchdogMinute = 30;
-  const watchdogMins = watchdogHour * 60 + watchdogMinute;
-  const nowIST = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const nowMins = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
-  const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().split("T")[0];
-  const todayIsHoliday = NSE_HOLIDAYS.has(todayIst);
-  const isWeekend = nowIST.getUTCDay() === 0 || nowIST.getUTCDay() === 6;
-  const isTradingDayToday = !isWeekend && !todayIsHoliday;
-
-  if (newAlerts === 0 && isTradingDayToday && nowMins >= watchdogMins && watchdogShouldSend(todayIst)) {
-    markWatchdogSent();
-    console.warn("[sendIntradayAlerts] WATCHDOG: No alerts sent by 11:30 IST on trading day " + todayIst);
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChatId = process.env.TELEGRAM_CHAT_ID;
-    if (tgToken && tgChatId) {
-      try {
-        const diag = `scanned ${scanStats.symbolsScanned} symbols · ${scanStats.candidates} candidates · ${scanStats.sent} sent · ${scanStats.errors} errors · ${scanStats.rejected.length} rejected`;
-        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day).\n\n" + diag + ".\n\nNo qualifying setups: SDM index signals are below the confidence floor and stock-scanner plans are below the unified gate / per-trade deployment cap. Provider and signal health: check /api/health and /api/sdm-signal logs. This watchdog fires once per trading day.";
-        await fetch("https://api.telegram.org/bot" + tgToken + "/sendMessage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: tgChatId, text: watchdogMsg, parse_mode: "HTML" }),
-          // Draw from the scan budget (floor 3s so the watchdog still fires
-          // when the budget is exhausted) — never an extra independent 10s.
-          signal: AbortSignal.timeout(Math.min(10000, Math.max(3000, remainingBudgetMs()))),
-        });
-      } catch (e) {
-        console.error("[sendIntradayAlerts] Watchdog alert failed: " + String(e));
-      }
-    }
-  }
 
   scanInFlight = false;
   return { ran: true, newAlerts };
