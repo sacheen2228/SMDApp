@@ -460,6 +460,51 @@ export default function TradingDashboard() {
     };
   })();
 
+  // Confirmation checks for SimpleMode card — tells the user WHEN to take a trade
+  const confirmations = useMemo(() => {
+    const raw = data as any;
+    const summaryData = raw?.summary || {};
+    const spot = summaryData.spotPrice || 0;
+    const rec = raw?.analysis?.recommendation;
+    const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : null;
+    if (!dir || !spot) return [];
+
+    const freshWriting = (raw?.analysis?.freshWriting || []) as any[];
+    const ceWriting = freshWriting.filter((f: any) => f.side === "CE").length;
+    const peWriting = freshWriting.filter((f: any) => f.side === "PE").length;
+
+    // Trend: spot vs VWAP
+    const vwap = summaryData.vwap ?? null;
+    const trendDir = vwap
+      ? spot > vwap ? "bullish" : spot < vwap ? "bearish" : "neutral"
+      : null;
+
+    // Trigger: fresh writing in the direction of the signal
+    const trigger =
+      dir === "CALL" && peWriting > 0 ? "fresh" :
+      dir === "PUT" && ceWriting > 0 ? "fresh" :
+      ceWriting > 0 || peWriting > 0 ? "against" :
+      "none";
+
+    // Volume
+    const rvol = summaryData.rvol ?? summaryData.relVolume ?? null;
+
+    // PCR
+    const pcr = summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
+
+    // VWAP side
+    const vwapSide = vwap ? (spot > vwap ? "above" : spot < vwap ? "below" : null) : null;
+
+    return evaluateConfirmations({
+      direction: dir,
+      trend: trendDir,
+      trigger,
+      rvol,
+      pcr,
+      vwap: vwapSide,
+    });
+  }, [data]);
+
   // V2 recommendation, produced by SDMBot.tsx (generateTradeRecommendation /
   // sdm-recommendation.ts) — kept separate from the legacy `recommendation`
   // memo below (built from sdm-engine.ts's older shape) so we don't mix the
@@ -560,56 +605,6 @@ export default function TradingDashboard() {
       pcrOI: analysis.pcrOI ?? 0,
       maxPain: analysis.maxPain ?? 0,
     };
-  }, [data]);
-
-  // Confirmation checks for SimpleMode card — tells the user WHEN to take a trade
-  const confirmations = useMemo(() => {
-    const raw = data as any;
-    const summaryData = raw?.summary || {};
-    const spot = summaryData.spotPrice || 0;
-    const rec = raw?.analysis?.recommendation;
-    const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : null;
-    if (!dir || !spot) return [];
-
-    const freshWriting = (raw?.analysis?.freshWriting || []) as any[];
-    const ceWriting = freshWriting.filter((f: any) => f.side === "CE").length;
-    const peWriting = freshWriting.filter((f: any) => f.side === "PE").length;
-
-    // Trend: spot vs VWAP if available, else from direction + PCR alignment
-    const vwap = summaryData.vwap ?? null;
-    const trend = vwap
-      ? spot > vwap ? "bullish" : "bullish" // placeholder - will be refined
-      : null;
-    const trendDir = vwap
-      ? spot > vwap ? "bullish" : spot < vwap ? "bearish" : "neutral"
-      : null;
-
-    // Trigger: fresh writing in the direction of the signal
-    // Fresh CE writing (writers selling calls) = bearish trigger for PUT
-    // Fresh PE writing (writers selling puts) = bullish trigger for CALL
-    const trigger =
-      dir === "CALL" && peWriting > 0 ? "fresh" :
-      dir === "PUT" && ceWriting > 0 ? "fresh" :
-      ceWriting > 0 || peWriting > 0 ? "against" :
-      "none";
-
-    // Volume: try summary volume data
-    const rvol = summaryData.rvol ?? summaryData.relVolume ?? null;
-
-    // PCR from summary
-    const pcr = summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
-
-    // VWAP side
-    const vwapSide = vwap ? (spot > vwap ? "above" : spot < vwap ? "below" : null) : null;
-
-    return evaluateConfirmations({
-      direction: dir,
-      trend: trendDir,
-      trigger,
-      rvol,
-      pcr,
-      vwap: vwapSide,
-    });
   }, [data]);
 
   // Update store
