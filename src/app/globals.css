@@ -23,6 +23,23 @@
   --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
   --color-input: var(--input);
+  --color-ty-surface: var(--ty-surface);
+  --color-ty-surface-2: var(--ty-surface-2);
+  --color-ty-surface-3: var(--ty-surface-3);
+  --color-ty-hairline: var(--ty-hairline);
+  --color-ty-hairline-strong: var(--ty-hairline-strong);
+  --color-ty-fill: var(--ty-fill);
+  --color-ty-brand: var(--ty-brand);
+  --color-ty-brand-glow: var(--ty-brand-glow);
+  --color-ty-up: var(--ty-up);
+  --color-ty-down: var(--ty-down);
+  --color-ty-warn: var(--ty-warn);
+  --color-ty-info: var(--ty-info);
+  --color-ty-muted-fg: var(--ty-muted-fg);
+  --color-ty-subtle-fg: var(--ty-subtle-fg);
+  --color-ty-shadow-card: var(--ty-shadow-card);
+  --color-ty-shadow-raised: var(--ty-shadow-raised);
+  --color-ty-shadow-pop: var(--ty-shadow-pop);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
@@ -76,6 +93,23 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --ty-surface: oklch(1 0 0);
+  --ty-surface-2: oklch(0.97 0 0);
+  --ty-surface-3: oklch(0.922 0 0);
+  --ty-hairline: oklch(0.922 0 0 / 12%);
+  --ty-hairline-strong: oklch(0.922 0 0 / 24%);
+  --ty-fill: oklch(0.205 0 0 / 4%);
+  --ty-brand: oklch(0.5 0.245 280);
+  --ty-brand-glow: oklch(0.5 0.245 280 / 20%);
+  --ty-up: oklch(0.646 0.222 140);
+  --ty-down: oklch(0.577 0.245 27.325);
+  --ty-warn: oklch(0.7 0.16 60);
+  --ty-info: oklch(0.65 0.18 210);
+  --ty-muted-fg: oklch(0.556 0 0);
+  --ty-subtle-fg: oklch(0.65 0 0);
+  --ty-shadow-card: 0 1px 2px oklch(0 0 0 / 6%), 0 0 0 1px oklch(0.922 0 0 / 12%);
+  --ty-shadow-raised: 0 4px 12px -2px oklch(0 0 0 / 8%), 0 0 0 1px oklch(0.922 0 0 / 12%);
+  --ty-shadow-pop: 0 8px 24px -4px oklch(0 0 0 / 10%), 0 0 0 1px oklch(0.922 0 0 / 16%);
 }
 
 .dark {
@@ -110,6 +144,23 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 12%);
   --sidebar-ring: oklch(0.556 0 0);
+  --ty-surface: oklch(0.13 0 0);
+  --ty-surface-2: oklch(0.17 0 0);
+  --ty-surface-3: oklch(0.23 0 0);
+  --ty-hairline: oklch(1 0 0 / 8%);
+  --ty-hairline-strong: oklch(1 0 0 / 16%);
+  --ty-fill: oklch(1 0 0 / 4%);
+  --ty-brand: oklch(0.7 0.18 280);
+  --ty-brand-glow: oklch(0.7 0.18 280 / 25%);
+  --ty-up: oklch(0.6 0.16 140);
+  --ty-down: oklch(0.65 0.2 25);
+  --ty-warn: oklch(0.75 0.17 60);
+  --ty-info: oklch(0.7 0.16 210);
+  --ty-muted-fg: oklch(0.65 0 0);
+  --ty-subtle-fg: oklch(0.55 0 0);
+  --ty-shadow-card: 0 1px 2px oklch(0 0 0 / 40%), 0 0 0 1px oklch(1 0 0 / 8%);
+  --ty-shadow-raised: 0 4px 12px -2px oklch(0 0 0 / 45%), 0 0 0 1px oklch(1 0 0 / 10%);
+  --ty-shadow-pop: 0 8px 24px -4px oklch(0 0 0 / 50%), 0 0 0 1px oklch(1 0 0 / 14%);
 }
 
 @layer base {
@@ -237,3 +288,66 @@ td, th {
 .agent-send { display: inline-flex !important; }
 .agent-loading .agent-stop { display: inline-flex !important; }
 .agent-loading .agent-send { display: none !important; }
+
+/* ── Tredye-style UI utilities (additive) ── */
+.ty-panel {
+  background: var(--ty-surface);
+  border: 1px solid var(--ty-hairline);
+  box-shadow: var(--ty-shadow-card);
+  border-radius: 0.625rem;
+}
+.ty-panel-raised {
+  box-shadow: var(--ty-shadow-raised);
+}
+.ty-pop {
+  box-shadow: var(--ty-shadow-pop);
+}
+.ty-fill {
+  background: var(--ty-fill);
+}
+.ty-glow-brand {
+  box-shadow: 0 0 0 1px var(--ty-hairline-strong), 0 0 16px -6px var(--ty-brand-glow);
+}
+
+/* Speed-of-change dots that flow out of / into OI bars */
+@keyframes ty-dot-flow {
+  0% { transform: translateX(0) scale(1); opacity: 0.9; }
+  80% { opacity: 0.35; }
+  100% { transform: translateX(calc(var(--ty-dir, 1) * 14px)) scale(0.3); opacity: 0; }
+}
+.ty-dot {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: ty-dot-flow 1.15s linear infinite;
+}
+
+/* Pulsing halo for the strike with the fastest OI change */
+@keyframes ty-halo-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ty-halo-c, #8b5cf6) 40%, transparent); }
+}
+.ty-halo { animation: ty-halo-pulse 1.5s ease-in-out infinite; }
+.ty-text-xs { font-size: 0.6875rem; line-height: 1rem; letter-spacing: 0.01em; }
+.ty-text-caption { font-size: 0.75rem; line-height: 1.05rem; }
+.ty-text-body-sm { font-size: 0.8125rem; line-height: 1.25rem; }
+.ty-text-body { font-size: 0.875rem; line-height: 1.4rem; }
+.ty-text-title { font-size: 0.9375rem; line-height: 1.35rem; letter-spacing: -0.005em; }
+.ty-stat-label { font-size: 0.6875rem; line-height: 1rem; letter-spacing: 0.01em; color: var(--ty-subtle-fg); }
+.ty-stat-value { font-size: 0.9375rem; line-height: 1.35rem; letter-spacing: -0.005em; font-weight: 600; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.ty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  letter-spacing: 0.01em;
+  font-weight: 500;
+  border: 1px solid var(--ty-hairline-strong);
+  background: var(--ty-fill);
+  color: var(--ty-muted-fg);
+}

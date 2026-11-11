@@ -69,6 +69,10 @@ import InstitutionalPositioningPanel from '@/components/terminal/InstitutionalPo
 import ChallengeTab from '@/components/challenge/ChallengeTab';
 import PaperTradingTab from '@/components/dashboard/PaperTradingTab';
 import IntelTab from '@/components/dashboard/IntelTab';
+import { OptionPulseView } from '@/components/views/OptionPulseView';
+import { OIFlowView } from '@/components/views/OIFlowView';
+import { LiquidityMapView } from '@/components/views/LiquidityMapView';
+import { OrderFlowView } from '@/components/views/OrderFlowView';
 
 import { getLotSize } from '@/lib/symbol-config';
 import type { FullAnalysis } from '@/lib/sdm-engine';
@@ -336,7 +340,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -960,6 +964,26 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('intelligence'); setDisplayMode('pro'); }}>
               <Brain className="h-2.5 w-2.5 mr-0.5" /> Intel
             </Button>
+            <Button variant={viewMode === 'options' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'options' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
+              onClick={() => { setViewMode('options'); setDisplayMode('pro'); }}>
+              <Activity className="h-2.5 w-2.5 mr-0.5" /> Option Pulse
+            </Button>
+            <Button variant={viewMode === 'oiflow' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'oiflow' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
+              onClick={() => { setViewMode('oiflow'); setDisplayMode('pro'); }}>
+              <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> OI Flow
+            </Button>
+            <Button variant={viewMode === 'liq' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'liq' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
+              onClick={() => { setViewMode('liq'); setDisplayMode('pro'); }}>
+              <Target className="h-2.5 w-2.5 mr-0.5" /> Liquidity
+            </Button>
+            <Button variant={viewMode === 'orderflow' ? 'default' : 'ghost'} size="sm"
+              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orderflow' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
+              onClick={() => { setViewMode('orderflow'); setDisplayMode('pro'); }}>
+              <Zap className="h-2.5 w-2.5 mr-0.5" /> Order Flow
+            </Button>
             </div>
 
           {/* More dropdown */}
@@ -1227,6 +1251,26 @@ export default function TradingDashboard() {
         /* ═══════ HERMES PAPER TRADING ═══════ */
         <div className="flex-1 overflow-hidden">
           <PaperTradingTab />
+        </div>
+        ) : viewMode === 'options' ? (
+        /* ═══════ OPTION PULSE ═══════ */
+        <div className="flex-1 overflow-hidden p-2">
+          <OptionPulseView />
+        </div>
+        ) : viewMode === 'oiflow' ? (
+        /* ═══════ OI FLOW ═══════ */
+        <div className="flex-1 overflow-hidden p-2">
+          <OIFlowView />
+        </div>
+        ) : viewMode === 'liq' ? (
+        /* ═══════ LIQUIDITY MAP ═══════ */
+        <div className="flex-1 overflow-hidden p-2">
+          <LiquidityMapView />
+        </div>
+        ) : viewMode === 'orderflow' ? (
+        /* ═══════ ORDER FLOW ═══════ */
+        <div className="flex-1 overflow-hidden p-2">
+          <OrderFlowView />
         </div>
         ) : (
         /* ═══════ CHAIN VIEW (default) ═══════ */

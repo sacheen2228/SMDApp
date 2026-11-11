@@ -17,6 +17,7 @@ export type MobileViewMode =
   | "terminal" | "chain" | "zerohero" | "scanner" | "btst" | "daily"
   | "backtest" | "expiry" | "gap" | "news" | "institutional" | "futures"
   | "orderbook" | "commodity" | "india" | "intelligence" | "credit" | "challenge"
+  | "options" | "oiflow" | "liq" | "orderflow"
 
 interface MobileNavProps {
   viewMode: MobileViewMode;
@@ -43,6 +44,10 @@ const TABS: { mode: MobileViewMode; label: string; icon: any; color: string }[] 
   { mode: "india", label: "India", icon: Map, color: "text-orange-500" },
   { mode: "intelligence", label: "Intel", icon: LayoutGrid, color: "text-emerald-500" },
   { mode: "credit", label: "Credit", icon: Handshake, color: "text-rose-500" },
+  { mode: "options", label: "Option Pulse", icon: Activity, color: "text-rose-500" },
+  { mode: "oiflow", label: "OI Flow", icon: BarChart3, color: "text-indigo-500" },
+  { mode: "liq", label: "Liquidity", icon: Target, color: "text-purple-500" },
+  { mode: "orderflow", label: "Order Flow", icon: Zap, color: "text-cyan-500" },
   { mode: "challenge", label: "Chal", icon: Shield, color: "text-red-500" },
   // Agent + misc
   { mode: "agent", label: "Chat", icon: Bot, color: "text-purple-600" },
