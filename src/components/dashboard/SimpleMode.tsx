@@ -460,14 +460,18 @@ export const SimpleMode = memo(function SimpleMode({
                   <span className="text-muted-foreground">{c.name}</span>
                   <span
                     className={`text-[10px] font-bold ${
-                      c.pass ? "text-emerald-500" : "text-red-500"
+                      !c.available
+                        ? "text-gray-500"
+                        : c.pass
+                          ? "text-emerald-500"
+                          : "text-red-500"
                     }`}
                   >
-                    {c.pass ? "✓" : "✗"} {c.detail}
+                    {!c.available ? "—" : c.pass ? "✓" : "✗"} {c.detail}
                   </span>
                 </div>
               ))}
-              {!confirmedEnough && confirmTotal > 0 && (
+              {!confirmedEnough && confirmPass < confirmTotal && confirmTotal > 0 && (
                 <p className="text-[10px] text-red-500/80 mt-1">
                   Not enough confirmations to trade — wait for structure + trigger alignment
                 </p>

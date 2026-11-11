@@ -29,6 +29,8 @@ export interface ConfirmationCheck {
   name: string;
   pass: boolean;
   detail: string;
+  /** false when the data is unavailable (not counted in pass/total ratio). */
+  available: boolean;
 }
 
 export interface SignalRec {
@@ -352,10 +354,12 @@ export const CONF_FLOOR_PUT = CONFIG.confFloorPut; // 70 (0-100 scale)
  * *when* to take a trade — only when structure + trigger + volume + OI
  * all align in the same direction.
  *
- * Inputs are optional — missing data yields a "skip" check, never a fake pass.
+ * Inputs are optional — missing data yields a "skip" check that does NOT
+ * count toward the pass/total ratio (so unavailable data never penalizes
+ * the score).
  */
 export function evaluateConfirmations(input: {
-  /** Direction the signal is calling (1 = bullish/CALL, -1 = bearish/PUT). */
+  /** Direction the signal is calling ("CALL" | "PUT"). */
   direction: "CALL" | "PUT";
   /** EMA/SuperTrend alignment: "bullish" | "bearish" | "neutral" | null. */
   trend?: "bullish" | "bearish" | "neutral" | null;
@@ -376,9 +380,12 @@ export function evaluateConfirmations(input: {
   checks.push({
     name: "Trend",
     pass: (wantBullish && input.trend === "bullish") || (!wantBullish && input.trend === "bearish"),
-    detail: input.trend
-      ? `EMA/SuperTrend ${input.trend}`
-      : "trend data unavailable",
+    detail: input.trend === null
+      ? "trend data unavailable"
+      : input.trend === "neutral"
+        ? "EMA/SuperTrend neutral"
+        : `EMA/SuperTrend ${input.trend}`,
+    available: input.trend !== null,
   });
 
   // ── 2. Trigger (fresh cross / sweep reclaim in direction) ──
@@ -390,6 +397,7 @@ export function evaluateConfirmations(input: {
       : input.trigger === "against"
         ? "trigger against direction"
         : "no fresh trigger",
+    available: input.trigger !== null,
   });
 
   // ── 3. Volume confirmation ──
@@ -398,6 +406,7 @@ export function evaluateConfirmations(input: {
     name: "Volume",
     pass: rvol >= 1.2,
     detail: rvol > 0 ? `RVOL ${rvol.toFixed(1)}x` : "volume data unavailable",
+    available: input.rvol !== null,
   });
 
   // ── 4. OI / PCR alignment ──
@@ -407,6 +416,7 @@ export function evaluateConfirmations(input: {
     name: "OI / PCR",
     pass: pcr > 0 && pcrPass,
     detail: pcr > 0 ? `PCR ${pcr.toFixed(2)}` : "PCR data unavailable",
+    available: pcr > 0,
   });
 
   // ── 5. VWAP side ──
@@ -416,19 +426,21 @@ export function evaluateConfirmations(input: {
     detail: input.vwap
       ? `price ${input.vwap} VWAP`
       : "VWAP data unavailable",
+    available: input.vwap !== null,
   });
 
   return checks;
 }
 
-/** Count how many checks pass and total. */
+/** Count how many checks pass — only counts checks with available data. */
 export function confirmSummary(checks: ConfirmationCheck[]): {
   pass: number;
   total: number;
   pct: number;
 } {
-  const pass = checks.filter((c) => c.pass).length;
-  const total = checks.length;
+  const available = checks.filter((c) => c.available);
+  const pass = available.filter((c) => c.pass).length;
+  const total = available.length;
   return { pass, total, pct: total > 0 ? Math.round((pass / total) * 100) : 0 };
 }
 

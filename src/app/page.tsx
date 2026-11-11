@@ -491,11 +491,24 @@ export default function TradingDashboard() {
     const ceWriting = oiFreshWriting.filter((f: any) => f.side === "CE").length;
     const peWriting = oiFreshWriting.filter((f: any) => f.side === "PE").length;
 
-    // Trend: spot vs VWAP
-    const vwap = summaryData.vwap ?? null;
-    const trendDir = vwap
-      ? spot > vwap ? "bullish" : spot < vwap ? "bearish" : "neutral"
-      : null;
+    // Trend: derive from spot vs max pain, and CE/PE OI imbalance
+    const maxPain = oiSummary?.maxPain ?? 0;
+    const ceOI = summaryData.totalCallOI || 0;
+    const peOI = summaryData.totalPutOI || 0;
+    const pcr = ceOI > 0 ? peOI / ceOI : summaryData.pcr ?? null;
+
+    let trendDir: "bullish" | "bearish" | "neutral" | null = null;
+    if (maxPain > 0 && spot > 0) {
+      const distPct = (spot - maxPain) / maxPain;
+      if (distPct > 0.005) trendDir = "bullish";  // spot above max pain = bullish
+      else if (distPct < -0.005) trendDir = "bearish";  // spot below max pain = bearish
+      else trendDir = "neutral";
+    } else if (ceOI > 0 && peOI > 0) {
+      // Fall back to OI imbalance
+      if (peOI > ceOI * 1.1) trendDir = "bearish";
+      else if (ceOI > peOI * 1.1) trendDir = "bullish";
+      else trendDir = "neutral";
+    }
 
     // Trigger: fresh writing in the direction of the signal
     const trigger =
@@ -504,21 +517,23 @@ export default function TradingDashboard() {
       ceWriting > 0 || peWriting > 0 ? "against" :
       "none";
 
-    // Volume
+    // Volume: try summary volume data
     const rvol = summaryData.rvol ?? summaryData.relVolume ?? null;
 
-    // PCR
-    const pcr = summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
+    // PCR from summary or computed
+    const pcrVal = pcr > 0 ? pcr : summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
 
-    // VWAP side
-    const vwapSide = vwap ? (spot > vwap ? "above" : spot < vwap ? "below" : null) : null;
+    // VWAP side: derive from spot vs max pain as proxy (spot above max pain = above value area)
+    const vwapSide = maxPain > 0
+      ? spot > maxPain ? "above" : spot < maxPain ? "below" : null
+      : null;
 
     return evaluateConfirmations({
       direction: dir,
       trend: trendDir,
       trigger,
       rvol,
-      pcr,
+      pcr: pcrVal,
       vwap: vwapSide,
     });
   }, [data, oiSummary]);
