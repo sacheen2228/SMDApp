@@ -205,9 +205,9 @@ export function directionLabel(s: MorningSignal): "BULLISH" | "BEARISH" {
 }
 
 /**
- * The house option plan (rupee risk + 1:2 / 1:3 / 1:4 ladder). The TP/SL
- * monitor implements exactly this convention — CE: stop below the entry,
- * PE: stop above it — so every option trade registered here is built with it.
+ * The house option plan (rupee risk + 1:2 / 1:3 / 1:4 ladder). A bought
+ * option is LONG premium for both CE and PE: stop below the entry, targets
+ * above it. Every option trade registered here is built with that convention.
  *
  * 0 LOTS = NO TRADE. The plan returns `lots: 0` when the contract does not fit
  * the per-trade deployment budget (one lot of a RELIANCE CE at ₹90 costs ₹45,000

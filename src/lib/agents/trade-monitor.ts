@@ -12,10 +12,14 @@
 import type {
   TradeMonitorState, TradeMonitorStatus, TPSLAlert, TPSLAlertType,
 } from './agent-contract';
-import { updateTradeStatus, isTradeActive, getMonitoredTrades } from '../activeTradeTracker';
+import { updateTradeStatus, isTradeActive, getMonitoredTrades, detectPlanHit } from '../activeTradeTracker';
 import { isTerminalTradeStatus } from '../activeTradeTracker';
 import { releaseTradeLock } from '../active-trade-lock';
 import { sendTradeEvent } from '../trade-event-coordinator';
+
+// Re-exported for the monitor's own tests/callers; the implementation lives
+// in activeTradeTracker (single source of truth for plan-hit detection).
+export { detectPlanHit };
 
 // ─── In-Memory Trade Monitor State ────────────────────────────────
 const monitoredTrades = new Map<string, TradeMonitorState>();

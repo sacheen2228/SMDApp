@@ -32,6 +32,7 @@ export function MarketRegimePanel({ regimeData }: { regimeData?: any }) {
     }),
     refetchInterval: 60_000,
     staleTime: 30_000,
+    enabled: !regimeData,
   });
 
   const regime = regimeData ?? data;

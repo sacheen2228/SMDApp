@@ -217,9 +217,10 @@ describe("morning signal type integrity — mapping", () => {
     // the entry is the PREMIUM, not the underlying price
     expect(put?.entry).toBeCloseTo(120, 2);
     expect(put?.entry).toBeLessThan(24000);
-    // a bought put is mirrored in premium space
-    expect(put?.stopLoss).toBeGreaterThan(put!.entry);
-    expect(put?.tp1).toBeLessThan(put!.entry);
+    // a bought put is long PREMIUM: stop below the entry, target above.
+    // (The old mirrored PE convention was short-premium geometry.)
+    expect(put?.stopLoss).toBeLessThan(put!.entry);
+    expect(put?.tp1).toBeGreaterThan(put!.entry);
   });
 
   test("a stock option view without a real contract is dropped, never a cash trade", async () => {

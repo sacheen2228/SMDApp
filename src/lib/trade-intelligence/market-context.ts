@@ -58,18 +58,18 @@ export interface FuturesData {
 }
 
 export interface MarketBreadthData {
-  advances: number;
-  declines: number;
-  unchanged: number;
-  totalStocks: number;
-  advanceDeclineRatio: number;
-  breadthScore: number;
-  newHighs: number;
-  newLows: number;
-  ema20Participation: number;
-  ema50Participation: number;
-  vwapParticipation: number;
-  relativeVolume: number;
+  advances: number | null;
+  declines: number | null;
+  unchanged: number | null;
+  totalStocks: number | null;
+  advanceDeclineRatio: number | null;
+  breadthScore: number | null;
+  newHighs: number | null;
+  newLows: number | null;
+  ema20Participation: number | null;
+  ema50Participation: number | null;
+  vwapParticipation: number | null;
+  relativeVolume: number | null;
 }
 
 export interface SectorData {
@@ -312,22 +312,22 @@ async function fetchBreadth(): Promise<MarketBreadthData> {
   const data = await fetchJSON<any>(`http://localhost:3000/api/market/breadth`);
   if (!data?.breadth) {
     return {
-      advances: 0, declines: 0, unchanged: 0, totalStocks: 50,
-      advanceDeclineRatio: 1, breadthScore: 50, newHighs: 0, newLows: 0,
-      ema20Participation: 50, ema50Participation: 50, vwapParticipation: 50,
-      relativeVolume: 1,
+      advances: null, declines: null, unchanged: null, totalStocks: null,
+      advanceDeclineRatio: null, breadthScore: null, newHighs: null, newLows: null,
+      ema20Participation: null, ema50Participation: null, vwapParticipation: null,
+      relativeVolume: null,
     };
   }
   const b = data.breadth;
   return {
-    advances: b.advances ?? 0,
-    declines: b.declines ?? 0,
-    unchanged: b.unchanged ?? 0,
-    totalStocks: b.totalStocks || 50,
+    advances: b.advances ?? null,
+    declines: b.declines ?? null,
+    unchanged: b.unchanged ?? null,
+    totalStocks: b.totalStocks ?? null,
     advanceDeclineRatio: b.advanceDeclineRatio ?? null,
     breadthScore: b.breadthScore ?? b.score ?? null,
-    newHighs: b.newHighs ?? 0,
-    newLows: b.newLows ?? 0,
+    newHighs: b.newHighs ?? null,
+    newLows: b.newLows ?? null,
     ema20Participation: b.ema20Participation ?? null,
     ema50Participation: b.ema50Participation ?? null,
     vwapParticipation: b.vwapParticipation ?? null,
@@ -494,10 +494,10 @@ export async function buildMarketIntelligenceContext(
   const bankniftyFutures = extract(bankniftyFut, null);
   const sensexFutures = extract(sensexFut, null);
   const breadthData = extract(breadth, {
-    advances: 0, declines: 0, unchanged: 0, totalStocks: 50,
-    advanceDeclineRatio: 1, breadthScore: 50, newHighs: 0, newLows: 0,
-    ema20Participation: 50, ema50Participation: 50, vwapParticipation: 50,
-    relativeVolume: 1,
+    advances: null, declines: null, unchanged: null, totalStocks: null,
+    advanceDeclineRatio: null, breadthScore: null, newHighs: null, newLows: null,
+    ema20Participation: null, ema50Participation: null, vwapParticipation: null,
+    relativeVolume: null,
   });
   const sectorData = extract(sectors, []);
   const regimeData = extract(regime, {
@@ -527,7 +527,7 @@ export async function buildMarketIntelligenceContext(
   let dataQuality: "REAL" | "PARTIAL" | "DEGRADED" = "REAL";
   if (!nifty && !banknifty && stockQuotesData.length === 0) {
     dataQuality = "DEGRADED";
-  } else if (!nifty || !banknifty || breadthData.advances === 0) {
+  } else if (!nifty || !banknifty || !breadthData.advances) {
     dataQuality = "PARTIAL";
   }
 

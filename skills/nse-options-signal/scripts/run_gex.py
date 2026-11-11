@@ -63,6 +63,12 @@ def main(argv=None):
     for w in warns:
         print("WARN: %s" % w)
 
+    # Publish the canonical snapshot for eod-pcr (it reads this exact path).
+    gex_out = os.path.join(DATA, "live", "gex_snapshot.json")
+    os.makedirs(os.path.dirname(gex_out), exist_ok=True)
+    with open(gex_out, "w") as fh:
+        json.dump(gex_snap, fh, indent=1)
+
     gex_hist_dir = os.path.join(DATA, "live", "gex_history")
     if os.path.isdir(a.history):
         gex_snapshot.convert_dir(a.history, gex_hist_dir, now=now,

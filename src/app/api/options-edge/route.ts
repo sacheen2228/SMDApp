@@ -22,16 +22,27 @@ export async function GET(req: NextRequest) {
     const input: DynamicOptionsInput = {
       symbol,
       spot: data.summary.spotPrice,
-      vix: data.summary.indiaVIX || 15,
+      // Never invent VIX=15. Missing VIX fails validation instead of faking a
+      // tradeable volatility regime; the engine still uses it as a real
+      // Greeks fallback only when the chain omits per-strike IV.
+      vix: data.summary.indiaVIX ?? 0,
       pcr: data.summary.pcr,
       maxPain: data.summary.maxPain,
       atmStrike: data.summary.atmStrike,
+      expiryDate:
+        (data as any).expiryIso ||
+        (data as any).selectedExpiry ||
+        (data as any).expiry ||
+        data.summary.expiryDate ||
+        undefined,
       strikes: (data.data || []).map((row: any) => ({
         strike: row.strike,
         ce: {
           ltp: row.ce?.ltp || 0,
-          bid: row.ce?.bid || 0,
-          ask: row.ce?.ask || row.ce?.ltp || 0,
+          // 0 = quote unavailable. Never pair a fake 0 bid with LTP as ask —
+          // that manufactured a 100% spread and false "spread >50%" blocks.
+          bid: row.ce?.bid ?? 0,
+          ask: row.ce?.ask ?? 0,
           oi: row.ce?.oi || row.ce?.openInterest || 0,
           oiChg: row.ce?.oiChg || 0,
           volume: row.ce?.volume || 0,
@@ -43,8 +54,8 @@ export async function GET(req: NextRequest) {
         },
         pe: {
           ltp: row.pe?.ltp || 0,
-          bid: row.pe?.bid || 0,
-          ask: row.pe?.ask || row.pe?.ltp || 0,
+          bid: row.pe?.bid ?? 0,
+          ask: row.pe?.ask ?? 0,
           oi: row.pe?.oi || row.pe?.openInterest || 0,
           oiChg: row.pe?.oiChg || 0,
           volume: row.pe?.volume || 0,

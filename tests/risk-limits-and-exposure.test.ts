@@ -23,6 +23,7 @@ import {
   updateRiskState,
 } from "@/lib/risk-management";
 import { GATE_CONFIG } from "@/lib/agent-brain-gate";
+import { isSyntheticTradeRow } from "@/lib/risk-state.server";
 
 describe("the loss caps fit a ₹25,000 account and a 20% per-trade risk", () => {
   test("the caps are derived from the per-trade model", () => {
@@ -218,5 +219,21 @@ describe("the gate config the caps are derived from", () => {
     expect(GATE_CONFIG.capital).toBe(RISK_LIMITS.capital);
     expect(GATE_CONFIG.tradeBudget).toBe(RISK_LIMITS.perTradeBudget);
     expect(GATE_CONFIG.riskPctOfTrade).toBe(RISK_LIMITS.riskPctOfTrade);
+  });
+});
+
+describe("synthetic rows never move the real loss caps", () => {
+  test("test/e2e strategies and probe ids are excluded", () => {
+    expect(isSyntheticTradeRow({ tradeId: "test-trade-3", strategy: "test" })).toBe(true);
+    expect(isSyntheticTradeRow({ tradeId: "provenance-1", strategy: "e2e-test" })).toBe(true);
+    expect(isSyntheticTradeRow({ tradeId: "probe-real-1", strategy: "sdm" })).toBe(true);
+    expect(isSyntheticTradeRow({ tradeId: "zz-inline-1", strategy: "sdm" })).toBe(true);
+    expect(isSyntheticTradeRow({ tradeId: "monerr-1", strategy: "sdm" })).toBe(true);
+  });
+
+  test("real strategy rows are kept", () => {
+    expect(isSyntheticTradeRow({ tradeId: "ZERO_HERO_AI-NIFTY-1", strategy: "ZERO_HERO_AI" })).toBe(false);
+    expect(isSyntheticTradeRow({ tradeId: "SMART_MONEY-NIFTY-1", strategy: "SMART_MONEY" })).toBe(false);
+    expect(isSyntheticTradeRow({ tradeId: "api-123", strategy: "option-chain-api" })).toBe(false);
   });
 });

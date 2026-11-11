@@ -971,15 +971,20 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     return iv > 1 ? iv / 100 : iv;
   };
 
-  // Fill missing Greeks via Black-Scholes when IV is present
+  // Live chains (notably Breeze) can omit per-strike IV.  Fall back to the
+  // REAL India VIX for Black-Scholes so Greeks/expected move are not zero;
+  // the validation warning records that the per-strike IV was unavailable.
+  const fallbackIV = normalizeIV(vix);
   const fillGreeks = (leg: any, spot: number, strike: number, tte: number, isCall: boolean) => {
     if (!leg) return leg;
-    const ivDec = normalizeIV(leg.iv);
-    if (ivDec <= 0 || tte <= 0) return { ...leg, iv: ivDec };
+    const legIV = normalizeIV(leg.iv);
+    const ivDec = legIV > 0 ? legIV : fallbackIV;
+    const ivOut = legIV > 0 ? leg.iv : vix;
+    if (ivDec <= 0 || tte <= 0) return { ...leg, iv: ivOut };
     const g = calculateGreeks(spot, strike, tte, ivDec, isCall);
     return {
       ...leg,
-      iv: ivDec,
+      iv: ivOut,
       delta: leg.delta != null && leg.delta !== 0 ? leg.delta : g.delta,
       gamma: leg.gamma != null && leg.gamma !== 0 ? leg.gamma : g.gamma,
       theta: leg.theta != null && leg.theta !== 0 ? leg.theta : g.theta,
@@ -993,8 +998,20 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     pe: fillGreeks(s.pe, spot, s.strike, timeToExpiry, false),
   }));
 
+  // A quoted premium can never be far below its intrinsic value. Breeze
+  // occasionally returns a stale/mismatched deep-ITM leg (e.g. 23900 PE at
+  // ₹6.95 when intrinsic is ₹1,483) — never build a candidate from it.
+  const legQuoteValid = (leg: LegInput, strike: number, isCall: boolean): boolean => {
+    if (!leg || !(leg.ltp > 0)) return false;
+    const intrinsic = isCall ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+    return intrinsic === 0 || leg.ltp >= intrinsic * 0.95;
+  };
+
   // ── V2: Data validation ──
   const dataValidation = validateOptionChainData({ ...input, strikes: strikesNorm });
+  if (!strikes.some(s => s.ce.iv > 0 || s.pe.iv > 0)) {
+    dataValidation.warnings.push('Per-strike IV missing — using India VIX as Black-Scholes fallback');
+  }
   const expiryMode = isExpiryDay(symbol, today);
   const marketOpen = isMarketOpenNow();
 
@@ -1011,12 +1028,14 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   // ── Filter strikes: keep only those near ATM with real premium data ──
   const filteredStrikes = strikesNorm.filter(s => {
     const strikeDistPct = Math.abs(s.strike - spot) / spot * 100;
-    const hasPremium = s.ce.ltp > 0 || s.pe.ltp > 0;
-    // Keep strikes within ±8% of spot that have at least one leg with real premium
-    return strikeDistPct <= 8 && hasPremium;
+    // Keep strikes within ±8% of spot with at least one VALID leg quote.
+    return strikeDistPct <= 8 && (legQuoteValid(s.ce, s.strike, true) || legQuoteValid(s.pe, s.strike, false));
   });
 
-  const strikesToProcess = filteredStrikes.length > 0 ? filteredStrikes : strikesNorm;
+  const validStrikes = strikesNorm.filter(s => legQuoteValid(s.ce, s.strike, true) || legQuoteValid(s.pe, s.strike, false));
+  // If nothing near spot is valid, stay within the validated set — never fall
+  // back to the raw chain (that reintroduced impossible deep-ITM quotes).
+  const strikesToProcess = filteredStrikes.length > 0 ? filteredStrikes : validStrikes;
 
   const currentATM = findATMStrike(strikesToProcess.map(s => s.strike), spot);
 
@@ -1106,6 +1125,11 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     optionType: 'CE' | 'PE'
   ): StrikeCandidate => {
     const leg = optionType === 'CE' ? analysis.ce : analysis.pe;
+    // Moneyness is option-type specific: a strike BELOW spot is ITM for a CE
+    // but OTM for a PE. The generic strike-vs-ATM label inverted every PE.
+    const intrinsic = optionType === 'CE' ? spot - analysis.strike : analysis.strike - spot;
+    const strikeType: 'ITM' | 'ATM' | 'OTM' =
+      Math.abs(intrinsic) / spot < 0.005 ? 'ATM' : intrinsic > 0 ? 'ITM' : 'OTM';
     const capitalRequired = leg.ltp * lotSize;
     const charges = capitalRequired * 0.03;
     const slippage = capitalRequired * 0.01;
@@ -1120,7 +1144,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
     return {
       strike: analysis.strike,
-      type,
+      type: strikeType,
       optionType,
       premium: leg.ltp,
       delta: leg.delta,
@@ -1140,9 +1164,15 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   };
 
   const findStrikeByType = (type: 'ITM' | 'ATM' | 'OTM', optType: 'CE' | 'PE'): StrikeCandidate | null => {
-    const candidates = strikeAnalyses.filter(a => a.moneyness === type || (type === 'ATM' && a.strike === currentATM));
+    const candidates = strikeAnalyses.filter(a => {
+      const intrinsic = optType === 'CE' ? spot - a.strike : a.strike - spot;
+      const m = Math.abs(intrinsic) / spot < 0.005 ? 'ATM' : intrinsic > 0 ? 'ITM' : 'OTM';
+      return m === type;
+    });
     if (candidates.length === 0) return null;
     const target = candidates[0];
+    const leg = optType === 'CE' ? target.ce : target.pe;
+    if (!legQuoteValid(leg, target.strike, optType === 'CE')) return null;
     return buildCandidate(target, type, optType);
   };
 
@@ -1176,8 +1206,9 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
 
   const allCandidates: StrikeCandidate[] = [];
   for (const a of strikeAnalyses) {
-    allCandidates.push(buildCandidate(a, a.moneyness === 'ATM' ? 'ATM' : a.moneyness.includes('ITM') ? 'ITM' : 'OTM', 'CE'));
-    allCandidates.push(buildCandidate(a, a.moneyness === 'ATM' ? 'ATM' : a.moneyness.includes('ITM') ? 'ITM' : 'OTM', 'PE'));
+    const type = a.moneyness === 'ATM' ? 'ATM' : a.moneyness.includes('ITM') ? 'ITM' : 'OTM';
+    if (legQuoteValid(a.ce, a.strike, true)) allCandidates.push(buildCandidate(a, type, 'CE'));
+    if (legQuoteValid(a.pe, a.strike, false)) allCandidates.push(buildCandidate(a, type, 'PE'));
   }
 
   // ── V2: Filter candidates by direction and quality gates ──

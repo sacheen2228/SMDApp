@@ -9,6 +9,7 @@ fetch_timestamp / status LIVE|FALLBACK|MISSING|UNAVAILABLE) under snap.meta.
 --news only reads a provided JSON file - this script never invents news.
 """
 import argparse, json, time, datetime, sys, os, re
+from urllib.parse import quote
 import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provenance as _prov
@@ -21,7 +22,9 @@ HEADERS = {
     "Referer": BASE + "/",
 }
 ENDPOINTS = {
-    "option_chain": "/api/option-chain-indices?symbol={symbol}",
+    # NSE retired /api/option-chain-indices (404).  The live path is two-step:
+    # contract-info -> nearest expiry -> option-chain-v3 (see fetch_option_chain).
+    "option_chain": "/api/option-chain-v3?symbol={symbol}",
     "oi_spurts_underlyings": "/api/live-analysis-oi-spurts-underlyings",
     "oi_spurts_contracts": "/api/live-analysis-oi-spurts-contracts",
     "gainers": "/api/live-analysis-variations?index=gainers",
@@ -101,6 +104,35 @@ def get(s, path, retries=3, with_attempts=False):
     if with_attempts:
         return payload, attempts
     return payload
+
+
+def fetch_option_chain(s, symbol):
+    """The live NSE index chain: contract-info -> nearest expiry -> v3.
+
+    NSE retired /api/option-chain-indices (404).  v3 rows omit the top-level
+    expiryDate, so stamp the selected expiry onto every row for the downstream
+    GEX/snapshot parsers.
+    """
+    info, info_attempts = get(
+        s, f"/api/option-chain-contract-info?symbol={symbol}&type=Indices",
+        with_attempts=True,
+    )
+    if isinstance(info, dict) and info.get("_error"):
+        return info, info_attempts
+    exps = info.get("expiryDates") or []
+    if not exps:
+        return {"_error": f"no expiry dates for {symbol}"}, info_attempts
+    exp = exps[0]
+    path = f"/api/option-chain-v3?symbol={symbol}&type=Indices&expiry={quote(str(exp))}"
+    payload, attempts = get(s, path, with_attempts=True)
+    if isinstance(payload, dict) and not payload.get("_error"):
+        rec = payload.get("records")
+        if isinstance(rec, dict):
+            rec.setdefault("expiryDates", exps)
+            for row in rec.get("data") or []:
+                if isinstance(row, dict) and not row.get("expiryDate"):
+                    row["expiryDate"] = exp
+    return payload, attempts
 
 
 def _payload_timestamp(payload):
@@ -263,12 +295,17 @@ if __name__ == "__main__":
             provenance[input_name] = record
 
     for k, p in ENDPOINTS.items():
-        payload, attempts = get(s, p.format(symbol=a.symbol), with_attempts=True)
+        if k == "option_chain":
+            payload, attempts = fetch_option_chain(s, a.symbol)
+            path = f"/api/option-chain-v3?symbol={a.symbol}"
+        else:
+            path = p.format(symbol=a.symbol)
+            payload, attempts = get(s, path, with_attempts=True)
         snap[k] = payload
         input_name = _prov.SECTION_INPUT_MAP.get(k, k)
         if k.startswith("heatmap"):
             input_name = "heatmap"
-        stamp(input_name, k, p.format(symbol=a.symbol), payload, attempts)
+        stamp(input_name, k, path, payload, attempts)
         time.sleep(1.2)
     # Index futures (OI + volume) — breakout checks b & c
     if isinstance(snap.get("futures_chain"), dict):

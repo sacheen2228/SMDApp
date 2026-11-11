@@ -16,6 +16,7 @@ export function MarketBreadth({ breadthData }: { breadthData?: any }) {
     }),
     refetchInterval: 60_000,
     staleTime: 30_000,
+    enabled: !breadthData,
   });
 
   const dataWithDefault = breadthData ?? data;

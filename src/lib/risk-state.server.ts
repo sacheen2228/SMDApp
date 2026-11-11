@@ -22,6 +22,33 @@ import {
 } from "./risk-management";
 import type { RiskState } from "../types/sdm";
 
+// Test/probe rows must never move the REAL loss caps. The audit API rejects
+// `strategyId: "test"`, but rows written directly to Prisma (e2e suites,
+// probes, inline checks) still land here — filter them before any cap maths.
+const SYNTHETIC_STRATEGIES = new Set([
+  "test",
+  "e2e-test",
+  "prod-verify",
+  "TEST_DRY_RUN",
+]);
+const SYNTHETIC_TRADE_ID_PREFIXES = [
+  "test-",
+  "probe-",
+  "zz-",
+  "monerr-",
+  "provenance-",
+];
+
+export function isSyntheticTradeRow(t: {
+  tradeId?: string | null;
+  strategy?: string | null;
+}): boolean {
+  const strategy = String(t.strategy || "").trim();
+  if (SYNTHETIC_STRATEGIES.has(strategy)) return true;
+  const id = String(t.tradeId || "").trim().toLowerCase();
+  return SYNTHETIC_TRADE_ID_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
 async function readOpenExposure(nowMs: number): Promise<{
   deployed: number; risk: number; positions: number; unpriced: number;
 }> {
@@ -113,7 +140,7 @@ async function readOpenExposure(nowMs: number): Promise<{
 
     const closed = await db.trade.findMany({
       where: { pnl: { not: null } },
-      select: { pnl: true, exitTime: true, createdAt: true },
+      select: { tradeId: true, strategy: true, pnl: true, exitTime: true, createdAt: true },
       orderBy: { createdAt: "desc" },
       take: 800,
     });
@@ -125,6 +152,7 @@ async function readOpenExposure(nowMs: number): Promise<{
     let streakBroken = false;
 
     const sorted = closed
+      .filter((t) => !isSyntheticTradeRow(t))
       .map((t) => ({
         pnl: Number(t.pnl) || 0,
         at: t.exitTime instanceof Date ? t.exitTime.getTime() : new Date(t.exitTime as any).getTime(),

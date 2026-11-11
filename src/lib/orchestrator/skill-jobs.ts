@@ -92,7 +92,7 @@ export const SKILL_JOBS: SkillJob[] = [
   {
     name: "live-breadth",
     schedule: "*/5 9-14 * * 1-5",
-    command: [PY, path.join(SKILL_ROOT, "scripts/live_fetch.sh")],
+    command: ["bash", path.join(SKILL_ROOT, "scripts/live_fetch.sh")],
     timeoutMs: 180_000,
     retries: 1,
     retryDelayS: 30,

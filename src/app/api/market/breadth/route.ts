@@ -170,20 +170,31 @@ export async function GET() {
     // that is the one that can make the reading stale.
     // The quote provider publishes its own stamp (Moneycontrol `lastupd`);
     // when a feed is undated the exchange's own trade date is used instead.
-    const quoteStamp = prov.providerTimestamp ?? clock.tradeDate ?? null;
+    // An undated free NSE quote feed has no provider timestamp. While the
+    // exchange is live, measure freshness from retrieval time — using the
+    // previous session's close made a LIVE feed look STALE on the next day
+    // (especially after a holiday). When closed, the last session date is
+    // the honest reference.
+    const undated = !prov.providerTimestamp;
+    const quoteStamp = prov.providerTimestamp ?? (clock.isOpen ? prov.retrievedAt : clock.tradeDate) ?? null;
     const quoteMeta = buildCardMeta({
       source: prov.source === "moneycontrol" ? "moneycontrol" : "nse",
       providerTimestamp: quoteStamp,
       ttlMs: QUOTE_TTL_MS,
       live: clock.isOpen,
       reason: clock.isOpen
-        ? undefined
+        ? undated
+          ? "Quote feed is undated — freshness measured from retrieval time"
+          : undefined
         : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
     });
     const techMeta = buildCardMeta({
       source: "nse",
       providerTimestamp: tech.newestBarAt,
-      ttlMs: 36 * 3600_000,
+      // Daily technicals are EOD by definition. 36h flagged the normal
+      // "last session + weekend/holiday" gap as stale; 96h covers a long
+      // weekend without hiding a genuinely old history.
+      ttlMs: 96 * 3600_000,
       live: clock.isOpen,
       reason: tech.newestBarAt
         ? clock.isOpen
@@ -202,7 +213,11 @@ export async function GET() {
         complete: boolean;
       };
     } = {
-      ...(techMeta.stale ? techMeta : quoteMeta),
+      // The card's freshness is the QUOTE feed's freshness. Daily technicals
+      // legitimately come from the last completed session (and can remain
+      // "stale" across a holiday); they are reported separately instead of
+      // making live quotes look stale.
+      ...quoteMeta,
       quotes: quoteMeta,
       technicals: techMeta,
       coverage: {
@@ -231,7 +246,7 @@ export async function GET() {
         delayed: data.stale,
         fallbackUsed: data.source !== "nse",
       },
-      quality: data.stale ? "DEGRADED" : "OK",
+      quality: quoteMeta.stale ? "DEGRADED" : techMeta.stale ? "PARTIAL" : "OK",
       data,
       breadth: {
         score: breadthScore,

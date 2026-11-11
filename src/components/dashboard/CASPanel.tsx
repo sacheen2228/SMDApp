@@ -19,6 +19,7 @@ export function CASPanel({ breadthData, sectorData, regimeData }: { breadthData?
     }),
     refetchInterval: 120_000,
     staleTime: 30_000,
+    enabled: !breadthData,
   });
 
   const { data: sData } = useQuery({
@@ -29,6 +30,7 @@ export function CASPanel({ breadthData, sectorData, regimeData }: { breadthData?
       return json;
     }),
     refetchInterval: 120_000,
+    enabled: !sectorData,
   });
 
   const { data: rData } = useQuery({
@@ -39,6 +41,7 @@ export function CASPanel({ breadthData, sectorData, regimeData }: { breadthData?
       return json;
     }),
     refetchInterval: 120_000,
+    enabled: !regimeData,
   });
 
   const breadth = breadthData ?? bData;
