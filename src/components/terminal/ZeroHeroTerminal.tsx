@@ -23,7 +23,6 @@ import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 import SignalExplanationPanel from "@/components/terminal/SignalExplanationPanel";
-import MostActiveContracts from "@/components/terminal/MostActiveContracts";
 import ExpiryDayOptionSurvivalCalculator from "@/components/terminal/ExpiryDayOptionSurvivalCalculator";
 
 /**
@@ -114,7 +113,7 @@ async function recordScannerCycle(
   }).catch(() => {});
 }
 
-type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow" | "dom" | "watchlist" | "ide" | "top5" | "mostactive" | "calculator";
+type Tab = "overview" | "options" | "optionsedge" | "smartmoney" | "instgreeks" | "greekflow";
 
 const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "overview", icon: <Home size={19} />, label: "Overview" },
@@ -123,12 +122,6 @@ const TABS: { id: Tab; icon: React.ReactNode; label: string }[] = [
   { id: "smartmoney", icon: <Wallet size={19} />, label: "Smart Money" },
   { id: "instgreeks", icon: <Zap size={19} />, label: "Institutional Greeks" },
   { id: "greekflow", icon: <Flame size={19} />, label: "Greek Flow Heatmap" },
-  { id: "dom", icon: <BarChart3 size={19} />, label: "DOM Analysis" },
-  { id: "watchlist", icon: <Star size={19} />, label: "Watchlist" },
-  { id: "ide", icon: <Layers size={19} />, label: "Institutional Derivatives" },
-  { id: "top5", icon: <Flame size={19} />, label: "Today's Trade" },
-  { id: "mostactive", icon: <Activity size={19} />, label: "Most Active F&O" },
-  { id: "calculator", icon: <Target size={19} />, label: "Expiry Calculator" },
 ];
 
 function getISTTime(): Date {
@@ -1153,24 +1146,6 @@ export function ZeroHeroTerminal() {
           )}
           {activeTab === "greekflow" && (
             <GreekFlowHeatmap onTrade={openTrade} />
-          )}
-          {activeTab === "dom" && (
-            <DOMTab symbol={symbol} />
-          )}
-          {activeTab === "watchlist" && (
-            <WatchlistTab watchlist={watchlist} setWatchlist={setWatchlist} setSymbol={setSymbol} symbol={symbol} />
-          )}
-          {activeTab === "ide" && (
-            <InstitutionalDerivativesView />
-          )}
-          {activeTab === "top5" && (
-            <TodaysTradeView />
-          )}
-          {activeTab === "mostactive" && (
-            <MostActiveContracts />
-          )}
-          {activeTab === "calculator" && (
-            <ExpiryCalculator spot={spot} vix={vix} symbol={symbol} lotSize={lotSize} />
           )}
         </div>
       </div>
