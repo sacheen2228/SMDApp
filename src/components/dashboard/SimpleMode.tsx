@@ -76,6 +76,15 @@ interface OptionData {
   pe: OptionSide | null;
 }
 
+interface OISummary {
+  freshWriting: any[];
+  traps: any[];
+  supportResistance: any;
+  classifications: any[];
+  pcrOI: number;
+  maxPain: number;
+}
+
 interface SimpleModeProps {
   recommendation: SDMRecommendation | null;
   spotPrice: number;
@@ -88,6 +97,7 @@ interface SimpleModeProps {
   dataSource?: string;
   selectedExpiry?: string;
   onExpiryChange?: (expiry: string) => void;
+  oiSummary?: OISummary | null;
 }
 
 function fmt(n: number | undefined | null): string {
@@ -343,10 +353,62 @@ export const SimpleMode = memo(function SimpleMode({
             <span className="text-emerald-500">T1 <span className="font-bold">{fmtCurrency(rec.tp1)}</span></span>
             <span className="text-emerald-500">T2 <span className="font-bold">{fmtCurrency(rec.tp2)}</span></span>
             {rec.riskReward > 0 && <span className="text-muted-foreground">R:R 1:{rec.riskReward}</span>}
+            {oiSummary && oiSummary.freshWriting.length > 0 && (
+              <span className="text-blue-500 font-bold">📊 OI Writing</span>
+            )}
+            {oiSummary && oiSummary.traps.length > 0 && (
+              <span className="text-orange-500 font-bold">⚠️ OI Trap</span>
+            )}
           </div>
         )}
         {rec?.reason && (
           <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{rec.reason}</p>
+        )}
+        {oiSummary && (
+          <div className="mt-3 p-3 rounded-lg bg-muted/40 border border-border/50 text-xs">
+            <div className="flex items-center gap-2 mb-1">
+              <Layers className="w-3 h-3 text-blue-500" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">OI Analysis</span>
+            </div>
+            <div className="space-y-0.5">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">PCR (OI)</span>
+                <span className={`font-bold tabular-nums ${oiSummary.pcrOI > 1 ? "text-emerald-500" : oiSummary.pcrOI < 0.9 ? "text-red-500" : "text-yellow-500"}`}>
+                  {oiSummary.pcrOI.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Max Pain</span>
+                <span className="font-bold tabular-nums">{fmt(oiSummary.maxPain)}</span>
+              </div>
+              {oiSummary.freshWriting.length > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Fresh Writing</span>
+                  <span className="font-bold tabular-nums text-blue-500">
+                    CE {oiSummary.freshWriting.filter((f:any)=>f.side==='CE').length} · PE {oiSummary.freshWriting.filter((f:any)=>f.side==='PE').length}
+                  </span>
+                </div>
+              )}
+              {oiSummary.traps.length > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">OI Traps</span>
+                  <span className="font-bold tabular-nums text-orange-500">{oiSummary.traps.length}</span>
+                </div>
+              )}
+              {oiSummary.supportResistance?.resistance?.[0] && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Resistance</span>
+                  <span className="font-bold tabular-nums">{fmt(oiSummary.supportResistance.resistance[0].strike)}</span>
+                </div>
+              )}
+              {oiSummary.supportResistance?.support?.[0] && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Support</span>
+                  <span className="font-bold tabular-nums">{fmt(oiSummary.supportResistance.support[0].strike)}</span>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 

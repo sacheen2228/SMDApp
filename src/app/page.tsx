@@ -48,6 +48,7 @@ import SignalStrip from '@/components/dashboard/SignalStrip';
 import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
 import { evaluateStrikeSignal } from '@/lib/signal-engine';
 import { runMLAnalysis } from '@/lib/ml-engine';
+import { analyzeOptionChain } from '@/lib/sdm-oianalysis';
 
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
@@ -542,6 +543,23 @@ export default function TradingDashboard() {
     } as SDMRecommendation;
   }, [data]);
 
+  // OI Summary for SimpleMode card — absorption/exhaustion, traps, support/resistance
+  const oiSummary = useMemo(() => {
+    const raw = data as any;
+    const chain = raw?.data || [];
+    const spot = raw?.summary?.spotPrice || 0;
+    if (!chain.length || !spot) return null;
+    const analysis = analyzeOptionChain(chain, spot);
+    return {
+      freshWriting: analysis.freshWriting || [],
+      traps: analysis.traps || [],
+      supportResistance: analysis.supportResistance || { resistance: [], support: [] },
+      classifications: analysis.classifications || [],
+      pcrOI: analysis.pcrOI ?? 0,
+      maxPain: analysis.maxPain ?? 0,
+    };
+  }, [data]);
+
   // Update store
   useEffect(() => {
     if (data) {
@@ -1021,6 +1039,7 @@ export default function TradingDashboard() {
               dataSource={data?.dataSource}
               selectedExpiry={selectedExpiry}
               onExpiryChange={setSelectedExpiry}
+              oiSummary={oiSummary}
             />
           </div>
         ) : viewMode === 'scanner' ? (

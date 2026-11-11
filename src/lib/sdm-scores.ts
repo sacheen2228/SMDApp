@@ -221,12 +221,12 @@ function scoreVolume(input: QualityScoreInput): QualityScoreFactor {
   };
 }
 
-// ─── Factor 4: OI (10%) ───────────────────────────────────────────
+// ─── Factor 4: OI (15%) ───────────────────────────────────────────
 // OI build-up patterns aligned with direction
 
 function scoreOI(input: QualityScoreInput): QualityScoreFactor {
   const { oiAnalysis, tradeDirection } = input;
-  const w = 0.10;
+  const w = 0.15;
 
   if (oiAnalysis.status === 'DEGRADED') {
     return degraded(
@@ -275,12 +275,12 @@ function scoreOI(input: QualityScoreInput): QualityScoreFactor {
   };
 }
 
-// ─── Factor 5: OI Change (5%) ─────────────────────────────────────
+// ─── Factor 5: OI Change (10%) ─────────────────────────────────────
 // Fresh writing/unwinding detection
 
 function scoreOIChange(input: QualityScoreInput): QualityScoreFactor {
   const { oiAnalysis, tradeDirection } = input;
-  const w = 0.05;
+  const w = 0.10;
 
   if (oiAnalysis.status === 'DEGRADED') {
     return degraded(
