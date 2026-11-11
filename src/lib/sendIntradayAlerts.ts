@@ -667,7 +667,7 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
         const highConfStocks = scanData.candidates.filter((s: any) => {
           const opt = s.monthlyOptionTrade;
           if (!opt || !(opt.premium > 0)) return false;
-          if ((s.totalScore ?? 0) < 65) return false;
+          if ((s.totalScore ?? 0) < 60) return false;
           if (!dataQualityOk) return false;
           // Unified gate: only alert when the unified scorer approves.
           const unifiedOk = s.unifiedDecision === "TRADE" || s.hardGatesPassed === true;
