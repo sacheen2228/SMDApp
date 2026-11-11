@@ -810,7 +810,7 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
     if (tgToken && tgChatId) {
       try {
         const diag = `scanned ${scanStats.symbolsScanned} symbols · ${scanStats.candidates} candidates · ${scanStats.sent} sent · ${scanStats.errors} errors · ${scanStats.rejected.length} rejected`;
-        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day).\n\n" + diag + ".\n\nNo qualifying setups: SDM index signals are below the confidence floor and stock-scanner plans are below the unified gate / ₹20,000 per-trade budget. Provider and signal health: check /api/health and /api/sdm-signal logs. This watchdog fires once per trading day.";
+        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day).\n\n" + diag + ".\n\nNo qualifying setups: SDM index signals are below the confidence floor and stock-scanner plans are below the unified gate / per-trade deployment cap. Provider and signal health: check /api/health and /api/sdm-signal logs. This watchdog fires once per trading day.";
         await fetch("https://api.telegram.org/bot" + tgToken + "/sendMessage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
