@@ -44,8 +44,8 @@ export default function CreditAutoSuggest() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [capital, setCapital] = useState(50000);
   const [riskPct, setRiskPct] = useState(2); // 2% default
-  const [minCreditPct, setMinCreditPct] = useState(25); // 25% credit capture min
-  const [maxWidth, setMaxWidth] = useState(3); // max width in strikes
+  const [minCreditPct, setMinCreditPct] = useState(15); // 15% credit capture min (was 65 - too high)
+  const [maxWidth, setMaxWidth] = useState(5); // max width in strikes (was 3 - too restrictive)
   const [selectedExpiry, setSelectedExpiry] = useState<string>("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showOnlyTradable, setShowOnlyTradable] = useState(true);
