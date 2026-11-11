@@ -46,6 +46,35 @@ export async function POST(request: NextRequest) {
 
     let sent = false;
     switch (type) {
+      case "test": {
+        // Dry-run delivery check: clearly labeled, excluded from risk caps,
+        // no trade registered, no expectsTrade — proves Telegram delivery
+        // without fabricating a real signal.
+        sent = await sendTradeAlert({
+          symbol: "NIFTY",
+          action: "BUY",
+          optionType: "CE",
+          strike: 25400,
+          entry: 236.4,
+          stopLoss: 211.4,
+          target1: 286.4,
+          confidence: 70,
+          spot: 25382,
+          expiry: "2026-11-17",
+          lots: 1,
+          lotSize: 75,
+          deployedAmount: 17730,
+          riskAmount: 1875,
+          source: "TEST_DRY_RUN",
+          strategy: "TEST_DRY_RUN",
+          instrument: "CALL",
+          requireExpiry: true,
+          requireSpot: true,
+          expectsTrade: false,
+          message: "🧪 <b>TEST DRY RUN</b> — Telegram delivery check only, not a real trade.\n\nNIFTY 25400 CE @ ₹236.4 · SL ₹211.4 · T1 ₹286.4 (R:R 1:2) · ₹17,730 deployed · ₹1,875 risk.",
+        });
+        break;
+      }
       case "trade":
         sent = await sendTradeAlert(params);
         break;
