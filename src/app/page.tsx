@@ -1087,6 +1087,7 @@ export default function TradingDashboard() {
               selectedExpiry={selectedExpiry}
               onExpiryChange={setSelectedExpiry}
               oiSummary={oiSummary}
+              confirmations={confirmations}
             />
           </div>
         ) : viewMode === 'scanner' ? (
