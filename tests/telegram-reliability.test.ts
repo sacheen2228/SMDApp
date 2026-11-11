@@ -12,6 +12,7 @@ import {
   markThrottle,
   sendTelegramMessage,
   escapeHtml,
+  evaluateTradeGate,
 } from "@/lib/telegram";
 
 afterEach(() => {
@@ -103,5 +104,30 @@ describe("markdown escaping", () => {
   it("escapeHtml does not double-escape already escaped text", () => {
     // Already escaped text should not be double-escaped
     expect(escapeHtml("&amp;")).toBe("&amp;amp;");
+  });
+});
+
+describe("evaluateTradeGate parameter mapping", () => {
+  it("uses tp1 (not target1) so a valid long-premium plan is not rejected", async () => {
+    const res = await evaluateTradeGate({
+      symbol: "NIFTY",
+      action: "BUY",
+      optionType: "CE",
+      strike: 25400,
+      entry: 236.4,
+      stopLoss: 211.4,
+      tp1: 286.4,
+      confidence: 70,
+      spot: 25382,
+      expiry: "2026-11-17",
+      lots: 1,
+      lotSize: 75,
+      deployedAmount: 17730,
+      riskAmount: 1875,
+      nowMs: Date.UTC(2026, 10, 11, 4, 30),
+    });
+
+    expect(res.reasons.some((r) => r.includes("missing target"))).toBe(false);
+    expect(res.reasons.some((r) => r.includes("not on one side"))).toBe(false);
   });
 });

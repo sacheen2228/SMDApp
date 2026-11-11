@@ -268,7 +268,7 @@ export async function evaluateTradeGate(params: {
     strike: params.strike,
     entry: params.entry,
     stopLoss: params.stopLoss,
-    tp1: params.target1,
+    tp1: params.tp1,
     confidence: params.confidence,
     spot: params.spot,
     expiry: params.expiry,
