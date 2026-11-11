@@ -656,12 +656,11 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
           // Unified gate: only alert when the unified scorer approves.
           const unifiedOk = s.unifiedDecision === "TRADE" || s.hardGatesPassed === true;
           if (!unifiedOk) return false;
-          // SIGNED R:R (R1): risk = premium − stop (>0 for valid long plans),
-          // reward = target1 − premium (>0 for valid long plans). A wrong-side
-          // stop or target yields rr 0 instead of being Math.abs'd into a
-          // plausible value that passes the gate.
-          const risk = opt.premium - opt.stopLoss;
-          const reward = (opt.targets?.[0] ?? 0) - opt.premium;
+          // SIGNED R:R: stop is BELOW entry for CE, ABOVE entry for PE.
+          // Target is ABOVE entry for CE, BELOW entry for PE.
+          const isCall = opt.optionType === "CE";
+          const risk = isCall ? opt.premium - opt.stopLoss : opt.stopLoss - opt.premium;
+          const reward = isCall ? (opt.targets?.[0] ?? 0) - opt.premium : opt.premium - (opt.targets?.[0] ?? 0);
           const rr = risk > 0 && reward > 0 ? reward / risk : 0;
           return rr >= 1.5;
         });

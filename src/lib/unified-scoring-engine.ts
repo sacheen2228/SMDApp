@@ -992,8 +992,11 @@ export function scoreTrade(input: MarketDataInput): TradeDecision {
     // SIGNED R:R (R1): risk = entry − stop, reward = target1 − entry.
     // A stop on the wrong side makes risk ≤ 0 → rr 0.
     // A target on the wrong side makes reward ≤ 0 → rr 0.
-    const risk = entry - stopLoss;
-    const reward = target1 - entry;
+    // SIGNED R:R: stop is BELOW entry for CE, ABOVE entry for PE.
+    // Target is ABOVE entry for CE, BELOW entry for PE.
+    const isCall = input.direction === "BULLISH";
+    const risk = isCall ? entry - stopLoss : stopLoss - entry;
+    const reward = isCall ? target1 - entry : entry - target1;
     riskReward = risk > 0 && reward > 0 ? reward / risk : 0;
     const lotSize = input.lotSize ?? 1;
     const qty = input.maxPositionSize ?? 1;
