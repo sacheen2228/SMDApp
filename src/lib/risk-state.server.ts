@@ -42,11 +42,20 @@ const SYNTHETIC_TRADE_ID_PREFIXES = [
 export function isSyntheticTradeRow(t: {
   tradeId?: string | null;
   strategy?: string | null;
+  type?: string | null;
+  expiry?: string | null;
 }): boolean {
   const strategy = String(t.strategy || "").trim();
   if (SYNTHETIC_STRATEGIES.has(strategy)) return true;
   const id = String(t.tradeId || "").trim().toLowerCase();
-  return SYNTHETIC_TRADE_ID_PREFIXES.some((prefix) => id.startsWith(prefix));
+  if (SYNTHETIC_TRADE_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return true;
+  // A CE/PE row with NO expiry cannot be a real option trade: it cannot be
+  // monitored to TP/SL or settled. Seeded fixtures and e2e rows land like
+  // this (ZERO_HERO_AI NIFTY 23000 CE, entry 150 → 41.05, repeated four
+  // times) and must never drive the real loss caps.
+  const type = String(t.type || "").toUpperCase();
+  if ((type === "CE" || type === "PE") && !String(t.expiry || "").trim()) return true;
+  return false;
 }
 
 async function readOpenExposure(nowMs: number): Promise<{
@@ -67,13 +76,15 @@ async function readOpenExposure(nowMs: number): Promise<{
     const open = await db.trade.findMany({
       where: { status: { in: OPEN_JOURNAL_STATUSES } },
       select: {
-        tradeId: true, riskPerTrade: true, positionSize: true, type: true,
-        entryPrice: true, stopLoss: true, symbol: true, createdAt: true,
+        tradeId: true, strategy: true, riskPerTrade: true, positionSize: true,
+        type: true, expiry: true, entryPrice: true, stopLoss: true,
+        symbol: true, createdAt: true,
       },
       orderBy: { createdAt: "desc" },
     });
     for (const t of open) {
       if (!t.tradeId) continue;
+      if (isSyntheticTradeRow(t)) continue;
       const at = t.createdAt instanceof Date ? t.createdAt.getTime() : Date.parse(String(t.createdAt));
       if (Number.isFinite(at) && at > nowMs) continue; // opened after the signal time
       put({
@@ -95,6 +106,7 @@ async function readOpenExposure(nowMs: number): Promise<{
   try {
     const { getMonitoredTrades } = await import("./activeTradeTracker");
     for (const t of getMonitoredTrades()) {
+      if (isSyntheticTradeRow({ tradeId: t.id })) continue;
       const at = Date.parse(t.sentAt || "");
       if (Number.isFinite(at) && at > nowMs) continue; // opened after the signal time
       put({
@@ -140,7 +152,10 @@ async function readOpenExposure(nowMs: number): Promise<{
 
     const closed = await db.trade.findMany({
       where: { pnl: { not: null } },
-      select: { tradeId: true, strategy: true, pnl: true, exitTime: true, createdAt: true },
+      select: {
+        tradeId: true, strategy: true, type: true, expiry: true,
+        pnl: true, exitTime: true, createdAt: true,
+      },
       orderBy: { createdAt: "desc" },
       take: 800,
     });

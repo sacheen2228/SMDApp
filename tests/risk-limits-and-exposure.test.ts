@@ -231,6 +231,28 @@ describe("synthetic rows never move the real loss caps", () => {
     expect(isSyntheticTradeRow({ tradeId: "monerr-1", strategy: "sdm" })).toBe(true);
   });
 
+  test("an option row with no expiry is unmonitorable, never real", () => {
+    expect(isSyntheticTradeRow({
+      tradeId: "ZERO_HERO_AI-NIFTY-23000-CE-20261110",
+      strategy: "ZERO_HERO_AI",
+      type: "CE",
+      expiry: null,
+    })).toBe(true);
+    expect(isSyntheticTradeRow({
+      tradeId: "ZERO_HERO_AI-NIFTY-23000-CE-20261110",
+      strategy: "ZERO_HERO_AI",
+      type: "CE",
+      expiry: "2026-11-17",
+    })).toBe(false);
+    // Equity has no contract expiry — it stays valid.
+    expect(isSyntheticTradeRow({
+      tradeId: "BTST-NIFTYBEES-1",
+      strategy: "BTST",
+      type: "EQ",
+      expiry: null,
+    })).toBe(false);
+  });
+
   test("real strategy rows are kept", () => {
     expect(isSyntheticTradeRow({ tradeId: "ZERO_HERO_AI-NIFTY-1", strategy: "ZERO_HERO_AI" })).toBe(false);
     expect(isSyntheticTradeRow({ tradeId: "SMART_MONEY-NIFTY-1", strategy: "SMART_MONEY" })).toBe(false);
