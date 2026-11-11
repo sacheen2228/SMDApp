@@ -5,6 +5,7 @@
 // Decision-support only — NOT investment advice.
 
 import { parseExpiryToYears } from "@/lib/greeks";
+import { GATE_CONFIG } from "@/lib/agent-brain-gate";
 
 export interface ChainLeg {
   ltp: number;
@@ -183,28 +184,37 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
         ];
         if (short.pe.oiChg && short.pe.oiChg > 0) reasons.push("short OI building");
 
-        bullPuts.push({
-          id: `BPS-${short.strike}-${longStrike}`,
-          strategy: "BULL_PUT_SPREAD",
-          bias: "BULLISH",
-          direction: "CREDIT",
-          legs: [
-            { action: "SELL", type: "PE", strike: short.strike, premium: +shortPrem.toFixed(2) },
-            { action: "BUY", type: "PE", strike: longStrike, premium: +longPrem.toFixed(2) },
-          ],
-          netCredit: credit,
-          width: w,
-          marginPerLot: margin,
-          maxProfitPerLot: credit * lotSize,
-          maxLossPerLot,
-          minProfitPerLot: credit * 0.5 * lotSize,   // exit at 50% credit
-          minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize), // stop at 1.5x credit
-          breakeven: [+(short.strike - credit).toFixed(2)],
-          winProb,
-          score,
-          affordableLots: 1,
-          reasons,
-        });
+        const cePlan = ce && ce.ltp >= 5 ? buildOptionPlan({
+          symbol: activeSymbol,
+          optionType: "CE",
+          entryPremium: ce.ltp,
+          lotSize,
+          deployedAmount: Math.min(capital, GATE_CONFIG.tradeBudget),
+        }) : null;
+
+        if (cePlan && cePlan.tradable) {
+          bullPuts.push({
+            id: `BPS-${short.strike}-${longStrike}`,
+            strategy: "BULL_PUT_SPREAD",
+            bias: "BULLISH",
+            direction: "CREDIT",
+            legs: [
+              { action: "SELL", type: "PE", strike: short.strike, premium: +shortPrem.toFixed(2) },
+              { action: "BUY", type: "PE", strike: longStrike, premium: +longPrem.toFixed(2) },
+            ],
+            netCredit: credit,
+            width: w,
+            marginPerLot: margin,
+            maxProfitPerLot: credit * lotSize,
+            maxLossPerLot,
+            minProfitPerLot: credit * 0.5 * lotSize,   // exit at 50% credit
+            minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize), // stop at 1.5x credit
+            breakeven: [+(short.strike - credit).toFixed(2)],
+            winProb,
+            score,
+            affordableLots: cePlan.lots,
+            reasons,
+          });
       }
     }
 
@@ -242,28 +252,37 @@ export function suggestSpreads(opts: SuggestOptions): SpreadSuggestion[] {
         ];
         if (short.ce.oiChg && short.ce.oiChg > 0) reasons.push("short OI building");
 
-        bearCalls.push({
-          id: `BCS-${short.strike}-${longStrike}`,
-          strategy: "BEAR_CALL_SPREAD",
-          bias: "BEARISH",
-          direction: "CREDIT",
-          legs: [
-            { action: "SELL", type: "CE", strike: short.strike, premium: +shortPrem.toFixed(2) },
-            { action: "BUY", type: "CE", strike: longStrike, premium: +longPrem.toFixed(2) },
-          ],
-          netCredit: credit,
-          width: w,
-          marginPerLot: margin,
-          maxProfitPerLot: credit * lotSize,
-          maxLossPerLot,
-          minProfitPerLot: credit * 0.5 * lotSize,
-          minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize),
-          breakeven: [+(short.strike + credit).toFixed(2)],
-          winProb,
-          score,
-          affordableLots: 1,
-          reasons,
-        });
+        const pePlan = pe && pe.ltp >= 5 ? buildOptionPlan({
+          symbol: activeSymbol,
+          optionType: "PE",
+          entryPremium: pe.ltp,
+          lotSize,
+          deployedAmount: Math.min(capital, GATE_CONFIG.tradeBudget),
+        }) : null;
+
+        if (pePlan && pePlan.tradable) {
+          bearCalls.push({
+            id: `BCS-${short.strike}-${longStrike}`,
+            strategy: "BEAR_CALL_SPREAD",
+            bias: "BEARISH",
+            direction: "CREDIT",
+            legs: [
+              { action: "SELL", type: "CE", strike: short.strike, premium: +shortPrem.toFixed(2) },
+              { action: "BUY", type: "CE", strike: longStrike, premium: +longPrem.toFixed(2) },
+            ],
+            netCredit: credit,
+            width: w,
+            marginPerLot: margin,
+            maxProfitPerLot: credit * lotSize,
+            maxLossPerLot,
+            minProfitPerLot: credit * 0.5 * lotSize,
+            minLossPerLot: Math.min(maxLossPerLot, credit * 1.5 * lotSize),
+            breakeven: [+(short.stripe + credit).toFixed(2)],
+            winProb,
+            score,
+            affordableLots: pePlan.lots,
+            reasons,
+          });
       }
     }
   }
@@ -352,4 +371,8 @@ function scoreSpread(
   const rank = sortedOi.filter((x) => x <= shortOi).length / Math.max(sortedOi.length, 1);
   const liqScore = rank * 30;
   return Math.round(creditScore + deltaScore + liqScore);
+}
+
+}
+
 }
