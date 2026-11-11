@@ -35,6 +35,7 @@ import { getStockQuoteProvenance } from "@/lib/nse-stock-data";
 import { buildCardMeta, getMarketClock, round } from "@/lib/data-freshness";
 import { classifyScannerDataQuality, type DataQuality, type SourceStatus } from "@/lib/scanner-data-quality";
 import { getMOCandles } from "@/lib/motilal/candles";
+import { getIntradayCandles } from "@/lib/breeze-historical";
 import { alertScannerStock, scannerTradeId } from "@/lib/scanner-stock-alerts";
 
 // Unified Intraday Intelligence Engine — additive layer on the Scanner tab.
@@ -91,6 +92,7 @@ async function buildScannerMarketData(symbols: string[]): Promise<{
   quoteSourceStamp: string | null;
 }> {
   const dailyCandles = new Map<string, any[]>();
+  const intradayCandles = new Map<string, any[]>();
   const quoteFallback = new Map<string, any>();
   const sources = { daily: "nse", intraday: "none", quotes: "nse" };
   let quoteSourceStamp: string | null = null;
@@ -167,6 +169,42 @@ async function buildScannerMarketData(symbols: string[]): Promise<{
   } catch { /* MOapi unavailable → no daily context */ }
   if (moDailyAdded) sources.daily = "motilal";
 
+  // ── Breeze live intraday 5m candles (per stock, current session) ─────────
+  // Breeze session is live (see /api/health). Real 5m bars drive the engine's
+  // session profile (opening range, session VWAP, VAL/VAH, auction state) —
+  // without them the scanner falls back to daily bars and reports
+  // "5m UNAVAILABLE (no intraday feed)". Honest when Breeze is dead, live
+  // when the session is up.
+  let intradayAdded = 0;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const IV_CONCURRENCY = 6;
+    const IV_DEADLINE = Date.now() + 20_000;
+    for (let i = 0; i < symbols.length && Date.now() < IV_DEADLINE; i += IV_CONCURRENCY) {
+      const batch = symbols.slice(i, i + IV_CONCURRENCY);
+      await Promise.allSettled(batch.map(async (sym) => {
+        try {
+          const res = await getIntradayCandles(sym, today, "5minute");
+          const bars = (res?.candles || []).map((c: any) => {
+            const t = new Date(String(c.time).replace(" ", "T")).getTime();
+            const o = Number(c.open);
+            const h = Number(c.high);
+            const l = Number(c.low);
+            const cl = Number(c.close);
+            const v = Number(c.volume || 0);
+            if (!Number.isFinite(t) || !o || !h || !l || !cl) return null;
+            return { time: t, open: o, high: h, low: l, close: cl, volume: v };
+          }).filter(Boolean).sort((a: any, b: any) => a.time - b.time);
+          if (bars.length >= 5) {
+            intradayCandles.set(sym, bars as any);
+            intradayAdded++;
+          }
+        } catch { /* Breeze per-symbol failure → honest gap for that name */ }
+      }));
+    }
+  } catch { /* Breeze module unavailable → intraday stays none */ }
+  if (intradayAdded > 0) sources.intraday = "breeze";
+
   try {
     const { fetchFreeNSEQuotes } = await import("@/lib/nse-stock-data");
     const free = await fetchFreeNSEQuotes(symbols);
@@ -199,7 +237,7 @@ async function buildScannerMarketData(symbols: string[]): Promise<{
       : null;
   } catch { /* no quote fallback */ }
   return {
-    marketData: { dailyCandles, quoteFallback, sources },
+    marketData: { dailyCandles, intradayCandles, quoteFallback, sources },
     quoteSource: sources.quotes,
     quoteSourceStamp,
   };

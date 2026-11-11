@@ -436,6 +436,8 @@ const SCANNER_CACHE_TTL = 30_000;
 export interface ScannerMarketData {
   /** Daily bars per symbol (free NSE equity history) */
   dailyCandles?: Map<string, Candle[]>;
+  /** Live intraday 5m bars per symbol (Breeze, current session) */
+  intradayCandles?: Map<string, Candle[]>;
   /** Quotes for symbols the free quote paths missed */
   quoteFallback?: Map<string, any>;
   sources?: { daily: string; intraday: string; quotes: string };
@@ -524,10 +526,16 @@ async function fetchScannerMarketData(symbols: string[], provided?: ScannerMarke
     for (const [sym, bars] of provided.dailyCandles) candles.set(sym, bars);
   }
 
-  // No Yahoo intraday fetch — intraday 5m candles are unavailable from free
-  // sources; Breeze is the live one and is auth-gated (passed in by the
-  // server route, or null → engine falls back to daily bars).
-  const intradaySource = "none";
+  // Intraday 5m bars come from the server via Breeze (live session) — passed
+  // in as provided.intradayCandles. When unavailable the engine falls back to
+  // daily bars (honest "no intraday feed" rather than a fabricated series).
+  const providedIntraday = provided?.intradayCandles;
+  if (providedIntraday) {
+    for (const [sym, bars] of providedIntraday) {
+      if (bars && bars.length) intradayCandles.set(sym, bars);
+    }
+  }
+  const intradaySource = intradayCandles.size > 0 ? "breeze" : "none";
 
   const data: ScannerData = {
     quotes, candles, intradayCandles,
