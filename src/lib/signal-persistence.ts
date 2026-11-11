@@ -25,6 +25,12 @@
 
 export type SignalDirection = "CALL" | "PUT" | "WAIT" | "NEUTRAL";
 
+export interface ConfirmationCheck {
+  name: string;
+  pass: boolean;
+  detail: string;
+}
+
 export interface SignalRec {
   direction: SignalDirection;
   confidence: number; // 0-100
@@ -37,6 +43,11 @@ export interface SignalRec {
   tradeGrade: string;
   reason: string;
   riskReward: number;
+  /** Confirmation checks evaluated alongside the signal. */
+  confirmations?: ConfirmationCheck[];
+  /** Overall confirmation pass count / total. */
+  confirmPass?: number;
+  confirmTotal?: number;
 }
 
 export interface ConfirmResult {
@@ -140,7 +151,7 @@ function confFloor(dir: SignalDirection): number {
 function buildResult(rec: SignalRec, confirmed: boolean, status: string): ConfirmResult {
   const showDirection =
     confirmed && rec.direction !== "WAIT" && rec.confidence >= confFloor(rec.direction);
-  return { rec, confirmed, status, showDirection };
+  return { rec: { ...rec }, confirmed, status, showDirection };
 }
 
 /**
@@ -153,6 +164,7 @@ function buildResult(rec: SignalRec, confirmed: boolean, status: string): Confir
 export function updateSignal(
   raw: SignalRec,
   nowMs: number = Date.now(),
+  confirmations?: ConfirmationCheck[],
 ): ConfirmResult {
   const dir = normalise(raw.direction);
   const conf = Number.isFinite(raw.confidence) ? raw.confidence : 0;
@@ -175,6 +187,7 @@ export function updateSignal(
       ...state.lastConfirmedRec,
       direction: "WAIT",
       confidence: 0,
+      confirmations: [],
     };
     state.lastLevelUpdate = null;
     staled = true;
@@ -195,7 +208,12 @@ export function updateSignal(
   if (isNewSignal && dir !== "WAIT") {
     state.confirmedDirection = dir;
     state.confirmedConfidence = conf;
-    state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+    state.lastConfirmedRec = {
+      ...raw,
+      direction: dir,
+      confidence: conf,
+      confirmations,
+    };
     state.lastLevelUpdate = nowMs;
     state.pendingDirection = null;
     state.pendingSince = null;
@@ -220,7 +238,12 @@ export function updateSignal(
       nowMs - state.lastLevelUpdate >= CONFIG.levelStaleMs;
 
     if (premiumMoved || levelStale) {
-      state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+      state.lastConfirmedRec = {
+        ...raw,
+        direction: dir,
+        confidence: conf,
+        confirmations,
+      };
       state.lastLevelUpdate = nowMs;
     } else {
       // Same levels, just refresh confidence.
@@ -263,7 +286,12 @@ export function updateSignal(
       // Flip confirmed to the new direction.
       state.confirmedDirection = dir;
       state.confirmedConfidence = conf;
-      state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+      state.lastConfirmedRec = {
+        ...raw,
+        direction: dir,
+        confidence: conf,
+        confirmations,
+      };
       state.lastLevelUpdate = nowMs;
       state.pendingDirection = null;
       state.pendingSince = null;
@@ -317,5 +345,91 @@ export function getConfirmedSignal(): ConfirmResult {
 
 export const CONF_FLOOR_CALL = CONFIG.confFloorCall; // 60 (0-100 scale)
 export const CONF_FLOOR_PUT = CONFIG.confFloorPut; // 70 (0-100 scale)
+
+/** Evaluate confirmation checks from available market context.
+ *
+ * Returns checks that the SimpleMode card can display so the user knows
+ * *when* to take a trade — only when structure + trigger + volume + OI
+ * all align in the same direction.
+ *
+ * Inputs are optional — missing data yields a "skip" check, never a fake pass.
+ */
+export function evaluateConfirmations(input: {
+  /** Direction the signal is calling (1 = bullish/CALL, -1 = bearish/PUT). */
+  direction: "CALL" | "PUT";
+  /** EMA/SuperTrend alignment: "bullish" | "bearish" | "neutral" | null. */
+  trend?: "bullish" | "bearish" | "neutral" | null;
+  /** Trigger: fresh EMA cross + sweep reclaim in direction. "fresh" | "against" | "none" | null. */
+  trigger?: "fresh" | "against" | "none" | null;
+  /** Relative volume vs average: number or null. */
+  rvol?: number | null;
+  /** PCR: call/put OI ratio. >1 bullish-leaning, <0.9 bearish-leaning. */
+  pcr?: number | null;
+  /** Price vs VWAP: "above" | "below" | null. */
+  vwap?: "above" | "below" | null;
+}): ConfirmationCheck[] {
+  const dir = input.direction;
+  const wantBullish = dir === "CALL";
+  const checks: ConfirmationCheck[] = [];
+
+  // ── 1. Trend / structure alignment ──
+  checks.push({
+    name: "Trend",
+    pass: (wantBullish && input.trend === "bullish") || (!wantBullish && input.trend === "bearish"),
+    detail: input.trend
+      ? `EMA/SuperTrend ${input.trend}`
+      : "trend data unavailable",
+  });
+
+  // ── 2. Trigger (fresh cross / sweep reclaim in direction) ──
+  checks.push({
+    name: "Trigger",
+    pass: input.trigger === "fresh",
+    detail: input.trigger === "fresh"
+      ? "fresh cross + sweep reclaim"
+      : input.trigger === "against"
+        ? "trigger against direction"
+        : "no fresh trigger",
+  });
+
+  // ── 3. Volume confirmation ──
+  const rvol = input.rvol ?? 0;
+  checks.push({
+    name: "Volume",
+    pass: rvol >= 1.2,
+    detail: rvol > 0 ? `RVOL ${rvol.toFixed(1)}x` : "volume data unavailable",
+  });
+
+  // ── 4. OI / PCR alignment ──
+  const pcr = input.pcr ?? 0;
+  const pcrPass = wantBullish ? pcr > 1.0 : pcr < 0.9;
+  checks.push({
+    name: "OI / PCR",
+    pass: pcr > 0 && pcrPass,
+    detail: pcr > 0 ? `PCR ${pcr.toFixed(2)}` : "PCR data unavailable",
+  });
+
+  // ── 5. VWAP side ──
+  checks.push({
+    name: "VWAP",
+    pass: (wantBullish && input.vwap === "above") || (!wantBullish && input.vwap === "below"),
+    detail: input.vwap
+      ? `price ${input.vwap} VWAP`
+      : "VWAP data unavailable",
+  });
+
+  return checks;
+}
+
+/** Count how many checks pass and total. */
+export function confirmSummary(checks: ConfirmationCheck[]): {
+  pass: number;
+  total: number;
+  pct: number;
+} {
+  const pass = checks.filter((c) => c.pass).length;
+  const total = checks.length;
+  return { pass, total, pct: total > 0 ? Math.round((pass / total) * 100) : 0 };
+}
 
 export { CONFIG };

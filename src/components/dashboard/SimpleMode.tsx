@@ -8,6 +8,7 @@ import { OIChangePanel } from "./OIChangePanel";
 import type { SDMRecommendation } from "@/types/sdm";
 import type { FullAnalysis } from "@/lib/sdm-engine";
 import { Badge } from "@/components/ui/badge";
+import { confirmSummary } from "@/lib/signal-persistence";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -208,6 +209,9 @@ export const SimpleMode = memo(function SimpleMode({
   oiSummary,
 }: SimpleModeProps) {
   const rec = recommendation;
+  const confirmations = rec?.confirmations || [];
+  const { pass: confirmPass, total: confirmTotal, pct: confirmPct } = confirmSummary(confirmations);
+  const confirmedEnough = confirmPass >= Math.max(2, Math.ceil(confirmTotal * 0.6));
 
   // Live data from summary (falls back to recommendation, then defaults)
   const livePCR = summary?.pcr ?? rec?.marketContext?.pcr ?? 0;
@@ -242,7 +246,17 @@ export const SimpleMode = memo(function SimpleMode({
     D: "bg-red-500 text-white",
   };
 
-  const actionLabel = isLoading ? "ANALYZING" : isWait ? "NO TRADE" : isCall ? "BUY CALL" : isPut ? "BUY PUT" : "NO TRADE";
+  const actionLabel = isLoading
+    ? "ANALYZING"
+    : isWait
+      ? "NO TRADE"
+      : !confirmedEnough && confirmTotal > 0
+        ? "WATCH"
+        : isCall
+          ? "BUY CALL"
+          : isPut
+            ? "BUY PUT"
+            : "NO TRADE";
   const actionIcon = isLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : isWait ? <Pause className="w-5 h-5" /> : isCall ? <ArrowUp className="w-5 h-5" /> : isPut ? <ArrowDown className="w-5 h-5" /> : <Pause className="w-5 h-5" />;
   const actionColor = isLoading
     ? "border-muted bg-muted/20"
@@ -344,6 +358,19 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="text-right">
               <div className="text-3xl font-black tabular-nums">{rec.confidence}%</div>
               <Badge className={`${gradeColors[rec.tradeGrade]} text-[10px]`}>Grade {rec.tradeGrade}</Badge>
+              {confirmTotal > 0 && (
+                <Badge
+                  className={`text-[10px] ${
+                    confirmedEnough
+                      ? "bg-emerald-600 text-white"
+                      : confirmPass === 0
+                        ? "bg-red-600 text-white"
+                        : "bg-yellow-600 text-white"
+                  }`}
+                >
+                  {`Confirm: ${confirmPass}/${confirmTotal}`}
+                </Badge>
+              )}
             </div>
           )}
         </div>
@@ -407,6 +434,42 @@ export const SimpleMode = memo(function SimpleMode({
                   <span className="text-muted-foreground">Support</span>
                   <span className="font-bold tabular-nums">{fmt(oiSummary.supportResistance.support[0].strike)}</span>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+        {confirmTotal > 0 && (
+          <div className="mt-3 p-3 rounded-lg bg-muted/40 border border-border/50 text-xs">
+            <div className="flex items-center gap-2 mb-1">
+              <Shield className="w-3 h-3 text-blue-500" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Confirmation</span>
+              <span className={`ml-2 text-[10px] ${
+                confirmedEnough
+                  ? "bg-emerald-600 text-white"
+                  : confirmPass === 0
+                    ? "bg-red-600 text-white"
+                    : "bg-yellow-600 text-white"
+              } px-1.5`}>
+                {confirmPass}/{confirmTotal}
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              {confirmations.map((c) => (
+                <div key={c.name} className="flex justify-between">
+                  <span className="text-muted-foreground">{c.name}</span>
+                  <span
+                    className={`text-[10px] font-bold ${
+                      c.pass ? "text-emerald-500" : "text-red-500"
+                    }`}
+                  >
+                    {c.pass ? "✓" : "✗"} {c.detail}
+                  </span>
+                </div>
+              ))}
+              {!confirmedEnough && confirmTotal > 0 && (
+                <p className="text-[10px] text-red-500/80 mt-1">
+                  Not enough confirmations to trade — wait for structure + trigger alignment
+                </p>
               )}
             </div>
           </div>
