@@ -207,9 +207,10 @@ export const SimpleMode = memo(function SimpleMode({
   selectedExpiry,
   onExpiryChange,
   oiSummary,
+  confirmations: confirmationsProp,
 }: SimpleModeProps) {
   const rec = recommendation;
-  const confirmations = rec?.confirmations || [];
+  const confirmations = confirmationsProp || rec?.confirmations || [];
   const { pass: confirmPass, total: confirmTotal, pct: confirmPct } = confirmSummary(confirmations);
   const confirmedEnough = confirmPass >= Math.max(2, Math.ceil(confirmTotal * 0.6));
 
