@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  BarChart,
-  Bar,
   LineChart,
   Line,
   XAxis,
@@ -11,14 +9,13 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine,
 } from "recharts";
-import { Activity, ChevronDown, RefreshCw, Target, Activity as ActivityIcon } from "lucide-react";
+import { RefreshCw, Activity as ActivityIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Panel, StatCell, Chip, TimeframePills } from "@/components/ui/panel";
+import { Panel, StatCell, Chip } from "@/components/ui/panel";
 import { cn } from "@/lib/utils";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
@@ -57,6 +54,8 @@ interface ChainRow {
 interface OptionPulseData {
   summary: {
     spotPrice: number;
+    spotChange?: number;
+    spotChangePct?: number;
     pcr: number;
     maxPain: number;
     atmStrike: number;
@@ -81,8 +80,16 @@ function fetchOptionPulse(symbol: string, expiry?: string) {
     const json = await r.json();
     const d = json.data || json;
     const fr = d.freshness;
+    const s = d.summary || {};
+    const prevClose = n(s.prevClose) || n(s.prevCloseLive);
+    const spotPrice = n(s.spotPrice);
     return {
       ...d,
+      summary: {
+        ...s,
+        spotChange: s.spotChange != null ? n(s.spotChange) : prevClose ? spotPrice - prevClose : 0,
+        spotChangePct: s.spotChangePct != null ? n(s.spotChangePct) : prevClose > 0 ? ((spotPrice - prevClose) / prevClose) * 100 : 0,
+      },
       source: d.source || fr?.source || "UNKNOWN",
       freshness: typeof fr === "string" ? fr : fr?.freshness || "UNKNOWN",
     } as OptionPulseData;
@@ -92,7 +99,7 @@ function fetchOptionPulse(symbol: string, expiry?: string) {
 export function OptionPulseView() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [expiry, setExpiry] = useState<string | undefined>(undefined);
-  const { data, isLoading, error } = useQuery<OptionPulseData>({
+  const { data, isLoading, error, refetch, isRefetching } = useQuery<OptionPulseData>({
     queryKey: ["option-pulse", symbol, expiry],
     queryFn: () => fetchOptionPulse(symbol, expiry),
     refetchInterval: 30000,
@@ -108,11 +115,24 @@ export function OptionPulseView() {
   const spot = n(summary?.spotPrice);
   const pcr = n(summary?.pcr);
   const maxPain = n(summary?.maxPain);
-  const iv = n(summary?.indiaVIX);
 
   const verdict = pcrVerdict(pcr);
   const callOiChange = n(summary?.callOiChange);
   const putOiChange = n(summary?.putOiChange);
+
+  // real walls + ATM straddle premium (no hardcoded %)
+  const putWall = useMemo(
+    () => strikes.filter((s) => s.strike < spot && n(s.pe?.oi) > 0).sort((a, b) => n(b.pe?.oi) - n(a.pe?.oi))[0] ?? null,
+    [strikes, spot]
+  );
+  const callWall = useMemo(
+    () => strikes.filter((s) => s.strike > spot && n(s.ce?.oi) > 0).sort((a, b) => n(b.ce?.oi) - n(a.ce?.oi))[0] ?? null,
+    [strikes, spot]
+  );
+  const straddle = useMemo(() => {
+    const atmRow = strikes.find((s) => s.strike === atm) ?? strikes.reduce((best, s) => (Math.abs(s.strike - spot) < Math.abs((best?.strike ?? 1e12) - spot) ? s : best), null as ChainRow | null);
+    return atmRow ? n(atmRow.ce?.ltp) + n(atmRow.pe?.ltp) : 0;
+  }, [strikes, atm, spot]);
 
   // ATM window strikes for center table (±5 strikes)
   const center = useMemo(() => {
@@ -172,8 +192,8 @@ export function OptionPulseView() {
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-            <RefreshCw className="h-3 w-3" /> Refresh
+          <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isRefetching}>
+            <RefreshCw className={`h-3 w-3 ${isRefetching ? "animate-spin" : ""}`} /> Refresh
           </Button>
           <Badge variant="outline" className="px-2 py-1">
             {data.freshness}
@@ -183,11 +203,11 @@ export function OptionPulseView() {
 
       {/* Stat strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCell label="Spot" value={spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })} change={{ value: "", up: true }} />
+        <StatCell label="Spot" value={spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })} change={{ value: `${n(summary?.spotChangePct) >= 0 ? "+" : ""}${n(summary?.spotChangePct).toFixed(2)}%`, up: n(summary?.spotChangePct) >= 0 }} />
         <StatCell label="PCR" value={pcr.toFixed(2)} change={{ value: verdict.label, up: verdict.tone === "up" }} />
         <StatCell label="Max Pain" value={maxPain.toLocaleString("en-IN")} />
-        <StatCell label="ATM IV" value={iv ? iv.toFixed(1) : "—"} change={{ value: "", up: true }} />
-        <StatCell label="VIX" value={n(data?.summary?.indiaVIX).toFixed(1)} change={{ value: "", up: true }} />
+        <StatCell label="CE OI Δ" value={fmtLakh(callOiChange)} change={{ value: callOiChange >= 0 ? "added" : "covered", up: false }} />
+        <StatCell label="PE OI Δ" value={fmtLakh(putOiChange)} change={{ value: putOiChange >= 0 ? "added" : "covered", up: true }} />
         <StatCell label="Source" value={data.source.toUpperCase()} />
       </div>
 
@@ -196,7 +216,7 @@ export function OptionPulseView() {
         <div className="lg:col-span-4 space-y-3">
           <Panel title="Writers' Walls" subtitle="Top open-interest walls by strike">
             <div className="space-y-2">
-              {center.slice(0, 5).map((s) => {
+              {center.slice().sort((a, b) => (n(b.ce?.oi) + n(b.pe?.oi)) - (n(a.ce?.oi) + n(a.pe?.oi))).slice(0, 5).map((s) => {
                 const callShare = Math.min(100, (n(s.ce?.oi) / maxCallOi) * 100);
                 const putShare = Math.min(100, (n(s.pe?.oi) / maxPutOi) * 100);
                 return (
@@ -227,21 +247,23 @@ export function OptionPulseView() {
             </div>
           </Panel>
 
-          <Panel title="Expected Range" subtitle="ATM straddle 1σ move">
+          <Panel title="Expected Range" subtitle="from OI walls + ATM straddle premium">
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3 p-3 bg-ty-fill rounded">
                 <div className="flex flex-col gap-0.5">
-                  <span className="ty-text-xs text-ty-subtle-fg">Support</span>
-                  <span className="ty-text-title font-semibold">{Math.round(spot * 0.98).toLocaleString("en-IN")}</span>
+                  <span className="ty-text-xs text-ty-subtle-fg">Support (put wall)</span>
+                  <span className="ty-text-title font-semibold">{putWall ? putWall.strike.toLocaleString("en-IN") : "—"}</span>
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <span className="ty-text-xs text-ty-subtle-fg">Resistance</span>
-                  <span className="ty-text-title font-semibold">{Math.round(spot * 1.02).toLocaleString("en-IN")}</span>
+                  <span className="ty-text-xs text-ty-subtle-fg">Resistance (call wall)</span>
+                  <span className="ty-text-title font-semibold">{callWall ? callWall.strike.toLocaleString("en-IN") : "—"}</span>
                 </div>
               </div>
               <div className="p-3 border border-ty-hairline rounded text-center">
-                <span className="ty-text-xs block text-ty-subtle-fg">Expected move</span>
-                <span className="ty-text-title font-bold">{Math.round(spot * 0.02).toLocaleString("en-IN")} pts</span>
+                <span className="ty-text-xs block text-ty-subtle-fg">Expected move (ATM straddle)</span>
+                <span className="ty-text-title font-bold">
+                  {straddle > 0 ? `${Math.round(straddle).toLocaleString("en-IN")} pts (${((straddle / spot) * 100).toFixed(1)}%)` : "—"}
+                </span>
               </div>
             </div>
           </Panel>
@@ -309,7 +331,7 @@ export function OptionPulseView() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={ivPoints}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--ty-hairline)" />
-                  <XAxis dataKey="stroke" tickFormatter={(v) => String(v)} tickFontSize="9px" />
+                  <XAxis dataKey="strike" tickFormatter={(v) => String(v)} tickFontSize="9px" />
                   <YAxis tickFormatter={(v) => v + "%"} tickFontSize="9px" />
                   <Tooltip />
                   <Line type="monotone" dataKey="ceIV" stroke="var(--ty-up)" strokeWidth={2} dot={false} name="CE IV" />

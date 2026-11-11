@@ -23,7 +23,7 @@ function fmtLakh(v: number): string {
 }
 
 interface Candle { time: number; open: number; high: number; low: number; close: number; volume: number }
-interface WallStrike { strike: number; ceOi: number; peOi: number }
+interface WallStrike { strike: number; ceOi: number; ceOiChg: number; peOi: number; peOiChg: number }
 
 interface LiquidityData {
   symbol: string;
@@ -57,7 +57,7 @@ function fetchLiquidity(symbol: string, tf: string) {
       putOiChange: n(s.putOiChange),
       totalCallOI: n(s.totalCallOI),
       totalPutOI: n(s.totalPutOI),
-      walls: rows.map((r) => ({ strike: r.strike, ceOi: n(r.ce?.oi), peOi: n(r.pe?.oi) })).filter((w) => w.ceOi > 0 || w.peOi > 0),
+      walls: rows.map((r) => ({ strike: r.strike, ceOi: n(r.ce?.oi), ceOiChg: n(r.ce?.oiChg), peOi: n(r.pe?.oi), peOiChg: n(r.pe?.oiChg) })).filter((w) => w.ceOi > 0 || w.peOi > 0),
       source: d.source || json.source || fr?.source || "UNKNOWN",
       freshness: typeof fr === "string" ? fr : fr?.freshness || "UNKNOWN",
     };
@@ -260,11 +260,11 @@ export function LiquidityMapView() {
         <div className="relative">
           <RingCard title="SUPPORT" score={derived.supportScore} tone="up"
             level={derived.putWall ? fmtNum(derived.putWall.strike) : "—"}
-            caption={derived.putWall ? (derived.putWall.peOi >= (data.walls.find((w) => w.strike === derived.putWall?.strike)?.peOi ?? 0) && derived.net >= 0 ? "strong, fresh adds" : "defending") : "no wall below"} />
+            caption={derived.putWall ? (derived.putWall.peOiChg >= 0 ? "strong, fresh adds" : "unwinding — weakening") : "no wall below"} />
         </div>
         <RingCard title="RESISTANCE" score={derived.resistScore} tone="down"
           level={derived.callWall ? fmtNum(derived.callWall.strike) : "—"}
-          caption={derived.callWall ? (derived.callWall.ceOi >= 0 && -derived.net >= 0 ? "strong, fresh adds" : "defending") : "no wall above"} />
+          caption={derived.callWall ? (derived.callWall.ceOiChg >= 0 ? "strong, fresh adds" : "covering — melting") : "no wall above"} />
         <RingCard title="BUILDUP" score={derived.buildScore}
           tone={derived.buildup === "Bullish" ? "up" : derived.buildup === "Bearish" ? "down" : "warn"}
           level={derived.buildup}

@@ -87,6 +87,7 @@ function fetchOIFlow(symbol: string, expiry?: string) {
     const d = json.data || json;
     const fr = d.freshness;
     const s = d.summary || {};
+    const prevClose = n(s.prevClose) || n(s.prevCloseLive);
     const rows = (d.data || d.strikes || []).map((r: any) => {
       const ceOi = n(r.ce?.oi);
       const peOi = n(r.pe?.oi);
@@ -103,8 +104,9 @@ function fetchOIFlow(symbol: string, expiry?: string) {
     return {
       symbol,
       spot: n(s.spotPrice),
-      spotChange: n(s.spotChange),
-      spotChangePct: n(s.spotChangePct),
+      // some summary paths carry no spotChange/spotChangePct — derive from prevClose
+      spotChange: s.spotChange != null ? n(s.spotChange) : prevClose ? n(s.spotPrice) - prevClose : 0,
+      spotChangePct: s.spotChangePct != null ? n(s.spotChangePct) : prevClose && prevClose > 0 ? ((n(s.spotPrice) - prevClose) / prevClose) * 100 : 0,
       pcr: n(s.pcr),
       totalCallOI: n(s.totalCallOI),
       totalPutOI: n(s.totalPutOI),
