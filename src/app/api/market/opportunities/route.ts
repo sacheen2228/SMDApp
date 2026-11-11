@@ -278,7 +278,7 @@ export async function GET(request: Request) {
       .reduce((a, b) => Math.max(a, b), 0);
     const meta = buildCardMeta({
       source: "nse",
-      providerTimestamp: newestBar ? new Date(newestBar) : clock.tradeDate,
+      providerTimestamp: newestBar ? new Date(newestBar) : new Date(),
       ttlMs: 36 * 3600_000,
       live: clock.isOpen,
       reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
