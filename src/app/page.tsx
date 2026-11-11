@@ -460,6 +460,23 @@ export default function TradingDashboard() {
     };
   })();
 
+  // OI Summary for SimpleMode card — absorption/exhaustion, traps, support/resistance
+  const oiSummary = useMemo(() => {
+    const raw = data as any;
+    const chain = raw?.data || [];
+    const spot = raw?.summary?.spotPrice || 0;
+    if (!chain.length || !spot) return null;
+    const analysis = analyzeOptionChain(chain, spot);
+    return {
+      freshWriting: analysis.freshWriting || [],
+      traps: analysis.traps || [],
+      supportResistance: analysis.supportResistance || { resistance: [], support: [] },
+      classifications: analysis.classifications || [],
+      pcrOI: analysis.pcrOI ?? 0,
+      maxPain: analysis.maxPain ?? 0,
+    };
+  }, [data]);
+
   // Confirmation checks for SimpleMode card — tells the user WHEN to take a trade
   const confirmations = useMemo(() => {
     const raw = data as any;
@@ -469,9 +486,10 @@ export default function TradingDashboard() {
     const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : rec?.direction === "CALL" ? "CALL" : rec?.direction === "PUT" ? "PUT" : null;
     if (!dir || !spot) return [];
 
-    const freshWriting = (raw?.analysis?.freshWriting || []) as any[];
-    const ceWriting = freshWriting.filter((f: any) => f.side === "CE").length;
-    const peWriting = freshWriting.filter((f: any) => f.side === "PE").length;
+    // Use oiSummary-computed fresh writing (same source as oiSummary panel)
+    const oiFreshWriting = oiSummary?.freshWriting || [];
+    const ceWriting = oiFreshWriting.filter((f: any) => f.side === "CE").length;
+    const peWriting = oiFreshWriting.filter((f: any) => f.side === "PE").length;
 
     // Trend: spot vs VWAP
     const vwap = summaryData.vwap ?? null;
@@ -503,12 +521,7 @@ export default function TradingDashboard() {
       pcr,
       vwap: vwapSide,
     });
-  }, [data]);
-
-  // V2 recommendation, produced by SDMBot.tsx (generateTradeRecommendation /
-  // sdm-recommendation.ts) — kept separate from the legacy `recommendation`
-  // memo below (built from sdm-engine.ts's older shape) so we don't mix the
-  // two engines' output into one variable.
+  }, [data, oiSummary]);
 
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. The API returns analysis.recommendation + analysis.pcr / vix /
@@ -588,23 +601,6 @@ export default function TradingDashboard() {
       holdingTimeEstimate: "",
       expectedMove: 0,
     } as SDMRecommendation;
-  }, [data]);
-
-  // OI Summary for SimpleMode card — absorption/exhaustion, traps, support/resistance
-  const oiSummary = useMemo(() => {
-    const raw = data as any;
-    const chain = raw?.data || [];
-    const spot = raw?.summary?.spotPrice || 0;
-    if (!chain.length || !spot) return null;
-    const analysis = analyzeOptionChain(chain, spot);
-    return {
-      freshWriting: analysis.freshWriting || [],
-      traps: analysis.traps || [],
-      supportResistance: analysis.supportResistance || { resistance: [], support: [] },
-      classifications: analysis.classifications || [],
-      pcrOI: analysis.pcrOI ?? 0,
-      maxPain: analysis.maxPain ?? 0,
-    };
   }, [data]);
 
   // Update store
