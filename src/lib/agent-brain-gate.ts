@@ -19,15 +19,15 @@ export const GATE_CONFIG = {
   //   trade, NOT 1% of a large account. The old 1%-of-₹2L model made every NIFTY
   //   lot unaffordable (1 lot risks ₹2.8–3.4k > 1% of ₹2L) → 0 lots → NO TRADE.
   riskPctOfTrade: 20,      // risk = 20% of the amount deployed (₹10k deployed → ₹2k risk)
-  // FIXED ₹ risk per trade (user-defined, 2026-11-10): sizing must keep the
+  // FIXED ₹ risk per trade (user-defined, 2026-11-11): sizing must keep the
   // stop loss within this cap; 1 lot that already risks more is skipped.
-  maxRiskPerTrade: 2_000,
-  tradeBudget: 20_000,     // ₹ DEPLOYED per trade (matches AUDIT_TRADE_BUDGET)
+  maxRiskPerTrade: 4_000,
+  tradeBudget: 45_000,     // ₹ DEPLOYED per trade (enables ~2 lots for index options)
   defaultRiskPct: 20,      // kept for compatibility: now % of the deployed amount
   maxRiskPct: 20,
   maxOtmSteps: 3,          // OTM ≤ 3 strikes from ATM
   minAbsDelta: 0.35,       // below = lottery ticket
-  capital: 25_000,         // the real trading capital (₹20–30k), NOT ₹2L
+  capital: 50_000,         // the real trading capital (₹50k), NOT ₹2L
   // With 20% risk per trade, one stop = 20% of the account: allow two losses, then stop.
   maxConsecutiveLosses: 2,
   maxDailyLossPct: 40,
