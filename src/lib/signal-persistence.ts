@@ -58,8 +58,8 @@ const CONFIG = {
   /** Reversal confidence must exceed current confirmed confidence by this much. */
   hysteresisMargin: 8,
   /** Confidence floor below which no directional card is shown (NO TRADE). */
-  confFloorCall: 60,
-  confFloorPut: 70,
+  confFloorCall: 65,
+  confFloorPut: 65,
   /** No fresh data within this ms invalidates the confirmed signal. */
   staleMs: 5 * 60 * 1000, // 5 minutes
 };
