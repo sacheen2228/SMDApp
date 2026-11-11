@@ -316,6 +316,22 @@ export function isChainFresh(chainAsOf?: string, maxMinutes = 15): boolean {
 /** Single-flight lock: only one scan at a time. */
 let scanInFlight = false;
 
+/** Watchdog fires at most once per trading day. Resets on IST date change. */
+let watchdogSentToday = false;
+let watchdogDateKey = "";
+
+function watchdogShouldSend(key: string): boolean {
+  if (watchdogDateKey !== key) {
+    watchdogDateKey = key;
+    watchdogSentToday = false;
+  }
+  return !watchdogSentToday;
+}
+
+function markWatchdogSent(): void {
+  watchdogSentToday = true;
+}
+
 /** Run up to `concurrency` async tasks concurrently. Each item is processed
  * exactly once; results are returned in the same order as items. */
 async function boundedConcurrency<T>(items: any[], concurrency: number, fn: (item: any) => Promise<T>, checkDeadline?: () => boolean): Promise<T[]> {
@@ -786,13 +802,15 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
   const isWeekend = nowIST.getUTCDay() === 0 || nowIST.getUTCDay() === 6;
   const isTradingDayToday = !isWeekend && !todayIsHoliday;
 
-  if (newAlerts === 0 && isTradingDayToday && nowMins >= watchdogMins) {
+  if (newAlerts === 0 && isTradingDayToday && nowMins >= watchdogMins && watchdogShouldSend(todayIst)) {
+    markWatchdogSent();
     console.warn("[sendIntradayAlerts] WATCHDOG: No alerts sent by 11:30 IST on trading day " + todayIst);
     const tgToken = process.env.TELEGRAM_BOT_TOKEN;
     const tgChatId = process.env.TELEGRAM_CHAT_ID;
     if (tgToken && tgChatId) {
       try {
-        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day). Possible causes: market closed, all providers failed, or no qualifying setups. Please check /api/health and /api/sdm-signal logs.";
+        const diag = `scanned ${scanStats.symbolsScanned} symbols · ${scanStats.candidates} candidates · ${scanStats.sent} sent · ${scanStats.errors} errors · ${scanStats.rejected.length} rejected`;
+        const watchdogMsg = "🚨 <b>SDM Alert Watchdog</b>\n\nNo trade alerts sent by 11:30 IST on " + todayIst + " (trading day).\n\n" + diag + ".\n\nNo qualifying setups: SDM index signals are below the confidence floor and stock-scanner plans are below the unified gate / ₹20,000 per-trade budget. Provider and signal health: check /api/health and /api/sdm-signal logs. This watchdog fires once per trading day.";
         await fetch("https://api.telegram.org/bot" + tgToken + "/sendMessage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
