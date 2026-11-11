@@ -466,7 +466,7 @@ export default function TradingDashboard() {
     const summaryData = raw?.summary || {};
     const spot = summaryData.spotPrice || 0;
     const rec = raw?.analysis?.recommendation;
-    const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : null;
+    const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : rec?.direction === "CALL" ? "CALL" : rec?.direction === "PUT" ? "PUT" : null;
     if (!dir || !spot) return [];
 
     const freshWriting = (raw?.analysis?.freshWriting || []) as any[];
