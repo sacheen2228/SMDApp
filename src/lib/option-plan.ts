@@ -262,18 +262,21 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
     return null;
   }
 
-  // Long-option geometry for BOTH CE and PE (R1): a bought option loses when
-  // the premium falls — the stop is always BELOW the entry, targets ABOVE.
-  const stopLoss = roundTick(entry - riskPoints);
+  // Long-option geometry: stop BELOW entry for CALL, ABOVE entry for PE.
+  // A bought CE loses when premium falls → stop below entry, targets above.
+  // A bought PE loses when premium rises → stop above entry, targets below.
+  const isCall = input.optionType === "CE";
+  const stopLoss = roundTick(isCall ? entry - riskPoints : entry + riskPoints);
 
   // Targets: 2R / 3R / 4R, dropping the unreachable ones.
+  // For CE: targets above entry. For PE: targets below entry.
   const mults = input.targetMultipliers ?? [...PLAN_CONFIG.targetMultipliers];
   const targets: number[] = [];
   const rupee = { tp1: 0, tp2: 0, tp3: 0 };
   for (const k of mults) {
     const pts = riskPoints * k;
     if (pts >= entry) { notes.push(`${k}R target unreachable (${(pts).toFixed(2)} pts ≥ premium ${entry}) — dropped`); continue; }
-    const px = roundTick(entry + pts);
+    const px = roundTick(isCall ? entry + pts : entry - pts);
     targets.push(px);
     const gain = tradable ? (px - entry) * units : 0;
     if (targets.length === 1) rupee.tp1 = gain;
@@ -283,11 +286,9 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   if (!targets.length) return null;
 
   const riskAmount = tradable ? riskPoints * units : 0;
-  // SIGNED R:R (R1): risk = entry − stop, reward = target1 − entry. A stop on
-  // the wrong side of the entry makes risk ≤ 0 → rr 0 → the gate note below
-  // fires. The old Math.abs formula reported rr 2.0 for a mirrored PE plan.
-  const risk = entry - stopLoss;
-  const reward = targets.length ? targets[0] - entry : 0;
+  // SIGNED R:R: risk = |entry − stop|, reward = |target1 − entry|.
+  const risk = Math.abs(entry - stopLoss);
+  const reward = targets.length ? Math.abs(targets[0] - entry) : 0;
   const rr = risk > 0 && reward > 0 ? reward / risk : 0;
   if (rr < PLAN_CONFIG.minOptionRR) {
     notes.push(`R:R ${rr.toFixed(2)} is below the gate's ${PLAN_CONFIG.minOptionRR} — this plan will be blocked`);

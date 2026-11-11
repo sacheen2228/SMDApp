@@ -21,6 +21,7 @@ import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero
 import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
+import { buildOptionPlan } from "@/lib/option-plan";
 import OptionsEdgePanel from "@/components/terminal/OptionsEdgePanel";
 import SignalExplanationPanel from "@/components/terminal/SignalExplanationPanel";
 import ExpiryDayOptionSurvivalCalculator from "@/components/terminal/ExpiryDayOptionSurvivalCalculator";
@@ -1657,40 +1658,60 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           const ce = row.ce;
           const pe = row.pe;
           if (flowBias === "BULLISH" && ce && ce.ltp >= 5 && ce.oiChg > 0) {
-            results.push({
-              strike: row.strike,
-              type: "CE",
-              entry: ce.ltp,
-              sl: ce.ltp * 0.7,
-              tp1: ce.ltp * 1.5,
-              tp2: ce.ltp * 2.0,
-              tp3: ce.ltp * 2.5,
-              rr: 1.0,
-              confidence: Math.min(55, 40 + Math.min(15, Math.abs(ce.oiChg)/1000)),
-              qualityGrade: "B",
-              maxLoss: 0,
-              reasons: ["OI-only mode: candles unavailable, OI flow BULLISH, CE OI rising"],
-              direction: "BULLISH",
-              hardGates: { passed: false },
+            const plan = buildOptionPlan({
+              symbol: activeSymbol,
+              optionType: "CE",
+              entryPremium: ce.ltp,
+              lotSize,
             });
+            if (plan.tradable) {
+              results.push({
+                strike: row.strike,
+                type: "CE",
+                entry: plan.entry,
+                sl: plan.stopLoss,
+                tp1: plan.targets[0] || plan.entry * 1.5,
+                tp2: plan.targets[1] || plan.entry * 2.0,
+                tp3: plan.targets[2] || plan.entry * 2.5,
+                rr: plan.rr,
+                confidence: Math.min(85, 40 + Math.min(45, Math.abs(ce.oiChg)/1000)),
+                qualityGrade: "B",
+                maxLoss: plan.riskAmount,
+                reasons: ["OI-only mode: candles unavailable, OI flow BULLISH, CE OI rising", ...plan.notes],
+                direction: "BULLISH",
+                lots: plan.lots,
+                deployed: plan.deployed,
+                riskAmount: plan.riskAmount,
+              });
+            }
           }
           if (flowBias === "BEARISH" && pe && pe.ltp >= 5 && pe.oiChg > 0) {
-            results.push({
-              strike: row.strike,
-              type: "PE",
-              entry: pe.ltp,
-              sl: pe.ltp * 1.3,
-              tp1: pe.ltp * 0.6,
-              tp2: pe.ltp * 0.5,
-              tp3: pe.ltp * 0.4,
-              rr: 1.0,
-              confidence: Math.min(55, 40 + Math.min(15, Math.abs(pe.oiChg)/1000)),
-              qualityGrade: "B",
-              maxLoss: 0,
-              reasons: ["OI-only mode: candles unavailable, OI flow BEARISH, PE OI rising"],
-              direction: "BEARISH",
-              hardGates: { passed: false },
+            const plan = buildOptionPlan({
+              symbol: activeSymbol,
+              optionType: "PE",
+              entryPremium: pe.ltp,
+              lotSize,
             });
+            if (plan.tradable) {
+              results.push({
+                strike: row.strike,
+                type: "PE",
+                entry: plan.entry,
+                sl: plan.stopLoss,
+                tp1: plan.targets[0] || plan.entry * 0.6,
+                tp2: plan.targets[1] || plan.entry * 0.5,
+                tp3: plan.targets[2] || plan.entry * 0.4,
+                rr: plan.rr,
+                confidence: Math.min(85, 40 + Math.min(45, Math.abs(pe.oiChg)/1000)),
+                qualityGrade: "B",
+                maxLoss: plan.riskAmount,
+                reasons: ["OI-only mode: candles unavailable, OI flow BEARISH, PE OI rising", ...plan.notes],
+                direction: "BEARISH",
+                lots: plan.lots,
+                deployed: plan.deployed,
+                riskAmount: plan.riskAmount,
+              });
+            }
           }
         }
         return results.sort((a: any, b: any) => b.confidence - a.confidence).slice(0, 5);
@@ -1720,7 +1741,16 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
       const peSessionOk = peMins >= 555 && peMins < 930; // 09:15–15:30 IST
 
       for (const row of nearStrikes) {
-        // CE direction
+        // CE direction — use buildOptionPlan for proper rupee-risk SL/TP
+        const cePlan = row.ce && row.ce.ltp >= 5
+          ? buildOptionPlan({
+              symbol: activeSymbol,
+              optionType: "CE",
+              entryPremium: row.ce.ltp,
+              lotSize,
+            })
+          : null;
+        const ceEntry = cePlan?.entry ?? (row.ce?.ltp || 0);
         const ceInput: MarketDataInput = {
           symbol: activeSymbol,
           strategy: "FO" as StrategyProfile,
@@ -1732,16 +1762,16 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           vix: vix || undefined,
           candles: candles as any[] | undefined,
           lotSize,
-          entryPrice: row.ce?.ltp || 0,
-          stopLoss: row.ce ? row.ce.ltp * 0.7 : 0,
-          target1: row.ce ? row.ce.ltp * 1.5 : 0,
-          target2: row.ce ? row.ce.ltp * 2.0 : 0,
+          entryPrice: ceEntry,
+          stopLoss: cePlan?.stopLoss ?? (row.ce ? row.ce.ltp * 0.7 : 0),
+          target1: cePlan?.targets[0] ?? (row.ce ? row.ce.ltp * 1.5 : 0),
+          target2: cePlan?.targets[1] ?? (row.ce ? row.ce.ltp * 2.0 : 0),
+          target3: cePlan?.targets[2] ?? (row.ce ? row.ce.ltp * 2.5 : 0),
           historicalWinRate: 0.65,
-          historicalRR: 2.0,
-          // TODO: migrate to option-plan rupee-risk (20% deployed → 2R/3R/4R targets)
-          // TODO: the old 0.7/1.5/2.0 hardcodes will be replaced when the scanner
-          //      integrates buildOptionPlan() from option-plan.ts — currently kept for
-          //      backwards compat but producing incorrect R:R values.
+          historicalRR: cePlan?.rr ?? 2.0,
+          lots: cePlan?.lots ?? 1,
+          deployedAmount: cePlan?.deployed,
+          riskAmount: cePlan?.riskAmount,
         };
         const ceDecision = scoreTrade(withCandleContext(ceInput, candles));
         if (ceDecision.entry >= 5 && ceDecision.stopLoss > 0 && ceDecision.stopLoss < ceDecision.entry &&
@@ -1758,9 +1788,12 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
             confidence: ceDecision.score,
             qualityGrade: ceDecision.grade,
             maxLoss: ceDecision.maxLoss,
-            reasons: ceDecision.reasons,
+            reasons: [...(ceDecision.reasons || []), ...(cePlan?.notes || [])],
             direction: ceDecision.direction,
             hardGates: ceDecision.hardGateStatus,
+            lots: cePlan?.lots ?? 1,
+            deployed: cePlan?.deployed,
+            riskAmount: cePlan?.riskAmount,
           });
         }
 
@@ -1777,30 +1810,39 @@ function SmartMoneyTab({ flowData, chain, spot, vix, pcr, maxPain, candles, open
           row.strike >= peMinStrike &&
           row.strike <= peMaxStrike
         ) {
-const peInput: MarketDataInput = {
-          symbol: activeSymbol,
-          strategy: "FO" as StrategyProfile,
-          direction: "BEARISH",
-          spot,
-          optionChain,
-          pcr: pcr || undefined,
-          maxPain: maxPain || undefined,
-          vix: vix || undefined,
-          candles: candles as any[] | undefined,
-          lotSize,
-          entryPrice: row.pe?.ltp || 0,
-          stopLoss: row.pe ? row.pe.ltp * 0.7 : 0,
-          target1: row.pe ? row.pe.ltp * 1.5 : 0,
-          target2: row.pe ? row.pe.ltp * 2.0 : 0,
-          historicalWinRate: 0.65,
-          historicalRR: 2.0,
-          // TODO: migrate to option-plan rupee-risk (20% deployed → 2R/3R/4R targets)
-          // TODO: the old 0.7/1.5/2.0 hardcodes will be replaced when the scanner
-          //      integrates buildOptionPlan() from option-plan.ts — currently kept for
-          //      backwards compat but producing incorrect R:R values.
-        };
+          const pePlan = row.pe && row.pe.ltp >= 5
+            ? buildOptionPlan({
+                symbol: activeSymbol,
+                optionType: "PE",
+                entryPremium: row.pe.ltp,
+                lotSize,
+              })
+            : null;
+          const peEntry = pePlan?.entry ?? (row.pe?.ltp || 0);
+          const peInput: MarketDataInput = {
+            symbol: activeSymbol,
+            strategy: "FO" as StrategyProfile,
+            direction: "BEARISH",
+            spot,
+            optionChain,
+            pcr: pcr || undefined,
+            maxPain: maxPain || undefined,
+            vix: vix || undefined,
+            candles: candles as any[] | undefined,
+            lotSize,
+            entryPrice: peEntry,
+            stopLoss: pePlan?.stopLoss ?? (row.pe ? row.pe.ltp * 1.3 : 0),
+            target1: pePlan?.targets[0] ?? (row.pe ? row.pe.ltp * 0.6 : 0),
+            target2: pePlan?.targets[1] ?? (row.pe ? row.pe.ltp * 0.5 : 0),
+            target3: pePlan?.targets[2] ?? (row.pe ? row.pe.ltp * 0.4 : 0),
+            historicalWinRate: 0.65,
+            historicalRR: pePlan?.rr ?? 2.0,
+            lots: pePlan?.lots ?? 1,
+            deployedAmount: pePlan?.deployed,
+            riskAmount: pePlan?.riskAmount,
+          };
           const peDecision = scoreTrade(withCandleContext(peInput, candles));
-          if (peDecision.entry >= 5 && peDecision.stopLoss > 0 && peDecision.stopLoss < peDecision.entry &&
+          if (peDecision.entry >= 5 && peDecision.stopLoss > peDecision.entry &&
               (peDecision.decision === "TRADE" || peDecision.grade === "WATCH" || peDecision.score >= 65)) {
             results.push({
               strike: row.strike,
@@ -1814,9 +1856,12 @@ const peInput: MarketDataInput = {
               confidence: peDecision.score,
               qualityGrade: peDecision.grade,
               maxLoss: peDecision.maxLoss,
-              reasons: peDecision.reasons,
+              reasons: [...(peDecision.reasons || []), ...(pePlan?.notes || [])],
               direction: peDecision.direction,
               hardGates: peDecision.hardGateStatus,
+              lots: pePlan?.lots ?? 1,
+              deployed: pePlan?.deployed,
+              riskAmount: pePlan?.riskAmount,
             });
           }
         }
