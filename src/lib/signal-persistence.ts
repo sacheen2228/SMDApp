@@ -62,6 +62,10 @@ const CONFIG = {
   confFloorPut: 65,
   /** No fresh data within this ms invalidates the confirmed signal. */
   staleMs: 5 * 60 * 1000, // 5 minutes
+  /** Levels (entry/SL/targets/strike) only refresh after this ms since last level update. */
+  levelStaleMs: 5 * 60 * 1000, // 5 minutes
+  /** Levels only refresh if premium moved beyond this fraction (e.g. 0.05 = 5%). */
+  levelMovePct: 0.05,
 };
 
 interface State {
@@ -71,6 +75,8 @@ interface State {
   pendingSince: number | null;
   pendingConfirmations: number;
   lastUpdate: number | null;
+  /** Timestamp when entry/SL/targets/strike were last refreshed. */
+  lastLevelUpdate: number | null;
   lastConfirmedRec: SignalRec;
 }
 
@@ -81,6 +87,7 @@ let state: State = {
   pendingSince: null,
   pendingConfirmations: 0,
   lastUpdate: null,
+  lastLevelUpdate: null,
   lastConfirmedRec: {
     direction: "WAIT",
     confidence: 0,
@@ -105,6 +112,7 @@ export function resetSignalState(): void {
     pendingSince: null,
     pendingConfirmations: 0,
     lastUpdate: null,
+    lastLevelUpdate: null,
     lastConfirmedRec: {
       direction: "WAIT",
       confidence: 0,
@@ -168,6 +176,7 @@ export function updateSignal(
       direction: "WAIT",
       confidence: 0,
     };
+    state.lastLevelUpdate = null;
     staled = true;
   }
   state.lastUpdate = nowMs;
@@ -187,16 +196,40 @@ export function updateSignal(
     state.confirmedDirection = dir;
     state.confirmedConfidence = conf;
     state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+    state.lastLevelUpdate = nowMs;
     state.pendingDirection = null;
     state.pendingSince = null;
     state.pendingConfirmations = 0;
     return buildResult(state.lastConfirmedRec, true, "confirmed");
   }
 
-  // ── Same direction as confirmed → refresh levels, clear pending ────
+  // ── Same direction as confirmed → keep levels sticky ──────────────
   if (dir === confirmedDir) {
     state.confirmedConfidence = conf;
-    state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+
+    // Levels only refresh when premium moved materially OR the level
+    // cache is stale. Otherwise we keep the same entry/SL/targets/strike
+    // so the card stops flickering on every 15s option-chain refresh.
+    const prevEntry = state.lastConfirmedRec.entry;
+    const premiumMoved =
+      prevEntry > 0 && raw.entry > 0
+        ? Math.abs(raw.entry - prevEntry) / prevEntry >= CONFIG.levelMovePct
+        : true;
+    const levelStale =
+      state.lastLevelUpdate == null ||
+      nowMs - state.lastLevelUpdate >= CONFIG.levelStaleMs;
+
+    if (premiumMoved || levelStale) {
+      state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+      state.lastLevelUpdate = nowMs;
+    } else {
+      // Same levels, just refresh confidence.
+      state.lastConfirmedRec = {
+        ...state.lastConfirmedRec,
+        confidence: conf,
+      };
+    }
+
     state.pendingDirection = null;
     state.pendingSince = null;
     state.pendingConfirmations = 0;
@@ -231,6 +264,7 @@ export function updateSignal(
       state.confirmedDirection = dir;
       state.confirmedConfidence = conf;
       state.lastConfirmedRec = { ...raw, direction: dir, confidence: conf };
+      state.lastLevelUpdate = nowMs;
       state.pendingDirection = null;
       state.pendingSince = null;
       state.pendingConfirmations = 0;

@@ -55,21 +55,23 @@ describe("initial signal shows immediately (only flips need confirmation)", () =
     expect(r.status).toBe("confirmed");
   });
 
-  test("repeating the same CALL refreshes levels", () => {
+  test("repeating the same CALL keeps levels sticky (no flicker)", () => {
     updateSignal(rec(), T0);
     const r1 = updateSignal(rec({ entry: 160 }), T0 + 10_000);
     expect(r1.showDirection).toBe(true);
-    expect(r1.rec.entry).toBe(160);
+    // 10s < levelStaleMs and 160 vs 157 = 1.9% < levelMovePct → levels stay
+    expect(r1.rec.entry).toBe(157);
     expect(r1.rec.direction).toBe("CALL");
   });
 });
 
 describe("confirmation required only for flips", () => {
-  test("confirmed CALL keeps refreshing levels on subsequent CALLs", () => {
+  test("confirmed CALL keeps levels sticky on subsequent CALLs", () => {
     updateSignal(rec(), T0); // initial CALL shown immediately
     const r = updateSignal(rec({ entry: 160 }), T0 + 130_000);
     expect(r.showDirection).toBe(true);
-    expect(r.rec.entry).toBe(160);
+    // 130s < levelStaleMs and 160 vs 157 = 1.9% < levelMovePct → levels stay
+    expect(r.rec.entry).toBe(157);
     expect(r.rec.direction).toBe("CALL");
   });
 });
@@ -128,11 +130,11 @@ describe("confidence floor", () => {
     expect(r.rec.direction).toBe("CALL");
   });
 
-  test("PUT below floor (70) → NO TRADE", () => {
-    updateSignal(rec({ direction: "PUT", confidence: 65 }), T0);
-    updateSignal(rec({ direction: "PUT", confidence: 65 }), T0 + 10_000);
+  test("PUT below floor (65) → NO TRADE", () => {
+    updateSignal(rec({ direction: "PUT", confidence: 60 }), T0);
+    updateSignal(rec({ direction: "PUT", confidence: 60 }), T0 + 10_000);
     const r = updateSignal(
-      rec({ direction: "PUT", confidence: 65 }),
+      rec({ direction: "PUT", confidence: 60 }),
       T0 + 130_000,
     );
     expect(r.showDirection).toBe(false);
