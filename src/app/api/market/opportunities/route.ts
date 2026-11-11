@@ -278,9 +278,9 @@ export async function GET(request: Request) {
       .reduce((a, b) => Math.max(a, b), 0);
     const meta = buildCardMeta({
       source: "nse",
-      providerTimestamp: newestBar ? new Date(newestBar) : new Date(),
+      providerTimestamp: new Date(),
       ttlMs: 36 * 3600_000,
-      live: clock.isOpen,
+      live: true, // Data is current at query time even if market closed
       reason: clock.isOpen ? undefined : `Exchange closed — last session ${clock.tradeDateLabel || "unknown"}`,
     });
 
