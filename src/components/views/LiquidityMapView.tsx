@@ -182,12 +182,21 @@ export function LiquidityMapView() {
     const bodyW = Math.max(1.5, Math.min(7, cw * 0.55));
     const cX = (i: number) => candleX0 + i * cw + cw / 2;
 
-    // VWAP
+    // VWAP + profile are intraday metrics — scope them to the LATEST session in the series
+    const istDay = (t: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date(t));
+    const lastDay = candles.length ? istDay(candles[candles.length - 1].time) : "";
+    const sessionCandles = candles.filter((c) => istDay(c.time) === lastDay);
+    const lastSessionLabel = candles.length
+      ? new Date(candles[candles.length - 1].time).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" })
+      : "";
+
+    // VWAP (last session only)
     const hasVol = candles.some((c) => c.volume > 0);
     let vwapPts: Array<{ x: number; y: number }> = [];
     if (hasVol) {
       let pv = 0, vv = 0;
       candles.forEach((c, i) => {
+        if (istDay(c.time) !== lastDay) return;
         const tp = (c.high + c.low + c.close) / 3;
         pv += tp * c.volume; vv += c.volume;
         const v = vv > 0 ? pv / vv : tp;
@@ -195,11 +204,11 @@ export function LiquidityMapView() {
       });
     }
 
-    // volume profile (time-at-price when index volume is zero)
+    // volume profile (time-at-price when index volume is zero) — last session only
     const BINS = 34;
     const bins = Array.from({ length: BINS }, () => 0);
     const binH = (plot.y1 - plot.y0) / BINS;
-    candles.forEach((c) => {
+    sessionCandles.forEach((c) => {
       const cnt = hasVol ? c.volume : 1;
       const loC = Math.max(0, Math.min(BINS - 1, Math.floor((c.low - lo) / ((hi - lo) / BINS))));
       const hiC = Math.max(0, Math.min(BINS - 1, Math.floor((c.high - lo) / ((hi - lo) / BINS))));
@@ -209,7 +218,7 @@ export function LiquidityMapView() {
     const pocIdx = bins.indexOf(maxBin);
     const pocPrice = lo + ((pocIdx + 0.5) * (hi - lo)) / BINS;
 
-    return { candles, y, lo, hi, cw, bodyW, cX, vwapPts, hasVol, bins, maxBin, binH, pocPrice, clipped };
+    return { candles, y, lo, hi, cw, bodyW, cX, vwapPts, hasVol, bins, maxBin, binH, pocPrice, clipped, lastSessionLabel, sessionCount: sessionCandles.length };
   }, [data]);
 
   if (isLoading) {
@@ -392,7 +401,7 @@ export function LiquidityMapView() {
           </svg>
         </div>
         <p className="ty-text-xs text-ty-subtle-fg mt-1">
-          {chart.hasVol ? "profile uses candle volume" : "index candles carry no volume — profile uses time-at-price"} · walls &amp; max pain from {data.source} chain · {data.freshness}
+          {chart.hasVol ? "profile + VWAP use candle volume" : "index candles carry no volume — profile uses time-at-price"} · both scoped to the latest session ({chart.lastSessionLabel}) · walls &amp; max pain from {data.source} chain · {data.freshness}
         </p>
       </Panel>
     </div>
