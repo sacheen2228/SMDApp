@@ -270,6 +270,7 @@ async function persistDecisionLog(
   try {
     await db.quantDecisionLog.create({
       data: {
+        id: qid(),
         decisionId: decision.decisionId,
         ts: new Date(Date.parse(decision.ts)),
         symbol: decision.symbol,
@@ -450,7 +451,7 @@ export async function runQuantCycle(opts?: {
     }
 
     // 5. Contract selection.
-    const contract = selectContract({ symbol, direction: winner.direction, chain, features });
+    const contract = selectContract({ symbol, direction: winner.direction, chain, features, nowMs });
     if (contract.rejected) {
       decision.verdict = "NO_TRADE";
       decision.blockReason = contract.rejectionReason ?? "contract selection rejected";
@@ -631,6 +632,7 @@ export async function runQuantCycle(opts?: {
     const tradeId = scopedQid();
     await db.quantPaperTrade.create({
       data: {
+        id: qid(),
         tradeId,
         engineVersion: ENGINE_VERSION,
         mode: "PAPER",
@@ -696,6 +698,7 @@ export async function runQuantCycle(opts?: {
     try {
       await db.quantDecisionLog.create({
         data: {
+          id: qid(),
           decisionId,
           ts: new Date(nowMs),
           symbol,

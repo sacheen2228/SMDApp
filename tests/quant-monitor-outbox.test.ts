@@ -213,6 +213,7 @@ describe("quant monitor — DB round trip", () => {
     // whose row was left OPEN (crash between event persist and row update).
     await db.quantPaperTrade.create({
       data: {
+        id: qid(),
         tradeId: tradeD,
         engineVersion: "UNIVERSAL_QUANT_V1",
         mode: "PAPER",

@@ -16,6 +16,7 @@ import { Slider } from "@/components/ui/slider";
 import { Panel, StatCell } from "@/components/ui/panel";
 import { getChainOiHistory, type ChainOiSnapshot } from "@/lib/market-history-client";
 import { buildOptionPlan, PLAN_CONFIG, type OptionPlan } from "@/lib/option-plan";
+import { evaluateSignalVeto, type VetoResult } from "@/lib/signal-veto";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
@@ -85,7 +86,9 @@ function fetchOIFlow(symbol: string, expiry?: string) {
     if (!r.ok) throw new Error("option-chain failed");
     const json = await r.json();
     const d = json.data || json;
-    const fr = d.freshness;
+    // freshness lives at the TOP level of the option-chain response — the inner
+    // data object carries none, so reading it there always showed UNKNOWN.
+    const fr = d.freshness ?? json.freshness;
     const s = d.summary || {};
     const prevClose = n(s.prevClose) || n(s.prevCloseLive);
     const rows = (d.data || d.strikes || []).map((r: any) => {
@@ -125,6 +128,20 @@ function fetchOIFlow(symbol: string, expiry?: string) {
 /* ─── A frame is one snapshot of OI (live = today, replay = a moment) ─── */
 interface FrameStrike { strike: number; ceOi: number; ceDelta: number; cePrev: number; peOi: number; peDelta: number; pePrev: number; }
 interface Frame { t: string | null; spot: number; dir: number; strikes: FrameStrike[]; live: boolean }
+
+/* ─── Strong-confirmation factors ───
+   A trade plan only shows when EVERY hard factor agrees with the direction.
+   hard=false factors are informational and never block on their own. */
+interface ConfirmFactor { name: string; ok: boolean; detail: string; hard: boolean; }
+interface TradePlanState {
+  dir: "CE" | "PE" | null;
+  plan: OptionPlan | null;
+  strike: number | null;
+  entry: number;
+  confirm: { factors: ConfirmFactor[]; confirmed: boolean } | null;
+  veto: VetoResult | null;
+  notes: string[];
+}
 
 function buildLiveFrame(d: OIFlowData | undefined): Frame | null {
   if (!d) return null;
@@ -221,6 +238,18 @@ function MomentumGauge({ value }: { value: number }) {
   );
 }
 
+/* ─── Confirmation factor row: ✓ met · ✗ hard fail · ! soft mismatch ─── */
+function FactorRow({ f }: { f: ConfirmFactor }) {
+  const mark = f.ok ? "✓" : f.hard ? "✗" : "!";
+  const tone = f.ok ? "text-ty-up" : f.hard ? "text-ty-down" : "text-ty-warn";
+  return (
+    <li className="flex items-start gap-1.5 ty-text-xs">
+      <span className={`mt-0.5 w-3 shrink-0 font-bold ${tone}`}>{mark}</span>
+      <span><b className="font-medium text-foreground">{f.name}</b> <span className="text-ty-subtle-fg">· {f.detail}</span></span>
+    </li>
+  );
+}
+
 /* ══════════════════════════ VIEW ══════════════════════════ */
 export function OIFlowView() {
   const [symbol, setSymbol] = useState("NIFTY");
@@ -293,13 +322,44 @@ export function OIFlowView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [startReplay, step, goLive]);
 
-  /* ─── Window of strikes around spot ─── */
+  /* ─── Window of strikes ───
+     ANCHORED with hysteresis: the window must NOT re-centre on every refetch.
+     When spot crossed a strike boundary the whole row list slid by one every
+     ~1-2 min, reordering the strikes under the reader's eye. The anchor strike
+     is held; it only re-centres when spot drifts more than ANCHOR_DRIFT steps
+     away (or the symbol/expiry changes). The spot line still moves freely
+     inside the stable row list. */
   const WINDOW = 12;
+  const ANCHOR_DRIFT = 4;
+  const anchorRef = useRef<{ key: string; strike: number } | null>(null);
   const sorted = useMemo(() => (frame?.strikes ?? []).slice().sort((a, b) => a.strike - b.strike), [frame]);
+
+  /* ─── Contract step = the MODE of the strike gaps ───
+     sorted[1]−sorted[0] breaks on sparse chains (a far-dump strike next to
+     ATM makes the "step" ~350 and wall detection misfires). The most common
+     gap is the exchange's contract step. */
+  const chainStep = useMemo(() => {
+    if (sorted.length < 2) return 50;
+    const counts = new Map<number, number>();
+    for (let i = 1; i < sorted.length; i++) {
+      const g = sorted[i].strike - sorted[i - 1].strike;
+      if (g > 0) counts.set(g, (counts.get(g) ?? 0) + 1);
+    }
+    if (!counts.size) return 50;
+    let best = 50, bestC = 0;
+    for (const [g, c] of counts) if (c > bestC) { best = g; bestC = c; }
+    return best || 50;
+  }, [sorted]);
   const windowData = useMemo(() => {
     if (!frame || !sorted.length) return { rows: [], spotTop: 0, maxOi: 1, floorStrike: null as number | null, ceilStrike: null as number | null };
     const spot = frame.spot;
-    let mid = sorted.findIndex((s) => s.strike >= spot);
+    const stepSize = chainStep;
+    const key = `${symbol}:${expiry}`;
+    const nearest = sorted.reduce((best, s) => (Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best), sorted[0]).strike;
+    if (!anchorRef.current || anchorRef.current.key !== key) anchorRef.current = { key, strike: nearest };
+    else if (Math.abs(spot - anchorRef.current.strike) > ANCHOR_DRIFT * stepSize) anchorRef.current = { key, strike: nearest };
+    const anchor = anchorRef.current.strike;
+    let mid = sorted.findIndex((s) => s.strike >= anchor);
     if (mid === -1) mid = sorted.length;
     const start = Math.max(0, mid - WINDOW);
     const end = Math.min(sorted.length, mid + WINDOW);
@@ -317,7 +377,7 @@ export function OIFlowView() {
     const floor = rows.filter((s) => s.strike < spot).sort((a, b) => b.peOi - a.peOi)[0];
     const ceil = rows.filter((s) => s.strike > spot).sort((a, b) => b.ceOi - a.ceOi)[0];
     return { rows, spotTop, maxOi, floorStrike: floor?.strike ?? null, ceilStrike: ceil?.strike ?? null };
-  }, [frame, sorted]);
+  }, [frame, sorted, chainStep, symbol, expiry]);
   const { rows, spotTop, maxOi, floorStrike, ceilStrike } = windowData;
 
   /* fastest strike → halo */
@@ -333,7 +393,7 @@ export function OIFlowView() {
   /* ─── Momentum & speed (near spot ±5 strikes) ─── */
   const momentum = useMemo(() => {
     if (!frame) return null;
-    const near = sorted.filter((s) => Math.abs(s.strike - frame.spot) <= 5 * (sorted[1] && sorted[0] ? sorted[1].strike - sorted[0].strike : 50));
+    const near = sorted.filter((s) => Math.abs(s.strike - frame.spot) <= 5 * chainStep);
     let bull = 0, bear = 0;
     for (const s of near) {
       bull += Math.max(0, s.peDelta) + Math.abs(Math.min(0, s.ceDelta));
@@ -342,7 +402,7 @@ export function OIFlowView() {
     const net = bull - bear;
     const val = Math.max(-100, Math.min(100, Math.round((net / Math.max(1, bull + bear)) * 100)));
     return { val, bull, bear, net, nearCount: near.length };
-  }, [frame, sorted]);
+  }, [frame, sorted, chainStep]);
 
   const speedPerMin = useMemo(() => {
     if (!momentum || replayIdx === null) return null;
@@ -356,29 +416,108 @@ export function OIFlowView() {
   const regime = !momentum ? "—" : momentum.val > 25 ? "Bullish" : momentum.val < -25 ? "Bearish" : "Range-bound";
   const regimeTone = regime === "Bullish" ? "text-ty-up" : regime === "Bearish" ? "text-ty-down" : "text-ty-warn";
 
-  /* ─── Trade plan from live flow (uses the repo's own buildOptionPlan engine) ─── */
-  const tradePlan = useMemo(() => {
-    if (!data || !momentum) return null;
+  /* ─── Trade plan from live flow — STRONG CONFIRMATION REQUIRED ───
+     |momentum| ≥ 25 alone was far too weak a trigger. The plan now needs
+     EVERY hard factor to agree — momentum · day OI Δ · walls · PCR · quote
+     freshness — and then passes through the SAME veto the Telegram funnel
+     runs (evaluateSignalVeto: budget/lot caps, R:R, delta, expiry day,
+     session cutoff) before anything is presented as a trade. */
+  const tradePlan = useMemo<TradePlanState>(() => {
+    if (!data || !momentum) return null as unknown as TradePlanState;
     const dir: "CE" | "PE" | null = momentum.val >= 25 ? "CE" : momentum.val <= -25 ? "PE" : null;
-    if (!dir) return { dir: null as null, plan: null, strike: null, entry: 0, notes: ["Flow is range-bound near spot — the plan waits for a wall break or |momentum| ≥ 25."] };
+    if (!dir) return { dir: null, plan: null, strike: null, entry: 0, confirm: null, veto: null, notes: ["Flow is range-bound near spot — the plan waits for a wall break or |momentum| ≥ 25."] };
+
+    const bull = dir === "CE";
     const spot = data.spot;
-    const stepSize = data.strikes.length > 1 ? Math.abs(data.strikes[1].strike - data.strikes[0].strike) || 50 : 50;
-    // ATM → 2 steps ITM-preferred side, nearest strike with a live premium
+    const stepSize = chainStep;
+    const factors: ConfirmFactor[] = [];
+
+    // F1 — momentum (the trigger; listed so the record shows it was checked)
+    factors.push({ name: "Near-spot momentum", ok: true, hard: true, detail: `${momentum.val > 0 ? "+" : ""}${momentum.val} ${bull ? "bullish" : "bearish"} (need |≥25|)` });
+
+    // F2 — day OI Δ agreement: put writing must dominate for a call buy, call writing for a put buy
+    const ceD = data.callOiChange, peD = data.putOiChange;
+    const oiOk = bull ? peD >= ceD : ceD >= peD;
+    factors.push({
+      name: "Day OI Δ agrees", ok: oiOk, hard: true,
+      detail: `CE Δ ${fmtLakh(ceD)} · PE Δ ${fmtLakh(peD)} — ${oiOk ? (bull ? "put writing dominates" : "call writing dominates") : (bull ? "call OI added faster — ceiling building" : "put OI added faster — floor building")}`,
+    });
+
+    // F3 — walls: the direction must not point INTO a strengthening opposite wall.
+    //      Only a wall ≥2 steps away from spot counts — ATM churn is not a wall.
+    const floorRow = floorStrike != null ? sorted.find((s) => s.strike === floorStrike) : undefined;
+    const ceilRow = ceilStrike != null ? sorted.find((s) => s.strike === ceilStrike) : undefined;
+    const ceilIsWall = !!ceilRow && ceilRow.strike >= spot + 2 * stepSize;
+    const floorIsWall = !!floorRow && floorRow.strike <= spot - 2 * stepSize;
+    const ceilStrengthening = ceilIsWall && ceilRow!.ceDelta > 0;
+    const floorStrengthening = floorIsWall && floorRow!.peDelta > 0;
+    const wallOk = bull ? !ceilStrengthening : !floorStrengthening;
+    factors.push({
+      name: bull ? "Ceiling wall" : "Floor wall", ok: wallOk, hard: true,
+      detail: bull
+        ? ceilIsWall
+          ? `call writers at ${ceilRow!.strike.toLocaleString("en-IN")} · ${fmtLakh(ceilRow!.ceOi)} OI ${ceilRow!.ceDelta >= 0 ? "STILL ADDING — blocks upside" : "covering — ceiling melting"}`
+          : "no call wall ≥2 steps above spot"
+        : floorIsWall
+          ? `put writers at ${floorRow!.strike.toLocaleString("en-IN")} · ${fmtLakh(floorRow!.peOi)} OI ${floorRow!.peDelta >= 0 ? "STILL ADDING — holds the floor" : "unwinding — floor softening"}`
+          : "no put wall ≥2 steps below spot",
+    });
+
+    // F4 — PCR agreement
+    const pcrOk = bull ? data.pcr >= 0.9 : data.pcr <= 1.1;
+    factors.push({ name: "PCR", ok: pcrOk, hard: true, detail: `${data.pcr.toFixed(2)} — ${data.pcr > 1 ? "put-heavy" : "call-heavy"} (need ${bull ? "≥0.90" : "≤1.10"})` });
+
+    // F5 — quote freshness: no plan on stale/delayed/unverifiable quotes
+    const fresh = /^(FRESH|LIVE)$/i.test(data.freshness);
+    factors.push({ name: "Quote freshness", ok: fresh, hard: true, detail: `${data.freshness} · ${data.source} — ${fresh ? "live feed" : "stale/delayed — no trade on unverifiable quotes"}` });
+
+    // F6 — futures basis: soft, never blocks alone
+    if (data.futuresPrice != null && spot > 0) {
+      const basisPct = ((data.futuresPrice - spot) / spot) * 100;
+      const basisOk = bull ? basisPct >= -0.05 : basisPct <= 0.05;
+      factors.push({ name: "Futures basis", ok: basisOk, hard: false, detail: `fut ${data.futuresPrice.toLocaleString("en-IN", { maximumFractionDigits: 1 })} · ${basisPct >= 0 ? "+" : ""}${basisPct.toFixed(2)}% vs spot — ${basisOk ? "agrees" : "contradicts"}` });
+    }
+
+    const confirmed = factors.every((f) => f.ok || !f.hard);
+    const confirm = { factors, confirmed };
+
+    // Strike pick — ATM side, nearest strike with a live premium
     const candidates = dir === "CE"
       ? data.strikes.filter((s) => s.strike >= spot - stepSize && s.ceLtp > 0)
       : data.strikes.filter((s) => s.strike <= spot + stepSize && s.peLtp > 0);
     const pick = candidates.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
-    if (!pick) return { dir, plan: null, strike: null, entry: 0, notes: ["No live premium at any strike near spot — chain data incomplete."] };
+    if (!pick) return { dir, plan: null, strike: null, entry: 0, confirm, veto: null, notes: ["No live premium at any strike near spot — chain data incomplete."] };
     const entry = dir === "CE" ? pick.ceLtp : pick.peLtp;
     const lotSize = getLotSizeStrict(symbol) ?? 0;
-    if (!lotSize || entry <= 0) return { dir, plan: null, strike: pick.strike, entry, notes: [!lotSize ? `Lot size for ${symbol} unknown — fail closed.` : "Premium is zero — no tradable quote."] };
+    if (!lotSize || entry <= 0) return { dir, plan: null, strike: pick.strike, entry, confirm, veto: null, notes: [!lotSize ? `Lot size for ${symbol} unknown — fail closed.` : "Premium is zero — no tradable quote."] };
     const plan = buildOptionPlan({ symbol, optionType: dir, entryPremium: entry, lotSize });
     const notes: string[] = [];
     const delta = dir === "CE" ? pick.ceDeltaG : pick.peDeltaG;
     if (delta != null && Math.abs(delta) < 0.35) notes.push(`|delta| ${Math.abs(delta).toFixed(2)} < 0.35 — deep OTM lottery risk, halve size.`);
-    if (plan && !plan.tradable) notes.push(plan.notes.join(" "));
-    return { dir, plan, strike: pick.strike, entry, notes };
-  }, [data, momentum, symbol]);
+
+    // The SAME veto the Telegram funnel runs — one source of truth for the rules
+    const nearestExpiry = (data.expiries ?? [])[0]?.date ?? null;
+    const veto = evaluateSignalVeto({
+      symbol,
+      action: `BUY ${dir}`,
+      optionType: dir,
+      strike: pick.strike,
+      entry,
+      stopLoss: plan?.stopLoss,
+      tp1: plan?.targets[0],
+      confidence: conviction,
+      spot,
+      expiry: nearestExpiry ?? undefined,
+      requireExpiry: nearestExpiry != null,
+      requireSpot: true,
+      source: "OI_FLOW",
+      lotSize,
+      lots: plan?.lots ?? 0,
+      deployedAmount: plan?.deployed,
+      riskAmount: plan?.riskAmount,
+    });
+    return { dir, plan: plan ?? null, strike: pick.strike, entry, notes, confirm, veto };
+  }, [data, momentum, symbol, sorted, chainStep, floorStrike, ceilStrike, conviction]);
 
   /* ─── What's next read (own wording) ─── */
   const nextRead = useMemo(() => {
@@ -450,15 +589,76 @@ export function OIFlowView() {
         <StatCell label="Total PE OI" value={fmtLakh(data.totalPutOI)} />
       </div>
 
-      {/* ═══ Trade plan card — strike/SL/TP from buildOptionPlan on the live flow ═══ */}
+      {/* ═══ Trade plan card — strong confirmation + the funnel veto ═══ */}
       {tradePlan && (
-        <Panel title="Trade plan · from live flow" subtitle={tradePlan.dir ? `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · momentum ${momentum!.val > 0 ? "+" : ""}${momentum!.val}` : "no trade — range-bound"}>
-          {tradePlan.dir && tradePlan.plan && tradePlan.plan.tradable ? (
+        <Panel title="Trade plan · from live flow" subtitle={
+          !tradePlan.dir ? "no trade — range-bound"
+            : tradePlan.confirm?.confirmed
+              ? `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · all confirmations met · veto ${tradePlan.veto?.verdict ?? "…"}`
+              : `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · WAITING for confirmation`
+        }>
+          {!tradePlan.dir ? (
+            <div className="space-y-2">
+              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">WAIT — no fresh option buy</Badge>
+              {floorStrike && ceilStrike && (
+                <p className="ty-text-xs text-ty-muted-fg">
+                  Writers bracket the spot: ceiling {ceilStrike.toLocaleString("en-IN")} · floor {floorStrike.toLocaleString("en-IN")}. The plan fires when flow commits to a side (|momentum| ≥ 25).
+                </p>
+              )}
+              {tradePlan.notes.map((nt, i) => (
+                <p key={i} className="ty-text-xs text-ty-muted-fg">{nt}</p>
+              ))}
+            </div>
+          ) : !tradePlan.confirm?.confirmed ? (
+            /* ─── confirmation pending — show the factor checklist ─── */
+            <div className="space-y-3">
+              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">STRONG CONFIRMATION NOT MET — no trade</Badge>
+              <ul className="space-y-1.5">
+                {tradePlan.confirm?.factors.map((f, i) => <FactorRow key={i} f={f} />)}
+              </ul>
+              <p className="ty-text-xs text-ty-muted-fg">Every ✗ must turn ✓ before the plan is built — one disagreeing hard factor is enough to stand down.</p>
+            </div>
+          ) : !tradePlan.plan ? (
+            <div className="space-y-2">
+              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">No tradable quote</Badge>
+              <ul className="space-y-1.5">
+                {tradePlan.confirm?.factors.map((f, i) => <FactorRow key={i} f={f} />)}
+              </ul>
+              {tradePlan.notes.map((nt, i) => <p key={i} className="ty-text-xs text-ty-warn">{nt}</p>)}
+            </div>
+          ) : !tradePlan.plan.tradable ? (
+            <div className="space-y-2">
+              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">{symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir} — NOT tradable</Badge>
+              <p className="ty-text-xs text-ty-muted-fg">One lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} — over the ₹{PLAN_CONFIG.maxDeployedAmount.toLocaleString("en-IN")} per-trade budget, so 0 lots. Nothing deployed.</p>
+              {tradePlan.notes.map((nt, i) => (
+                <p key={i} className="ty-text-xs text-ty-warn">{nt}</p>
+              ))}
+            </div>
+          ) : tradePlan.veto?.verdict === "BLOCK" ? (
+            /* ─── confirmations met, but the funnel veto hard-blocks ─── */
+            <div className="space-y-2">
+              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-down">VETO BLOCK — {symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir}</Badge>
+              <ul className="space-y-1.5">
+                {tradePlan.veto.fails.map((fl, i) => (
+                  <li key={i} className="ty-text-xs text-ty-down flex gap-1.5"><span className="mt-1 size-1 shrink-0 rounded-full bg-ty-down" />{fl}</li>
+                ))}
+              </ul>
+              <p className="ty-text-xs text-ty-muted-fg">Same veto the Telegram funnel enforces — the alert path would reject this plan too.</p>
+            </div>
+          ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className="bg-ty-brand text-white px-2 py-1 ty-text-xs font-bold">{symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir}</Badge>
-                <span className="ty-text-xs text-ty-subtle-fg">premium quote at plan build · {data.freshness}</span>
+                {tradePlan.veto?.verdict === "WARN" ? (
+                  <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">⚠ HALF SIZE — halve the lots</Badge>
+                ) : (
+                  <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-up">✓ CONFIRMED</Badge>
+                )}
+                <span className="ty-text-xs text-ty-subtle-fg">premium quote at plan build · {data.freshness} · {data.source}</span>
               </div>
+              <ul className="space-y-1.5">
+                {tradePlan.confirm?.factors.map((f, i) => <FactorRow key={i} f={f} />)}
+              </ul>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 <StatCell label="Entry" value={tradePlan.entry.toFixed(2)} />
                 <StatCell label="Stop Loss" value={tradePlan.plan.stopLoss.toFixed(2)} change={{ value: `${tradePlan.plan.riskPoints.toFixed(1)} pts risk`, up: false }} />
@@ -470,6 +670,13 @@ export function OIFlowView() {
               <p className="ty-text-xs text-ty-subtle-fg">
                 R:R 1:{tradePlan.plan.rr.toFixed(1)} · one lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} · stop capped at {Math.round(tradePlan.plan.stopPctOfPremium * 100)}% of premium
               </p>
+              {tradePlan.veto?.warnings.length ? (
+                <ul className="space-y-1">
+                  {tradePlan.veto.warnings.map((w, i) => (
+                    <li key={i} className="ty-text-xs text-ty-warn flex gap-1.5"><span className="mt-1 size-1 shrink-0 rounded-full bg-ty-warn" />{w}</li>
+                  ))}
+                </ul>
+              ) : null}
               {tradePlan.notes.length > 0 && (
                 <ul className="space-y-1">
                   {tradePlan.notes.map((nt, i) => (
@@ -477,26 +684,6 @@ export function OIFlowView() {
                   ))}
                 </ul>
               )}
-            </div>
-          ) : tradePlan.dir && tradePlan.plan && !tradePlan.plan.tradable ? (
-            <div className="space-y-2">
-              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">{symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir} — NOT tradable</Badge>
-              <p className="ty-text-xs text-ty-muted-fg">One lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} — over the ₹{PLAN_CONFIG.maxDeployedAmount.toLocaleString("en-IN")} per-trade budget, so 0 lots. Nothing deployed.</p>
-              {tradePlan.notes.map((nt, i) => (
-                <p key={i} className="ty-text-xs text-ty-warn">{nt}</p>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">WAIT — no fresh option buy</Badge>
-              {floorStrike && ceilStrike && (
-                <p className="ty-text-xs text-ty-muted-fg">
-                  Writers bracket the spot: ceiling {ceilStrike.toLocaleString("en-IN")} · floor {floorStrike.toLocaleString("en-IN")}. The plan fires when flow commits to a side (|momentum| ≥ 25).
-                </p>
-              )}
-              {tradePlan.notes.map((nt, i) => (
-                <p key={i} className="ty-text-xs text-ty-muted-fg">{nt}</p>
-              ))}
             </div>
           )}
         </Panel>

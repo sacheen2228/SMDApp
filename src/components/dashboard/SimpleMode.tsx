@@ -8,7 +8,7 @@ import { OIChangePanel } from "./OIChangePanel";
 import type { SDMRecommendation } from "@/types/sdm";
 import type { FullAnalysis } from "@/lib/sdm-engine";
 import { Badge } from "@/components/ui/badge";
-import { confirmSummary } from "@/lib/signal-persistence";
+import { confirmSummary, confirmTradeGate } from "@/lib/signal-persistence";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -99,6 +99,16 @@ interface SimpleModeProps {
   selectedExpiry?: string;
   onExpiryChange?: (expiry: string) => void;
   oiSummary?: OISummary | null;
+  /** Real ATR from the tech-cache snapshots (informational — volatility, not a direction check). */
+  atrInfo?: { tf15?: number | null; tf5?: number | null; close?: number | null };
+  /** The contract selectStrike picked (real gate rules) — or null when none. */
+  strikeInfo?: { strike: number; otmSteps: number; isAtm: boolean; reason: string } | null;
+  /** Real greeks of the traded leg (live chain row). */
+  greeks?: { delta: number | null; theta: number | null; gamma: number | null; vega: number | null; iv: number | null; premium: number } | null;
+  /** Timestamp of the candle the verdict was judged on (from the tech snapshot). */
+  barStamp?: { asOf5m?: number | null; asOf15m?: number | null; fresh5m?: boolean };
+  /** True when the market session is closed — label the verdict, never hide it. */
+  marketClosed?: boolean;
 }
 
 function fmt(n: number | undefined | null): string {
@@ -208,11 +218,21 @@ export const SimpleMode = memo(function SimpleMode({
   onExpiryChange,
   oiSummary,
   confirmations: confirmationsProp,
+  atrInfo,
+  strikeInfo,
+  greeks,
+  barStamp,
+  marketClosed,
 }: SimpleModeProps) {
   const rec = recommendation;
   const confirmations = confirmationsProp || rec?.confirmations || [];
   const { pass: confirmPass, total: confirmTotal, pct: confirmPct } = confirmSummary(confirmations);
-  const confirmedEnough = confirmPass >= Math.max(2, Math.ceil(confirmTotal * 0.6));
+  // The BUY/WAIT verdict follows the playbook gate on REAL reads only:
+  // a closed-bar trigger fires AND (real trend agrees OR real VWAP side
+  // agrees). Unavailable checks never count as passes — no fabricated BUY.
+  const gate = confirmTradeGate(confirmations);
+  const confirmedEnough = gate.tradeable;
+  const gateReason = gate.rule;
 
   // Live data from summary (falls back to recommendation, then defaults)
   const livePCR = summary?.pcr ?? rec?.marketContext?.pcr ?? 0;
@@ -279,6 +299,12 @@ export const SimpleMode = memo(function SimpleMode({
           <Badge variant="outline" className="text-[10px]">{symbol === "NIFTY" ? "NIFTY 50" : symbol}</Badge>
           {isLive && (
             <Badge className="text-[9px] bg-emerald-600 text-white h-5 px-1.5">LIVE</Badge>
+          )}
+          {marketClosed && (
+            <Badge className="text-[9px] bg-zinc-600 text-white h-5 px-1.5">CLOSED</Badge>
+          )}
+          {rec?.isExpiryDay && (
+            <Badge className="text-[9px] bg-orange-600 text-white h-5 px-1.5">EXPIRY DAY — no option buys</Badge>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -351,7 +377,12 @@ export const SimpleMode = memo(function SimpleMode({
               {isLoading ? (
                 <p className="text-sm text-muted-foreground">AI is scanning {symbol} market data...</p>
               ) : (
-                <p className="text-sm text-muted-foreground">{symbol} {rec.strike} {isCall ? "CE" : isPut ? "PE" : "—"} · {isLive ? "Live Data" : "Simulation"}</p>
+                <p className="text-sm text-muted-foreground">
+                  {symbol} {rec.strike} {isCall ? "CE" : isPut ? "PE" : "—"}
+                  {strikeInfo ? ` · ${strikeInfo.isAtm ? "ATM" : `${strikeInfo.otmSteps} OTM`}` : ""}
+                  {greeks?.delta != null ? ` · Δ ${greeks.delta.toFixed(2)}` : ""}
+                  {` · ${isLive ? "Live Data" : "Simulation"}`}
+                </p>
               )}
             </div>
           </div>
@@ -382,6 +413,19 @@ export const SimpleMode = memo(function SimpleMode({
             <span className="text-emerald-500">T1 <span className="font-bold">{fmtCurrency(rec.tp1)}</span></span>
             <span className="text-emerald-500">T2 <span className="font-bold">{fmtCurrency(rec.tp2)}</span></span>
             {rec.riskReward > 0 && <span className="text-muted-foreground">R:R 1:{rec.riskReward}</span>}
+            {/* REAL sizing from the plan builder — lots / ₹ deployed / ₹ at risk. */}
+            {(() => {
+              const ps: any = rec?.positionSizing;
+              if (!ps || ps.lots == null) return null;
+              if (ps.tradable) return (
+                <span className="text-blue-400 font-bold">
+                  {ps.lots} lot{ps.lots > 1 ? "s" : ""} · ₹{Math.round(ps.deployed).toLocaleString("en-IN")} · risk ₹{Math.round(ps.riskAmount).toLocaleString("en-IN")}
+                </span>
+              );
+              return (
+                <span className="text-orange-400 font-bold">0 lots — 1 lot ₹{Math.round(ps.lotCost).toLocaleString("en-IN")} over budget → NO TRADE</span>
+              );
+            })()}
             {oiSummary && oiSummary.freshWriting.length > 0 && (
               <span className="text-blue-500 font-bold">📊 OI Writing</span>
             )}
@@ -392,6 +436,21 @@ export const SimpleMode = memo(function SimpleMode({
         )}
         {rec?.reason && (
           <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{rec.reason}</p>
+        )}
+        {/* REAL greeks of the traded leg — live chain row, "—" when the provider didn't publish a field. */}
+        {greeks && (
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>Delta <span className="font-bold text-foreground">{greeks.delta != null ? greeks.delta.toFixed(2) : "—"}</span></span>
+            <span>
+              Theta <span className="font-bold text-foreground">{greeks.theta != null ? greeks.theta.toFixed(2) : "—"}</span>
+              {greeks.theta != null && greeks.premium > 0 && (
+                <span className="text-[10px]"> ({((Math.abs(greeks.theta) / greeks.premium) * 100).toFixed(1)}%/day)</span>
+              )}
+            </span>
+            <span>IV <span className="font-bold text-foreground">{greeks.iv != null ? `${greeks.iv.toFixed(1)}` : "—"}</span></span>
+            <span>Gamma <span className="font-bold text-foreground">{greeks.gamma != null ? greeks.gamma.toFixed(4) : "—"}</span></span>
+            <span>Vega <span className="font-bold text-foreground">{greeks.vega != null ? greeks.vega.toFixed(2) : "—"}</span></span>
+          </div>
         )}
         {oiSummary && (
           <div className="mt-3 p-3 rounded-lg bg-muted/40 border border-border/50 text-xs">
@@ -426,14 +485,24 @@ export const SimpleMode = memo(function SimpleMode({
               )}
               {oiSummary.supportResistance?.resistance?.[0] && (
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Resistance</span>
-                  <span className="font-bold tabular-nums">{fmt(oiSummary.supportResistance.resistance[0].strike)}</span>
+                  <span className="text-muted-foreground">Resistance (CE wall)</span>
+                  <span className="font-bold tabular-nums">
+                    {fmt(oiSummary.supportResistance.resistance[0].strike)}
+                    <span className="text-[9px] text-muted-foreground ml-1">
+                      {(oiSummary.supportResistance.resistance[0].oi / 1000).toFixed(0)}K OI
+                    </span>
+                  </span>
                 </div>
               )}
               {oiSummary.supportResistance?.support?.[0] && (
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Support</span>
-                  <span className="font-bold tabular-nums">{fmt(oiSummary.supportResistance.support[0].strike)}</span>
+                  <span className="text-muted-foreground">Support (PE wall)</span>
+                  <span className="font-bold tabular-nums">
+                    {fmt(oiSummary.supportResistance.support[0].strike)}
+                    <span className="text-[9px] text-muted-foreground ml-1">
+                      {(oiSummary.supportResistance.support[0].oi / 1000).toFixed(0)}K OI
+                    </span>
+                  </span>
                 </div>
               )}
             </div>
@@ -444,6 +513,15 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="flex items-center gap-2 mb-1">
               <Shield className="w-3 h-3 text-blue-500" />
               <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Confirmation</span>
+              {barStamp?.asOf5m ? (
+                <span className="text-[9px] text-muted-foreground">
+                  {new Date(barStamp.asOf5m).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })} {barStamp.fresh5m ? "5m" : "15m"} candle
+                </span>
+              ) : barStamp?.asOf15m ? (
+                <span className="text-[9px] text-muted-foreground">
+                  {new Date(barStamp.asOf15m).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })} 15m candle
+                </span>
+              ) : null}
               <span className={`ml-2 text-[10px] ${
                 confirmedEnough
                   ? "bg-emerald-600 text-white"
@@ -455,6 +533,18 @@ export const SimpleMode = memo(function SimpleMode({
               </span>
             </div>
             <div className="space-y-0.5">
+              {(atrInfo?.tf15 != null || atrInfo?.tf5 != null) && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">ATR</span>
+                  <span className="text-[10px] font-bold tabular-nums text-blue-400">
+                    {atrInfo?.tf15 != null && (
+                      <>15m {atrInfo.tf15.toFixed(1)}{atrInfo.close ? ` (${((atrInfo.tf15 / atrInfo.close) * 100).toFixed(2)}%)` : ""}</>
+                    )}
+                    {atrInfo?.tf15 != null && atrInfo?.tf5 != null && <span className="text-muted-foreground"> · </span>}
+                    {atrInfo?.tf5 != null && <>5m {atrInfo.tf5.toFixed(1)}</>}
+                  </span>
+                </div>
+              )}
               {confirmations.map((c) => (
                 <div key={c.name} className="flex justify-between">
                   <span className="text-muted-foreground">{c.name}</span>
@@ -471,9 +561,11 @@ export const SimpleMode = memo(function SimpleMode({
                   </span>
                 </div>
               ))}
-              {!confirmedEnough && confirmPass < confirmTotal && confirmTotal > 0 && (
+              {!confirmedEnough && confirmTotal > 0 && (
                 <p className="text-[10px] text-red-500/80 mt-1">
-                  Not enough confirmations to trade — wait for structure + trigger alignment
+                  {gateReason === "trigger + context aligned"
+                    ? "Not enough confirmations to trade — wait for structure + trigger alignment"
+                    : `WAIT: ${gateReason}`}
                 </p>
               )}
             </div>

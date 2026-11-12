@@ -801,3 +801,105 @@ model CandidateLog {
   @@index([simResolvedTs])
   @@index([symbol])
 }
+
+// ─── UNIVERSAL_QUANT_V1 (2026-10-24) ───
+// These models were shipped as manual migrations (20261024_quant_v1.sql /
+// 20261024_quant_trailing_atr.sql) but were never registered in the schema, so
+// the generated client had no accessor and every /api/quant/* route 500'd.
+// Mirrors the SQL exactly — do not drift.
+
+model QuantPaperTrade {
+  id                 String    @id
+  tradeId            String    @unique
+  engineVersion      String    @default("UNIVERSAL_QUANT_V1")
+  mode               String    @default("SHADOW")
+  strategy           String
+  regime             String
+  symbol             String
+  exchange           String
+  direction          String
+  tradingsymbol      String?
+  strike             Float?
+  optionType         String?
+  expiry             String?
+  lotSize            Int?
+  quantity           Int?
+  lots               Int?
+  entryPrice         Float?
+  entryTime          DateTime?
+  stopLoss           Float?
+  currentStopLoss    Float?
+  tp1                Float?
+  tp2                Float?
+  tp3                Float?
+  tp4                Float?
+  tpHitLevel         String?
+  trailingHighWater  Float?
+  trailingAtrPremium Float?    // Phase C: premium-space ATR the trail follows (NULL = no ATR in plan)
+  status             String    @default("CANDIDATE")
+  exitPrice          Float?
+  exitTime           DateTime?
+  exitReason         String?
+  realizedPnl        Float?
+  unrealizedPnl      Float?
+  estCosts           Float?
+  riskAmount         Float?
+  maxLossPlanned     Float?
+  confidence         Float?
+  dataQuality        Float?
+  decisionId         String?
+  provenance         String?
+  monitorDegraded    Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([status])
+  @@index([symbol])
+  @@index([createdAt])
+}
+
+model QuantTradeEvent {
+  id                String    @id
+  tradeId           String
+  eventId           String    @unique
+  type              String
+  level             Float?
+  fillPrice         Float?
+  quantityExited    Int?
+  remainingQuantity Int?
+  realizedPnl       Float?
+  note              String?
+  ts                DateTime  @default(now())
+
+  @@index([tradeId])
+  @@index([ts])
+}
+
+model QuantAlertOutbox {
+  id             String    @id
+  eventId        String    @unique
+  idempotencyKey String    @unique
+  alertType      String
+  payload        String
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  lastError      String?
+  chatId         String?
+  createdAt      DateTime  @default(now())
+  sentAt         DateTime?
+}
+
+model QuantDecisionLog {
+  id             String   @id
+  decisionId     String   @unique
+  ts             DateTime @default(now())
+  symbol         String
+  verdict        String
+  regime         String?
+  winnerStrategy String?
+  blockReason    String?
+  payload        String
+
+  @@index([ts])
+  @@index([symbol])
+}

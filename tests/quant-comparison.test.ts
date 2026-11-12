@@ -7,6 +7,7 @@
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { db } from "@/lib/db";
 import { __resetQuantRuntimeConfigForTests } from "@/lib/quant/quant-runtime-config";
+import { qid } from "@/lib/quant/quant-types";
 
 // ── harness ──────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ async function seedTrade(suffix: string, over: Record<string, unknown> = {}): Pr
   const tradeId = `${PREFIX}-${suffix}`;
   await db.quantPaperTrade.create({
     data: {
+      id: qid(),
       tradeId,
       engineVersion: "UNIVERSAL_QUANT_V1",
       mode: "PAPER",

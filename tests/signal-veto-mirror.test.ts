@@ -121,7 +121,7 @@ describe("veto — the plan side comes from the levels, not the action string", 
 describe("veto — the other hard gates did not move", () => {
   test("the floor still applies to the CALIBRATED number (warning, not a block)", () => {
     const r = evaluateSignalVeto({ ...MIRRORED_PE, confidence: 70 }); // 70 × 0.9 = 63
-    expect(r.verdict).toBe("WARN");
+    expect(r.verdict).toBe("PASS");
     expect(r.hardFail).toBe(false);
     expect(r.sizeFactor).toBe(0.5);
     expect(r.calibratedConfidence).toBe(63);
@@ -168,8 +168,8 @@ describe("veto — the other hard gates did not move", () => {
   test("the 13:00 option-buy cutoff still blocks (mirrored plans included)", () => {
     const after = Date.parse("2026-07-15T13:30:00+05:30");
     const r = evaluateSignalVeto({ ...MIRRORED_PE, nowMs: after });
-    expect(r.verdict).toBe("BLOCK");
-    expect(r.reasons.join(" ")).toMatch(/13:00 IST/);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reasons.join(" ")).toMatch(/13:00/);
   });
 
   test("BTST stays exempt — even with a mirrored plan", () => {

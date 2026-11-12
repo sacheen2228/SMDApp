@@ -6,7 +6,7 @@
 // bar close; the veto only ever does an O(1) Map lookup. A MISSING or STALE snapshot
 // is a WARNING (never a BLOCK) — the veto must never block a trade because the
 // technical cache is cold.
-import { analyzeTf, DEFAULT_PARAMS, type Candle, type TfRead } from "./tech-read";
+import { analyzeTf, closedOnly, DEFAULT_PARAMS, type Candle, type TfRead } from "./tech-read";
 import type { Layer } from "./agent-brain-gate";
 
 export type TechTf = "5m" | "15m" | "1d";
@@ -18,7 +18,23 @@ export interface TechSnapshot {
   computedAt: number;
   read: TfRead;
   candles: number;
+  /** REAL relative volume: last closed bar volume vs the prior 20-bar average. null when the candles carry no volume. */
+  rvol?: number | null;
   error?: string;
+}
+
+/** Real RVOL from candles: last CLOSED bar volume / mean volume of the prior 20 bars.
+ *  Returns null when the candles carry no volume (index spot feeds) or not enough bars —
+ *  never a fabricated proxy. */
+export function rvolFromCandles(candles: Candle[], nowMs = Date.now()): number | null {
+  const c = closedOnly(candles, nowMs);
+  if (c.length < 21) return null;
+  const vols = c.map((x) => Number(x.v ?? 0));
+  const last = vols[vols.length - 1];
+  const prior = vols.slice(-21, -1);
+  const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
+  if (!avg || last <= 0) return null;
+  return last / avg;
 }
 
 /** TTL per timeframe = one bar interval (a snapshot older than that is stale). */
@@ -58,6 +74,7 @@ export function buildSnapshot(symbol: string, tf: TechTf, candles: Candle[], now
     computedAt: nowMs,
     read,
     candles: candles.length,
+    rvol: rvolFromCandles(candles, nowMs),
   };
   putSnapshot(snap);
   return snap;

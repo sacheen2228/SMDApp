@@ -9,6 +9,7 @@ import { join } from "path";
 import { db } from "@/lib/db";
 import { QUANT_FLAGS } from "@/lib/quant/quant-config";
 import { __resetQuantRuntimeConfigForTests } from "@/lib/quant/quant-runtime-config";
+import { qid } from "@/lib/quant/quant-types";
 
 // ── harness ──────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ async function seedTrade(suffix: string, status: string): Promise<string> {
   seededTradeIds.push(tradeId);
   await db.quantPaperTrade.create({
     data: {
+      id: qid(),
       tradeId,
       engineVersion: "UNIVERSAL_QUANT_V1",
       mode: "PAPER",
@@ -130,6 +132,7 @@ describe("GET /api/quant/status", () => {
     const tradeId = await seedTrade("status", "OPEN");
     await db.quantDecisionLog.create({
       data: {
+        id: qid(),
         decisionId: `${TRADE_PREFIX}-dec-1`,
         symbol: "NIFTY",
         verdict: "NO_TRADE",
@@ -151,8 +154,12 @@ describe("GET /api/quant/status", () => {
 
 describe("/api/quant/tick", () => {
   test("GET without a secret (QUANT_TICK_SECRET unset) → 503, tick refused (fail closed)", async () => {
-    delete process.env.QUANT_TICK_SECRET;
     const { GET } = await import("@/app/api/quant/tick/route");
+    // NOTE: importing the route pulls in next/server → @next/env, which
+    // re-loads .env (where QUANT_TICK_SECRET IS configured in production).
+    // The delete must therefore happen AFTER the import — the route reads
+    // process.env at request time, so the unset branch is still what runs.
+    delete process.env.QUANT_TICK_SECRET;
     const res = await GET(get("/api/quant/tick"));
     expect(res.status).toBe(503);
     const body = await res.json();
@@ -182,8 +189,8 @@ describe("/api/quant/tick", () => {
   });
 
   test("POST without a secret is refused exactly like GET", async () => {
-    delete process.env.QUANT_TICK_SECRET;
     const { POST } = await import("@/app/api/quant/tick/route");
+    delete process.env.QUANT_TICK_SECRET; // after import — see GET note above
     const res = await POST(postJson("/api/quant/tick", {}));
     expect(res.status).toBe(503);
     expect((await res.json()).success).toBe(false);
@@ -282,6 +289,7 @@ describe("GET /api/quant/decisions", () => {
     const { GET } = await import("@/app/api/quant/decisions/route");
     await db.quantDecisionLog.create({
       data: {
+        id: qid(),
         decisionId: `${TRADE_PREFIX}-dec-2`,
         symbol: "NIFTY",
         verdict: "TRADE",

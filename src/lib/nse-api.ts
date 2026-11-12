@@ -180,7 +180,7 @@ function stampContract(payload: any, effective: string | null) {
 // reporting would spam session-health episodes for a non-critical extra, and
 // NSE failures here are cookie/block availability, never session expiry.
 export async function getNSEEquityOptionChain(symbol: string): Promise<{
-  rows: Array<{ strike: number; ceLtp?: number; peLtp?: number }>;
+  rows: Array<{ strike: number; ceLtp?: number; peLtp?: number; ceIv?: number; peIv?: number; ceVol?: number; peVol?: number; ceOi?: number; peOi?: number; ceOiChg?: number; peOiChg?: number }>;
   expiry?: string;
   spot?: number;
 } | null> {
@@ -204,6 +204,14 @@ export async function getNSEEquityOptionChain(symbol: string): Promise<{
         strike: parseFloat(row?.strikePrice),
         ceLtp: row?.CE?.lastPrice != null ? parseFloat(row.CE.lastPrice) : undefined,
         peLtp: row?.PE?.lastPrice != null ? parseFloat(row.PE.lastPrice) : undefined,
+        ceIv: row?.CE?.impliedVolatility != null ? parseFloat(row.CE.impliedVolatility) : undefined,
+        peIv: row?.PE?.impliedVolatility != null ? parseFloat(row.PE.impliedVolatility) : undefined,
+        ceVol: row?.CE?.totalTradedVolume != null ? parseFloat(row.CE.totalTradedVolume) : undefined,
+        peVol: row?.PE?.totalTradedVolume != null ? parseFloat(row.PE.totalTradedVolume) : undefined,
+        ceOi: row?.CE?.openInterest != null ? parseFloat(row.CE.openInterest) : undefined,
+        peOi: row?.PE?.openInterest != null ? parseFloat(row.PE.openInterest) : undefined,
+        ceOiChg: row?.CE?.changeinOpenInterest != null ? parseFloat(row.CE.changeinOpenInterest) : undefined,
+        peOiChg: row?.PE?.changeinOpenInterest != null ? parseFloat(row.PE.changeinOpenInterest) : undefined,
       }))
       .filter((r: any) => Number.isFinite(r.strike) && r.strike > 0);
     if (!rows.length) return null;

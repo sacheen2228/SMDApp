@@ -35,11 +35,11 @@ import { mapStockFOSignal, mapIndexFOSignal, sendIndividualSignals } from "@/lib
 import { generateMonthlyOptionTrade } from "@/lib/intraday-scanner";
 import type { OptionChainSnapshot } from "@/lib/auction-types";
 
-const CAP = GATE_CONFIG.tradeBudget;          // ₹20,000 — the per-trade cap
+const CAP = GATE_CONFIG.tradeBudget;          // ₹45,000 — the per-trade cap
 const RISK_PCT = GATE_CONFIG.riskPctOfTrade;   // 20% of the amount DEPLOYED
 
 // The two contracts that used to breach the cap (verified live):
-const RELIANCE = { symbol: "RELIANCE", premium: 90, lot: 500, cost: 45_000 };
+const RELIANCE = { symbol: "RELIANCE", premium: 100, lot: 500, cost: 50_000 };
 const SBIN = { symbol: "SBIN", premium: 300, lot: 750, cost: 225_000 };
 
 // 2026-07-15 10:05 IST — before the 13:00 option-buy cutoff
@@ -48,12 +48,12 @@ const AT = Date.parse("2026-07-15T10:05:00+05:30");
 // ───────────────────────────────────────────────────────────────────────────
 describe("the sizing floor — 0 lots is a REAL outcome", () => {
   test("the cap and the risk rule are the live ones", () => {
-    expect(CAP).toBe(20_000);
+    expect(CAP).toBe(45_000);
     expect(RISK_PCT).toBe(20);
     expect(PLAN_CONFIG.maxDeployedAmount).toBe(CAP);
   });
 
-  test("RELIANCE CE ₹90 × lot 500 → 0 lots (₹45,000 per lot)", () => {
+  test("RELIANCE CE ₹100 × lot 500 → 0 lots (₹50,000 per lot)", () => {
     expect(RELIANCE.cost).toBeGreaterThan(CAP);
     expect(lotsForBudget(RELIANCE.premium, RELIANCE.lot, CAP)).toBe(0);
     const s = sizeOptionTrade({ entryPremium: RELIANCE.premium, lotSize: RELIANCE.lot });
@@ -61,7 +61,7 @@ describe("the sizing floor — 0 lots is a REAL outcome", () => {
     expect(s.tradable).toBe(false);
     expect(s.deployed).toBe(0);
     expect(s.riskAmount).toBe(0);
-    expect(s.costPerLot).toBe(45_000);
+    expect(s.costPerLot).toBe(50_000);
     expect(s.reason).toMatch(/per-trade budget/);
   });
 
@@ -75,13 +75,13 @@ describe("the sizing floor — 0 lots is a REAL outcome", () => {
   });
 
   test("an affordable contract still gets its lots", () => {
-    expect(lotsForBudget(150, 65, CAP)).toBe(2);   // ₹9,750 per lot
-    expect(lotsForBudget(30, 500, CAP)).toBe(1);    // ₹15,000 per lot
-    expect(lotsForBudget(300, 65, CAP)).toBe(1);   // ₹19,500 per lot
+    expect(lotsForBudget(150, 65, CAP)).toBe(4);   // ₹9,750 per lot → 4 lots fits ₹45,000 cap
+    expect(lotsForBudget(30, 500, CAP)).toBe(3);    // ₹15,000 per lot → 3 lots
+    expect(lotsForBudget(300, 65, CAP)).toBe(2);   // ₹19,500 per lot → 2 lots
     const s = sizeOptionTrade({ entryPremium: 150, lotSize: 65 });
-    expect(s.lots).toBe(2);
-    expect(s.units).toBe(130);
-    expect(s.deployed).toBe(19_500);
+    expect(s.lots).toBe(4);
+    expect(s.units).toBe(260);
+    expect(s.deployed).toBe(39_000);
     expect(s.tradable).toBe(true);
   });
 
@@ -107,7 +107,7 @@ describe("buildOptionPlan — 0 lots, ₹0 deployed, ₹0 at risk", () => {
     expect(p.riskAmount).toBe(0);
     expect(p.tradable).toBe(false);
     expect(p.rupee.tp1).toBe(0);
-    expect(p.lotCost).toBe(45_000);
+    expect(p.lotCost).toBe(50_000);
     expect(p.notes.join(" ")).toMatch(/0 lots/);
   });
 
@@ -151,9 +151,9 @@ describe("buildOptionPlan — 0 lots, ₹0 deployed, ₹0 at risk", () => {
 
   test("even an explicit lot count cannot push the deployment over the cap", () => {
     const p = buildOptionPlan({
-      symbol: "NIFTY", optionType: "CE", entryPremium: 400, lotSize: 65, lots: 1,
+      symbol: "NIFTY", optionType: "CE", entryPremium: 700, lotSize: 65, lots: 1,
     })!;
-    expect(p.lots).toBe(0);      // 1 lot = ₹26,000 → over the ₹20,000 cap
+    expect(p.lots).toBe(0);      // 1 lot = ₹45,500 → over the ₹45,000 cap
     expect(p.deployed).toBe(0);
     expect(p.tradable).toBe(false);
   });
@@ -186,17 +186,16 @@ describe("the 1-lot case — NO REGRESSION in the plan maths", () => {
     expect(p.lotCost).toBeCloseTo(153.85 * 65, 5);
   });
 
-  test("the default sizing still takes 2 NIFTY lots and caps the rupee risk at ₹2,000", () => {
+  test("the default sizing still takes 4 NIFTY lots (₹39,000 ≤ the ₹45,000 cap) with risk capped at ₹4,000", () => {
     const p = buildOptionPlan({ symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65 })!;
-    expect(p.lots).toBe(2);
-    expect(p.units).toBe(130);
-    expect(p.deployed).toBe(19_500);
-    expect(p.riskAmount).toBeCloseTo(2_000, 0);   // FIXED cap (20% would be ₹3,900)
-    // ₹2,000 over 130 units = 15.38 pts of premium → stop and 2R/3R/4R ladder
-    expect(p.stopLoss).toBeCloseTo(150 - 2_000 / 130, 1);
-    expect(p.targets[0]).toBeCloseTo(150 + 2 * 2_000 / 130, 1);
-    expect(p.targets[1]).toBeCloseTo(150 + 3 * 2_000 / 130, 1);
-    expect(p.targets[2]).toBeCloseTo(150 + 4 * 2_000 / 130, 1);
+    expect(p.lots).toBe(4);
+    expect(p.units).toBe(260);
+    expect(p.deployed).toBe(39_000);
+    expect(p.riskAmount).toBeCloseTo(4_000, 0);   // 20% of ₹39,000 = ₹7,800 > ₹4,000 cap → cap binds
+    expect(p.stopLoss).toBeCloseTo(150 - 4_000 / 260, 1);
+    expect(p.targets[0]).toBeCloseTo(150 + 2 * 4_000 / 260, 1);
+    expect(p.targets[1]).toBeCloseTo(150 + 3 * 4_000 / 260, 1);
+    expect(p.targets[2]).toBeCloseTo(150 + 4 * 4_000 / 260, 1);
   });
 
   test("the guardrails still hold (35% premium cap + 8-tick floor)", () => {
@@ -238,15 +237,15 @@ describe("the veto — DEPLOYMENT / LOT check (fail closed, no network)", () => 
     expect(r.fails).toHaveLength(0);
   });
 
-  test("RELIANCE CE ₹90 (lot 500 → ₹45,000) is BLOCKED", () => {
+  test("RELIANCE CE ₹100 (lot 500 → ₹50,000) is BLOCKED", () => {
     const r = evaluateSignalVeto({
-      ...base, symbol: "RELIANCE", entry: 90, stopLoss: 72, tp1: 126,
+      ...base, symbol: "RELIANCE", entry: 100, stopLoss: 80, tp1: 140,
     });
     expect(r.verdict).toBe("BLOCK");
     expect(r.hardFail).toBe(true);
     expect(r.suppress).toBe(true);
     expect(r.sizeFactor).toBe(0);
-    expect(r.reasons.join(" ")).toMatch(/45,000|20,000/);
+    expect(r.reasons.join(" ")).toMatch(/50,000|45,000/);
     expect(r.reasons.join(" ")).toMatch(/budget/);
   });
 
@@ -255,7 +254,7 @@ describe("the veto — DEPLOYMENT / LOT check (fail closed, no network)", () => 
       ...base, symbol: "SBIN", entry: 300, stopLoss: 240, tp1: 420,
     });
     expect(r.verdict).toBe("BLOCK");
-    expect(r.reasons.join(" ")).toMatch(/2,25,000|20,000/);
+    expect(r.reasons.join(" ")).toMatch(/2,25,000|45,000/);
   });
 
   test("0 lots is BLOCKED (the state a 0-lot plan would carry)", () => {
@@ -266,14 +265,14 @@ describe("the veto — DEPLOYMENT / LOT check (fail closed, no network)", () => 
   });
 
   test("a stated deployment over the cap is BLOCKED", () => {
-    const r = evaluateSignalVeto({ ...base, deployedAmount: 45_000 });
+    const r = evaluateSignalVeto({ ...base, deployedAmount: 60_000 });
     expect(r.verdict).toBe("BLOCK");
-    expect(r.reasons.join(" ")).toMatch(/45,000/);
+    expect(r.reasons.join(" ")).toMatch(/60,000|45,000/);
   });
 
   test("a stated lot size is honoured (no symbol lookup needed)", () => {
     const r = evaluateSignalVeto({
-      ...base, symbol: "UNKNOWNCO", lotSize: 500, entry: 90, stopLoss: 72, tp1: 126,
+      ...base, symbol: "UNKNOWNCO", lotSize: 500, entry: 100, stopLoss: 80, tp1: 140,
     });
     expect(r.verdict).toBe("BLOCK");
     const ok = evaluateSignalVeto({
@@ -313,10 +312,10 @@ describe("the callers bail on 0 lots (no trade, no alert, no tracker row)", () =
       symbol: "RELIANCE", direction: "CALL", entryPremium: 30, lotSize: 500,
     })!;
     expect(p).not.toBeNull();
-    expect(p.lots).toBe(1);
+    expect(p.lots).toBe(3);                          // 45,000 / 15,000 per lot = exactly 3 lots
     expect(p.totalPremium).toBeLessThanOrEqual(CAP);
-    expect(p.totalPremium).toBe(15_000);
-    expect(p.maxRisk).toBeCloseTo(2_000, 0);   // FIXED ₹2,000 risk cap (20% would be ₹3,000)
+    expect(p.totalPremium).toBe(45_000);             // exactly at the cap, not over
+    expect(p.maxRisk).toBeCloseTo(4_000, 0);         // 20% of ₹45,000 = ₹9,000 > ₹4,000 cap → cap binds
   });
 
   test("morning scan: an unaffordable contract is skipped", () => {
@@ -356,9 +355,9 @@ describe("the callers bail on 0 lots (no trade, no alert, no tracker row)", () =
     };
     // 1 NIFTY lot (65) at ₹300 = ₹19,500 → affordable
     expect(mapIndexFOSignal(index)).not.toBeNull();
-    // ₹400 → 1 lot = ₹26,000 → over the cap → dropped
+    // ₹700 × lot 65 = ₹45,500 → over the cap → dropped
     expect(
-      mapIndexFOSignal({ ...index, premium: 400, entry: 400 })
+      mapIndexFOSignal({ ...index, premium: 700, entry: 700 })
     ).toBeNull();
   });
 
@@ -417,8 +416,8 @@ describe("the callers bail on 0 lots (no trade, no alert, no tracker row)", () =
       ivSkew: 0,
     });
 
-    // ₹90 × lot 500 = ₹45,000 → 0 lots → no monthly option trade at all
-    expect(generateMonthlyOptionTrade(RELIANCE.symbol, 2500, "BULLISH", chain(90))).toBeUndefined();
+    // ₹100 × lot 500 = ₹50,000 → over the cap → no monthly option trade at all
+    expect(generateMonthlyOptionTrade(RELIANCE.symbol, 2500, "BULLISH", chain(100))).toBeUndefined();
     // ₹30 × lot 500 = ₹15,000 → affordable → a real trade
     const ok = generateMonthlyOptionTrade(RELIANCE.symbol, 2500, "BULLISH", chain(30));
     expect(ok).toBeDefined();

@@ -137,7 +137,10 @@ async function defaultChainProbe(): Promise<ChainProbeResult> {
   const atm = res.data.spot != null
     ? res.data.strikes.find((s) => Math.abs(s.strike - (res.data!.spot as number)) <= 50)
     : undefined;
-  const greeks = !!(atm?.ce?.delta != null || atm?.pe?.delta != null);
+  // Check greeks: look at both CE and PE for any greek value (delta, gamma, theta, vega, iv)
+  const hasCegreeks = atm?.ce && (atm.ce.delta != null || atm.ce.gamma != null || atm.ce.theta != null || atm.ce.iv != null);
+  const hasPEgreeks = atm?.pe && (atm.pe.delta != null || atm.pe.gamma != null || atm.pe.theta != null || atm.pe.iv != null);
+  const greeks = !!(hasCegreeks || hasPEgreeks);
   return {
     ok: strikes > 0,
     source: res.data.source,

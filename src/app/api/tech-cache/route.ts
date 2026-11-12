@@ -2,8 +2,8 @@
 //   GET  → cache status + health
 //   POST → recompute the snapshots (uses the candle API; never called by the alert path)
 import { NextRequest, NextResponse } from "next/server";
-import { getJSON } from "@/lib/agent-brain-gate";
-import { fetchCandles, type Candle } from "@/lib/tech-read";
+import { getJSON, type Layer } from "@/lib/agent-brain-gate";
+import { fetchCandles, triggerLayer, type Candle } from "@/lib/tech-read";
 import {
   CACHE_SYMBOLS, TF_TTL_MS, buildSnapshot, cacheStats, getSnapshot, isFresh, prune, type TechTf,
 } from "@/lib/tech-cache";
@@ -33,13 +33,76 @@ export async function refresh(symbols: string[], tfs: TechTf[]): Promise<{ refre
   return { refreshed, failed, detail };
 }
 
-export async function GET() {
+/** GET ?symbol=NIFTY → the REAL technical reads the SimpleMode card scores:
+ *  15m trend (SuperTrend/EMA/structure), 5m trigger evidence (closed-bar),
+ *  real vsVwap and real RVOL — straight from the cached TfRead snapshots.
+ *  A missing/stale snapshot is refreshed server-side first (TTL = one bar
+ *  interval), so the card's state changes land on candle closes. No
+ *  snapshot → read: null with the real reason. Never a fabricated value.
+ */
+export async function GET(req: NextRequest) {
+  const symbol = (req.nextUrl.searchParams.get("symbol") || "").toUpperCase();
+  if (!symbol) {
+    return NextResponse.json({
+      ok: true,
+      stats: cacheStats(),
+      ttlMs: TF_TTL_MS,
+      symbols: CACHE_SYMBOLS,
+    });
+  }
+
+  const tfs: TechTf[] = ["15m", "5m"];
+  const stale = tfs.filter((tf) => !isFresh(getSnapshot(symbol, tf), tf));
+  if (stale.length) {
+    await refresh([symbol], stale);
+    prune();
+  }
+
+  const snapshots: Record<string, any> = {};
+  for (const tf of tfs) {
+    const snap = getSnapshot(symbol, tf);
+    if (!snap || snap.error) {
+      snapshots[tf] = { fresh: false, read: null, reason: snap?.error || "no snapshot (no candles)" };
+      continue;
+    }
+    const r = snap.read;
+    snapshots[tf] = {
+      fresh: isFresh(snap, tf),
+      asOf: snap.asOf,
+      computedAt: snap.computedAt,
+      bars: r.bars,
+      close: r.close,
+      warnings: r.warnings,
+      trend: {
+        stDir: r.st.dir,
+        emaRel: r.ema.rel,
+        emaChop: r.ema.chop,
+        structureTrend: r.structure.trend,
+        structureEvent: r.structure.event ?? null,
+        structureEventBarsAgo: r.structure.eventBarsAgo ?? null,
+        adx: r.adx ?? null,
+        pdi: r.pdi ?? null,
+        mdi: r.mdi ?? null,
+      },
+      // Real volatility — informational on the card, never a pass/fail check.
+      atr: r.atr ?? null,
+      atrPct: r.atr && r.close > 0 ? r.atr / r.close : null,
+      vsVwap: r.vsVwap,
+      // Real closed-bar trigger evidence per direction (state + evidence string).
+      triggers: {
+        call: triggerLayer(r, "call"),
+        put: triggerLayer(r, "put"),
+      } as Record<"call" | "put", Layer>,
+    };
+  }
+
+  const snap5 = getSnapshot(symbol, "5m");
   return NextResponse.json({
     ok: true,
-    stats: cacheStats(),
-    ttlMs: TF_TTL_MS,
-    snapshots: [...cacheStats().byTf ? [] : []],
-    symbols: CACHE_SYMBOLS,
+    symbol,
+    snapshots,
+    // REAL relative volume from the 5m candles; null when they carry no volume.
+    rvol: snap5?.rvol ?? null,
   });
 }
 

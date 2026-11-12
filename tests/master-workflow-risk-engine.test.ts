@@ -30,10 +30,10 @@ describe("the workflow risk engine", () => {
     expect(r.approved).toBe(true);
     // NOT ₹10,00,000 — the ₹ DEPLOYED per trade
     expect(r.maxPositionSize).toBe(RISK_LIMITS.perTradeBudget);
-    expect(r.maxPositionSize).toBe(20_000);
-    // the ₹ at risk on one trade = the FIXED ₹2,000 cap
+    expect(r.maxPositionSize).toBe(45_000);
+    // the ₹ at risk on one trade = the FIXED ₹4,000 cap
     expect(r.var95).toBe(RISK_LIMITS.maxRiskPerTrade);
-    expect(r.var95).toBe(2_000);
+    expect(r.var95).toBe(4_000);
   });
 
   test("a blown daily loss is NOT approved", () => {
@@ -49,7 +49,7 @@ describe("the workflow risk engine", () => {
   });
 
   test("an over-exposed book is NOT approved", () => {
-    const r = evaluateWorkflowRisk(cleanState({ openDeployed: 40_000, openRisk: 8_000 }));
+    const r = evaluateWorkflowRisk(cleanState({ openDeployed: 46_000, openRisk: 8_000 }));
     expect(r.approved).toBe(false);
     expect(r.warnings.join(" ")).toMatch(/exceeds/i);
   });

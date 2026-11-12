@@ -37,6 +37,12 @@ export interface NSEStockQuote {
    * as LIVE.
    */
   providerTimestamp?: string | null;
+  /** % distance below the 52‑week high (NSE field). */
+  nearWKH?: number;
+  /** % distance above the 52‑week low (NSE field). */
+  nearWKL?: number;
+  /** Total traded value (₹) for the session (NSE field). */
+  tradedValue?: number;
 }
 
 const SECTOR_MAP: Record<string, string> = {
@@ -160,6 +166,10 @@ async function fetchFromNSEIndexList(indexName = "NIFTY 50"): Promise<NSEStockQu
         weekHigh52: d.high52 || 0,
         weekLow52: d.low52 || 0,
         sector: SECTOR_MAP[d.symbol] || "Other",
+        // NSE equity‑stockIndices now returns nearWKH / nearWKL / totalTradedValue.
+        nearWKH: d.nearWKH,
+        nearWKL: d.nearWKL,
+        tradedValue: d.totalTradedValue ?? null,
         // The NSE index-list rows carry no publication timestamp — an undated
         // quote stays undated (the market clock supplies the trade date).
         providerTimestamp: null,

@@ -70,6 +70,38 @@ function withMarketOpen(info: Omit<SessionInfo, 'isMarketOpen'>): SessionInfo {
   return { ...info, isMarketOpen: info.confidenceMultiplier > 0 };
 }
 
+// ─── Late Option-Buy Gate (13:00 IST) ─────────────────────────────
+// Measured on the ledger (see tests/market-session-late-option-gate.test.ts):
+//   after  13:00 IST — n=119, WR 16.0%, net −₹719,751, avgR −1.730
+//   option-chain-api after 13:00 — n=52, 0 wins, avgR −2.774
+//   ZERO_HERO_AI after 13:00    — n=42, WR 23.8%, avgR −1.195
+// New option-premium BUY entries are refused from 13:00 IST to the close.
+export const LATE_OPTION_BUY_CUTOFF_IST_MINUTES = 780; // 13:00 IST
+
+/** True when a NEW option buy at `mins` (IST minutes since midnight) is blocked. */
+export function lateOptionBuysBlocked(mins: number): boolean {
+  return mins >= LATE_OPTION_BUY_CUTOFF_IST_MINUTES && process.env.SMD_ALLOW_LATE_OPTION_BUYS !== '1';
+}
+
+/**
+ * SessionInfo for a pinned IST time-of-day (minutes since midnight) — the
+ * time-injected variant of getCurrentSession so replays/tests can evaluate
+ * the gate at any clock. Applies the 13:00 late-option-buy gate on top of
+ * the base schedule: BUY_CALL / BUY_PUT are removed from allowedActions and
+ * the description says WHY.
+ */
+export function getSessionForMinutes(mins: number): SessionInfo {
+  const s = baseSession(mins);
+  if (lateOptionBuysBlocked(mins) && s.allowedActions.includes('BUY_CALL')) {
+    return {
+      ...s,
+      allowedActions: s.allowedActions.filter(a => a !== 'BUY_CALL' && a !== 'BUY_PUT'),
+      description: `${s.description} — No New Option Buys after 13:00 IST (afternoon option entries went 0 wins / 34 trades on the ledger). Set SMD_ALLOW_LATE_OPTION_BUYS=1 to override.`,
+    };
+  }
+  return s;
+}
+
 // ─── Session Lookup Helpers ──────────────────────────────────────
 function baseSession(minutes: number): SessionInfo {
   const t = timeStr(minutes);
@@ -274,7 +306,7 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
   }
 
   // All instruments share the same pre-15:00 schedule
-  if (minutes < 900) return withMarketOpen(baseSession(minutes));
+  if (minutes < 900) return withMarketOpen(getSessionForMinutes(minutes));
 
   // Index / derivatives: trade until 15:40
   if (instrument === 'index') {

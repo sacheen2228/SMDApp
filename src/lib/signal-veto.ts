@@ -399,22 +399,24 @@ export function evaluateSignalVeto(input: VetoInput): VetoResult {
  *     "cannot verify today's loss" — an unverifiable limit is not a passed
  *     limit, and unlimited trades are exactly what that would allow.
  *
- * `loader` is the test seam (and the seam for any other source of truth).
+ * `loader` is REQUIRED — the DB reader lives in risk-state.server.ts, which pulls
+ * Prisma + the whole tracker/telegram/voice chain. A dynamic import here (the old
+ * default) was still chased by the bundler and broke the CLIENT build the moment
+ * a client component (OIFlowView) imported this module for its verdict display.
+ * Server callers wire checkSignalRiskLimits themselves; client callers never
+ * have the DB — they call evaluateSignalVeto directly (account caps stay
+ * enforced in the sendTradeAlert funnel).
  */
 export async function evaluateSignalVetoWithRisk(
   input: VetoInput,
-  loader?: () => Promise<
+  loader: () => Promise<
     { ok: true; state: RiskStateSnapshot } | { ok: false; reason: string }
   >,
 ): Promise<VetoResult> {
   let state: RiskStateSnapshot | undefined;
   let unavailable = false;
   try {
-    const load = loader ?? (async () => {
-      const { loadRiskState } = await import("./risk-state.server");
-      return loadRiskState(input.nowMs ?? Date.now());
-    });
-    const loaded = await load();
+    const loaded = await loader();
     if (loaded?.ok) state = loaded.state;
     else unavailable = true;
   } catch (err: any) {

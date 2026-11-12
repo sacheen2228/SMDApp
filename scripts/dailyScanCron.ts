@@ -56,6 +56,11 @@ const BTST_SCHEDULE = "15 15 * * 1-5";         // 3:15pm, Mon-Fri — BTST scan 
 const BTST_CLOSE_SCHEDULE = "25 15 * * 1-5";   // 3:25pm, Mon-Fri — square off prior-day BTST into audit engine
 const EOD_SQUAREOFF_SCHEDULE = "31 15 * * 1-5"; // 3:31pm, Mon-Fri — close intraday journal trades at real LTP (BTST excluded)
 const INST_SCHEDULE = "*/20 16-18 * * 1-5";          // every 20 min, 16:00-18:40 Mon-Fri — fetch NSE participant OI data (published ~4pm IST)
+const EVENING_SCHEDULE = "0 20 * * 1-5";            // 8:00pm, Mon-Fri — evening watchlist digest
+const WATCHLIST_PREOPEN_SCHEDULE = "8 9 * * 1-5";   // 9:08am, Mon-Fri — preopen re-rank (coexists with PREOPEN_LAB_RETRY)
+const WATCH_SCHEDULE = "*/2 9-14,15 * * 1-5";       // every 2 min, 09:00-15:30 Mon-Fri — live watch alerts
+const EVALUATE_SCHEDULE = "40 15 * * 1-5";          // 3:40pm, Mon-Fri — end-of-day grading
+const PLAN_SCHEDULE = "30 9 * * 1-5";               // 9:30am, Mon-Fri — trade plan generation
 
 // The nse-options-signal skill's jobs (EOD PCR/max-pain, EOD feeds, pre-market
 // bias, live breadth/movers, the GEX engine, the holiday list).  They live in
@@ -277,3 +282,48 @@ cron.schedule(
   },
   { timezone: TIMEZONE }
 );
+cron.schedule(EVENING_SCHEDULE, async () => {
+  console.log("[dailyScanCron] evening watchlist digest starting...");
+  try {
+    const result = await import("@/lib/watchlist-scanner").then((m) => m.runEveningMode());
+    console.log("[dailyScanCron] evening watchlist digest completed:", result);
+  } catch (err) {
+    console.error("[dailyScanCron] evening watchlist digest error:", err);
+  }
+}, { timezone: TIMEZONE });
+cron.schedule(WATCHLIST_PREOPEN_SCHEDULE, async () => {
+  console.log("[dailyScanCron] preopen re-rank starting...");
+  try {
+    const result = await import("@/lib/watchlist-scanner").then((m) => m.runPreopenMode());
+    console.log("[dailyScanCron] preopen re-rank completed:", result);
+  } catch (err) {
+    console.error("[dailyScanCron] preopen re-rank error:", err);
+  }
+}, { timezone: TIMEZONE });
+cron.schedule(WATCH_SCHEDULE, async () => {
+  console.log("[dailyScanCron] watch mode starting...");
+  try {
+    const result = await import("@/lib/watchlist-scanner").then((m) => m.runWatchMode());
+    console.log("[dailyScanCron] watch mode completed:", result);
+  } catch (err) {
+    console.error("[dailyScanCron] watch mode error:", err);
+  }
+}, { timezone: TIMEZONE });
+cron.schedule(EVALUATE_SCHEDULE, async () => {
+  console.log("[dailyScanCron] evaluate mode starting...");
+  try {
+    const result = await import("@/lib/watchlist-scanner").then((m) => m.runEvaluateMode());
+    console.log("[dailyScanCron] evaluate mode completed:", result);
+  } catch (err) {
+    console.error("[dailyScanCron] evaluate mode error:", err);
+  }
+}, { timezone: TIMEZONE });
+cron.schedule(PLAN_SCHEDULE, async () => {
+  console.log("[dailyScanCron] plan mode starting...");
+  try {
+    const result = await import("@/lib/watchlist-scanner").then((m) => m.runPlanMode());
+    console.log("[dailyScanCron] plan mode completed:", result);
+  } catch (err) {
+    console.error("[dailyScanCron] plan mode error:", err);
+  }
+}, { timezone: TIMEZONE });

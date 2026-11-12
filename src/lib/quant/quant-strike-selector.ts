@@ -80,6 +80,9 @@ export interface SelectContractInput {
   features?: QuantFeatures | null;
   plan?: QuantPlan | null; // reserved for premium-fit tiebreaks (Phase B) — not a filter
   expiry?: string | null;
+  /** Engine clock — expiry validation must use it, never the real clock
+   *  (tests pin NOW; a real-clock read made pinned fixtures "expired"). */
+  nowMs?: number;
 }
 
 export function selectContract(input: SelectContractInput): QuantContractSelection {
@@ -97,7 +100,7 @@ export function selectContract(input: SelectContractInput): QuantContractSelecti
   if (!finite(spot) || spot <= 0) return rejected("chain spot invalid or missing", []);
 
   const expiry = input.expiry ?? chain.expiry ?? null;
-  const tYears = expiry ? parseExpiryToYears(expiry) : null;
+  const tYears = expiry ? parseExpiryToYears(expiry, new Date(input.nowMs ?? Date.now())) : null;
   if (expiry == null || tYears == null || tYears <= 0) {
     return rejected("expiry invalid or expired", []);
   }

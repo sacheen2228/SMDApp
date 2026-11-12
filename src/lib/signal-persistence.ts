@@ -23,6 +23,11 @@
 // Genuine reversals are NOT blocked: once an opposing signal is confirmed
 // (persistence + hysteresis), the card flips. Nothing is retained forever.
 
+// Nothing here touches the network; the module is imported by client
+// components (page.tsx, SimpleMode.tsx) as well as server paths.
+
+import { GATE_CONFIG } from "./agent-brain-gate";
+
 export type SignalDirection = "CALL" | "PUT" | "WAIT" | "NEUTRAL";
 
 export interface ConfirmationCheck {
@@ -345,91 +350,268 @@ export function getConfirmedSignal(): ConfirmResult {
   return buildResult(hold, true, "current");
 }
 
-export const CONF_FLOOR_CALL = CONFIG.confFloorCall; // 60 (0-100 scale)
-export const CONF_FLOOR_PUT = CONFIG.confFloorPut; // 70 (0-100 scale)
+export const CONF_FLOOR_CALL = CONFIG.confFloorCall; // 65 (0-100 scale)
+export const CONF_FLOOR_PUT = CONFIG.confFloorPut; // 65 (0-100 scale)
 
-/** Evaluate confirmation checks from available market context.
+/** REAL trend read — mapped from the 15m TfRead (tech-read.ts analyzeTf). */
+export interface TrendReadInput {
+  /** SuperTrend direction on the last CLOSED bar: 1 up, -1 down, 0 n/a. */
+  stDir: 1 | -1 | 0;
+  /** Close vs EMA fast/slow relation. */
+  emaRel: "ABOVE" | "BELOW" | "UNKNOWN";
+  /** EMA chop flag — when true the EMA vote is suppressed (crossovers unreliable). */
+  emaChop: boolean;
+  /** Market structure trend (HH/HL vs LH/LL on closed candles). */
+  structureTrend: "UP" | "DOWN" | "RANGE";
+}
+
+/** REAL trigger read — mapped from the 5m triggerLayer evidence. */
+export interface TriggerReadInput {
+  /** Trigger evidence in favour (e.g. "BOS_UP on a closed candle"). */
+  hits: string[];
+  /** Trigger evidence against the direction. */
+  opposing: string[];
+}
+
+/** REAL ADX/DI read — mapped from the 15m TfRead (adx/pdi/mdi). */
+export interface AdxReadInput {
+  adx: number;
+  pdi: number;
+  mdi: number;
+}
+
+/** REAL greeks read — the recommended leg's live chain row (delta/theta/gamma/vega/iv). */
+export interface GreeksReadInput {
+  delta: number | null;
+  theta: number | null;
+  gamma: number | null;
+  vega: number | null;
+  /** IV in the provider's units (%). */
+  iv: number | null;
+  /** Current premium of the leg (for theta-as-%-of-premium). */
+  premium: number;
+}
+
+/** Evaluate confirmation checks from REAL market reads.
  *
- * Returns checks that the SimpleMode card can display so the user knows
- * *when* to take a trade — only when structure + trigger + volume + OI
- * all align in the same direction.
+ * Every check is scored from real data only:
+ *   • Trend    — SuperTrend + EMA (chop-suppressed) + structure (15m TfRead)
+ *   • Trigger  — closed-bar trigger hits/opposing (5m triggerLayer)
+ *   • Volume   — real last-bar RVOL vs the 20-bar average
+ *   • OI / PCR — real PCR
+ *   • VWAP     — real vsVwap ("NA" when the candles carry no volume)
  *
- * Inputs are optional — missing data yields a "skip" check that does NOT
- * count toward the pass/total ratio (so unavailable data never penalizes
- * the score).
+ * Missing data yields an UNAVAILABLE check that does NOT count toward the
+ * pass/total ratio — unavailable data is never turned into a pass or a lie.
  */
 export function evaluateConfirmations(input: {
   /** Direction the signal is calling ("CALL" | "PUT"). */
   direction: "CALL" | "PUT";
-  /** EMA/SuperTrend alignment: "bullish" | "bearish" | "neutral" | null. */
-  trend?: "bullish" | "bearish" | "neutral" | null;
-  /** Trigger: fresh EMA cross + sweep reclaim in direction. "fresh" | "against" | "none" | null. */
-  trigger?: "fresh" | "against" | "none" | null;
-  /** Relative volume vs average: number or null. */
+  /** Real 15m trend read, or null when the snapshot is missing/stale. */
+  trendRead?: TrendReadInput | null;
+  /** Real 5m trigger read, or null when the snapshot is missing/stale. */
+  triggerRead?: TriggerReadInput | null;
+  /** Real relative volume (last bar vs prior 20-bar avg), or null when no volume data. */
   rvol?: number | null;
   /** PCR: call/put OI ratio. >1 bullish-leaning, <0.9 bearish-leaning. */
   pcr?: number | null;
-  /** Price vs VWAP: "above" | "below" | null. */
-  vwap?: "above" | "below" | null;
+  /** Real price-vs-VWAP side from the 5m read; "NA" when no volume. */
+  vsVwap?: "ABOVE" | "BELOW" | "NA" | null;
+  /** Real ADX/DI read from the 15m snapshot, or null when unavailable. */
+  adxRead?: AdxReadInput | null;
+  /** Real greeks of the recommended leg (from the live chain row), or null. */
+  greeksRead?: GreeksReadInput | null;
 }): ConfirmationCheck[] {
   const dir = input.direction;
   const wantBullish = dir === "CALL";
   const checks: ConfirmationCheck[] = [];
 
-  // ── 1. Trend / structure alignment ──
-  checks.push({
-    name: "Trend",
-    pass: (wantBullish && input.trend === "bullish") || (!wantBullish && input.trend === "bearish"),
-    detail: input.trend === null
-      ? "trend data unavailable"
-      : input.trend === "neutral"
-        ? "EMA/SuperTrend neutral"
-        : `EMA/SuperTrend ${input.trend}`,
-    available: input.trend !== null,
-  });
+  // ── 1. Trend / structure alignment (REAL: SuperTrend + EMA + structure) ──
+  const tr = input.trendRead ?? null;
+  if (tr) {
+    const wantUp = wantBullish;
+    const stAgrees = tr.stDir === (wantUp ? 1 : -1);
+    const structureAgrees = tr.structureTrend === (wantUp ? "UP" : "DOWN");
+    const emaAgrees = !tr.emaChop && tr.emaRel !== "UNKNOWN" && tr.emaRel === (wantUp ? "ABOVE" : "BELOW");
+    // SuperTrend must agree AND at least one of (structure, EMA-not-chop) must agree.
+    const pass = stAgrees && (structureAgrees || emaAgrees);
+    const parts = [
+      `SuperTrend ${tr.stDir === 1 ? "up" : tr.stDir === -1 ? "down" : "n/a"}`,
+      tr.emaChop ? `EMA chop (suppressed)` : `EMA ${tr.emaRel.toLowerCase()}`,
+      `structure ${tr.structureTrend}`,
+    ];
+    checks.push({
+      name: "Trend",
+      pass,
+      detail: parts.join(", "),
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "Trend",
+      pass: false,
+      detail: "trend read unavailable (no fresh 15m snapshot)",
+      available: false,
+    });
+  }
 
-  // ── 2. Trigger (fresh cross / sweep reclaim in direction) ──
-  checks.push({
-    name: "Trigger",
-    pass: input.trigger === "fresh",
-    detail: input.trigger === "fresh"
-      ? "fresh cross + sweep reclaim"
-      : input.trigger === "against"
-        ? "trigger against direction"
-        : "no fresh trigger",
-    available: input.trigger !== null,
-  });
+  // ── 2. Trigger (REAL: closed-bar evidence from the 5m trigger layer) ──
+  const tg = input.triggerRead ?? null;
+  if (tg) {
+    const pass = tg.hits.length > 0 && tg.opposing.length === 0;
+    const detail =
+      tg.hits.length && tg.opposing.length
+        ? `trigger mixed: ${tg.hits.join("; ")} | against: ${tg.opposing.join("; ")}`
+        : tg.hits.length
+          ? tg.hits.join("; ")
+          : tg.opposing.length
+            ? `trigger against: ${tg.opposing.join("; ")}`
+            : "no trigger on closed candles";
+    checks.push({ name: "Trigger", pass, detail, available: true });
+  } else {
+    checks.push({
+      name: "Trigger",
+      pass: false,
+      detail: "trigger read unavailable (no fresh 5m snapshot)",
+      available: false,
+    });
+  }
 
-  // ── 3. Volume confirmation ──
-  const rvol = input.rvol ?? 0;
-  checks.push({
-    name: "Volume",
-    pass: rvol >= 1.2,
-    detail: rvol > 0 ? `RVOL ${rvol.toFixed(1)}x` : "volume data unavailable",
-    available: input.rvol !== null,
-  });
+  // ── 3. Volume confirmation (REAL RVOL; null = no volume data) ──
+  const rvol = input.rvol;
+  if (rvol != null && Number.isFinite(rvol) && rvol > 0) {
+    checks.push({
+      name: "Volume",
+      pass: rvol >= 1.2,
+      detail: `RVOL ${rvol.toFixed(1)}x`,
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "Volume",
+      pass: false,
+      detail: "no volume data on these candles",
+      available: false,
+    });
+  }
 
-  // ── 4. OI / PCR alignment ──
-  const pcr = input.pcr ?? 0;
-  const pcrPass = wantBullish ? pcr > 1.0 : pcr < 0.9;
-  checks.push({
-    name: "OI / PCR",
-    pass: pcr > 0 && pcrPass,
-    detail: pcr > 0 ? `PCR ${pcr.toFixed(2)}` : "PCR data unavailable",
-    available: pcr > 0,
-  });
+  // ── 4. OI / PCR alignment (REAL PCR) ──
+  const pcr = input.pcr;
+  if (pcr != null && Number.isFinite(pcr) && pcr > 0) {
+    const pcrPass = wantBullish ? pcr > 1.0 : pcr < 0.9;
+    checks.push({
+      name: "OI / PCR",
+      pass: pcrPass,
+      detail: `PCR ${pcr.toFixed(2)}`,
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "OI / PCR",
+      pass: false,
+      detail: "PCR data unavailable",
+      available: false,
+    });
+  }
 
-  // ── 5. VWAP side ──
-  checks.push({
-    name: "VWAP",
-    pass: (wantBullish && input.vwap === "above") || (!wantBullish && input.vwap === "below"),
-    detail: input.vwap
-      ? `price ${input.vwap} VWAP`
-      : "VWAP data unavailable",
-    available: input.vwap !== null,
-  });
+  // ── 5. VWAP side (REAL vsVwap; "NA" = no volume → unavailable) ──
+  const vsVwap = input.vsVwap;
+  if (vsVwap === "ABOVE" || vsVwap === "BELOW") {
+    checks.push({
+      name: "VWAP",
+      pass: (wantBullish && vsVwap === "ABOVE") || (!wantBullish && vsVwap === "BELOW"),
+      detail: `price ${vsVwap === "ABOVE" ? "above" : "below"} VWAP`,
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "VWAP",
+      pass: false,
+      detail: vsVwap === "NA"
+        ? "no VWAP (candles carry no volume)"
+        : "VWAP data unavailable",
+      available: false,
+    });
+  }
+
+  // ── 6. ADX / DI (REAL: trend strength + directional DI from the 15m read) ──
+  const ax = input.adxRead ?? null;
+  if (ax && Number.isFinite(ax.adx) && Number.isFinite(ax.pdi) && Number.isFinite(ax.mdi)) {
+    const diAgrees = wantBullish ? ax.pdi > ax.mdi : ax.mdi > ax.pdi;
+    const weak = ax.adx < 20;
+    checks.push({
+      name: "ADX",
+      pass: !weak && diAgrees,
+      detail: weak
+        ? `ADX ${ax.adx.toFixed(1)} — weak trend (< 20, chop/ranging)`
+        : `ADX ${ax.adx.toFixed(1)}, +DI ${ax.pdi.toFixed(1)} / −DI ${ax.mdi.toFixed(1)}`,
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "ADX",
+      pass: false,
+      detail: "ADX data unavailable",
+      available: false,
+    });
+  }
+
+  // ── 7. Delta (REAL: the leg's live |delta| vs the gate's minAbsDelta 0.35) ──
+  const gr = input.greeksRead ?? null;
+  const legDelta = gr && gr.delta != null && Number.isFinite(Number(gr.delta)) && Number(gr.delta) !== 0
+    ? Number(gr.delta)
+    : null;
+  if (legDelta != null) {
+    const absDelta = Math.abs(legDelta);
+    checks.push({
+      name: "Delta",
+      pass: absDelta >= GATE_CONFIG.minAbsDelta,
+      detail: absDelta >= GATE_CONFIG.minAbsDelta
+        ? `|delta| ${absDelta.toFixed(2)}`
+        : `|delta| ${absDelta.toFixed(2)} — lottery ticket (< ${GATE_CONFIG.minAbsDelta})`,
+      available: true,
+    });
+  } else {
+    checks.push({
+      name: "Delta",
+      pass: false,
+      detail: "delta unavailable (provider did not publish greeks)",
+      available: false,
+    });
+  }
 
   return checks;
+}
+
+/** The trade gate behind the card's BUY/WAIT verdict — the playbook rule:
+ *  a real trigger fires AND (real trend agrees OR real VWAP side agrees).
+ *  Unavailable checks never count as passes; with no trigger or no
+ *  trend/VWAP agreement the gate stays closed (WAIT), never fabricated open.
+ */
+export function confirmTradeGate(checks: ConfirmationCheck[]): {
+  tradeable: boolean;
+  rule: string;
+} {
+  const get = (name: string) => checks.find((c) => c.name === name);
+  const trigger = get("Trigger");
+  const trend = get("Trend");
+  const vwap = get("VWAP");
+
+  const triggerPass = !!trigger?.available && trigger.pass;
+  const trendPass = !!trend?.available && trend.pass;
+  const vwapPass = !!vwap?.available && vwap.pass;
+  const contextOk = trendPass || vwapPass;
+
+  return {
+    tradeable: triggerPass && contextOk,
+    rule: triggerPass
+      ? contextOk
+        ? "trigger + context aligned"
+        : "trigger fired but no trend/VWAP agreement"
+      : trigger?.available
+        ? "no trigger on closed candles"
+        : "trigger unavailable",
+  };
 }
 
 /** Count how many checks pass — only counts checks with available data. */

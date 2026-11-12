@@ -453,14 +453,14 @@ export function runQuantBacktest(input: QuantBacktestInput): QuantBacktestResult
         rejected.push({ idx: i, ts: c.timestamp, stage: "chain_unavailable", reason: "no recorded option bar for any contract at this step" });
         continue;
       }
-      contract = selectContract({ symbol, direction: winner.direction, chain, features });
+      contract = selectContract({ symbol, direction: winner.direction, chain, features, nowMs: Date.parse(c.timestamp) });
     } else if (instrument === "CHAIN") {
       const chain = input.chainProvider?.(i) ?? null;
       if (!chain) {
         rejected.push({ idx: i, ts: c.timestamp, stage: "chain_unavailable", reason: "chainProvider returned no chain at this step" });
         continue;
       }
-      contract = selectContract({ symbol, direction: winner.direction, chain, features });
+      contract = selectContract({ symbol, direction: winner.direction, chain, features, nowMs: Date.parse(c.timestamp) });
     } else {
       contract = underlyingSimContract(symbol, c, winner.direction);
     }

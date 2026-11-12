@@ -69,20 +69,11 @@ export function getGreeksAssumptions(): GreeksAssumptions {
   };
 }
 
-// Standard normal CDF (Abramowitz-Stegun approximation)
-function normCdf(x: number): number {
-  const a1 = 0.254829592;
-  const a2 = -0.284496791;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  const absX = Math.abs(x) / Math.SQRT2;
-  const t = 1.0 / (1.0 + p * absX);
-  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
-  return 0.5 * (1.0 + sign * y);
-}
+// Standard normal CDF — the ONE Abramowitz-Stegun implementation in this
+// file lives at the bottom of the file (exported normalCDF); bsPrice and
+// calculateGreeks both share it.
+
+const normCdf = normalCDF;
 
 function normPdf(x: number): number {
   return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
@@ -111,8 +102,8 @@ export function bsPrice(
   const d2 = d1 - iv * sqrtT;
   const disc = Math.exp(-r * T);
   const price = isCall
-    ? spot * normCdf(d1) - strike * disc * normCdf(d2)
-    : strike * disc * normCdf(-d2) - spot * normCdf(-d1);
+    ? spot * normalCDF(d1) - strike * disc * normalCDF(d2)
+    : strike * disc * normalCDF(-d2) - spot * normalCDF(-d1);
   // Full precision here — callers round for display; rounding here would
   // break put-call parity and the IV round-trip.
   return Math.max(price, 0);
@@ -161,28 +152,20 @@ export function calculateGreeks(
   const r = getRiskFreeRate(); // risk-free rate — see getGreeksAssumptions()
   const sqrtT = Math.sqrt(Math.max(timeToExpiry, 0.0001));
 
-  // Avoid division by zero
-  if (iv <= 0 || sqrtT <= 0) {
+  // Degenerate inputs → zeros, never NaN: spot/strike must be positive and
+  // finite (log(spot/strike) needs both), T and IV must be positive. A
+  // spot = 0 used to produce gamma = 0/0 = NaN and a strike = 0 a delta of 1.
+  if (
+    !(spot > 0) || !(strike > 0) || !(timeToExpiry > 0) || !(iv > 0) ||
+    !Number.isFinite(spot) || !Number.isFinite(strike) || !Number.isFinite(timeToExpiry) || !Number.isFinite(iv)
+  ) {
     return { delta: 0, theta: 0, gamma: 0, vega: 0, d1: 0, d2: 0 };
   }
 
   const d1 = (Math.log(spot / strike) + (r + (iv * iv) / 2) * timeToExpiry) / (iv * sqrtT);
   const d2 = d1 - iv * sqrtT;
 
-  // Cumulative normal distribution approximation
-  const cdf = (x: number): number => {
-    const a1 = 0.254829592;
-    const a2 = -0.284496736;
-    const a3 = 1.421413741;
-    const a4 = -1.453152027;
-    const a5 = 1.061405429;
-    const p = 0.3275911;
-    const sign = x < 0 ? -1 : 1;
-    const absX = Math.abs(x) / Math.SQRT2;
-    const t = 1.0 / (1.0 + p * absX);
-    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
-    return 0.5 * (1.0 + sign * y);
-  };
+  const cdf = normalCDF; // the ONE CDF implementation — shared with bsPrice
 
   // PDF of normal distribution
   const pdf = (x: number): number => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);

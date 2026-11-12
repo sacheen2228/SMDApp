@@ -296,6 +296,10 @@ function scoreStock(
     ? Math.abs(target1 - entry) / Math.abs(entry - stopLoss)
     : 0;
 
+// Explicit R:R gate: minimum 1.5:1 risk-reward for option trades
+const minRR = direction !== "NO_TRADE" && (direction === "BUY_CE" || direction === "BUY_PE") ? 1.5 : 0;
+const rrGated = riskReward >= minRR ? riskReward : 0;
+
   // Instrument — real ATM premium from the chain (never IV-as-premium);
   // 0 means "chain had no premium", reported as-is.
   let recommendedInstrument = "NO_TRADE";
@@ -374,6 +378,29 @@ function scoreStock(
     }
   }
 
+  // Final R:R gate — ensure option trade has R:R >= 1.5
+  const displayRR = rrGated >= 1.5 ? rrGated : 0;
+  if (displayRR === 0 && direction !== "NO_TRADE" && direction !== "LONG" && direction !== "SHORT") {
+    return {
+      symbol,
+      name: quote.name || symbol,
+      sector: quote.sector || "",
+      direction: "NO_TRADE",
+      confidence: 0,
+      score: 0,
+      entry: 0,
+      stopLoss: 0,
+      target1: 0,
+      target2: 0,
+      riskReward: 0,
+      rMultiple: 0,
+      expectedMove: 0,
+      rationale: [`R:R ${riskReward.toFixed(1)} below minimum 1.5 — tighten stop or use a spread`],
+      premiumNote: `R:R ${riskReward.toFixed(1)} below minimum 1.5`,
+      asOf: new Date().toISOString(),
+    } as any;
+  }
+
   return {
     symbol,
     name: quote.name || symbol,
@@ -398,7 +425,7 @@ function scoreStock(
     stopLoss,
     target1,
     target2,
-    riskReward,
+    rrGated,
     spotEntry,
     spotStopLoss,
     spotTarget1,

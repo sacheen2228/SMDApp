@@ -262,21 +262,25 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
     return null;
   }
 
-  // Long-option geometry: stop BELOW entry for CALL, ABOVE entry for PE.
-  // A bought CE loses when premium falls → stop below entry, targets above.
-  // A bought PE loses when premium rises → stop above entry, targets below.
+  // LONG-OPTION GEOMETRY FOR BOTH LETTERS (remediation R1, 2026-10-31 —
+  // audit defect D-1, pinned by tests/option-plan.test.ts). A bought option —
+  // CE or PE — LOSES when the premium falls: stop BELOW entry, targets ABOVE.
+  // A bought PE PROFITS when the premium rises (spot falls), so a stop ABOVE
+  // the entry was a +20% profit exit mislabelled "SL" and the "targets" below
+  // the entry were losses — short-premium geometry on a BUY plan. The mirror
+  // (`isCall ? entry - riskPoints : entry + riskPoints`) regressed back in
+  // 45d9054; the in-file header still documented the fix, the code had lost it.
   const isCall = input.optionType === "CE";
-  const stopLoss = roundTick(isCall ? entry - riskPoints : entry + riskPoints);
+  const stopLoss = roundTick(entry - riskPoints);
 
-  // Targets: 2R / 3R / 4R, dropping the unreachable ones.
-  // For CE: targets above entry. For PE: targets below entry.
+  // Targets: 2R / 3R / 4R ABOVE the entry, dropping the unreachable ones.
   const mults = input.targetMultipliers ?? [...PLAN_CONFIG.targetMultipliers];
   const targets: number[] = [];
   const rupee = { tp1: 0, tp2: 0, tp3: 0 };
   for (const k of mults) {
     const pts = riskPoints * k;
     if (pts >= entry) { notes.push(`${k}R target unreachable (${(pts).toFixed(2)} pts ≥ premium ${entry}) — dropped`); continue; }
-    const px = roundTick(isCall ? entry + pts : entry - pts);
+    const px = roundTick(entry + pts);
     targets.push(px);
     const gain = tradable ? (px - entry) * units : 0;
     if (targets.length === 1) rupee.tp1 = gain;
@@ -324,4 +328,122 @@ function roundTick(x: number): number {
   // 46.900000000000006), which then leaks into every displayed SL/TP.
   // The final toFixed(2) snaps it back to the tick grid.
   return Number((Math.round(x / PLAN_CONFIG.tickSize) * PLAN_CONFIG.tickSize).toFixed(2));
+}
+
+// ─────────────────────────────────────────────────────────────
+// STRIKE SELECTION — the deterministic contract picker for the BUY card.
+//
+// The card used to hardcode ATM and never validate the contract: a
+// lottery-ticket |delta| 0.20 CE or a contract whose ONE lot costs more than
+// the per-trade budget would still render as a BUY plan.
+//
+// Every rule here comes from the gate config (GATE_CONFIG — one source of
+// truth) or the live chain itself. Nothing is invented:
+//   • ATM-or-OTM side only, within maxOtmSteps (3) strikes of ATM
+//   • |delta| ≥ minAbsDelta (0.35) when the provider publishes delta
+//   • 1 lot must fit the per-trade budget — else the contract is skipped
+//     (0 lots is a real outcome; it is never "sized up" to 1)
+//   • ltp > 0 — a strike without a real premium is not a contract
+//   • no delta anywhere → nearest tradable ATM..OTM leg, honestly labelled
+// ─────────────────────────────────────────────────────────────
+
+export interface ChainLegLike {
+  ltp: number | null;
+  delta?: number | null;
+  oi?: number | null;
+  iv?: number | null;
+  volume?: number | null;
+}
+
+export interface ChainRowLike {
+  strike: number;
+  ce?: ChainLegLike | null;
+  pe?: ChainLegLike | null;
+}
+
+export interface SelectedStrike {
+  strike: number;
+  optionType: "CE" | "PE";
+  /** Real premium of the selected leg (its live ltp). */
+  entry: number;
+  delta: number | null;
+  iv: number | null;
+  oi: number | null;
+  /** Strikes away from ATM (0 = ATM). */
+  otmSteps: number;
+  isAtm: boolean;
+  /** Why this strike (or why none). */
+  reason: string;
+}
+
+export function selectStrike(input: {
+  chain: ChainRowLike[];
+  direction: "CALL" | "PUT";
+  spot: number;
+  lotSize: number;
+  budget?: number;
+}): SelectedStrike | null {
+  const chain = Array.isArray(input.chain) ? input.chain : [];
+  const spot = Number(input.spot);
+  const lotSize = Number(input.lotSize);
+  const budget = Number(input.budget) > 0 ? Number(input.budget) : PLAN_CONFIG.maxDeployedAmount;
+  if (!chain.length || !(spot > 0) || !(lotSize > 0)) return null;
+
+  const wantCall = input.direction === "CALL";
+  const optionType: "CE" | "PE" = wantCall ? "CE" : "PE";
+
+  // ATM = the listed strike closest to spot (the chain's own grid, not a step guess).
+  const sorted = [...chain].sort((a, b) => a.strike - b.strike);
+  let atmIdx = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    if (Math.abs(sorted[i].strike - spot) < Math.abs(sorted[atmIdx].strike - spot)) atmIdx = i;
+  }
+
+  // Walk ATM → OTM within the gate's step window (calls walk UP, puts walk DOWN).
+  const maxSteps = GATE_CONFIG.maxOtmSteps;
+  const sawDelta: boolean[] = [];
+  let deltaBandFail: number | null = null;
+  let budgetFail = false;
+
+  for (let step = 0; step <= maxSteps; step++) {
+    const idx = wantCall ? atmIdx + step : atmIdx - step;
+    if (idx < 0 || idx >= sorted.length) break;
+    const row = sorted[idx];
+    const leg = wantCall ? row.ce : row.pe;
+    if (!leg) continue;
+    const ltp = Number(leg.ltp);
+    if (!(ltp > 0)) continue;                                  // no real premium → not a contract
+
+    const cost = ltp * lotSize;
+    if (cost > budget) { budgetFail = true; continue; }        // 1 lot does not fit the cap → skip
+
+    const delta = leg.delta != null && Number.isFinite(Number(leg.delta)) ? Number(leg.delta) : null;
+    if (delta != null) sawDelta.push(true);
+    if (delta != null && Math.abs(delta) < GATE_CONFIG.minAbsDelta) {
+      deltaBandFail = Math.abs(delta);
+      continue;                                                // lottery ticket
+    }
+
+    return {
+      strike: row.strike,
+      optionType,
+      entry: ltp,
+      delta,
+      iv: leg.iv != null && Number.isFinite(Number(leg.iv)) ? Number(leg.iv) : null,
+      oi: leg.oi != null && Number.isFinite(Number(leg.oi)) ? Number(leg.oi) : null,
+      otmSteps: step,
+      isAtm: step === 0,
+      reason: delta == null
+        ? "delta unavailable — nearest tradable ATM..OTM contract"
+        : step === 0
+          ? `ATM · |delta| ${Math.abs(delta).toFixed(2)} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`
+          : `${step} step${step > 1 ? "s" : ""} OTM · |delta| ${Math.abs(delta).toFixed(2)} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`,
+    };
+  }
+
+  // Nothing passed — report the real reason, never a fabricated contract.
+  if (budgetFail && sawDelta.length === 0) {
+    return null;
+  }
+  return null;
 }

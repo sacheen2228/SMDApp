@@ -100,6 +100,7 @@ export async function createQuantPaperTrade(input: CreateQuantPaperTradeInput): 
   const lotSize = input.lotSize ?? 0;
   return db.quantPaperTrade.create({
     data: {
+      id: qid(),
       tradeId: input.tradeId ?? `QPT-${qid()}`,
       mode: input.mode ?? "SHADOW",
       strategy: input.strategy,

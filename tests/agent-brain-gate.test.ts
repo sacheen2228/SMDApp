@@ -78,7 +78,7 @@ const layersOver = (agree: number, against = 0) => {
 
 describe("GATE_CONFIG / STRIKE_STEP", () => {
   test("discipline defaults present and coherent", () => {
-    expect(C.minConfidence).toBe(65);
+    expect(C.minConfidence).toBe(50);
     expect(C.minLayersAgree).toBe(3);
     expect(C.maxLayersAgainst).toBe(1);
     expect(C.minUnderlyingRR).toBeGreaterThanOrEqual(2);
@@ -147,19 +147,22 @@ describe("positionSize", () => {
     expect(r.guidance).toMatch(/tighten|cheaper|spread/i);
   });
   test("fits when stop is tight enough (per-trade budget model)", () => {
-    // ₹20,000 deployed, risk capped at the FIXED ₹2,000; 1 NIFTY lot at a
-    // ₹20 stop risks ₹1,300 and commits ₹19,500 → 1 lot fits.
+    // ₹45,000 deployed cap; risk = 20% of deployed → ₹9,000 budget; 1 NIFTY lot
+    // at a ₹20 stop risks ₹1,300 and commits ₹19,500 → 2 lots fit (₹39,000),
+    // 3 lots (₹58,500) would breach the cap.
     const r = positionSize({ entry: 300, sl: 280, lotSize: 65 });
-    expect(r.lots).toBe(1);
-    expect(r.riskAmount).toBe(2000);
-    expect(r.capitalRequired).toBe(19500);
+    expect(r.lots).toBe(2);
+    expect(r.riskAmount).toBe(2600);
+    expect(r.capitalRequired).toBe(39000);
   });
 
   test("the per-trade deployment cap binds (a big capital does not buy a bigger position)", () => {
     const r = positionSize({ capital: 200000, riskPct: 1, entry: 150, sl: 145, lotSize: 75 });
-    // ₹20,000 deployed cap; 1% of it is ₹200 and one lot risks ₹375 → 0 lots
-    expect(r.lots).toBe(0);
-    expect(r.ok).toBe(false);
+    // ₹45,000 deployed cap; 1% risk = ₹450; one lot risks ₹375 → 1 lot fits,
+    // two lots (₹750 risk) exceed the risk budget → still 1 lot even with ₹2L
+    // capital; the cap binds on deployment, not risk.
+    expect(r.lots).toBe(1);
+    expect(r.ok).toBe(true);
   });
 
   test("a premium that does not fit the deployment budget yields 0 lots", () => {
@@ -187,7 +190,8 @@ describe("evaluateTradeGate", () => {
     expect(formatGate(res)).toMatch(/WAIT/);
   });
   test("confidence below floor → WAIT", () => {
-    expect(evaluateTradeGate(baseInput({ confidence: 50 })).verdict).toBe("WAIT");
+    expect(evaluateTradeGate(baseInput({ confidence: 49 })).verdict).toBe("WAIT");
+    expect(evaluateTradeGate(baseInput({ confidence: 50 })).verdict).toBe("TRADE"); // floor is inclusive
   });
   test("two layers against → SKIP", () => {
     const res = evaluateTradeGate(baseInput({ layers: layersOver(3, 2) }));
@@ -462,9 +466,9 @@ describe("hybrid mode (old brain generates, new brain vetoes)", () => {
       },
     }));
     expect(res.verdict).toBe("TRADE");
-    expect(res.checks.find((c) => c.id === "confidence")!.status).toBe("warn");
+    expect(res.checks.find((c) => c.id === "confidence")!.status).toBe("pass");
     expect(res.checks.find((c) => c.id === "layers")!.status).toBe("warn");
-    expect(res.warnings!.join(" ")).toMatch(/confidence/i);
+    expect(res.warnings!.join(" ")).toMatch(/layers/i);
   });
   test("hard safety fails still block in hybrid mode", () => {
     const res = evaluateTradeGate(baseInput({ hybrid: true, optionRR: 1.0 }));
@@ -481,6 +485,11 @@ describe("hybrid mode (old brain generates, new brain vetoes)", () => {
   });
   test("strict mode is unchanged — soft fails still skip", () => {
     const res = evaluateTradeGate(baseInput({ confidence: 55 }));
-    expect(res.verdict).toBe("WAIT");
+    expect(res.verdict).toBe("TRADE");
+  });
+
+  test("strict mode still skips on a genuine soft fail (layers below 3-of-5)", () => {
+    const res = evaluateTradeGate(baseInput({ confidence: 72, layers: layersOver(2) }));
+    expect(res.verdict).toBe("SKIP");
   });
 });

@@ -103,10 +103,19 @@ function isParseError(description: string | undefined): boolean {
   return PARSE_ERROR_HINTS.some((h) => d.includes(h));
 }
 
-export async function sendTelegramMessage(text: string, chatId?: string): Promise<boolean> {
+export function shouldSuppressSend(opts?: { allowOffHours?: boolean }, date?: Date): boolean {
+  if (opts?.allowOffHours) return false;
+  if (!date) date = new Date();
+  return !isTelegramSendWindow(date);
+}
+
+export async function sendTelegramMessage(text: string, chatId?: string, opts?: { allowOffHours?: boolean }): Promise<boolean> {
   // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
-  // Override for tests with TELEGRAM_ALLOW_OFFHOURS=1.
-  if (!isTelegramSendWindow()) {
+  // The opts.allowOffHours flag is intended for informational (non-trade) modes
+  // such as evening watchlist, preopen re‑rank and end‑of-day evaluation — these
+  // modes run outside the normal 09:10‑15:30 window and would otherwise be
+  // suppressed.  Trade‑alert funnels must NOT use this flag.
+  if (!opts?.allowOffHours && !isTelegramSendWindow()) {
     console.warn("[Telegram] outside 09:10-15:30 IST window — suppressed send");
     return false;
   }

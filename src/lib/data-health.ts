@@ -1,26 +1,16 @@
-// Data Health Monitor - Evaluates data quality and determines trade readiness
-// Provides health scoring, trade blocking, and warning indicators
-
-// ─── Types ───────────────────────────────────────────────────────
-export interface DataHealthReport {
-  score: number; // 0-100
-  status: "HEALTHY" | "DEGRADED" | "CRITICAL" | "OFFLINE";
-  latencyMs: number;
-  freshnessMs: number;
-  completeness: number; // 0-1
-  greeksAvailable: boolean;
-  source: string;
-  issues: string[];
-  timestamp: string;
-}
-
-interface HealthInput {
+export interface HealthInput {
   latencyMs: number;
   lastUpdateMs: number;
   totalStrikes: number;
   strikesWithMissingData: number;
   atmHasGreeks: boolean;
   source: string;
+}
+
+export interface HealthReport {
+  status: 'HEALTHY' | 'DEGRADED' | 'STALE' | 'CRITICAL' | 'OFFLINE';
+  score: number;
+  issues: string[];
 }
 
 // ─── Thresholds ──────────────────────────────────────────────────
@@ -30,9 +20,20 @@ const THRESHOLDS = {
   completeness: { good: 0.95, degraded: 0.8 },
 };
 
+// ─── NOW ───────────────────────────────────────────────────────────
 const NOW = () => Date.now();
 
-// ─── Core Functions ──────────────────────────────────────────────
+// ─── Block Trade Logic ───────────────────────────────────────────────────
+/** Block trade if data health is CRITICAL or OFFLINE, or score below minimum threshold */
+export function shouldBlockTrades(health: DataHealthReport): boolean {
+  const minScore = 50; // minimum confidence floor for trading
+  if (health.status === 'CRITICAL' || health.status === 'OFFLINE') return true;
+  if (health.score < minScore) return true;
+  if (health.status === 'STALE') return true; // stale data = block
+  return false;
+}
+
+// ─── Core Functions ────────────────────────────────────────────────
 
 /**
  * Evaluate data health from raw metrics.
@@ -68,9 +69,10 @@ export function evaluateDataHealth(input: HealthInput): DataHealthReport {
   score += freshnessScore;
 
   // 3. Completeness scoring (max -25 points)
+  // Count only strikes with truly missing critical data (ltp, bid, ask), not greeks
   const completeness =
     input.totalStrikes > 0
-      ? 1 - input.strikesWithMissingData / input.totalStrikes
+      ? 1 - Math.min(input.strikesWithMissingData / input.totalStrikes, 1)
       : 0;
   const completenessScore =
     completeness >= THRESHOLDS.completeness.good
@@ -92,41 +94,19 @@ export function evaluateDataHealth(input: HealthInput): DataHealthReport {
   }
   score += greeksScore;
 
-  // Clamp score
-  score = Math.max(0, Math.min(100, score));
+  // 5. Source reliability (max -10 points, optional)
+  // const sourceScore = input.source === 'NSE' ? 0 : -10;
 
-  // Determine status
-  let status: DataHealthReport["status"];
-  if (score >= 80) status = "HEALTHY";
-  else if (score >= 50) status = "DEGRADED";
-  else if (score > 0) status = "CRITICAL";
-  else status = "OFFLINE";
+  let status: 'HEALTHY' | 'DEGRADED' | 'STALE' | 'CRITICAL' | 'OFFLINE';
+  if (score >= 80) {
+    status = 'HEALTHY';
+  } else if (score >= 50) {
+    status = 'DEGRADED';
+  } else if (score >= 20) {
+    status = 'STALE';
+  } else {
+    status = 'CRITICAL';
+  }
 
-  return {
-    score,
-    status,
-    latencyMs: input.latencyMs,
-    freshnessMs,
-    completeness: Math.round(completeness * 100) / 100,
-    greeksAvailable: input.atmHasGreeks,
-    source: input.source,
-    issues,
-    timestamp: new Date().toISOString(),
-  };
-}
-
-/**
- * Returns true if trades should be completely blocked.
- * Triggers when data is CRITICAL or OFFLINE.
- */
-export function shouldBlockTrades(health: DataHealthReport): boolean {
-  return health.status === "CRITICAL" || health.status === "OFFLINE" || health.score < 30;
-}
-
-/**
- * Returns true if a warning banner should be shown.
- * Triggers when data is DEGRADED or has any issues.
- */
-export function shouldShowWarning(health: DataHealthReport): boolean {
-  return health.status !== "HEALTHY" || health.issues.length > 0;
+  return { status, score, issues };
 }

@@ -63,16 +63,16 @@ describe("the strategy config (the admin sliders)", () => {
 describe("the CAS straddle strategy", () => {
   test("it runs on the real account with the per-trade risk", () => {
     expect(CAS_DEFAULT_CONFIG.initialCapital).toBe(GATE_CONFIG.capital);
-    expect(CAS_DEFAULT_CONFIG.initialCapital).toBe(25_000);
+    expect(CAS_DEFAULT_CONFIG.initialCapital).toBe(50_000);
     expect(CAS_DEFAULT_CONFIG.maxRiskPct).toBe(GATE_CONFIG.riskPctOfTrade);
     expect(CAS_DEFAULT_CONFIG.maxRiskPct).toBe(20);
   });
 });
 
 describe("the paper account", () => {
-  test("it mirrors the real ₹25,000 account", () => {
+  test("it mirrors the real ₹50,000 account", () => {
     expect(DEFAULT_PAPER_CONFIG.startingCapital).toBe(GATE_CONFIG.capital);
-    expect(DEFAULT_PAPER_CONFIG.startingCapital).toBe(25_000);
+    expect(DEFAULT_PAPER_CONFIG.startingCapital).toBe(50_000);
   });
 });
 
@@ -93,6 +93,6 @@ describe("the agent's Risk-Management tool output", () => {
     expect(out).not.toMatch(/2%/);
     expect(out).not.toMatch(/₹1,00,000/);
     expect(out).toMatch(/20%/);
-    expect(out).toMatch(/₹20,000/);
+    expect(out).toMatch(/₹45,000/);
   });
 });

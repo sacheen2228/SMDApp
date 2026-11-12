@@ -7,6 +7,23 @@ afterEach(() => {
   mock.restore();
 });
 
+// The event-bus mock must carry the FULL export surface: mock.module replaces
+// the module for the WHOLE test process, and later test files (paper-pe-side,
+// hermes-paper) import emitTradeClosed etc. — a partial mock makes those
+// imports fail with "Export not found". Real functions, mocked by default.
+const eventBusMockFactory = (bus: Record<string, unknown>) => ({
+  getEventBus: () => bus,
+  emitTradeCreated: async () => "evt-mock",
+  emitTP1Hit: async () => "evt-mock",
+  emitTP2Hit: async () => "evt-mock",
+  emitSLHit: async () => "evt-mock",
+  emitTradeClosed: async () => "evt-mock",
+  emitTrailingSL: async () => "evt-mock",
+  emitThesisInvalidated: async () => "evt-mock",
+  emitTimeExit: async () => "evt-mock",
+  emitExpiryExit: async () => "evt-mock",
+});
+
 describe("TelegramQueue.start() resilience", () => {
   it("creates the timer even when getRecentEvents throws", async () => {
     const mockBus = {
@@ -14,9 +31,7 @@ describe("TelegramQueue.start() resilience", () => {
         throw new Error("bus down");
       }),
     };
-    mock.module("@/lib/hermes/event-bus", () => ({
-      getEventBus: () => mockBus,
-    }));
+    mock.module("@/lib/hermes/event-bus", () => eventBusMockFactory(mockBus));
 
     // Dynamic import to pick up the mocked event-bus
     const { TelegramQueue, getTelegramQueue } = await import("@/lib/hermes/telegram-queue");
@@ -41,9 +56,7 @@ describe("TelegramQueue.processQueue() resilience", () => {
       }),
       markFailed: mock(async () => {}),
     };
-    mock.module("@/lib/hermes/event-bus", () => ({
-      getEventBus: () => mockBus,
-    }));
+    mock.module("@/lib/hermes/event-bus", () => eventBusMockFactory(mockBus));
 
     const { TelegramQueue } = await import("@/lib/hermes/telegram-queue");
     const queue = new TelegramQueue();

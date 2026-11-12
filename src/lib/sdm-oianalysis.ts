@@ -117,9 +117,19 @@ function detectOITraps(
 ): OITrap[] {
   const traps: OITrap[] = [];
 
+  // Materiality: the doc below says "HIGH CE OI", but the old check was just
+  // `oi > 0` — every ITM-side strike qualified, so a full NIFTY chain reported
+  // "99 OI traps" (one per losing-side strike). A trap is only a trap when a
+  // MATERIAL pool is trapped: OI ≥ 25% of the chain's biggest single side.
+  const maxSideOI = Math.max(
+    1,
+    ...optionChain.map((s) => Math.max(s.ce?.oi ?? 0, s.pe?.oi ?? 0)),
+  );
+  const minTrappedOI = maxSideOI * 0.25;
+
   for (const strike of optionChain) {
     // CE trap: high CE OI, spot moved above strike (call holders winning = writers trapped)
-    if (strike.ce && spot > strike.strike && strike.ce.oi > 0) {
+    if (strike.ce && spot > strike.strike && strike.ce.oi >= minTrappedOI) {
       traps.push({
         strike: strike.strike,
         type: 'CE_TRAP',
@@ -129,7 +139,7 @@ function detectOITraps(
     }
 
     // PE trap: high PE OI, spot moved below strike (put holders winning = writers trapped)
-    if (strike.pe && spot < strike.strike && strike.pe.oi > 0) {
+    if (strike.pe && spot < strike.strike && strike.pe.oi >= minTrappedOI) {
       traps.push({
         strike: strike.strike,
         type: 'PE_TRAP',
@@ -153,34 +163,40 @@ function computeSupportResistance(
   spot: number,
 ): SRLines {
   const TOP_N = 5;
+  // Only look near price for walls (mirrors option-chain-reader CHAIN_CFG.windowPct).
+  const WINDOW = 0.05;
 
-  // Resistance candidates: strikes above spot with call OI
+  // Resistance = CE OI walls above spot; Support = PE OI walls below spot.
+  // Ranked by RAW OI concentration — NOT OI/distance. The old OI/distance
+  // ranking (distance clamped at 1 pt) made the strike one tick away win
+  // every time, so the card showed the adjacent strike as "Resistance /
+  // Support" no matter where the real wall sat.
   const resistanceCandidates: { strike: number; oi: number; weight: number }[] =
     [];
-  // Support candidates: strikes below spot with put OI
   const supportCandidates: { strike: number; oi: number; weight: number }[] = [];
 
   for (const strike of optionChain) {
-    if (strike.ce && strike.strike > spot) {
-      const dist = Math.max(1, Math.abs(strike.strike - spot));
-      resistanceCandidates.push({
-        strike: strike.strike,
-        oi: strike.ce.oi,
-        weight: strike.ce.oi / dist,
-      });
+    if (strike.ce && strike.strike > spot && strike.ce.oi > 0) {
+      const dist = Math.abs(strike.strike - spot);
+      if (dist <= spot * WINDOW) {
+        resistanceCandidates.push({ strike: strike.strike, oi: strike.ce.oi, weight: 0 });
+      }
     }
-    if (strike.pe && strike.strike < spot) {
-      const dist = Math.max(1, Math.abs(strike.strike - spot));
-      supportCandidates.push({
-        strike: strike.strike,
-        oi: strike.pe.oi,
-        weight: strike.pe.oi / dist,
-      });
+    if (strike.pe && strike.strike < spot && strike.pe.oi > 0) {
+      const dist = Math.abs(spot - strike.strike);
+      if (dist <= spot * WINDOW) {
+        supportCandidates.push({ strike: strike.strike, oi: strike.pe.oi, weight: 0 });
+      }
     }
   }
 
-  resistanceCandidates.sort((a, b) => b.weight - a.weight);
-  supportCandidates.sort((a, b) => b.weight - a.weight);
+  // Sort by raw OI (the wall), then assign weight = OI share of the side max.
+  resistanceCandidates.sort((a, b) => b.oi - a.oi);
+  supportCandidates.sort((a, b) => b.oi - a.oi);
+  const maxCe = resistanceCandidates[0]?.oi ?? 0;
+  const maxPe = supportCandidates[0]?.oi ?? 0;
+  for (const r of resistanceCandidates) r.weight = maxCe > 0 ? r.oi / maxCe : 0;
+  for (const s of supportCandidates) s.weight = maxPe > 0 ? s.oi / maxPe : 0;
 
   return {
     resistance: resistanceCandidates.slice(0, TOP_N),

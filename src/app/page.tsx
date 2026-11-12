@@ -50,6 +50,8 @@ import { evaluateStrikeSignal } from '@/lib/signal-engine';
 import { runMLAnalysis } from '@/lib/ml-engine';
 import { analyzeOptionChain } from '@/lib/sdm-oianalysis';
 import { evaluateConfirmations } from '@/lib/signal-persistence';
+import { selectStrike, buildOptionPlan, type ChainRowLike, type SelectedStrike, type OptionPlan } from '@/lib/option-plan';
+import type { GreeksReadInput } from '@/lib/signal-persistence';
 
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
@@ -137,6 +139,25 @@ type OptionChainResponse = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
+// Expiry strings from the exchange are "17-Nov-2026". Days-to-expiry is
+// computed with LOCAL date parts — toISOString() is UTC and reports a local
+// midnight date a day EARLY on an IST server.
+const EXPIRY_MONTHS: Record<string, number> = {
+  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+  Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+};
+function daysToExpiryLocal(dateStr?: string | null): number | null {
+  if (!dateStr) return null;
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(dateStr).trim());
+  if (!m || !(m[2] in EXPIRY_MONTHS)) return null;
+  const d = new Date(Number(m[3]), EXPIRY_MONTHS[m[2]], Number(m[1]));
+  if (isNaN(d.getTime())) return null;
+  d.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((d.getTime() - today.getTime()) / 86400000);
+}
+
 function formatIndian(num: number | undefined | null): string {
   if (num === undefined || num === null || isNaN(num)) return '0';
   if (num >= 10000000) return (num / 10000000).toFixed(2) + ' Cr';
@@ -481,71 +502,108 @@ export default function TradingDashboard() {
     };
   }, [data]);
 
-  // Confirmation checks for SimpleMode card — tells the user WHEN to take a trade
-  const confirmations = useMemo(() => {
+  // Tech reads — REAL 15m trend (SuperTrend/EMA/structure), 5m trigger
+  // evidence (closed bars), vsVwap and RVOL from the tech-cache snapshots.
+  // The server refreshes a snapshot only when it is stale (TTL = one bar
+  // interval), so these reads change when a candle CLOSES — not on every
+  // 15s OI tick.
+  const { data: techData } = useQuery<any>({
+    queryKey: ['tech-reads', symbol],
+    queryFn: async () => {
+      const res = await fetch(`/api/tech-cache?symbol=${encodeURIComponent(symbol)}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: autoRefresh ? 30000 : false,
+    staleTime: 15000,
+  });
+
+  // ── Strike selection + plan re-pricing (REAL gate rules, no invented contract) ──
+  // selectStrike picks the tradable contract for the signal direction from the
+  // LIVE chain: ATM..3-OTM only, |delta| ≥ 0.35 when published, 1 lot must fit
+  // the per-trade budget, ltp > 0. When it picks a (possibly different)
+  // contract, buildOptionPlan re-prices entry/SL/targets for THAT premium.
+  // Lot size comes from symbol-config (fail-closed: unknown symbol → 0 → no
+  // selection, never NIFTY's lot for a stock).
+  const strikeSel = useMemo(() => {
     const raw = data as any;
-    const summaryData = raw?.summary || {};
-    const spot = summaryData.spotPrice || 0;
+    const chainRows: ChainRowLike[] = raw?.data || [];
+    const spot = raw?.summary?.spotPrice || raw?.analysis?.spotPrice || 0;
     const rec = raw?.analysis?.recommendation;
     const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : rec?.direction === "CALL" ? "CALL" : rec?.direction === "PUT" ? "PUT" : null;
-    if (!dir || !spot) return [];
+    const lotSize = getLotSize(symbol);
+    const sel = dir && spot > 0 && lotSize > 0 && chainRows.length
+      ? selectStrike({ chain: chainRows, direction: dir, spot, lotSize })
+      : null;
 
-    // Use oiSummary-computed fresh writing (same source as oiSummary panel)
-    const oiFreshWriting = oiSummary?.freshWriting || [];
-    const ceWriting = oiFreshWriting.filter((f: any) => f.side === "CE").length;
-    const peWriting = oiFreshWriting.filter((f: any) => f.side === "PE").length;
+    const plan: OptionPlan | null = sel
+      ? buildOptionPlan({ symbol, optionType: sel.optionType, entryPremium: sel.entry, lotSize })
+      : null;
 
-    // Trend: derive from spot vs max pain, and CE/PE OI imbalance
-    const maxPain = oiSummary?.maxPain ?? 0;
+    // Greeks of the traded leg (selected contract, else the SDM rec's leg).
+    const greeks: GreeksReadInput | null = (() => {
+      const targetStrike = sel?.strike ?? rec?.strike;
+      const optType = sel?.optionType ?? rec?.optionType;
+      if (targetStrike == null || !optType) return null;
+      const row = chainRows.find((r: any) => r.strike === targetStrike);
+      if (!row) return null;
+      const leg = optType === "CE" ? row.ce : row.pe;
+      if (!leg) return null;
+      const premium = Number(leg.ltp) || 0;
+      if (!(premium > 0)) return null;
+      const num = (v: any) => (v != null && Number.isFinite(Number(v)) && Number(v) !== 0 ? Number(v) : null);
+      return {
+        delta: num(leg.delta), theta: num(leg.theta), gamma: num(leg.gamma),
+        vega: num(leg.vega), iv: num(leg.iv), premium,
+      };
+    })();
+
+    return { sel, plan, greeks, lotSize };
+  }, [data, symbol]);
+
+  // Confirmation checks for SimpleMode card — tells the user WHEN to take a
+  // trade. Every check is scored from REAL reads only: the 15m trend read,
+  // the 5m closed-bar trigger, real RVOL, real PCR, real vsVwap, real ADX/DI,
+  // and the traded leg's real |delta|. Missing data marks a check UNAVAILABLE
+  // (not counted, never a fabricated pass).
+  const confirmations = useMemo(() => {
+    const raw = data as any;
+    const rec = raw?.analysis?.recommendation;
+    const dir = rec?.optionType === "CE" ? "CALL" : rec?.optionType === "PE" ? "PUT" : rec?.direction === "CALL" ? "CALL" : rec?.direction === "PUT" ? "PUT" : null;
+    if (!dir) return [];
+
+    const summaryData = raw?.summary || {};
     const ceOI = summaryData.totalCallOI || 0;
     const peOI = summaryData.totalPutOI || 0;
     const pcr = ceOI > 0 ? peOI / ceOI : summaryData.pcr ?? null;
 
-    let trendDir: "bullish" | "bearish" | "neutral" | null = null;
-    if (maxPain > 0 && spot > 0) {
-      const distPct = (spot - maxPain) / maxPain;
-      if (distPct > 0.005) trendDir = "bullish";  // spot above max pain = bullish
-      else if (distPct < -0.005) trendDir = "bearish";  // spot below max pain = bearish
-      else trendDir = "neutral";
-    } else if (ceOI > 0 && peOI > 0) {
-      // Fall back to OI imbalance
-      if (peOI > ceOI * 1.1) trendDir = "bearish";
-      else if (ceOI > peOI * 1.1) trendDir = "bullish";
-      else trendDir = "neutral";
-    }
+    const snap15 = techData?.snapshots?.["15m"];
+    const snap5 = techData?.snapshots?.["5m"];
+    const trendRead = snap15?.fresh && snap15?.trend ? snap15.trend : null;
+    const adxRead = trendRead && trendRead.adx != null && trendRead.pdi != null && trendRead.mdi != null
+      ? { adx: trendRead.adx, pdi: trendRead.pdi, mdi: trendRead.mdi }
+      : null;
 
-    // Trigger: fresh writing in the direction of the signal
-    const trigger =
-      dir === "CALL" && peWriting > 0 ? "fresh" :
-      dir === "PUT" && ceWriting > 0 ? "fresh" :
-      ceWriting > 0 || peWriting > 0 ? "against" :
-      "none";
-
-    // Volume: compute from option chain strikes (sum of CE + PE volume)
-    const chain = raw?.data || [];
-    const totalVolume = chain.reduce((sum: number, s: any) => {
-      return sum + Number(s.ce?.volume || 0) + Number(s.pe?.volume || 0);
-    }, 0);
-    // RVOL proxy from total chain volume: > 1L = high volume (>1.2), > 500k = very high
-    const rvol = totalVolume > 0 ? Math.min(totalVolume / 50000, 5.0) : null; // scale: 1L volume = 1.0 RVOL
-
-    // PCR from summary or computed
-    const pcrVal = pcr > 0 ? pcr : summaryData.pcr ?? raw?.analysis?.pcrOI ?? null;
-
-    // VWAP side: derive from spot vs max pain as proxy (spot above max pain = above value area)
-    const vwapSide = maxPain > 0
-      ? spot > maxPain ? "above" : spot < maxPain ? "below" : null
+    const triggerLayer =
+      snap5?.fresh ? snap5.triggers?.[dir === "CALL" ? "call" : "put"] : null;
+    const triggerRead = triggerLayer
+      ? {
+          hits: triggerLayer.state === "agree" ? [triggerLayer.evidence] : [],
+          opposing: triggerLayer.state === "against" ? [triggerLayer.evidence] : [],
+        }
       : null;
 
     return evaluateConfirmations({
       direction: dir,
-      trend: trendDir,
-      trigger,
-      rvol,
-      pcr: pcrVal,
-      vwap: vwapSide,
+      trendRead,
+      triggerRead,
+      adxRead,
+      greeksRead: strikeSel.greeks,
+      rvol: techData?.rvol ?? null,
+      pcr: pcr && pcr > 0 ? pcr : null,
+      vsVwap: snap5?.fresh && snap5?.vsVwap ? snap5.vsVwap : null,
     });
-  }, [data, oiSummary]);
+  }, [data, techData, strikeSel]);
 
   // Build the SDM recommendation from the LIVE analysis in the option-chain
   // response. The API returns analysis.recommendation + analysis.pcr / vix /
@@ -561,9 +619,19 @@ export default function TradingDashboard() {
     const a = (data as any)?.analysis;
     const rec = a?.recommendation;
     if (!rec) return null;
-    const entry = rec.entryPrice || 0;
-    const sl = rec.stopLoss || 0;
-    const tp1 = rec.tp1 || 0;
+
+    // Levels come from the SELECTED contract when strike selection ran: the
+    // selector's premium re-priced through the canonical plan builder (rupee
+    // risk + 2R/3R/4R). Without a selection (no lot size / no chain) the SDM
+    // rec's own real levels are kept as-is.
+    const plan = strikeSel.plan;
+    const sel = strikeSel.sel;
+    const entry = plan ? plan.entry : (rec.entryPrice || 0);
+    const sl = plan ? plan.stopLoss : (rec.stopLoss || 0);
+    const tp1 = plan ? (plan.targets[0] || 0) : (rec.tp1 || 0);
+    const tp2 = plan ? (plan.targets[1] || 0) : (rec.tp2 || 0);
+    const tp3 = plan ? (plan.targets[2] || 0) : (rec.tp3 || 0);
+    const strike = sel ? sel.strike : rec.strike;
     const rr = entry && sl && entry !== sl ? Math.abs((tp1 - entry) / (entry - sl)) : 0;
     const score = rec.sdmScore ?? 0;
     const raw: SignalRec = {
@@ -572,9 +640,9 @@ export default function TradingDashboard() {
       entry,
       sl,
       tp1,
-      tp2: rec.tp2 || 0,
-      tp3: rec.tp3 || 0,
-      strike: rec.strike,
+      tp2,
+      tp3,
+      strike,
       tradeGrade:
         score >= 75 ? "A+" : score >= 65 ? "A" : score >= 55 ? "B+" : score >= 45 ? "B" : "C",
       reason: Array.isArray(rec.reasons) ? rec.reasons.join(" · ") : (rec.reasons || ""),
@@ -582,11 +650,17 @@ export default function TradingDashboard() {
       confirmations,
     };
     const { rec: confirmedRec, showDirection } = updateSignal(raw, Date.now(), confirmations);
+
+    // Expiry — REAL days-to-expiry from the contract the response SERVED.
+    // (Never toISOString: a UTC shift reports a local midnight date a day early.)
+    const servedExpiry = (data as any)?.selectedExpiry || (data as any)?.expiry || null;
+    const dte = daysToExpiryLocal(servedExpiry);
+
     return {
       direction: showDirection ? confirmedRec.direction : "WAIT",
-      optionType: rec.optionType ?? undefined,
+      optionType: sel?.optionType ?? rec.optionType ?? undefined,
       strike: confirmedRec.strike,
-      strikeType: "ATM" as any,
+      strikeType: (sel?.isAtm ? "ATM" : `${sel?.otmSteps ?? 0} OTM`) as any,
       entry: confirmedRec.entry,
       tp1: confirmedRec.tp1,
       tp2: confirmedRec.tp2,
@@ -594,8 +668,8 @@ export default function TradingDashboard() {
       sl: confirmedRec.sl,
       confidence: confirmedRec.confidence,
       riskReward: confirmedRec.riskReward,
-      isExpiryDay: false,
-      daysToExpiry: a?.expiry?.daysToExpiry ?? 0,
+      isExpiryDay: dte === 0,
+      daysToExpiry: dte ?? a?.expiry?.daysToExpiry ?? 0,
       currentWindow: "DAY" as any,
       windowTimeRemaining: "",
       tradesTakenToday: 0,
@@ -620,12 +694,14 @@ export default function TradingDashboard() {
       probabilities: {} as any,
       tradeGrade: confirmedRec.tradeGrade,
       dataHealth: {} as any,
-      positionSizing: {} as any,
+      positionSizing: plan
+        ? { lots: plan.lots, deployed: plan.deployed, riskAmount: plan.riskAmount, lotCost: plan.lotCost, tradable: plan.tradable, notes: plan.notes }
+        : ({} as any),
       marketRegime: {} as any,
       holdingTimeEstimate: "",
       expectedMove: 0,
     } as SDMRecommendation;
-  }, [data]);
+  }, [data, confirmations, strikeSel]);
 
   // Update store
   useEffect(() => {
@@ -1128,6 +1204,24 @@ export default function TradingDashboard() {
               onExpiryChange={setSelectedExpiry}
               oiSummary={oiSummary}
               confirmations={confirmations}
+              atrInfo={{
+                tf15: (techData as any)?.snapshots?.["15m"]?.atr ?? null,
+                tf5: (techData as any)?.snapshots?.["5m"]?.atr ?? null,
+                close: (techData as any)?.snapshots?.["15m"]?.close ?? null,
+              }}
+              strikeInfo={strikeSel.sel ? {
+                strike: strikeSel.sel.strike,
+                otmSteps: strikeSel.sel.otmSteps,
+                isAtm: strikeSel.sel.isAtm,
+                reason: strikeSel.sel.reason,
+              } : null}
+              greeks={strikeSel.greeks}
+              barStamp={{
+                asOf5m: (techData as any)?.snapshots?.["5m"]?.asOf ?? null,
+                asOf15m: (techData as any)?.snapshots?.["15m"]?.asOf ?? null,
+                fresh5m: !!(techData as any)?.snapshots?.["5m"]?.fresh,
+              }}
+              marketClosed={getCurrentSession('index').session === 'closed'}
             />
           </div>
         ) : viewMode === 'scanner' ? (

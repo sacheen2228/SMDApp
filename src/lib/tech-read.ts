@@ -81,6 +81,79 @@ export function atrSeries(c: Candle[], period = 10): (number | undefined)[] {
   return out;
 }
 
+/** ADX (Average Directional Index, default period 14).
+ *  Returns adx line (0-100) and +di/-di lines as (number | undefined)[] arrays.
+ *  Higher ADX = stronger trend; lower ADX = chop / ranging market.
+ */
+export function adxSeries(c: Candle[], period = 14): { adx: (number | undefined)[]; pdi: (number | undefined)[]; mdi: (number | undefined)[] } {
+  const n = c.length;
+  if (n <= period) return { adx: new Array(n).fill(undefined), pdi: new Array(n).fill(undefined), mdi: new Array(n).fill(undefined) };
+
+  // True Range components (reuse logic from atrSeries)
+  const tr: number[] = new Array(n).fill(undefined);
+  const plusDM: number[] = new Array(n).fill(undefined);
+  const minusDM: number[] = new Array(n).fill(undefined);
+
+  for (let i = 1; i < n; i++) {
+    const trVal = Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c));
+    tr[i] = trVal;
+
+    const plus = c[i].h - c[i - 1].h;
+    const minus = c[i - 1].l - c[i].l;
+
+    if (plus > 0) plusDM[i] = plus; else plusDM[i] = 0;
+    if (minus > 0) minusDM[i] = minus; else minusDM[i] = 0;
+    // if both +DM and -DM are positive, take the larger one (this is how Wilder's typically handles it,
+    // but the standard is: if +DM > -DM use +DM, if -DM > +DM use -DM, if equal both are 0)
+    // We'll keep them separate and let the smoothing handle it.
+  }
+
+  // Wilder's smoothing: EMA-like with (period-1) multiplier
+  const smooth = (values: number[], initIdx: number): number => {
+    let sum = 0;
+    for (let i = 1; i <= period; i++) sum += values[i];
+    let val = sum / period;
+    for (let i = period + 1; i < n; i++) {
+      val = (val * (period - 1) + values[i]) / period;
+    }
+    return val;
+  };
+
+  const trAvg = smooth(tr, 1);
+  const plusAvg = smooth(plusDM, 1);
+  const minusAvg = smooth(minusDM, 1);
+
+  const dx: number[] = new Array(n).fill(undefined);
+  const pdi: number[] = new Array(n).fill(undefined);
+  const mdi: number[] = new Array(n).fill(undefined);
+
+  for (let i = period; i < n; i++) {
+    const sumDI = plusAvg[i] + minusAvg[i];
+    if (sumDI > 0) {
+      dx[i] = Math.abs(plusAvg[i] - minusAvg[i]) / sumDI * 100;
+      pdi[i] = plusAvg[i] / sumDI * 100;
+      mdi[i] = minusAvg[i] / sumDI * 100;
+    }
+  }
+
+  // ADX is smoothed DX
+  const adx: (number | undefined)[] = new Array(n).fill(undefined);
+  // Use the same Wilder smoothing on DX
+  let dxSum = 0;
+  for (let i = period; i < period + period; i++) if (dx[i] != null) dxSum += dx[i];
+  let adxVal = dxSum / period;
+  if (adxVal != null && !isNaN(adxVal)) adx[period + period - 1] = adxVal;
+
+  for (let i = period + period; i < n; i++) {
+    if (dx[i] != null) {
+      adxVal = (adxVal * (period - 1) + dx[i]) / period;
+      adx[i] = adxVal;
+    }
+  }
+
+  return { adx, pdi, mdi };
+}
+
 export interface ST { line: (number | undefined)[]; dir: (1 | -1 | 0)[]; lastFlip?: number }
 
 /** SuperTrend (default 10, 3). dir 1 = uptrend (line below price), -1 = downtrend. */
@@ -301,6 +374,7 @@ export function fairValueGaps(c: Candle[], maxBars = 30): Fvg[] {
 // ─────────────────────────────────────────────────────────────
 export interface TfRead {
   tf: string; bars: number; close: number; atr: number;
+  adx: number | undefined; pdi: number | undefined; mdi: number | undefined;
   st: { dir: 1 | -1 | 0; line?: number; barsSinceFlip?: number };
   ema: EmaState; vwap?: number; vsVwap?: "ABOVE" | "BELOW" | "NA";
   structure: Structure; pools: Pool[]; sweeps: Sweep[]; fvg: Fvg[];
@@ -314,6 +388,7 @@ export function analyzeTf(tf: string, candlesIn: Candle[], symbol: string, p: Te
   const c = closedOnly(candlesIn, nowMs);
   if (c.length < Math.max(p.emaSlow, p.stPeriod) + 10) return null;
   const a = atrSeries(c, 14); const atrNow = a[a.length - 1];
+  const adxResult = adxSeries(c, 14); const adxNow = adxResult.adx[a.length - 1]; const pdiNow = adxResult.pdi[a.length - 1]; const mdiNow = adxResult.mdi[a.length - 1];
   if (!atrNow) return null;
   const st = superTrend(c, p.stPeriod, p.stMult);
   const n = c.length - 1;
@@ -323,6 +398,11 @@ export function analyzeTf(tf: string, candlesIn: Candle[], symbol: string, p: Te
   const warnings: string[] = [];
   if (vw == null) warnings.push("no VWAP (index spot candles have no volume — use futures candles for VWAP)");
   if (em.chop) warnings.push(`EMA ${p.emaFast}/${p.emaSlow} chop: ${em.crossesLast30} crosses in 30 bars / spread ${em.spreadAtr?.toFixed(2)} ATR — crossovers unreliable here`);
+  if (adxNow != null) {
+    if (adxNow < 20) warnings.push(`ADX ${adxNow.toFixed(1)} — very weak trend (chop/ranging); do not rely on trend-following indicators alone`);
+    if (adxNow > 25 && adxNow < 40) warnings.push(`ADX ${adxNow.toFixed(1)} — strong trend developing; good for trend-following setups`);
+    if (adxNow >= 40) warnings.push(`ADX ${adxNow.toFixed(1)} — very strong trend; indicator signals are more reliable`);
+  }
   const flat = st.dir.slice(-12).some((d, i, arr) => i > 0 && d !== arr[i - 1]);
   if (flat) warnings.push("SuperTrend flipped within the last 12 bars — trend-following signals are whipsawing");
   return {
@@ -408,6 +488,11 @@ export function suggestLevels(trend: TfRead, entry: TfRead, dir: "call" | "put")
 // ─────────────────────────────────────────────────────────────
 export type SignalName = "ema_cross" | "supertrend_flip" | "sweep_reclaim";
 
+export function classicPivots(high: number, low: number, close: number) {
+  const P = (high + low + close) / 3;
+  return { P, R1: 2 * P - low, S1: 2 * P - high };
+}
+
 export function signalSeries(c: Candle[], name: SignalName, p: TechParams = DEFAULT_PARAMS): (1 | -1 | 0)[] {
   const n = c.length, sig: (1 | -1 | 0)[] = new Array(n).fill(0);
   if (name === "ema_cross") {
@@ -488,7 +573,7 @@ const f1 = (x?: number) => (x == null ? "—" : x.toFixed(1));
 
 export function formatTf(r: TfRead): string {
   const L: string[] = [];
-  L.push(`[${r.tf}] close ${f1(r.close)} | ATR14 ${f1(r.atr)} | bars ${r.bars}`);
+  L.push(`[${r.tf}] close ${f1(r.close)} | ATR14 ${f1(r.atr)} | ADX ${f1(r.adx)} | bars ${r.bars}`);
   L.push(`  SuperTrend: ${r.st.dir === 1 ? "UP" : r.st.dir === -1 ? "DOWN" : "n/a"} line ${f1(r.st.line)}${r.st.barsSinceFlip != null ? ` (flipped ${r.st.barsSinceFlip} bars ago)` : ""}`);
   L.push(`  EMA fast/slow: ${f1(r.ema.fast)}/${f1(r.ema.slow)} → ${r.ema.rel}${r.ema.lastCross ? `, last cross ${r.ema.lastCross} ${r.ema.barsSinceCross} bars ago` : ""} | slope ${r.ema.slowSlope} | crosses(30) ${r.ema.crossesLast30}${r.ema.chop ? " ⚠ CHOP" : ""}`);
   L.push(`  VWAP: ${f1(r.vwap)} (${r.vsVwap})`);
