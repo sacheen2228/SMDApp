@@ -22,6 +22,15 @@ async function importRouteWithEnv(env: Record<string, string | undefined>) {
   return import("@/app/api/telegram/route");
 }
 
+async function importWithEnv(env: Record<string, string | undefined>) {
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  delete require.cache[require.resolve("@/app/api/telegram/route")]
+  return import("@/app/api/telegram/route");
+}
+
 describe("telegram route security", () => {
   it("verify type does not require API key", async () => {
     delete process.env.TELEGRAM_API_SECRET;
