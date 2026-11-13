@@ -111,6 +111,8 @@ interface SimpleModeProps {
   barStamp?: { asOf5m?: number | null; asOf15m?: number | null; fresh5m?: boolean };
   /** True when the market session is closed — label the verdict, never hide it. */
   marketClosed?: boolean;
+  /** Quant toolkit block (forward/EM/VRP/skew/scorecard) from /api/option-chain analysis. */
+  quant?: import("@/lib/quant-toolkit").QuantBlock | null;
 }
 
 function fmt(n: number | undefined | null): string {
@@ -225,6 +227,7 @@ export const SimpleMode = memo(function SimpleMode({
   greeks,
   barStamp,
   marketClosed,
+  quant,
 }: SimpleModeProps) {
   const rec = recommendation;
   const confirmations = confirmationsProp || rec?.confirmations || [];
@@ -687,21 +690,33 @@ export const SimpleMode = memo(function SimpleMode({
           </div>
         </div>
 
-        {/* 3. Key Levels */}
+        {/* 3. Key Levels — REAL structures only: OI walls + Max Pain + session VWAP.
+            The old spot±1.2% "Camarilla" grid invented levels the market never priced. */}
         <div className="rounded-xl border bg-card p-3">
           <div className="flex items-center gap-1.5 mb-2">
             <BarChart3 className="w-4 h-4 text-blue-500" />
             <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Key Levels</span>
           </div>
           <div className="space-y-0.5 text-xs tabular-nums">
-            {(["r3", "r2", "r1", "pivot", "s1", "s2", "s3"] as const).map((level) => (
-              <div key={level} className={`flex justify-between ${level === "pivot" ? "font-bold text-primary border-t border-border pt-0.5" : ""}`}>
-                <span className={level.startsWith("r") ? "text-emerald-500 font-medium" : level.startsWith("s") ? "text-red-500 font-medium" : "text-muted-foreground"}>
-                  {level.toUpperCase()}
-                </span>
-                <span className="font-semibold">{fmt(pivots[level])}</span>
-              </div>
-            ))}
+            {(() => {
+              const rows: Array<{ label: string; value: number | null; tone: string }> = [
+                { label: "R — CE WALL", value: rec?.gammaWallResistance || quant?.walls?.resistanceK || null, tone: "text-emerald-500 font-medium" },
+                { label: "PIVOT (SPOT)", value: spotPrice || null, tone: "font-bold text-primary border-t border-border pt-0.5" },
+                { label: "S — PE WALL", value: rec?.gammaWallSupport || quant?.walls?.supportK || null, tone: "text-red-500 font-medium" },
+                { label: "MAX PAIN", value: rec?.marketContext?.maxPain || null, tone: "text-muted-foreground" },
+                { label: "SESSION VWAP", value: quant?.vwapZ?.vwap ?? null, tone: "text-muted-foreground" },
+              ];
+              const visible = rows.filter((r) => r.value != null && r.value > 0);
+              if (!visible.length) {
+                return <p className="text-muted-foreground text-[10px]">No real levels available (no walls / no chain)</p>;
+              }
+              return visible.map((r) => (
+                <div key={r.label} className={`flex justify-between ${r.tone}`}>
+                  <span className="text-muted-foreground">{r.label}</span>
+                  <span className="font-semibold">{fmt(r.value)}</span>
+                </div>
+              ));
+            })()}
           </div>
         </div>
 
@@ -776,6 +791,84 @@ export const SimpleMode = memo(function SimpleMode({
             </div>
           </div>
         </div>
+
+        {/* 5b. Quant Toolkit — REAL math on real chain + candles. Missing data
+            shows "unavailable"; every baseline is labeled as a baseline. */}
+        {quant && (
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Activity className="w-4 h-4 text-violet-500" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Quant Toolkit</span>
+              {quant.scorecard && (
+                <span className={`ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                  quant.scorecard.verdict === "SKIP" ? "bg-muted text-muted-foreground" : "bg-emerald-500/15 text-emerald-500"
+                }`}>
+                  {quant.scorecard.verdict.replace("_", " ")} · {quant.scorecard.total}/{quant.scorecard.maxTotal} · {quant.scorecard.confidence}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+              <div className="flex justify-between"><span className="text-muted-foreground">Implied Fwd</span><span className="font-semibold tabular-nums">{quant.forward ? fmt(quant.forward.f) : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Basis vs spot</span><span className="font-semibold tabular-nums">{quant.forward ? `${quant.forward.basisPct >= 0 ? "+" : ""}${quant.forward.basisPct.toFixed(2)}%` : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">EM (25m)</span><span className="font-semibold tabular-nums">{quant.expectedMove ? `±${quant.expectedMove.emPct.toFixed(2)}%` : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">ATM IV</span><span className="font-semibold tabular-nums">{quant.atmIv ? `${quant.atmIv.toFixed(1)}%` : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">RV (5m)</span><span className="font-semibold tabular-nums">{quant.rvPct != null ? `${quant.rvPct.toFixed(1)}%` : "—"}</span></div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">VRP</span>
+                <span className={`font-semibold ${quant.vrp?.verdict === "expensive" ? "text-red-500" : quant.vrp?.verdict === "cheap" ? "text-emerald-500" : ""}`}>
+                  {quant.vrp ? quant.vrp.verdict : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Skew (PC)</span><span className="font-semibold tabular-nums">{quant.skew ? `${quant.skew.skewIv >= 0 ? "+" : ""}${quant.skew.skewIv.toFixed(1)}` : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">VWAP z</span><span className="font-semibold tabular-nums">{quant.vwapZ ? quant.vwapZ.z.toFixed(2) : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">BB %B</span><span className="font-semibold tabular-nums">{quant.bb ? quant.bb.percentB.toFixed(2) : "—"}</span></div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">BB regime</span>
+                <span className="font-semibold">{quant.bb ? `${quant.bb.regime === "trending" ? "TREND" : "REVERT"}${quant.bb.squeeze ? " · squeeze" : ""}` : "—"}</span>
+              </div>
+              <div className="flex justify-between"><span className="text-muted-foreground">RN mass (walls)</span><span className="font-semibold tabular-nums">{quant.rnMass ? `${(quant.rnMass.mass * 100).toFixed(0)}%${quant.rnMass.negativeCount ? ` (${quant.rnMass.negativeCount} noisy)` : ""}` : "—"}</span></div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Timing</span>
+                <span className={`font-semibold ${quant.timing.ok ? "text-emerald-500" : "text-red-500"}`}>{quant.timing.ok ? "OK" : "BLOCKED"}</span>
+              </div>
+            </div>
+
+            {/* Scorecard — every row shown; unknown = null shown honestly */}
+            {quant.scorecard && (
+              <div className="mt-2 pt-2 border-t border-border">
+                <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Scorecard (0-2 × 9)</p>
+                <div className="space-y-0.5">
+                  {quant.scorecard.rows.map((r) => (
+                    <div key={r.factor} className="flex justify-between text-[10px]">
+                      <span className="text-muted-foreground truncate mr-2">{r.factor}</span>
+                      <span className={`font-bold ${r.score == null ? "text-muted-foreground/50" : r.score >= 2 ? "text-emerald-500" : r.score === 1 ? "text-yellow-500" : "text-red-500"}`}>
+                        {r.score == null ? "n/a" : `${r.score}/2`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {quant.scorecard.notes.length > 0 && (
+                  <div className="mt-1 space-y-0.5">
+                    {quant.scorecard.notes.map((n, i) => (
+                      <p key={i} className="text-[10px] text-orange-400">⚠ {n}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Honest unavailability + assumptions */}
+            {(quant.unavailableReasons.length > 0 || !quant.timing.ok) && (
+              <p className="text-[10px] text-muted-foreground/70 mt-2">
+                {quant.unavailableReasons.length > 0 ? `Unavailable: ${quant.unavailableReasons.slice(0, 3).join("; ")}` : ""}
+              </p>
+            )}
+            <p className="text-[9px] text-muted-foreground/60 mt-1">
+              Baselines are zero-drift references, not forecasts. No win probability is produced.
+            </p>
+          </div>
+        )}
 
         {/* 6. Quick Actions */}
         <div className="rounded-xl border bg-card p-3">

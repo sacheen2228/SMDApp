@@ -1183,6 +1183,7 @@ export default function TradingDashboard() {
               selectedExpiry={selectedExpiry}
               onExpiryChange={setSelectedExpiry}
               oiSummary={oiSummary}
+              quant={(data as any)?.analysis?.quant ?? null}
               confirmations={confirmations}
               atrInfo={{
                 tf15: (techData as any)?.snapshots?.["15m"]?.atr ?? null,

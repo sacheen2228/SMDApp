@@ -7,6 +7,7 @@ import { getLotSizeStrict } from "./symbol-config";
 import { getRiskFreeRate, isExpiryToday, parseExpiryDateLoose } from "./greeks";
 import { computeMaxPain } from "./sdm-oianalysis";
 import { BRAIN_FLAGS } from "./brain-flags";
+import { analyzeQuant, type QuantBlock } from "./quant-toolkit";
 
 // ─── 1. PCR Score ────────────────────────────────────────────────
 // Put-Call Ratio: total PE OI / total CE OI
@@ -1069,6 +1070,24 @@ export interface FullAnalysis {
   moneyFlow: MoneyFlow;
   greeks: any;
   strikes: StrikeOI[];
+  /** Quant toolkit block (forward/EM/first-passage/θ-Γ BE/VRP/skew/BL mass/scorecard). Null when no ctx. */
+  quant?: QuantBlock | null;
+}
+
+/** Optional real-data context for the quant toolkit (SDM Simple Tab upgrade). */
+export interface QuantCtx {
+  /** Raw 5m rows from the route (Breeze). Empty → RV/BB/VWAP honestly unavailable. */
+  candles?: Array<{ open: number; high: number; low: number; close: number; volume: number }>;
+  vix?: number | null;
+  /** IST minutes-from-midnight at analysis time. */
+  nowMin?: number | null;
+  capital?: number;
+  riskPct?: number;
+  holdMinutes?: number;
+  spotChangePct?: number | null;
+  futuresPrice?: number | null;
+  riskState?: { consecutiveLosses: number; dailyLossPct: number; lossCapHit?: boolean } | null;
+  flowBias?: "bull" | "bear" | "neutral" | "unknown";
 }
 
 // runFullAnalysis: legacy analysis function used by API route
@@ -1155,7 +1174,8 @@ export function runFullAnalysis(
   strikes: SDMOptionStrike[],
   spotPrice: number,
   expiryDate: string,
-  symbol?: string          // the instrument — used for lot-size aware plan sizing
+  symbol?: string,          // the instrument — used for lot-size aware plan sizing
+  quantCtx?: QuantCtx       // real candles/VIX/clock/risk-state → quant toolkit + scorecard verdict
 ): FullAnalysis {
   let totalCEOI = 0;
   let totalPEOI = 0;
@@ -1214,6 +1234,47 @@ export function runFullAnalysis(
       : 40));
     if (sentiment === "bullish") { action = "BUY CALL"; direction = "CALL"; }
     else if (sentiment === "bearish") { action = "BUY PUT"; direction = "PUT"; }
+  }
+
+  // ─── Quant toolkit (SDM Simple Tab upgrade) ─────────────────────
+  // Runs on REAL chain + optional real candles/VIX/clock. Its 9-factor
+  // scorecard OVERRIDES the PCR-only verdict when computable (the spec:
+  // "SKIP is a valid and frequent answer"). Without quantCtx the legacy
+  // behaviour above is untouched (backward compat for tests/off-session).
+  let quant: QuantBlock | null = null;
+  if (quantCtx) {
+    try {
+      quant = analyzeQuant(strikes, {
+        spot: spotPrice,
+        expiryDate,
+        symbol,
+        vix: quantCtx.vix,
+        candles: quantCtx.candles,
+        nowMin: quantCtx.nowMin,
+        capital: quantCtx.capital,
+        riskPct: quantCtx.riskPct,
+        holdMinutes: quantCtx.holdMinutes,
+        spotChangePct: quantCtx.spotChangePct,
+        futuresPrice: quantCtx.futuresPrice,
+        riskState: quantCtx.riskState,
+        flowBias: quantCtx.flowBias,
+      });
+      const sc = quant?.scorecard;
+      if (sc) {
+        if (sc.verdict === "BUY_CE") {
+          sentiment = "bullish"; direction = "CALL"; action = "BUY CALL";
+          confidence = Math.min(90, Math.round(45 + (sc.total / sc.maxTotal) * 50));
+        } else if (sc.verdict === "BUY_PE") {
+          sentiment = "bearish"; direction = "PUT"; action = "BUY PUT";
+          confidence = Math.min(90, Math.round(45 + (sc.total / sc.maxTotal) * 50));
+        } else {
+          sentiment = "neutral"; direction = "NEUTRAL"; action = "WAIT"; confidence = 40;
+        }
+      }
+    } catch (e) {
+      console.warn("[SDM] quant block failed:", String(e).substring(0, 120));
+      quant = null;
+    }
   }
 
   // Calculate days to expiry — loose parse (Breeze/DD-MMM-YYYY/ISO)
@@ -1378,6 +1439,7 @@ export function runFullAnalysis(
       tp3: finalTp3,
       trailingTarget: confidence >= 65,
       reasons: [
+        ...(quant?.quantReasons ?? []),
         sentiment === "bullish" ? `Bullish PCR at ${pcr?.toFixed(2)}` : "",
         sentiment === "bearish" ? `Bearish PCR at ${pcr?.toFixed(2)}` : "",
         sentiment === "neutral" ? `Neutral PCR at ${pcr?.toFixed(2)} — no leg` : "",
@@ -1438,5 +1500,6 @@ export function runFullAnalysis(
       delta: 0,
     },
     strikes: strikeList,
+    quant,
   };
 }

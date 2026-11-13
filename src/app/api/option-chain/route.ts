@@ -770,8 +770,30 @@ export async function GET(request: NextRequest) {
     // With no real intraday candles the series is EMPTY and every consumer
     // that needs structure data (the PE confirmation) fails closed.
 
-    // Run full SDM analysis
-    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry, String(symbol || "NIFTY").toUpperCase());
+    // Run full SDM analysis — with the real-data quant ctx (Simple Tab upgrade):
+    // real Breeze 5m candles + live VIX + IST clock + session change feed the
+    // quant toolkit (forward/EM/VRP/scorecard). No ctx fields are invented;
+    // missing data degrades to honest "unavailable" inside the toolkit.
+    const istNowMin = (() => {
+      try {
+        const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+        const [h, m] = parts.split(":").map(Number);
+        return h * 60 + m;
+      } catch { return null; }
+    })();
+    const analysis = runFullAnalysis(optionChainStrikes, spotPrice, selectedExpiry, String(symbol || "NIFTY").toUpperCase(), {
+      candles: (candles5m || []).map((c: any) => ({
+        open: Number(c.open) || 0,
+        high: Number(c.high) || 0,
+        low: Number(c.low) || 0,
+        close: Number(c.close) || 0,
+        volume: Number(c.volume) || 0,
+      })),
+      vix: liveVix,
+      nowMin: istNowMin,
+      spotChangePct: livePrevClose ? ((spotPrice - livePrevClose) / livePrevClose) * 100 : null,
+      riskState: null,
+    });
 
     // Send Telegram alert if SDM analysis has a strong trade signal (real data only)
     // Throttled: only sends once per trade signature per day
