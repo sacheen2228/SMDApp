@@ -660,6 +660,10 @@ export async function generateCandidates(
     let engineAuctionState = "";
     let engineRegime = "";
     let engineBest: TradePlan | null | undefined = null;
+    // Real structural levels for the S/R card (never percentage bands).
+    let profVah = 0, profVal = 0, profPoc = 0;
+    let sessHigh = 0, sessLow = 0;
+    let pdHigh = 0, pdLow = 0;
     if (stockCandles && stockCandles.length >= 35) {
       const prev = stockCandles[stockCandles.length - 2];
       const week = stockCandles.slice(-6, -1); // last 5 completed sessions
@@ -686,6 +690,15 @@ export async function generateCandidates(
         analysis.finalDecision === "SHORT" ? analysis.bestShort : null;
       engineScore = engineBest?.signalScore.total ?? 0;
       engineSetup = engineBest?.setup || "";
+      // Real levels from the engine's session profile (computed from the
+      // same real candles the engine scored).
+      profVah = analysis.data.sessionProfile?.vah || 0;
+      profVal = analysis.data.sessionProfile?.val || 0;
+      profPoc = analysis.data.sessionProfile?.poc || 0;
+      sessHigh = analysis.data.sessionProfile?.sessionHigh || 0;
+      sessLow = analysis.data.sessionProfile?.sessionLow || 0;
+      pdHigh = prevDayHigh;
+      pdLow = prevDayLow;
       if (engineScore >= 60) {
         reasons.push(`Engine ${engineScore}/100 — ${engineSetup || engineAuctionState} @ ${engineRegime}`);
       }
@@ -894,9 +907,20 @@ export async function generateCandidates(
     const conviction: StockCandidate["conviction"] =
       totalScore >= 80 ? "HIGH" : totalScore >= 65 ? "MEDIUM" : "LOW";
 
-    // Support/Resistance
-    const supportLevels = [basePrice * 0.98, basePrice * 0.96, basePrice * 0.94];
-    const resistanceLevels = [basePrice * 1.02, basePrice * 1.04, basePrice * 1.06];
+    // Support/Resistance — REAL structures only: profile VAL/POC/VAH,
+    // prev-day high/low and session extremes, all computed from the same
+    // candles the engine scored. A shorter real list replaces the old
+    // fabricated ±2/4/6% bands; nothing is padded.
+    const supportLevels = [...new Set(
+      [profVal, profPoc, pdLow, sessLow]
+        .map(v => Math.round(v * 100) / 100)
+        .filter(v => v > 0 && v < basePrice)
+    )].sort((a, b) => b - a).slice(0, 3);
+    const resistanceLevels = [...new Set(
+      [profVah, profPoc, pdHigh, sessHigh]
+        .map(v => Math.round(v * 100) / 100)
+        .filter(v => v > 0 && v > basePrice)
+    )].sort((a, b) => a - b).slice(0, 3);
 
     // Technical summary
     const technicalSummary = `${ema9 > ema21 ? "Bullish" : "Bearish"} EMA alignment | RSI ${rsi.toFixed(0)} | ADX ${adx.toFixed(0)} | MACD ${macd > macdSignal ? "Bullish" : "Bearish"}`;
@@ -910,8 +934,11 @@ export async function generateCandidates(
     // Unified decision: only emit a plan when engine and technical agree (when engine is confident).
     const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction, chain, engineScore, engineDirection);
 
-    // Volume summary
-    const volumeSummary = `Vol ${formatOI(volume)} | Avg ${formatOI(avgVolume)} | RVOL ${rvol.toFixed(1)}x`;
+    // Volume summary — one block: raw numbers + honest classification
+    // (exchange volume only; there is no institutional-flow source here).
+    const volumeSummary = `Vol ${formatOI(volume)} | Avg ${formatOI(avgVolume)} | RVOL ${rvol.toFixed(1)}x` +
+      (rvol >= 2.0 ? " — unusual volume (exchange volume, no flow data)" :
+       rvol >= 1.5 ? " — above-average (exchange volume, no flow data)" : "");
 
     // Holding time
     const holdingTime = adx > 30 ? "2-4 hours" : "1-2 hours";
@@ -932,9 +959,12 @@ export async function generateCandidates(
       ? `${monthlyOptionTrade.direction === "BUY" ? "Buy" : "Sell"} ${monthlyOptionTrade.strike} ${monthlyOptionTrade.optionType}${monthlyOptionTrade.expiryLabel ? ` (${monthlyOptionTrade.expiryLabel})` : ""}`
       : "No option plan — chain unavailable";
 
-    // Institutional activity (from real volume data)
-    const institutionalActivity = rvol > 2.0 ? "High volume anomaly detected" :
-                                  rvol > 1.5 ? "Above-average volume" : "Normal volume activity";
+    // Volume activity — honest: exchange volume observation only. There is no
+    // institutional-flow source in this scan, so the old "Institutional"
+    // label ("High volume anomaly detected") claimed data we do not have.
+    const institutionalActivity = rvol >= 2.0 ? `Unusual volume — RVOL ${rvol.toFixed(1)}x (exchange volume, no flow data)` :
+                                  rvol >= 1.5 ? `Above-average volume — RVOL ${rvol.toFixed(1)}x` :
+                                  `Normal volume — RVOL ${rvol.toFixed(1)}x`;
 
     candidates.push({
       symbol: stock.symbol,
@@ -946,7 +976,10 @@ export async function generateCandidates(
       volume: Math.round(volume),
       avgVolume: Math.round(avgVolume),
       rvol: Math.round(rvol * 100) / 100,
-      marketCap: Math.round(basePrice * 50 * 100000),
+      // marketCap removed — the scan has no shares-outstanding source and the
+      // old value was price × a made-up 5-crore share count. Consumers use
+      // `c.marketCap || 0`.
+      marketCap: 0,
       ema9: Math.round(ema9 * 100) / 100,
       ema21: Math.round(ema21 * 100) / 100,
       ema50: Math.round(ema50 * 100) / 100,
@@ -1043,6 +1076,15 @@ export async function runIntradayScan(
 
   // MC Time-Machine annotate runs in the API route (server-only Breeze fetch)
   // via mc-confidence-gate.server.ts — never imported here (client bundle).
+
+  // Real breadth from the scanned quotes — replaces the "Mixed" placeholder
+  // that analyzeMarketDirection emits (it has no per-stock data there).
+  if (candidates.length) {
+    const advPct = Math.round(100 * candidates.filter(c => c.changePct > 0).length / candidates.length);
+    marketDirection.breadth = advPct >= 60 ? `Advancing (${advPct}% of ${candidates.length} up)` :
+      advPct <= 40 ? `Declining (${100 - advPct}% of ${candidates.length} down)` :
+      `Mixed (${advPct}% of ${candidates.length} up)`;
+  }
 
   // Filter — high-probability label is conditional on data quality.
   // Lowered from 55 to 25 so candidates still show when only quote data is

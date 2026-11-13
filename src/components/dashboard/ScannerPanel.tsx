@@ -176,6 +176,19 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
               </span>
             </div>
           )}
+          {(stock as any).mcPass != null && (
+            <div className="flex justify-between text-[10px] mt-1">
+              <span className="text-muted-foreground">MC Gate</span>
+              <span className={`font-bold ${(stock as any).mcPass ? "text-emerald-500" : "text-red-500"}`}>
+                {(stock as any).mcPass ? "PASS" : "BLOCK"}
+                {typeof (stock as any).mcGap === "number" && (
+                  <span className="text-[9px] opacity-70 ml-1">
+                    gap {(stock as any).mcGap >= 0 ? "+" : ""}{((stock as any).mcGap * 100).toFixed(0)}pp
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Quick Stats */}
@@ -321,16 +334,10 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
               )}
             </div>
 
-            {/* Volume Summary */}
+            {/* Volume — one block: raw numbers + honest classification */}
             <div>
               <span className="font-semibold text-muted-foreground">Volume:</span>
               <p className="mt-0.5">{stock.volumeSummary}</p>
-            </div>
-
-            {/* Institutional Activity */}
-            <div>
-              <span className="font-semibold text-muted-foreground">Institutional:</span>
-              <p className="mt-0.5">{stock.institutionalActivity}</p>
             </div>
 
             {/* Support/Resistance */}
