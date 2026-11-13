@@ -141,183 +141,43 @@ async function fetchMCXBatchFromMotilal(
   return results;
 }
 
-// ── Yahoo Finance mapping: which MCX symbols share which Yahoo ticker ──
-const MCX_TO_YAHOO: Record<MCXCommodity, string> = {
-  CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
-  NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
-  GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
-  SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
-};
 
-// Reverse map: Yahoo ticker → MCX symbols
-const YAHOO_TO_MCX: Record<string, MCXCommodity[]> = {};
-for (const [mcx, yahoo] of Object.entries(MCX_TO_YAHOO)) {
-  if (!YAHOO_TO_MCX[yahoo]) YAHOO_TO_MCX[yahoo] = [];
-  YAHOO_TO_MCX[yahoo].push(mcx as MCXCommodity);
-}
 
-// ── Fetch USD/INR exchange rate for Yahoo Finance MCX conversion ──
-let usdInrRate = 83.5; // fallback
-let usdInrTs = 0;
-const USD_INR_CACHE_TTL = 60000; // 1 minute
-
-async function fetchUsdInrRate(): Promise<number> {
-  const now = Date.now();
-  if (now - usdInrTs < USD_INR_CACHE_TTL) return usdInrRate;
-
-  try {
-    const res = await fetch(
-      'https://query1.finance.yahoo.com/v8/finance/chart/USDINR=X?range=1d&interval=1d',
-      { signal: AbortSignal.timeout(5000), headers: { 'User-Agent': 'Mozilla/5.0' } }
-    );
-    if (res.ok) {
-      const json = await res.json();
-      const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (price && price > 60 && price < 120) {
-        usdInrRate = price;
-        usdInrTs = now;
-      }
-    }
-  } catch {
-    // use cached or fallback
-  }
-
-  return usdInrRate;
-}
-
-// ── Batch fetch ALL MCX quotes from Yahoo in ONE request ──
-async function fetchAllMCXFromYahoo(): Promise<Map<MCXCommodity, MCXQuote>> {
-  const results = new Map<MCXCommodity, MCXQuote>();
-  const uniqueYahooTickers = [...new Set(Object.values(MCX_TO_YAHOO))]; // CL=F, NG=F, GC=F, SI=F
-
-  // Get USD/INR rate for conversion
-  const fxRate = await fetchUsdInrRate();
-
-  // Fetch each unique ticker via v8/chart endpoint (4 requests total)
-  const fetchPromises = uniqueYahooTickers.map(async (yahooSym) => {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(5000),
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-      });
-      if (!res.ok) return { yahooSym, data: null };
-      const json = await res.json();
-      return { yahooSym, data: json?.chart?.result?.[0] || null };
-    } catch {
-      return { yahooSym, data: null };
-    }
-  });
-
-  const fetched = await Promise.all(fetchPromises);
-
-  for (const { yahooSym, data } of fetched) {
-    if (!data?.meta?.regularMarketPrice) continue;
-    const meta = data.meta;
-    // Convert USD to INR for MCX prices
-    const ltpUSD = meta.regularMarketPrice;
-    const ltp = Math.round(ltpUSD * fxRate * 100) / 100;
-    const prevCloseUSD = meta.chartPreviousClose || ltpUSD;
-    const prevClose = Math.round(prevCloseUSD * fxRate * 100) / 100;
-    const change = ltp - prevClose;
-    const changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
-    const mcxSymbols = YAHOO_TO_MCX[yahooSym] || [];
-
-    for (const mcxSym of mcxSymbols) {
-      const spec = MCX_CONTRACT_SPECS[mcxSym];
-      const q = data.indicators?.quote?.[0];
-      results.set(mcxSym, {
-        symbol: mcxSym,
-        exchange: 'MCX',
-        assetClass: 'COMMODITY',
-        ltp,
-        open: q?.open?.[0] ? Math.round(q.open[0] * fxRate * 100) / 100 : null,
-        high: q?.high?.[0] ? Math.round(q.high[0] * fxRate * 100) / 100 : null,
-        low: q?.low?.[0] ? Math.round(q.low[0] * fxRate * 100) / 100 : null,
-        previousClose: prevClose,
-        change,
-        changePercent,
-        volume: meta.regularMarketVolume ?? q?.volume?.[0] ?? null,
-        openInterest: null,
-        changeInOI: null,
-        bid: null,
-        ask: null,
-        bidQty: null,
-        askQty: null,
-        timestamp: new Date().toISOString(),
-        dataStatus: 'GLOBAL_REFERENCE', // Yahoo global futures — NOT exact MCX prices
-        dataSource: 'YAHOO_GLOBAL_REFERENCE',
-        lotSize: spec?.lotSize || 0,
-        tickSize: spec?.tickSize || 1,
-        expiry: '',
-      });
-    }
-  }
-
-  return results;
-}
-
-// ── Fallback: single-symbol Yahoo fetch (kept for edge cases) ──
-async function fetchMCXFromYahoo(
-  symbol: MCXCommodity
-): Promise<MCXQuote | null> {
-  const yahooSym = MCX_TO_YAHOO[symbol];
-  if (!yahooSym) return null;
-
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=1d&interval=1d`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(5000),
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result?.meta?.regularMarketPrice) return null;
-
-    const meta = result.meta;
-    const fxRate = await fetchUsdInrRate();
-    const round2 = (v: number) => Math.round(v * 100) / 100;
-    const ltpUSD = meta.regularMarketPrice;
-    const ltp = round2(ltpUSD * fxRate);
-    const prevCloseUSD = meta.chartPreviousClose || ltpUSD;
-    const prevClose = round2(prevCloseUSD * fxRate);
-    const spec = MCX_CONTRACT_SPECS[symbol];
-    const q = result.indicators?.quote?.[0];
-
-    return {
-      symbol,
-      exchange: 'MCX',
-      assetClass: 'COMMODITY',
-      ltp,
-      open: q?.open?.[0] ? round2(q.open[0] * fxRate) : null,
-      high: q?.high?.[0] ? round2(q.high[0] * fxRate) : null,
-      low: q?.low?.[0] ? round2(q.low[0] * fxRate) : null,
-      previousClose: prevClose,
-      change: round2(ltp - prevClose),
-      changePercent: prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0,
-      volume: meta.regularMarketVolume ?? null,
-      openInterest: null,
-      changeInOI: null,
-      bid: null,
-      ask: null,
-      bidQty: null,
-      askQty: null,
-      timestamp: new Date().toISOString(),
-      dataStatus: 'GLOBAL_REFERENCE', // Yahoo global futures — NOT exact MCX prices
-      dataSource: 'YAHOO_GLOBAL_REFERENCE',
-      lotSize: spec?.lotSize || 0,
-      tickSize: spec?.tickSize || 1,
-      expiry: '',
-    };
-  } catch {
-    return null;
-  }
+// ── Map an MCX-India website scraped price onto a quote ──
+function buildWebsiteQuote(
+  sym: MCXCommodity,
+  price: { ltp: number; open?: number; high?: number; low?: number; prevClose?: number; change?: number; changePct?: number; volume?: number; oi?: number; timestamp: string }
+): MCXQuote {
+  const spec = MCX_CONTRACT_SPECS[sym];
+  return {
+    symbol: sym,
+    exchange: 'MCX',
+    assetClass: 'COMMODITY',
+    ltp: price.ltp,
+    open: price.open || null,
+    high: price.high || null,
+    low: price.low || null,
+    previousClose: price.prevClose || null,
+    change: price.change || null,
+    changePercent: price.changePct || null,
+    volume: price.volume || null,
+    openInterest: price.oi || null,
+    changeInOI: null,
+    bid: null,
+    ask: null,
+    bidQty: null,
+    askQty: null,
+    timestamp: price.timestamp,
+    dataStatus: 'LIVE',
+    dataSource: 'MCX_WEBSITE', // real provenance — NOT Motilal
+    lotSize: spec?.lotSize || 0,
+    tickSize: spec?.tickSize || 1,
+    expiry: '',
+  };
 }
 
 // ── Create unavailable quote ──
-function createUnavailableQuote(symbol: MCXCommodity, source: 'MOAPI' | 'BREEZE' | 'YAHOO'): MCXQuote {
+function createUnavailableQuote(symbol: MCXCommodity, source: MCXQuote['dataSource']): MCXQuote {
   const spec = MCX_CONTRACT_SPECS[symbol];
   return {
     symbol,
@@ -387,52 +247,15 @@ export async function fetchAllMCXQuotes(): Promise<Map<MCXCommodity, MCXQuote>> 
       for (const price of scraped) {
         const sym = price.symbol as MCXCommodity;
         if (uncachedSymbols.includes(sym) && price.ltp > 0) {
-          const spec = MCX_CONTRACT_SPECS[sym];
-          const quote: MCXQuote = {
-            symbol: sym,
-            exchange: 'MCX',
-            assetClass: 'COMMODITY',
-            ltp: price.ltp,
-            open: price.open || null,
-            high: price.high || null,
-            low: price.low || null,
-            previousClose: price.prevClose || null,
-            change: price.change || null,
-            changePercent: price.changePct || null,
-            volume: price.volume || null,
-            openInterest: price.oi || null,
-            changeInOI: null,
-            bid: null,
-            ask: null,
-            bidQty: null,
-            askQty: null,
-            timestamp: price.timestamp,
-            dataStatus: 'LIVE',
-            dataSource: 'MOAPI' as any, // MCX website is treated as primary source
-            lotSize: spec?.lotSize || 0,
-            tickSize: spec?.tickSize || 1,
-            expiry: '',
-          };
+          const quote = buildWebsiteQuote(sym, price);
           cachedQuotes.set(sym, quote);
           quoteCache.set(sym, { quote, ts: now });
         }
       }
       uncachedSymbols = uncachedSymbols.filter(s => !cachedQuotes.has(s));
     } catch {
-      // MCX scraper failed, continue to Yahoo
+      // MCX scraper failed — no more tiers; missing symbols go to DATA_UNAVAILABLE below
     }
-  }
-
-  // Tier 3: Yahoo Finance fallback (USD prices, delayed)
-  if (uncachedSymbols.length > 0) {
-    const yahooQuotes = await fetchAllMCXFromYahoo();
-    for (const [sym, quote] of yahooQuotes) {
-      if (uncachedSymbols.includes(sym)) {
-        cachedQuotes.set(sym, quote);
-        quoteCache.set(sym, { quote, ts: now });
-      }
-    }
-    uncachedSymbols = uncachedSymbols.filter(s => !cachedQuotes.has(s));
   }
 
   // After tiers, fill any MCX-approved symbols still missing with NONE (no made-up data).
@@ -463,23 +286,25 @@ export async function fetchMCXMarketData(): Promise<MCXMarketData> {
   // Calculate data health — based on ACTUAL data sources, not token existence
   const allQuotes = [...quotes.values()];
   const moapiQuotes = allQuotes.filter(q => q.dataSource === 'MOAPI' && q.dataStatus === 'LIVE');
-  const yahooRefQuotes = allQuotes.filter(q => q.dataStatus === 'GLOBAL_REFERENCE');
+  const websiteQuotes = allQuotes.filter(q => q.dataSource === 'MCX_WEBSITE' && q.dataStatus === 'LIVE');
   const liveQuotes = allQuotes.filter(q => q.dataStatus === 'LIVE');
   const lastQuote = allQuotes.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
   const lastTickAge = lastQuote ? (now - new Date(lastQuote.timestamp).getTime()) / 1000 : Infinity;
 
   // Determine primary source based on what's actually providing data
   const primarySource = moapiQuotes.length > 0 ? 'MOAPI'
-    : yahooRefQuotes.length > 0 ? 'YAHOO_GLOBAL_REFERENCE'
+    : websiteQuotes.length > 0 ? 'MCX_WEBSITE'
     : 'NONE';
 
   const dataHealth: MCXMarketData['dataHealth'] = {
     moapi: moapiQuotes.length > 0 ? `CONNECTED (${moapiQuotes.length}/${allQuotes.length})` : 'NO_DATA',
-    breeze: 'DISCONNECTED', // Breeze doesn't support MCX
-    websocket: 'DISCONNECTED', // TODO: implement WebSocket streaming
-    lastTickAge: Math.round(lastTickAge),
+    mcxWebsite: websiteQuotes.length > 0 ? `CONNECTED (${websiteQuotes.length}/${allQuotes.length})` : 'NO_DATA',
+    breeze: 'DISCONNECTED',
+    breezeNote: 'Breeze has no MCX instrument support',
+    websocket: 'DISCONNECTED', // no MCX streaming wired yet
+    primarySource,
+    lastTickAge: Number.isFinite(lastTickAge) ? Math.round(lastTickAge) : -1,
     status: liveQuotes.length > 0 ? 'LIVE'
-      : yahooRefQuotes.length > 0 ? 'GLOBAL_REFERENCE'
       : lastTickAge < 300 ? 'DELAYED'
       : lastTickAge < 600 ? 'STALE'
       : 'DATA_UNAVAILABLE',
@@ -513,10 +338,17 @@ export async function fetchMCXQuote(symbol: MCXCommodity): Promise<MCXQuote> {
     }
   }
 
-  const yahooQuote = await fetchMCXFromYahoo(symbol);
-  if (yahooQuote) {
-    quoteCache.set(symbol, { quote: yahooQuote, ts: Date.now() });
-    return yahooQuote;
+  // Tier 2: MCX India website scraper (same tier the batch path uses)
+  try {
+    const scraped = await scrapeMCXPrices();
+    const price = scraped.find(p => p.symbol === symbol);
+    if (price && price.ltp > 0) {
+      const quote = buildWebsiteQuote(symbol, price);
+      quoteCache.set(symbol, { quote, ts: Date.now() });
+      return quote;
+    }
+  } catch {
+    // website scrape failed — no more tiers
   }
 
   return createUnavailableQuote(symbol, 'NONE');

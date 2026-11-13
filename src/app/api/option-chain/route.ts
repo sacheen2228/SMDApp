@@ -20,7 +20,8 @@ import {
   toNseExpiry,
 } from '@/lib/data-layer/chains/option-chain';
 import { getNSEOptionChain } from '@/lib/nse-api';
-import { isBSEIndex } from '@/lib/bse-api';
+import { needsIvEnrichment, mergeNseIv } from '@/lib/option-iv-enrich';
+import { isBSEIndex, getBSEOptionChain, getBSEExpiryDates } from '@/lib/bse-api';
 import { sendTradeAlert } from '@/lib/telegram';
 import { buildFreshnessMeta, withSessionAwareFreshness, providerTimestamp } from '@/lib/api-freshness';
 import { getTradingSession } from '@/lib/expiry-liquidity/market-session-config';
@@ -262,7 +263,7 @@ export async function GET(request: NextRequest) {
       dataTimestamp = providerTs ?? new Date();
       effectiveExpiry = c.expiry || null;
       chainAsOf = c.providerTimestamp ?? c.fetchedAt;
-      chainExpirySelection = 'requested';
+      chainExpirySelection = rawExpiry ? 'requested' : 'nearest-live';
 
       chainData = {
         data: c.strikes.map((s: any) => ({
@@ -405,6 +406,24 @@ export async function GET(request: NextRequest) {
       chainData.expiry = resolved.expiry;
       chainData.selectedExpiry = resolved.expiry;
     }
+    // Safety net: a provider that served a chain without an expiry label
+    // (or an empty expiries list) still needs a contract for greeks — resolve
+    // the nearest live expiry from the provider's own list. Never invent one.
+    if (!effectiveExpiry && !requestedExpiryIso) {
+      try {
+        const exps = await getOptionChainExpiries(symbol);
+        const nearest = selectNearestLiveExpiry(exps);
+        if (nearest) {
+          effectiveExpiry = nearest;
+          chainData.expiry = nearest;
+          chainData.selectedExpiry = nearest;
+          if (!Array.isArray(chainData.expiries) || !chainData.expiries.length) {
+            chainData.expiries = [{ date: nearest, label: nearest, daysToExpiry: 0 }];
+          }
+          console.log(`[API] Expiry safety-net: ${symbol} → ${nearest}`);
+        }
+      } catch { /* leave null — greeks stay uncomputed, never faked */ }
+    }
 
     // The contract we were ASKED for must be the contract we GOT. A mismatch
     // is an honest failure — never a silent substitution.
@@ -492,6 +511,66 @@ export async function GET(request: NextRequest) {
       }));
     }
 
+    // ── IV enrich (same contract only) ───────────────────────────────
+    // The race never merges legs (prices/OI stay single-provider), but IV
+    // belongs to the contract. Breeze/MO ship no IV; NSE publishes
+    // impliedVolatility (NSE indices), BSE DerivOptionChain_IV (BSE indices —
+    // SENSEX/BANKEX are not on NSE). When the winner's near-the-money legs
+    // lack IV, copy the exchange's own IV by strike so applyGreeks can compute
+    // delta/gamma. Never an estimate — a leg still without IV stays null.
+    if (chainStrikes.length && source !== 'nse-api' && source !== 'bse-api') {
+      const spotForIv = chainData.spotPrice || chainData.summary?.spotPrice || 0;
+      if (needsIvEnrichment(chainStrikes, spotForIv)) {
+        try {
+          const bseSym = isBSEIndex(symbol);
+          let ivRows: any[] | null = null;
+          let ivExp: string | null = null;
+          const ivLabel = bseSym ? 'BSE' : 'NSE';
+
+          if (bseSym) {
+            // BSE's own expiry list — pick the winner's contract when it is
+            // listed, else nearest live. Never invent a date.
+            const bseExps = await getBSEExpiryDates(symbol).catch(() => [] as string[]);
+            let exp =
+              (effectiveExpiry && bseExps.find((e) => isSameExpiry(e, effectiveExpiry!))) ||
+              selectNearestLiveExpiry(bseExps) ||
+              bseExps[0] ||
+              effectiveExpiry ||
+              null;
+            if (exp) {
+              const bseChain = await Promise.race([
+                getBSEOptionChain(symbol, exp),
+                new Promise<null>((_, rej) => setTimeout(() => rej(new Error('IV enrich timeout')), 6000)),
+              ]).catch(() => null);
+              ivRows = (bseChain as any)?.data ?? null;
+              ivExp = exp;
+            }
+          } else {
+            const nseChain = await Promise.race([
+              getNSEOptionChain(symbol, effectiveExpiry ?? undefined),
+              new Promise<null>((_, rej) => setTimeout(() => rej(new Error('IV enrich timeout')), 6000)),
+            ]).catch(() => null);
+            ivRows = (nseChain as any)?.records?.data ?? null;
+            ivExp = (nseChain as any)?.records?.selectedExpiry ?? null;
+          }
+
+          // Only the SAME contract — IVs are expiry-specific.
+          const sameExpiry = !effectiveExpiry || !ivExp || isSameExpiry(ivExp, effectiveExpiry);
+          if (sameExpiry && Array.isArray(ivRows) && ivRows.length) {
+            const { strikes: merged, filled, nseIvCount } = mergeNseIv(chainStrikes, ivRows);
+            if (filled > 0) {
+              chainStrikes = merged;
+              console.log(`[API] IV enrich from ${ivLabel} for ${symbol}: ${filled} legs filled (${ivLabel} had ${nseIvCount} IVs)`);
+            }
+          } else if (!sameExpiry) {
+            console.warn(`[API] IV enrich skipped: ${ivLabel} contract ${ivExp} ≠ winner ${effectiveExpiry}`);
+          }
+        } catch (e: any) {
+          console.warn(`[API] IV enrich failed for ${symbol}:`, e?.message || e);
+        }
+      }
+    }
+
     // The legacy NUMERIC shape the SDM engine consumes. A missing field reads
     // as 0 INSIDE the analysis only — the payload keeps the nulls.
     const optionChainStrikes: OptionChainStrike[] = chainStrikes.map((row: any) => ({
@@ -546,10 +625,16 @@ export async function GET(request: NextRequest) {
     // happens to be first: the exchange lists the just-expired contract first).
     const selectedExpiry = effectiveExpiry || chainData.selectedExpiry || chainData.expiry || '';
     const now = new Date();
-    // Breeze/NSE format ("03-Nov-2026") — never new Date() alone
-    const expiryDate = parseExpiryDateLoose(selectedExpiry, now) ?? new Date(selectedExpiry);
-    const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
-    const tte = daysToExpiry / 365; // time to expiry in years
+    // Breeze/NSE format ("03-Nov-2026") — never new Date() alone.
+    // Unparseable/empty expiry → NO greeks (calculateGreeks would return
+    // zeros for NaN tte, which reads as a real flat market).
+    const parsedExpiry = selectedExpiry ? parseExpiryDateLoose(selectedExpiry, now) : null;
+    const expiryDate = parsedExpiry ?? (selectedExpiry ? new Date(selectedExpiry) : null);
+    const expiryOk = !!expiryDate && Number.isFinite(expiryDate.getTime());
+    const daysToExpiry = expiryOk
+      ? Math.max(1, Math.ceil((expiryDate!.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+      : 0;
+    const tte = expiryOk ? daysToExpiry / 365 : 0; // time to expiry in years
 
     for (const strike of optionChainStrikes) {
       // The greeks come from Black-Scholes on the EXCHANGE's own IV.
@@ -557,7 +642,7 @@ export async function GET(request: NextRequest) {
       // invented an IV from the moneyness (baseIV = 0.15 + moneyness×2) and
       // published it as if the exchange had sent it.
       const applyGreeks = (leg: any, isCall: boolean) => {
-        if (!leg) return null;
+        if (!leg || !expiryOk || tte <= 0) return null;
         const ivPct = numOrNull(leg.iv);
         if (ivPct === null || ivPct <= 0) return null;
         const g = calculateGreeks(spotPrice, strike.strike, tte, ivPct / 100, isCall);

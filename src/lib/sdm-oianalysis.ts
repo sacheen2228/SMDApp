@@ -10,41 +10,53 @@ import type {
 } from '@/types/sdm';
 
 // ─── Per-strike OI Pattern Classification ────────────────────────
+//
+// Needs the PREMIUM CHANGE (curr vs prev), not absolute `ltp > 0` — every
+// live leg has ltp > 0, so the old check always read "price up" and collapsed
+// the 4-way matrix onto LONG_BUILDUP / SHORT_COVERING. Without a prev leg
+// the pattern is honestly null (unknown), never fabricated.
 
-function classifyOIPattern(strike: SDMOptionStrike): OIClassification {
+function premiumDir(curr: number | undefined, prev: number | undefined): "UP" | "DOWN" | "FLAT" | null {
+  if (!(curr! > 0) || !(prev! > 0)) return null;
+  if (curr! > prev!) return "UP";
+  if (curr! < prev!) return "DOWN";
+  return "FLAT";
+}
+
+function classifyFromOi(
+  oiChg: number,
+  priceDir: "UP" | "DOWN" | "FLAT" | null,
+): OIPattern | null {
+  if (oiChg === 0 || priceDir === null) return null;
+  const oiUp = oiChg > 0;
+  // FLAT premium + OI change is still a real pattern (writers adding into a
+  // stall) — treat FLAT like "not down" for buildup and "not up" for covering.
+  if (oiUp && priceDir === "UP") return "LONG_BUILDUP";
+  if (oiUp && (priceDir === "DOWN" || priceDir === "FLAT")) return "SHORT_BUILDUP";
+  if (!oiUp && priceDir === "UP") return "SHORT_COVERING";
+  if (!oiUp && (priceDir === "DOWN" || priceDir === "FLAT")) return "LONG_UNWINDING";
+  return null;
+}
+
+function classifyOIPattern(
+  strike: SDMOptionStrike,
+  prev?: SDMOptionStrike,
+): OIClassification {
   let callPattern: OIPattern | null = null;
   let putPattern: OIPattern | null = null;
 
   if (strike.ce) {
-    const ceUp = strike.ce.ltp > 0 && strike.ce.oiChg > 0;
-    const ceDown = strike.ce.oiChg < 0;
-    // Price direction via option LTP
-    const ceLtpUp = strike.ce.ltp > 0;
-    // If oiChg is zero or ltp unchanged, pattern is null
-    if (ceUp && ceLtpUp) {
-      callPattern = 'LONG_BUILDUP';
-    } else if (ceDown && !ceLtpUp) {
-      callPattern = 'LONG_UNWINDING';
-    } else if (ceUp && !ceLtpUp) {
-      callPattern = 'SHORT_BUILDUP';
-    } else if (ceDown && ceLtpUp) {
-      callPattern = 'SHORT_COVERING';
-    }
+    callPattern = classifyFromOi(
+      strike.ce.oiChg,
+      premiumDir(strike.ce.ltp, prev?.ce?.ltp),
+    );
   }
 
   if (strike.pe) {
-    const peUp = strike.pe.ltp > 0 && strike.pe.oiChg > 0;
-    const peDown = strike.pe.oiChg < 0;
-    const peLtpUp = strike.pe.ltp > 0;
-    if (peUp && peLtpUp) {
-      putPattern = 'LONG_BUILDUP';
-    } else if (peDown && !peLtpUp) {
-      putPattern = 'LONG_UNWINDING';
-    } else if (peUp && !peLtpUp) {
-      putPattern = 'SHORT_BUILDUP';
-    } else if (peDown && peLtpUp) {
-      putPattern = 'SHORT_COVERING';
-    }
+    putPattern = classifyFromOi(
+      strike.pe.oiChg,
+      premiumDir(strike.pe.ltp, prev?.pe?.ltp),
+    );
   }
 
   return { strike: strike.strike, callPattern, putPattern };
@@ -53,52 +65,59 @@ function classifyOIPattern(strike: SDMOptionStrike): OIClassification {
 export { classifyOIPattern };
 
 // ─── Fresh Writing Detection ──────────────────────────────────────
+//
+// Fresh writing = OI ↑ sharply on the writer's side of spot while the
+// premium does NOT rise (writers absorbing, not longs piling in). The old
+// gate was `ltp <= 0` — never true on a live chain — so the panel was empty
+// forever. Needs a prev chain for the premium direction; without it, no
+// signal (unknown ≠ flat).
 
 function detectFreshWriting(
   optionChain: SDMOptionStrike[],
   spot: number,
+  prevChain?: SDMOptionStrike[],
 ): FreshWritingSignal[] {
   const signals: FreshWritingSignal[] = [];
+  const prevByStrike = new Map<number, SDMOptionStrike>();
+  for (const p of prevChain ?? []) prevByStrike.set(p.strike, p);
 
   for (const strike of optionChain) {
-    // Fresh Call Writing: CE OI ↑ sharply, CE LTP flat/down, near/above spot
+    const prev = prevByStrike.get(strike.strike);
+
+    // Fresh Call Writing: CE OI ↑ sharply, CE premium flat/down, strike ≥ spot
     if (strike.ce && strike.strike >= spot) {
       const oiPctChange =
         strike.ce.oi > 0
           ? (Math.abs(strike.ce.oiChg) / strike.ce.oi) * 100
           : 0;
-
-      if (oiPctChange > 20 && strike.ce.oiChg > 0 && strike.ce.ltp <= 0) {
-        const ltpDir: 'UP' | 'DOWN' | 'FLAT' =
-          strike.ce.ltp > 0 ? 'UP' : strike.ce.ltp < 0 ? 'DOWN' : 'FLAT';
+      const dir = premiumDir(strike.ce.ltp, prev?.ce?.ltp);
+      if (oiPctChange > 20 && strike.ce.oiChg > 0 && dir !== null && dir !== "UP") {
         signals.push({
           strike: strike.strike,
           side: 'CE',
           type: 'FRESH_CALL_WRITING',
           oiChange: strike.ce.oiChg,
           oiPercentChange: oiPctChange,
-          ltpDirection: ltpDir,
+          ltpDirection: dir,
         });
       }
     }
 
-    // Fresh Put Writing: PE OI ↑ sharply, PE LTP flat/down, near/below spot
+    // Fresh Put Writing: PE OI ↑ sharply, PE premium flat/down, strike ≤ spot
     if (strike.pe && strike.strike <= spot) {
       const oiPctChange =
         strike.pe.oi > 0
           ? (Math.abs(strike.pe.oiChg) / strike.pe.oi) * 100
           : 0;
-
-      if (oiPctChange > 20 && strike.pe.oiChg > 0 && strike.pe.ltp <= 0) {
-        const ltpDir: 'UP' | 'DOWN' | 'FLAT' =
-          strike.pe.ltp > 0 ? 'UP' : strike.pe.ltp < 0 ? 'DOWN' : 'FLAT';
+      const dir = premiumDir(strike.pe.ltp, prev?.pe?.ltp);
+      if (oiPctChange > 20 && strike.pe.oiChg > 0 && dir !== null && dir !== "UP") {
         signals.push({
           strike: strike.strike,
           side: 'PE',
           type: 'FRESH_PUT_WRITING',
           oiChange: strike.pe.oiChg,
           oiPercentChange: oiPctChange,
-          ltpDirection: ltpDir,
+          ltpDirection: dir,
         });
       }
     }
@@ -321,6 +340,8 @@ function detectOIMigration(
 export { detectOIMigration };
 
 // ─── Max Pain Calculation ─────────────────────────────────────────
+// SINGLE SOURCE OF TRUTH for max pain (Phase 5). Callers that used to keep
+// a private copy must import this instead.
 
 function computeMaxPain(optionChain: SDMOptionStrike[]): number {
   if (optionChain.length === 0) return 0;
@@ -356,6 +377,8 @@ function computeMaxPain(optionChain: SDMOptionStrike[]): number {
   return maxPainStrike;
 }
 
+export { computeMaxPain };
+
 // ─── PCR Calculations ────────────────────────────────────────────
 
 function computePCR(optionChain: SDMOptionStrike[]) {
@@ -390,8 +413,12 @@ function analyzeOptionChain(
 ): OIAnalysis {
   const status: 'OK' | 'DEGRADED' = optionChain.length < 5 ? 'DEGRADED' : 'OK';
 
-  const classifications = optionChain.map(classifyOIPattern);
-  const freshWriting = detectFreshWriting(optionChain, spot);
+  const prevByStrike = new Map<number, SDMOptionStrike>();
+  for (const p of prevChain ?? []) prevByStrike.set(p.strike, p);
+  const classifications = optionChain.map((s) =>
+    classifyOIPattern(s, prevByStrike.get(s.strike)),
+  );
+  const freshWriting = detectFreshWriting(optionChain, spot, prevChain);
   const traps = detectOITraps(optionChain, spot);
   const supportResistance = computeSupportResistance(optionChain, spot);
   const migration = prevChain

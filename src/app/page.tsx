@@ -54,8 +54,6 @@ import { selectStrike, buildOptionPlan, type ChainRowLike, type SelectedStrike, 
 import type { GreeksReadInput } from '@/lib/signal-persistence';
 
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
-import { FuturesDashboard } from '@/components/futures/FuturesDashboard';
-import { CommodityDashboard } from '@/components/dashboard/CommodityDashboard';
 import CreditTab from '@/components/credit/CreditTab';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
 import { VolumeProfilePanel } from '@/components/shared/VolumeProfilePanel';
@@ -69,7 +67,6 @@ import { CASPanel } from '@/components/dashboard/CASPanel';
 import { StockAnalysisDrawer } from '@/components/dashboard/StockAnalysisDrawer';
 import InstitutionalPositioningPanel from '@/components/terminal/InstitutionalPositioningPanel';
 import ChallengeTab from '@/components/challenge/ChallengeTab';
-import PaperTradingTab from '@/components/dashboard/PaperTradingTab';
 import IntelTab from '@/components/dashboard/IntelTab';
 import { OptionPulseView } from '@/components/views/OptionPulseView';
 import { OIFlowView } from '@/components/views/OIFlowView';
@@ -361,7 +358,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'futures' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'commodity' | 'credit' | 'paper' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'credit' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -1003,33 +1000,16 @@ export default function TradingDashboard() {
               onClick={() => { setViewMode('institutional'); setDisplayMode('pro'); }}>
               <Users className="h-2.5 w-2.5 mr-0.5" /> Insti
             </Button>
-            <Button variant={viewMode === 'futures' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'futures' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
-              onClick={() => { setViewMode('futures'); setDisplayMode('pro'); }}>
-              <Zap className="h-2.5 w-2.5 mr-0.5" /> Futures
-            </Button>
             <Button variant={viewMode === 'orderbook' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orderbook' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
               onClick={() => { setViewMode('orderbook'); setDisplayMode('pro'); }}>
               <BookOpen className="h-2.5 w-2.5 mr-0.5" /> Book
-            </Button>
-            <Button variant={viewMode === 'commodity' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'commodity' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
-              onClick={() => { setViewMode('commodity'); setDisplayMode('pro'); }}>
-              <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> MCX
             </Button>
             <Button variant={viewMode === 'credit' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'credit' ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25' : 'text-muted-foreground hover:text-emerald-500'}`}
               onClick={() => { setViewMode('credit'); setDisplayMode('pro'); }}>
               <TrendingDown className="h-2.5 w-2.5 mr-0.5" /> Credit
             </Button>
-
-            <Button variant={viewMode === 'paper' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'paper' ? 'bg-gradient-to-r from-amber-500 to-yellow-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
-              onClick={() => { setViewMode('paper'); setDisplayMode('pro'); }}>
-              <FileText className="h-2.5 w-2.5 mr-0.5" /> Paper
-            </Button>
-
             <Button variant={viewMode === 'india' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'india' ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/25' : 'text-muted-foreground hover:text-orange-500'}`}
               onClick={() => { setViewMode('india'); setDisplayMode('pro'); }}>
@@ -1307,16 +1287,6 @@ export default function TradingDashboard() {
         <div className="flex-1 overflow-hidden">
           <InstitutionalPositioningPanel symbol={symbol} />
         </div>
-        ) : viewMode === 'futures' ? (
-        /* ═══════ FUTURES DASHBOARD ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <FuturesDashboard />
-        </div>
-        ) : viewMode === 'commodity' ? (
-        /* ═══════ MCX COMMODITY ═══════ */
-        <div className="flex-1 overflow-auto p-2">
-          <CommodityDashboard />
-        </div>
         ) : viewMode === 'orderbook' ? (
         /* ═══════ ORDER BOOK (NIFTY + SENSEX futures depth) ═══════ */
         <div className="flex-1 overflow-auto">
@@ -1340,11 +1310,6 @@ export default function TradingDashboard() {
         /* ═══════ TERMINAL ═══════ */
         <div className="flex flex-1 overflow-hidden">
           <ZeroHeroTerminal />
-        </div>
-        ) : viewMode === 'paper' ? (
-        /* ═══════ HERMES PAPER TRADING ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <PaperTradingTab />
         </div>
         ) : viewMode === 'options' ? (
         /* ═══════ OPTION PULSE ═══════ */

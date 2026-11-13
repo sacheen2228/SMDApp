@@ -8,15 +8,15 @@
 import { useEffect, useRef } from "react";
 import {
   Activity, Bot, CalendarClock, Scan, Newspaper, Settings2, BarChart3,
-  LineChart, TrendingUp, Flame, LayoutGrid, Crosshair, Shield, Target,
-  FileText, Zap, Gem, Map, Landmark, Handshake, BookOpen,
+  LineChart, Flame, LayoutGrid, Crosshair, Shield, Target,
+  Zap, Map, Landmark, Handshake, BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export type MobileViewMode =
   | "terminal" | "chain" | "zerohero" | "scanner" | "btst" | "daily"
-  | "backtest" | "expiry" | "gap" | "news" | "institutional" | "futures"
-  | "orderbook" | "commodity" | "india" | "intelligence" | "credit" | "challenge"
+  | "backtest" | "expiry" | "gap" | "news" | "institutional"
+  | "orderbook" | "india" | "intelligence" | "credit" | "challenge"
   | "options" | "oiflow" | "liq" | "orderflow"
 
 interface MobileNavProps {
@@ -38,9 +38,7 @@ const TABS: { mode: MobileViewMode; label: string; icon: any; color: string }[] 
   { mode: "news", label: "News", icon: Newspaper, color: "text-orange-500" },
   // Market intel
   { mode: "institutional", label: "FII", icon: Landmark, color: "text-sky-500" },
-  { mode: "futures", label: "Futures", icon: TrendingUp, color: "text-emerald-500" },
   { mode: "orderbook", label: "Book", icon: BookOpen, color: "text-indigo-500" },
-  { mode: "commodity", label: "MCX", icon: Gem, color: "text-yellow-500" },
   { mode: "india", label: "India", icon: Map, color: "text-orange-500" },
   { mode: "intelligence", label: "Intel", icon: LayoutGrid, color: "text-emerald-500" },
   { mode: "credit", label: "Credit", icon: Handshake, color: "text-rose-500" },
@@ -52,7 +50,6 @@ const TABS: { mode: MobileViewMode; label: string; icon: any; color: string }[] 
   // Agent + misc
   { mode: "agent", label: "Chat", icon: Bot, color: "text-purple-600" },
   { mode: "agent-intel", label: "AIM", icon: BarChart3, color: "text-purple-500" },
-  { mode: "paper", label: "Paper", icon: FileText, color: "text-yellow-500" },
   { mode: "admin", label: "Admin", icon: Settings2, color: "text-gray-500" },
 ];
 

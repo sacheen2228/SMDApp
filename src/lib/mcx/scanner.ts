@@ -3,19 +3,11 @@
 // Uses real data only. Never fabricates signals.
 
 import type { MCXCommodity, MCXQuote, MCXScannerResult, MCXDataStatus } from './types';
-import { MCX_APPROVED_CONTRACTS } from './types';
+import { MCX_APPROVED_CONTRACTS, isMCXTradeEligible } from './types';
 import { MCX_CONTRACT_SPECS, isMCXHigherRisk, isMCXLowerLiquidity } from './instrument-master';
 import { fetchAllMCXQuotes } from './market-data';
 import { getMCXSession } from './session';
 import { scoreTrade, type MarketDataInput } from '@/lib/unified-scoring-engine';
-
-// ── Yahoo ticker mapping ──
-const MCX_TO_YAHOO: Record<MCXCommodity, string> = {
-  CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
-  NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
-  GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
-  SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
-};
 
 interface Candle {
   time: number;
@@ -31,53 +23,6 @@ let scannerCache: { results: MCXScannerResult[]; ts: number } | null = null;
 const SCANNER_CACHE_TTL = 30000;
 const candleCache = new Map<string, { candles: Candle[]; ts: number }>();
 const CANDLE_CACHE_TTL = 300000; // 5 min
-
-// ── Fetch daily candles from Yahoo for a commodity ──
-async function fetchMCXCandles(symbol: MCXCommodity): Promise<Candle[]> {
-  const yahooSym = MCX_TO_YAHOO[symbol];
-  if (!yahooSym) return [];
-
-  const cacheKey = yahooSym;
-  const cached = candleCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < CANDLE_CACHE_TTL) return cached.candles;
-
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(6000),
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) return [];
-
-    const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result?.timestamp || !result?.indicators?.quote?.[0]) return [];
-
-    const ts = result.timestamp;
-    const q = result.indicators.quote[0];
-    const candles: Candle[] = [];
-
-    for (let i = 0; i < ts.length; i++) {
-      const close = q.close?.[i];
-      if (close == null) continue;
-      candles.push({
-        time: ts[i],
-        open: q.open?.[i] ?? close,
-        high: q.high?.[i] ?? close,
-        low: q.low?.[i] ?? close,
-        close,
-        volume: q.volume?.[i] || 0,
-      });
-    }
-
-    if (candles.length > 0) {
-      candleCache.set(cacheKey, { candles, ts: Date.now() });
-    }
-    return candles;
-  } catch {
-    return [];
-  }
-}
 
 // ── Technical Analysis from Candles ──
 function computeTechnicals(candles: Candle[]): {
@@ -153,23 +98,17 @@ export async function runMCXScanner(): Promise<MCXScannerResult[]> {
     Promise.resolve(getMCXSession()),
   ]);
 
-  // Fetch candles for all commodities in parallel (4 unique Yahoo tickers)
-  const uniqueTickers = [...new Set(Object.values(MCX_TO_YAHOO))];
-  const tickerCandles = new Map<string, Candle[]>();
-  await Promise.all(uniqueTickers.map(async (ticker) => {
-    const sym = Object.entries(MCX_TO_YAHOO).find(([, v]) => v === ticker)?.[0] as MCXCommodity;
-    if (sym) tickerCandles.set(ticker, await fetchMCXCandles(sym));
-  }));
-
   const results: MCXScannerResult[] = [];
 
+  // MO API and Breeze have no MCX candle/OHLC feed, so real structure/ATR
+  // levels are unavailable for every contract. We still evaluate quotes but
+  // mark each result NO_TRADE (no fabricated SL/TP) instead of sourcing
+  // candles from a banned or nonexistent provider.
   for (const symbol of MCX_APPROVED_CONTRACTS) {
     const quote = quotes.get(symbol);
     const spec = MCX_CONTRACT_SPECS[symbol];
-    const yahooSym = MCX_TO_YAHOO[symbol];
-    const candles = tickerCandles.get(yahooSym) || [];
 
-    results.push(analyzeMCXCommodity(symbol, quote, spec, candles, session.isActive));
+    results.push(analyzeMCXCommodity(symbol, quote, spec, [], session.isActive));
   }
 
   // Sort: tradeable first, then by score
@@ -199,20 +138,23 @@ function analyzeMCXCommodity(
   }
 
   const ltp = quote.ltp!;
-  const technicals = hasCandles ? computeTechnicals(candles) : null;
+
+  // MO API and Breeze expose no MCX candle/OHLC feed, so ATR, structure,
+  // support/resistance, and honest SL/TP levels cannot be derived. Do not
+  // fabricate them (the old 2%/3% fallback was fabricated).
+  if (!hasCandles) {
+    return noTradeResult(symbol, spec, 'NO_CANDLE_DATA', sessionActive);
+  }
+
+  const technicals = computeTechnicals(candles);
 
   // Direction from trend
   let direction: 'LONG' | 'SHORT' | 'NEUTRAL' = 'NEUTRAL';
-  if (technicals) {
-    if (technicals.trend === 'UP' && ltp > technicals.ema21) direction = 'LONG';
-    else if (technicals.trend === 'DOWN' && ltp < technicals.ema21) direction = 'SHORT';
-    else if (quote.changePercent !== null) {
-      if (quote.changePercent > 0.3) direction = 'LONG';
-      else if (quote.changePercent < -0.3) direction = 'SHORT';
-    }
-  } else if (quote.changePercent !== null) {
-    if (quote.changePercent > 0.5) direction = 'LONG';
-    else if (quote.changePercent < -0.5) direction = 'SHORT';
+  if (technicals.trend === 'UP' && ltp > technicals.ema21) direction = 'LONG';
+  else if (technicals.trend === 'DOWN' && ltp < technicals.ema21) direction = 'SHORT';
+  else if (quote.changePercent !== null) {
+    if (quote.changePercent > 0.3) direction = 'LONG';
+    else if (quote.changePercent < -0.3) direction = 'SHORT';
   }
 
   if (direction === 'NEUTRAL') {

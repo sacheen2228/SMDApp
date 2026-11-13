@@ -85,7 +85,10 @@ function sessionBucket(time: number, bucketMs: number): number {
   const ist = time + IST_OFFSET_MS;
   const istDay = Math.floor(ist / 86_400_000) * 86_400_000;
   const sessionOpen = istDay + SESSION_OPEN_MS - IST_OFFSET_MS;
-  return Math.floor((time - sessionOpen) / bucketMs);
+  // Day-scoped index: include the IST day so multi-day series never collide
+  // on the same day-relative bucket (which collapsed N days into ~1 session
+  // and left 5m→15m aggregation under the 40-bar threshold).
+  return istDay + Math.floor((time - sessionOpen) / bucketMs);
 }
 
 export function aggregateCandles(candles: CandleData[], targetTimeframe: string): CandleData[] {

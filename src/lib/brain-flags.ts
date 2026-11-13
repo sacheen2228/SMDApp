@@ -27,9 +27,27 @@ export const BRAIN_FLAGS = {
    *  RESOLVED candidates in that tier with a Wilson lower bound on expectancy R above
    *  minExpectancyCiLowerR. */
   promotion: { minResolvedTrades: 175, minExpectancyCiLowerR: 0 },
+  /** Simple Tab direction engine (Phase 6):
+   *  "legacy" = PCR-only (runFullAnalysis default, current production behaviour).
+   *  "v2"    = multi-factor OI vote (PCR + OI-change balance + max-pain pull +
+   *            near-ATM wall). Same fail-closed NEUTRAL rules; no candle fabricaton.
+   *  Override at load with SIMPLE_ENGINE=legacy|v2. */
+  simpleEngine: readSimpleEngine(),
 } as const;
 
 export type BrainFlags = typeof BRAIN_FLAGS;
+
+function readSimpleEngine(): "legacy" | "v2" {
+  return process.env.SIMPLE_ENGINE === "v2" ? "v2" : "legacy";
+}
+
+/**
+ * Switch the Simple Tab direction engine (tests / runtime override).
+ * Mutates BRAIN_FLAGS.simpleEngine — production default is legacy.
+ */
+export function setSimpleEngine(mode: "legacy" | "v2"): void {
+  (BRAIN_FLAGS as { simpleEngine: "legacy" | "v2" }).simpleEngine = mode;
+}
 
 /** Cost model (per option round-trip) used when resolverCosts is ON. */
 export const COST_MODEL = {

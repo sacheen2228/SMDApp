@@ -164,3 +164,44 @@ describe("staleness invalidation", () => {
     expect(r.status).toBe("stale");
   });
 });
+
+describe("symbol-scoped state (no cross-symbol leak)", () => {
+  test("switching symbol resets the confirmed direction", () => {
+    updateSignal(rec(), T0, undefined, "NIFTY");
+    updateSignal(rec(), T0 + 10_000, undefined, "NIFTY");
+    updateSignal(rec(), T0 + 130_000, undefined, "NIFTY"); // confirmed CALL on NIFTY
+
+    // BANKNIFTY first signal must lock immediately — not hold NIFTY's CALL
+    const r = updateSignal(
+      rec({ direction: "PUT", confidence: 80 }),
+      T0 + 140_000,
+      undefined,
+      "BANKNIFTY",
+    );
+    expect(r.status).toBe("confirmed");
+    expect(r.rec.direction).toBe("PUT");
+    expect(r.showDirection).toBe(true);
+  });
+
+  test("same symbol keeps its own confirmed state across calls", () => {
+    updateSignal(rec(), T0, undefined, "NIFTY");
+    updateSignal(rec(), T0 + 10_000, undefined, "NIFTY");
+    updateSignal(rec(), T0 + 130_000, undefined, "NIFTY");
+    const r = updateSignal(rec({ entry: 160 }), T0 + 140_000, undefined, "NIFTY");
+    expect(r.rec.direction).toBe("CALL");
+    expect(r.status).toBe("confirmed");
+  });
+
+  test("resetSignalState also clears the symbol key", () => {
+    updateSignal(rec(), T0, undefined, "NIFTY");
+    resetSignalState();
+    const r = updateSignal(
+      rec({ direction: "PUT", confidence: 80 }),
+      T0 + 1000,
+      undefined,
+      "NIFTY",
+    );
+    expect(r.status).toBe("confirmed");
+    expect(r.rec.direction).toBe("PUT");
+  });
+});

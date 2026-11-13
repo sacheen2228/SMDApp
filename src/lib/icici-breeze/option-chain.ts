@@ -47,12 +47,12 @@ export async function getOptionChain(
     }
     const expiryFormatted = formatExpiryForSDK(expiry);
     if (!expiryFormatted) {
-      console.warn(
-        "[Breeze SDK] Invalid expiry for",
-        stockCode,
-        JSON.stringify(expiryDate),
-        "— skipping SDK call"
-      );
+        console.warn(
+          "[Breeze SDK] Invalid expiry for",
+          stockCode,
+          JSON.stringify(expiry),
+          "— skipping SDK call"
+        );
       return null;
     }
 
@@ -112,7 +112,7 @@ export async function getOptionChain(
         const quote: OptionQuote = {
           symbol: opt.stock_code || stockCode,
           strikePrice: strike,
-          expiryDate: opt.expiry_date || expiryDate,
+          expiryDate: opt.expiry_date || expiry,
           optionType: isCall ? 'call' : 'put',
           ltp: parseFloat(opt.ltp || '0'),
           bid: parseFloat(opt.best_bid_price || '0'),
@@ -130,7 +130,7 @@ export async function getOptionChain(
         };
 
         if (quote.iv > 0 && spotPrice > 0) {
-          const timeToExpiry = calculateTimeToExpiry(expiryDate);
+          const timeToExpiry = calculateTimeToExpiry(expiry);
           const greeks = calculateGreeks(spotPrice, strike, timeToExpiry, quote.iv / 100, isCall);
           quote.delta = greeks.delta;
           quote.gamma = greeks.gamma;
@@ -163,7 +163,10 @@ export async function getOptionChain(
 
       return {
         symbol: stockCode,
-        expiryDate,
+        // The RESOLVED contract (nearest when the caller passed ""), never the
+        // raw param — an empty param made the race winner carry a null expiry
+        // → selectedExpiry='' → NaN tte → all-zero greeks on the panel.
+        expiryDate: expiry,
         spotPrice,
         strikes,
         calls,

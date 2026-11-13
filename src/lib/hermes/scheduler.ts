@@ -3,6 +3,7 @@
 // No unnecessary polling when market is closed
 
 import { NSE_HOLIDAYS } from '../expiry-calculator';
+import { MCX_HOLIDAYS } from '../mcx/session';
 
 // ─── Session Types ────────────────────────────────────────────────
 export type MarketSession =
@@ -16,15 +17,9 @@ export type MarketSession =
 
 export type MarketId = 'NSE' | 'MCX' | 'BSE';
 
-// MCX has additional holidays (commodity-specific). NSE list is the canonical
-// calendar in expiry-calculator — this file's own copy said `2026-11-11` for
-// Diwali-Balipratipada (real: 2026-11-10) and had no 2026-11-24, so the
-// scheduler kept polling on the holiday.
-const MCX_HOLIDAYS = new Set([
-  ...NSE_HOLIDAYS,
-  '2026-01-01', // New Year
-  '2026-11-03', // Diwali (Laxmi Pujan) - special MCX session
-]);
+// MCX holidays now come from the canonical set in ../mcx/session (NSE list +
+// verified MCX-specific full closures) — no local duplicate. The Diwali
+// Laxmi-Pujan special evening session is handled by the early-return below.
 
 // ─── MCX Session Times (IST) ─────────────────────────────────────
 // MCX has two sessions: morning (09:00-23:30) and special hours

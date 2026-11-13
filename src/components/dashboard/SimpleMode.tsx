@@ -84,6 +84,8 @@ interface OISummary {
   classifications: any[];
   pcrOI: number;
   maxPain: number;
+  /** Full OIAnalysis slice for the 14-factor quality score. */
+  full?: unknown;
 }
 
 interface SimpleModeProps {
@@ -251,12 +253,11 @@ export const SimpleMode = memo(function SimpleMode({
   const pivots = computePivots(spotPrice);
   const mood = computeMood(livePCR, liveVIX);
 
-  // Derive direction from optionType (populated even when direction is WAIT
-  // by gates) so the trade card always reflects the actual leg type.
-  const hasValidTrade = rec?.entry > 0 && rec?.riskReward > 0;
-  const isCall = rec?.optionType === "CE" || rec?.direction === "CALL";
-  const isPut = rec?.optionType === "PE" || rec?.direction === "PUT";
-  const isWait = rec?.direction === "WAIT" && !hasValidTrade;
+  // Derive direction from the VOTED direction first (D-1: optionType only
+  // exists for a real CALL/PUT). WAIT always wins — never fall through to BUY.
+  const isCall = rec?.direction === "CALL" || rec?.optionType === "CE";
+  const isPut = rec?.direction === "PUT" || rec?.optionType === "PE";
+  const isWait = rec?.direction === "WAIT" || (!isCall && !isPut);
   const isLoading = !rec;
 
   const gradeColors: Record<string, string> = {
@@ -390,6 +391,24 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="text-right">
               <div className="text-3xl font-black tabular-nums">{rec.confidence}%</div>
               <Badge className={`${gradeColors[rec.tradeGrade]} text-[10px]`}>Grade {rec.tradeGrade}</Badge>
+              {rec.qualityScore && (
+                <div className="mt-1">
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] ${
+                      rec.qualityScore.overall >= 70
+                        ? "border-emerald-500 text-emerald-400"
+                        : rec.qualityScore.overall >= 50
+                          ? "border-yellow-500 text-yellow-400"
+                          : "border-red-500 text-red-400"
+                    }`}
+                    title={rec.qualityScore.status === "DEGRADED" ? "Some factors degraded (missing engines → neutral)" : "14-factor quality"}
+                  >
+                    Quality {rec.qualityScore.overall} · {rec.qualityScore.grade}
+                    {rec.qualityScore.status === "DEGRADED" ? " · partial" : ""}
+                  </Badge>
+                </div>
+              )}
               {confirmTotal > 0 && (
                 <Badge
                   className={`text-[10px] ${
@@ -436,6 +455,46 @@ export const SimpleMode = memo(function SimpleMode({
         )}
         {rec?.reason && (
           <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{rec.reason}</p>
+        )}
+        {/* 14-Factor Quality Score — same engine as Pro (sdm-scores). */}
+        {rec?.qualityScore && rec.qualityScore.factors.length > 0 && (
+          <div className="mt-3 p-3 rounded-lg bg-muted/40 border border-border/50 text-xs">
+            <div className="flex items-center gap-2 mb-2">
+              <BarChart3 className="w-3 h-3 text-purple-500" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                14-Factor Quality ({rec.qualityScore.overall} — Grade {rec.qualityScore.grade})
+              </span>
+              {rec.qualityScore.status === "DEGRADED" && (
+                <span className="text-[9px] text-yellow-500">partial data</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              {rec.qualityScore.factors.map((factor) => (
+                <div key={factor.name} className="flex items-center gap-2" title={`${factor.detail} · ${factor.source}`}>
+                  <span className="text-[9px] text-muted-foreground w-24 truncate">
+                    {factor.name}
+                  </span>
+                  <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        factor.score >= 70 ? "bg-emerald-500" :
+                        factor.score >= 50 ? "bg-yellow-500" :
+                        "bg-red-500"
+                      }`}
+                      style={{ width: `${factor.score}%` }}
+                    />
+                  </div>
+                  <span className={`text-[9px] w-6 text-right font-mono ${
+                    factor.score >= 60 ? "text-emerald-400" :
+                    factor.score >= 40 ? "text-yellow-400" :
+                    "text-red-400"
+                  }`}>
+                    {factor.score}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
         {/* REAL greeks of the traded leg — live chain row, "—" when the provider didn't publish a field. */}
         {greeks && (

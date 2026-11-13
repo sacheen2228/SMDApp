@@ -96,34 +96,14 @@ interface State {
   /** Timestamp when entry/SL/targets/strike were last refreshed. */
   lastLevelUpdate: number | null;
   lastConfirmedRec: SignalRec;
+  /** Instrument the state belongs to — a symbol change resets everything (D-6). */
+  symbolKey: string;
 }
 
-let state: State = {
-  confirmedDirection: "WAIT",
-  confirmedConfidence: 0,
-  pendingDirection: null,
-  pendingSince: null,
-  pendingConfirmations: 0,
-  lastUpdate: null,
-  lastLevelUpdate: null,
-  lastConfirmedRec: {
-    direction: "WAIT",
-    confidence: 0,
-    entry: 0,
-    sl: 0,
-    tp1: 0,
-    tp2: 0,
-    tp3: 0,
-    strike: 0,
-    tradeGrade: "—",
-    reason: "no signal yet",
-    riskReward: 0,
-  },
-};
+const DEFAULT_SYMBOL = "DEFAULT";
 
-/** Reset in-memory state (used by tests). */
-export function resetSignalState(): void {
-  state = {
+function blankState(symbolKey: string = DEFAULT_SYMBOL): State {
+  return {
     confirmedDirection: "WAIT",
     confirmedConfidence: 0,
     pendingDirection: null,
@@ -144,7 +124,23 @@ export function resetSignalState(): void {
       reason: "no signal yet",
       riskReward: 0,
     },
+    symbolKey,
   };
+}
+
+let state: State = blankState();
+
+/** Reset in-memory state (used by tests). */
+export function resetSignalState(): void {
+  state = blankState();
+}
+
+/** Reset when the instrument changes so NIFTY's confirmed CALL never leaks onto BANKNIFTY. */
+function ensureSymbol(symbol?: string): void {
+  const key = symbol && symbol.trim() ? symbol.trim().toUpperCase() : DEFAULT_SYMBOL;
+  if (state.symbolKey !== key) {
+    state = blankState(key);
+  }
 }
 
 function normalise(dir: SignalDirection): SignalDirection {
@@ -172,7 +168,9 @@ export function updateSignal(
   raw: SignalRec,
   nowMs: number = Date.now(),
   confirmations?: ConfirmationCheck[],
+  symbol?: string,
 ): ConfirmResult {
+  ensureSymbol(symbol);
   const dir = normalise(raw.direction);
   const conf = Number.isFinite(raw.confidence) ? raw.confidence : 0;
   let staled = false;

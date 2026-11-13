@@ -75,7 +75,7 @@ export interface MCXQuote {
   askQty: number | null;
   timestamp: string;
   dataStatus: MCXDataStatus;
-  dataSource: 'MOAPI' | 'BREEZE' | 'YAHOO' | 'NONE';
+  dataSource: 'MOAPI' | 'BREEZE' | 'MCX_WEBSITE' | 'NONE';
   lotSize: number;
   tickSize: number;
   expiry: string;
@@ -122,8 +122,14 @@ export interface MCXMarketData {
   lastUpdate: string;
   dataHealth: {
     moapi: string;
+    /** Motilal REST is the primary exchange-backed provider. */
+    mcxWebsite?: string;
     breeze: 'CONNECTED' | 'DISCONNECTED';
+    /** Set on the disconnect reason (Breeze has no MCX instrument support). */
+    breezeNote?: string;
     websocket: 'CONNECTED' | 'DISCONNECTED';
+    /** Provenance actually serving quotes: MOAPI | MCX_WEBSITE | YAHOO_GLOBAL_REFERENCE | NONE */
+    primarySource?: string;
     lastTickAge: number; // seconds
     status: MCXDataStatus;
   };
@@ -138,3 +144,14 @@ export const MCX_APPROVED_CONTRACTS: MCXCommodity[] = [
 
 export const MCX_ENERGY: MCXCommodity[] = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI'];
 export const MCX_PRECIOUS_METALS: MCXCommodity[] = ['GOLD', 'GOLDM', 'GOLDGUINEA', 'SILVER', 'SILVERM', 'SILVERMIC'];
+
+// Contracts excluded from NEW trade origination (scanner best-trade, morning
+// signals, digest, agent scan). They still appear in market data / quotes.
+// All silver contracts share the same SI=F proxy, so the data-quality issue
+// applies to the whole family.
+export const MCX_TRADE_EXCLUDED: MCXCommodity[] = ['SILVER', 'SILVERM', 'SILVERMIC'];
+
+/** Whether an MCX contract may originate a NEW trade. */
+export function isMCXTradeEligible(symbol: MCXCommodity | string): boolean {
+  return !(MCX_TRADE_EXCLUDED as string[]).includes(symbol);
+}

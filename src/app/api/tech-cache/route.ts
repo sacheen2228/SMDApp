@@ -4,6 +4,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJSON, type Layer } from "@/lib/agent-brain-gate";
 import { fetchCandles, triggerLayer, type Candle } from "@/lib/tech-read";
+import { getindexFuturesCandles, isIndexSymbol } from "@/lib/index-futures-candles";
+import { aggregateCandles } from "@/lib/technical-snapshot";
 import {
   CACHE_SYMBOLS, TF_TTL_MS, buildSnapshot, cacheStats, getSnapshot, isFresh, prune, type TechTf,
 } from "@/lib/tech-cache";
@@ -13,6 +15,23 @@ export const dynamic = "force-dynamic";
 const BASE = process.env.NEXT_PUBLIC_BASE_URL || "http://127.0.0.1:3000";
 
 async function loadCandles(symbol: string, tf: TechTf): Promise<Candle[]> {
+  // Index SPOT cash candles carry volume=0 → VWAP/RVOL null. Index FUTURES
+  // carry real volume (verified live). Prefer futures for the intraday tech
+  // read so the confirmation panel's Volume/VWAP checks can run; fall back to
+  // spot when no futures contract/feed (honest — never invent volume).
+  // 1d stays on the spot/daily path (futures helper is intraday-only).
+  // Breeze futures historical has NO 15minute interval (1/5/30/1day only) —
+  // always fetch 5m and aggregate 5m→15m with the session-anchored merger.
+  if (tf !== "1d" && isIndexSymbol(symbol)) {
+    try {
+      const fut = await getindexFuturesCandles(symbol, "5minute", tf === "5m" ? 3 : 5);
+      const bars = tf === "15m" ? aggregateCandles(fut.candles, "15m") : fut.candles;
+      const withVol = bars.filter((c) => Number(c.volume) > 0);
+      if (withVol.length >= 40) {
+        return bars.map((c) => ({ t: c.time, o: c.open, h: c.high, l: c.low, c: c.close, v: c.volume }));
+      }
+    } catch { /* fall through to spot */ }
+  }
   const r = await fetchCandles(BASE, symbol, tf);
   return r.ok ? r.candles : [];
 }

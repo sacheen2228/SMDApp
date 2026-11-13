@@ -192,6 +192,16 @@ describe("analyzeTf", () => {
     const r = analyzeTf("5m", uptrend(60).map((x) => ({ ...x, v: undefined })), "NIFTY");
     expect(r!.warnings.join(" ")).toMatch(/no VWAP/);
   });
+  test("returns adx/pdi/mdi from the ADX series (not undefined)", () => {
+    const r = analyzeTf("5m", uptrend(60), "NIFTY");
+    expect(r).toBeTruthy();
+    expect(typeof r!.adx).toBe("number");
+    expect(typeof r!.pdi).toBe("number");
+    expect(typeof r!.mdi).toBe("number");
+    expect(Number.isFinite(r!.adx!)).toBe(true);
+    // DI direction should agree with the uptrend fixture (+DI > −DI)
+    expect(r!.pdi!).toBeGreaterThan(r!.mdi!);
+  });
 });
 
 describe("layers + levels (gate mapping)", () => {

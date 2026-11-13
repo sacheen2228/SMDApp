@@ -40,6 +40,8 @@ import { isTradeActive } from "./active-trade-lock";
 import { addTrade, type ActiveTrade } from "./activeTradeTracker";
 import { buildOptionPlan } from "./option-plan";
 import { getLotSize } from "./symbol-config";
+import { mapMCXScannerResultToMorningSignal } from "@/lib/mcx/bridge";
+import { getMCXSession } from "@/lib/mcx/session";
 
 // Deterministic trade ID — same setup gets same ID across restarts
 function makeTradeId(symbol: string, strike: number, optionType: string, expiry: string, direction: string): string {
@@ -441,32 +443,16 @@ function fetchWithTimeout(url: string, ms = 15000): Promise<Response> {
 // "FUT" and the levels are futures (underlying) levels.
 async function fetchMCXSignals(): Promise<MorningSignal[]> {
   try {
-    const res = await fetchWithTimeout(`${BASE}/api/mcx?mode=scanner`);
+    // Correct endpoint: the scanner's best-trade view (was /api/mcx?mode=scanner,
+    // which returns the market payload and never a bestTrade).
+    const res = await fetchWithTimeout(`${BASE}/api/mcx/scanner?mode=best`);
     if (!res.ok) return [];
     const json = await res.json();
-    const best = json?.data?.bestTrade || json?.bestTrade;
-    if (!best) return [];
-    const dir = String(best.direction || "LONG").toUpperCase();
-    const side: MorningSignalSide = dir === "SHORT" || dir === "SELL" ? "SELL" : "BUY";
-    return [
-      {
-        symbol: best.symbol || "CRUDEOIL",
-        name: best.symbol || "Crude Oil",
-        sector: "Commodity",
-        type: "FUT",
-        side,
-        direction: dir,
-        entry: best.entry || 0,
-        stopLoss: best.stopLoss || 0,
-        tp1: best.target1 || best.target || 0,
-        tp2: best.target2 || 0,
-        rr: best.riskReward || 1,
-        confidence: best.confidence || 0,
-        instrument: best.instrument || `MCX ${best.symbol || "CRUDEOIL"} Futures`,
-        reasoning: best.reasoning || "MCX commodity scan",
-        source: "mcx-scanner",
-      },
-    ];
+    const best = json?.bestTrade;
+    if (!best || best.grade === "NO_TRADE") return [];
+    // MCX signals are only valid inside the executable evening window (17:30-22:00 IST).
+    if (!getMCXSession().signalsAllowed) return [];
+    return [mapMCXScannerResultToMorningSignal(best)];
   } catch {
     return [];
   }

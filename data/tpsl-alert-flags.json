@@ -13787,5 +13787,200 @@
   },
   "sell-1794337060882-21": {
     "SL_HIT": true
+  },
+  "retry-mon-1794515068531-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794515068711-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794515068738-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794515068780-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794515134978-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794515135192-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794515135230-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794515135273-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794515242534-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794515243122-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794515243358-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794515243477-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794515503082-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794515503129-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794515503204-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794515503220-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794557295093-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794557295227-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794557295290-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794557295306-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794557445290-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794557445326-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794557445348-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794557445356-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794557449217-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794557449254-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794557449278-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794557449286-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794567788052-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794567788082-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794567788101-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794567788108-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794567862953-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794567862986-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794567863008-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794567863017-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794567899359-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794567899394-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794567899416-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794567899427-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794580674676-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794580674750-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794580674789-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794580674809-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794586521282-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794586521320-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794586521350-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794586521363-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794590289108-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794590289143-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794590289164-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794590289176-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794590365213-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794590365248-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794590365273-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794590365288-21": {
+    "SL_HIT": true
+  },
+  "retry-mon-1794590949101-9": {
+    "TP1_HIT": true
+  },
+  "persist-1794590949132-19": {
+    "SL_HIT": true,
+    "TP2_HIT": true
+  },
+  "chain-1794590949151-20": {
+    "TP1_HIT": true
+  },
+  "sell-1794590949161-21": {
+    "SL_HIT": true
   }
 }

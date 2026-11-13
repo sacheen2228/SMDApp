@@ -10,6 +10,7 @@ import type {
 import { classifyFreshness, classifyFreshnessMs } from "./freshness";
 import { getRequiredTools } from "./tool-registry";
 import { NSE_HOLIDAYS } from "../expiry-calculator";
+import { extractMCXIntelligence } from "../mcx/bridge";
 
 const BASE = ""; // Same-origin API calls
 
@@ -469,33 +470,12 @@ export async function collectHermesContext(
   } : wrapFresh(null, "nse", "backtest");
 
   // MCX Intelligence (only for MCX commodities)
-  const mcxFresh = isMCX && data.mcxIntel ? {
-    value: {
-      regime: data.mcxIntel.regime || 'NO_TRADE',
-      regimeConfidence: data.mcxIntel.regimeConfidence || 0,
-      structureBias: data.mcxIntel.structureBias || 'NEUTRAL',
-      structureEvent: data.mcxIntel.structureEvent || 'NONE',
-      oiClassification: data.mcxIntel.oiClassification || 'NEUTRAL',
-      oiDivergence: data.mcxIntel.oiDivergence || false,
-      relativeVolume: data.mcxIntel.relativeVolume || 1,
-      volumeState: data.mcxIntel.volumeState || 'NORMAL',
-      atr: data.mcxIntel.atr || 0,
-      atrPercent: data.mcxIntel.atrPercent || 0,
-      volatilityRegime: data.mcxIntel.volatilityRegime || 'NORMAL_VOL',
-      ivClassification: data.mcxIntel.ivClassification || 'NORMAL',
-      expectedMove: data.mcxIntel.expectedMove || 0,
-      chainQuality: data.mcxIntel.chainQuality || 'UNTRADEABLE',
-      bestCandidateDirection: data.mcxIntel.bestCandidateDirection || 'NEUTRAL',
-      bestCandidateScore: data.mcxIntel.bestCandidateScore || 0,
-      bestCandidateRR: data.mcxIntel.bestCandidateRR || 0,
-      longScore: data.mcxIntel.longScore || 0,
-      shortScore: data.mcxIntel.shortScore || 0,
-      dataFreshness: data.mcxIntel.dataFreshness || {
-        candlesAvailable: false, candleCount: 0,
-        optionChainAvailable: false, quoteAvailable: false,
-      },
-    },
-    source: "yahoo",
+  // The route nests everything under `intelligence` — flatten it via the bridge
+  // (the old code read the flat keys and always collapsed to the defaults).
+  const mcxIntelFlat = isMCX && data.mcxIntel ? extractMCXIntelligence(data.mcxIntel) : null;
+  const mcxFresh = mcxIntelFlat ? {
+    value: mcxIntelFlat,
+    source: mcxIntelFlat.dataFreshness.quoteAvailable ? "moapi" : "yahoo",
     timestamp: data.mcxIntel?.timestamp || now.toISOString(),
     ageMs: data.mcxIntel?.timestamp ? Date.now() - new Date(data.mcxIntel.timestamp).getTime() : 0,
     freshness: classifyFreshnessMs(data.mcxIntel?.timestamp ? Date.now() - new Date(data.mcxIntel.timestamp).getTime() : 0, "optionChain"),

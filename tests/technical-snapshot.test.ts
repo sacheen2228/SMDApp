@@ -281,6 +281,26 @@ describe('aggregateCandles — exact session-anchored merge, no downward substit
     expect(aggregateCandles(bars, '1m')).toEqual(normalizeCandles(bars));
     expect(aggregateCandles(bars, '5m')).toEqual(normalizeCandles(bars));
   });
+
+  it('multi-day 5m→15m keeps every day’s bars (no cross-day key collision)', () => {
+    // Regression: sessionBucket used a day-relative index, so day N and day N+1
+    // shared Map keys — multi-day futures 5m collapsed to ~1 session (~27 bars)
+    // and fell under tech-cache’s 40-bar volume threshold → spot fallback.
+    // Three 5m bars inside ONE 15m session bucket (09:15/09:20/09:25) per day.
+    const day1 = [
+      bar(START, 100, 110, 95, 108),
+      bar(START + 5 * 60_000, 108, 112, 105, 110),
+      bar(START + 10 * 60_000, 110, 115, 108, 112),
+    ];
+    const day2 = day1.map((c) => ({ ...c, time: c.time + 86_400_000 }));
+    const out = aggregateCandles([...day1, ...day2], '15m');
+    expect(out.length).toBe(2);
+    expect(out[0].time).toBe(START);
+    expect(out[1].time).toBe(START + 86_400_000);
+    expect(out[0].open).toBe(100);
+    expect(out[0].close).toBe(112);
+    expect(out[0].volume).toBe(3000); // 3 × bar() volume 1000
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -105,6 +105,11 @@ export interface StockCandidate {
   institutionalActivity: string;
   supportLevels: number[];
   resistanceLevels: number[];
+  /** Monte-Carlo Time-Machine gate (null = not computed / fail-open). */
+  mcPct?: number;
+  mcPs?: number;
+  mcGap?: number;
+  mcPass?: boolean | null;
 }
 
 export interface MarketDirection {
@@ -739,10 +744,20 @@ export async function generateCandidates(
       if (rsi >= 45 && rsi <= 55) reasons.push(`RSI ${rsi.toFixed(0)} — balanced momentum`);
     }
 
-    // Volume scoring
-    if (rvol > 1.5) { volumeScore = 80; reasons.push(`RVOL ${rvol.toFixed(1)}x — high volume`); }
-    else if (rvol > 1.2) { volumeScore = 60; reasons.push(`RVOL ${rvol.toFixed(1)}x — above average`); }
+    // Volume scoring — RVOL is the #1 pro-day-scan filter (time-of-day
+    // relative volume). Thresholds: ≥2.0 anomaly, ≥1.5 high, ≥1.2 above avg.
+    if (rvol >= 2.0) { volumeScore = 95; reasons.push(`RVOL ${rvol.toFixed(1)}x — volume anomaly`); }
+    else if (rvol >= 1.5) { volumeScore = 80; reasons.push(`RVOL ${rvol.toFixed(1)}x — high volume`); }
+    else if (rvol >= 1.2) { volumeScore = 60; reasons.push(`RVOL ${rvol.toFixed(1)}x — above average`); }
     else { volumeScore = 30; }
+
+    // ADX chop dampener — trend setups in ADX < 20 regimes underperform
+    // (backtest: skip trend entries when ADX < 20). Dampen technical score
+    // and flag it; does not zero the score (mean-reversion setups still valid).
+    if (adx < 20) {
+      technicalScore = Math.round(technicalScore * 0.75);
+      reasons.push(`ADX ${adx.toFixed(0)} — choppy regime, trend edge reduced`);
+    }
 
     // Options scoring — REAL per-stock chain when available (Breeze → NSE);
     // null/0 defaults = no chain, never fake PCR 1.0 / IV 20 presented as real
@@ -766,12 +781,12 @@ export async function generateCandidates(
     else if (chain && stockPCR != null && direction === "BEARISH" && stockPCR < 0.9) { optionsScore = 70; reasons.push("PCR < 0.9 — call writing (bearish)"); }
     else { optionsScore = 50; if (!chain) reasons.push("Option chain unavailable — options score neutral"); }
 
-    // Fundamental score (simplified)
-    if (stock.sector === "IT" || stock.sector === "Banking") { fundamentalScore = 65; }
-    else if (stock.sector === "Pharma" || stock.sector === "FMCG") { fundamentalScore = 70; }
-    else { fundamentalScore = 50; }
+    // Fundamental score: NOT evaluated (no fundamentals source in this scan).
+    // Neutral 50 — never fabricated from sector name. Excluded from totalScore.
+    fundamentalScore = 50;
 
-    // News score (neutral — no news API integration yet)
+    // News score starts neutral; the scanner route replaces it with real RSS
+    // sentiment when headlines load (same weight formula).
     newsScore = 50;
 
     // Sector score
@@ -784,17 +799,18 @@ export async function generateCandidates(
     // Total score calculation
     // Weights normalised to 1.00. The real signal engine (Auction Theory +
     // Volume Profile + Liquidity + Market Structure + VWAP + Volume +
-    // Regime) is the dominant component; technicals + volume + sector add
-    // modulation; market context, options (real PCR when available), coarse
-    // fundamental and news are smaller contributors.
+    // Regime) is the dominant component; technicals + RVOL + sector add
+    // modulation; market context, options (real PCR when available) and
+    // news (real RSS when the route loads it) are smaller contributors.
+    // Fundamental is NOT scored — no fundamentals source in this scan.
+    // Sum: 0.05+0.10+0.28+0.35+0.05+0.12+0.05 = 1.00
     const totalScore = Math.round(
       (marketScore * 0.05) +
       (sectorScore * 0.10) +
-      (technicalScore * 0.25) +
+      (technicalScore * 0.28) +
       (engineScore * 0.35) +
       (optionsScore * 0.05) +
-      (volumeScore * 0.10) +
-      (fundamentalScore * 0.05) +
+      (volumeScore * 0.12) +
       (newsScore * 0.05)
     );
 
@@ -972,9 +988,7 @@ export async function generateCandidates(
       technicalSummary,
       optionsSummary,
       volumeSummary,
-      fundamentalNote: stock.sector === "IT" ? "Strong sector tailwinds" :
-                       stock.sector === "Banking" ? "Credit growth robust" :
-                       "Sector neutral",
+      fundamentalNote: "Not evaluated — no fundamentals source in scan",
       institutionalActivity,
       supportLevels: supportLevels.map(l => Math.round(l * 100) / 100),
       resistanceLevels: resistanceLevels.map(l => Math.round(l * 100) / 100),
@@ -1016,17 +1030,19 @@ export async function runIntradayScan(
     c.totalScore = Math.round(
       (c.marketScore * 0.05) +
       (c.sectorScore * 0.10) +
-      (c.technicalScore * 0.25) +
+      (c.technicalScore * 0.28) +
       (c.engineScore * 0.35) +
       (c.optionsScore * 0.05) +
-      (c.volumeScore * 0.10) +
-      (c.fundamentalScore * 0.05) +
+      (c.volumeScore * 0.12) +
       (c.newsScore * 0.05)
     );
     c.grade = c.totalScore >= 85 ? "A+" : c.totalScore >= 75 ? "A" : c.totalScore >= 65 ? "B+" : c.totalScore >= 55 ? "B" : c.totalScore < 40 ? "D" : "C";
     c.conviction = c.totalScore >= 80 ? "HIGH" : c.totalScore >= 65 ? "MEDIUM" : "LOW";
   }
   candidates.sort((a, b) => b.totalScore - a.totalScore);
+
+  // MC Time-Machine annotate runs in the API route (server-only Breeze fetch)
+  // via mc-confidence-gate.server.ts — never imported here (client bundle).
 
   // Filter — high-probability label is conditional on data quality.
   // Lowered from 55 to 25 so candidates still show when only quote data is

@@ -149,7 +149,32 @@ async function simulatePaperOutcome(sr: any): Promise<ResolvedOutcome | null> {
   try {
     candles = await getSessionCandlesForReplay(sr.symbol, sr.timestamp);
   } catch {
-    return null;
+    candles = [];
+  }
+  // Equity INTRADAY signals: the recorder only stores INDEX session candles
+  // (NIFTY/SENSEX/…). Without a fallback every equity paper-sim returns null
+  // and lands as NO_FILL — so try Breeze historical 5m for the signal date.
+  if (!candles.length) {
+    try {
+      const day = sr.timestamp.slice(0, 10);
+      const { getIntradayCandles } = await import("@/lib/breeze-historical");
+      const hist = await getIntradayCandles(sr.symbol, day, "5minute");
+      candles = (hist.candles ?? []).map((c: any) => ({
+        timestamp:
+          typeof c.time === "string"
+            ? c.time.includes("T")
+              ? c.time
+              : `${c.time.replace(" ", "T")}+05:30`
+            : new Date(c.time).toISOString(),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+    } catch {
+      /* Breeze unavailable — fall through to NO_FILL */
+    }
   }
   if (!candles.length) return null;
 
@@ -212,14 +237,17 @@ async function simulatePaperOutcome(sr: any): Promise<ResolvedOutcome | null> {
   }
 
   const risk = Math.abs(entry - sl);
-  const reward = exitPrice != null ? Math.abs(exitPrice - entry) : 0;
-  const finalR = risk > 0 ? reward / risk : 0;
+  // Signed R: positive only when exit is on the winning side of entry.
+  const signed = isLong
+    ? (exitPrice ?? entry) - entry
+    : entry - (exitPrice ?? entry);
+  const finalR = risk > 0 ? signed / risk : 0;
   const win = isLong ? (exitPrice ?? entry) >= entry : (exitPrice ?? entry) <= entry;
   const exitTime = relevant[exitIdx]?.timestamp ?? null;
   const holdingTimeSec = exitTime
     ? Math.max(0, Math.round((new Date(exitTime).getTime() - t0) / 1000))
     : null;
-  const finalPnl = isLong ? reward : -reward;
+  const finalPnl = signed;
 
   // Option premium magnitudes aren't derivable from the underlying → null them
   // so we never report misleading MFE/MAE/R. Equity signals keep real values.

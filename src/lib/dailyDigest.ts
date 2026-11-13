@@ -70,6 +70,29 @@ export async function fetchVIXInfo(): Promise<VixInfo> {
   }
 }
 
+export interface McxDigestInfo {
+  /** "CRUDEOIL A (82) — LONG entry ₹5000 SL ₹5100 T ₹4800", "NO VALID MCX TRADE" or "DATA_UNAVAILABLE". */
+  summary: string;
+  source: string;
+}
+
+/** MCX commodity section — best scanner trade + data source (never fabricated). */
+export async function fetchMCXDigestInfo(): Promise<McxDigestInfo> {
+  try {
+    const res = await fetchWithTimeout("http://localhost:3000/api/mcx/scanner?mode=best");
+    if (!res.ok) return { summary: "DATA_UNAVAILABLE", source: "none" };
+    const json = await res.json();
+    const best = json?.bestTrade;
+    if (!best || best.grade === "NO_TRADE") {
+      return { summary: "NO VALID MCX TRADE", source: "mcx-scanner" };
+    }
+    const summary = `${best.symbol} ${best.grade} (${best.score}) — ${best.direction} entry ₹${best.entry} SL ₹${best.stopLoss} T ₹${best.target}`;
+    return { summary, source: best.dataStatus || "mcx-scanner" };
+  } catch {
+    return { summary: "DATA_UNAVAILABLE", source: "none" };
+  }
+}
+
 export interface FiiInfo {
   fii: string;
   dii: string;
@@ -189,7 +212,7 @@ export function categorizeTrades(
 
 export function formatDigestMessage(
   sections: DigestSections,
-  market: { vix: VixInfo; fii: FiiInfo },
+  market: { vix: VixInfo; fii: FiiInfo; mcx?: McxDigestInfo | null },
   now: string
 ): string {
   const vixLine =
@@ -199,6 +222,9 @@ export function formatDigestMessage(
   const fiiLine = `  FII: ${market.fii.fii} | DII: ${market.fii.dii}${
     market.fii.date ? ` (${market.fii.date}${market.fii.source ? `, ${market.fii.source}` : ""})` : ""
   }`;
+  const mcxLine = market.mcx
+    ? `  MCX: ${market.mcx.summary} (${market.mcx.source})`
+    : `  MCX: DATA_UNAVAILABLE`;
 
   const none = "  None";
   return `📊 <b>END OF DAY — ${now}</b>
@@ -207,6 +233,7 @@ export function formatDigestMessage(
 📈 <b>Market</b>
 ${vixLine}
 ${fiiLine}
+${mcxLine}
 
 🎯 <b>1. New Signals Today: ${sections.newSignals.length}</b>
 ${sections.newSignals.length > 0 ? sections.newSignals.join("\n") : none}
@@ -289,19 +316,20 @@ async function fetchDeliveryFailures(): Promise<string[]> {
 
 export async function buildDigestData(): Promise<{
   sections: DigestSections;
-  market: { vix: VixInfo; fii: FiiInfo };
+  market: { vix: VixInfo; fii: FiiInfo; mcx: McxDigestInfo };
   now: string;
 }> {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const todaySignals = getTodaySignals();
-  const [trades, vix, fii, deliveryFailures] = await Promise.all([
+  const [trades, vix, fii, mcx, deliveryFailures] = await Promise.all([
     fetchTodayTrades(),
     fetchVIXInfo(),
     fetchFII(),
+    fetchMCXDigestInfo(),
     fetchDeliveryFailures(),
   ]);
   const sections = categorizeTrades(trades, todaySignals, deliveryFailures);
-  return { sections, market: { vix, fii }, now };
+  return { sections, market: { vix, fii, mcx }, now };
 }
 
 export async function sendDailyDigest(): Promise<boolean> {

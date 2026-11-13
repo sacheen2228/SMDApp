@@ -389,6 +389,31 @@ export async function GET(request: NextRequest) {
     // Run the scan
     const result = await runIntradayScan(config, optionChains, marketData);
 
+    // ─── MC Time-Machine confidence gate (server-only Breeze multi-day) ───
+    // Offline: gap ≥ 0.05 lifted engine-signal accuracy 39.1% → 62.1%.
+    // Fail-open when history is missing (mcPass null → never blocks).
+    try {
+      const { annotateCandidatesWithMc } = await import("@/lib/mc-confidence-gate.server");
+      await annotateCandidatesWithMc(result.candidates ?? [], {
+        maxCandidates: 12,
+        budgetMs: 6000,
+      });
+      // Float MC-passing candidates on score ties.
+      (result.candidates ?? []).sort((a: any, b: any) => {
+        const ap = a.mcPass === true ? 1 : a.mcPass === false ? 0 : 0.5;
+        const bp = b.mcPass === true ? 1 : b.mcPass === false ? 0 : 0.5;
+        if (ap !== bp) return bp - ap;
+        return (b.totalScore ?? 0) - (a.totalScore ?? 0);
+      });
+      // Keep best picks consistent with the re-sorted list.
+      const cands = result.candidates ?? [];
+      const hp = cands.filter((c: any) => (c.totalScore ?? 0) >= 25);
+      result.bestBullish = hp.find((c: any) => c.direction === "BULLISH") || null;
+      result.bestBearish = hp.find((c: any) => c.direction === "BEARISH") || null;
+    } catch {
+      // MC gate is additive — never fail the scan if it errors.
+    }
+
     // ─── Unified Intraday Intelligence — additive market-level decision ───
     // Reuses data the scan already fetched (daily candles, VIX, PCR, OI chain).
     // No redundant network calls. Does not replace existing scanner scoring.
@@ -587,19 +612,18 @@ export async function GET(request: NextRequest) {
           const avgSentiment = stockNews.reduce((sum: number, a: any) => sum + a.sentiment, 0) / stockNews.length;
           const newsScore = Math.round((avgSentiment + 1) * 50);
 
-          // SAME weights as the engine's totalScore (intraday-scanner.ts). The
-          // dominant term is the real signal engine (engineScore × 0.35) and
-          // news is folded in at 5%. A different formula here made the score —
+          // SAME weights as the engine's totalScore (intraday-scanner.ts).
+          // Fundamental is not scored (no fundamentals source); news is real
+          // RSS sentiment at 5%. A different formula here made the score —
           // and therefore the ranking and the alerts — change between runs
           // depending on whether news happened to load.
           const newTotalScore = Math.round(
             (candidate.marketScore * 0.05) +
             (candidate.sectorScore * 0.10) +
-            (candidate.technicalScore * 0.25) +
+            (candidate.technicalScore * 0.28) +
             (candidate.engineScore * 0.35) +
             (candidate.optionsScore * 0.05) +
-            (candidate.volumeScore * 0.10) +
-            (candidate.fundamentalScore * 0.05) +
+            (candidate.volumeScore * 0.12) +
             (newsScore * 0.05)
           );
 
@@ -778,6 +802,8 @@ export async function GET(request: NextRequest) {
           if (equityAlerts >= MAX_SCANNER_EQUITY_ALERTS) break;
           if (stock.direction !== "BULLISH") continue;
           if ((stock.totalScore ?? 0) < MIN_SCANNER_EQUITY_SCORE) continue;
+          // MC Time-Machine gate: block only when computed AND failed (fail-open).
+          if ((stock as any).mcPass === false) continue;
           // Same unified-decision gate as the option path below.
           const equityUnifiedOk = (stock as any).unifiedDecision === "TRADE" || (stock as any).hardGatesPassed === true;
           if (!equityUnifiedOk) continue;
@@ -804,6 +830,8 @@ export async function GET(request: NextRequest) {
         if (!opt || !(opt.premium > 0)) continue;
         if ((stock.totalScore ?? 0) < 65) continue;
         if (!dataQualityOk) continue;
+        // MC Time-Machine gate: block only when computed AND failed (fail-open).
+        if ((stock as any).mcPass === false) continue;
         const unifiedOk = (stock as any).unifiedDecision === "TRADE" || (stock as any).hardGatesPassed === true;
         if (!unifiedOk) continue;
         const risk = opt.premium - Number(opt.stopLoss || 0);

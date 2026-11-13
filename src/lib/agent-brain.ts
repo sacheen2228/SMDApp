@@ -11,6 +11,7 @@ import { OPTION_CHAIN_TOOL, OPTION_CHAIN_KNOWLEDGE, runReadOptionChain } from ".
 import { INDICATOR_TOOLS, INDICATOR_KNOWLEDGE, runCheckIndicators, runBacktestIndicator } from "./indicators";
 import { BRAIN_FLAGS } from "./brain-flags";
 import { SYMBOL_CONFIGS } from "./symbol-config";
+import { formatMCXQuoteToolResponse } from "./mcx/bridge";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -1809,7 +1810,7 @@ ${changes.join("\n")}`;
         const BASE2 = ctx?.apiBase || "";
         const [todayRes, mcxRes] = await Promise.allSettled([
           fetch(BASE2 + "/api/today-trades", { signal: AbortSignal.timeout(30000) }).then(r => r.json()),
-          fetch(BASE2 + "/api/mcx?mode=scanner", { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
+          fetch(BASE2 + "/api/mcx/scanner?mode=best", { signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(() => null),
         ]);
         const lines: string[] = [];
         if (todayRes.status === "fulfilled" && todayRes.value?.success) {
@@ -1823,10 +1824,10 @@ ${changes.join("\n")}`;
           lines.push("NIFTY/SENSEX/Stock F&O — data unavailable");
         }
         if (mcxRes.status === "fulfilled" && mcxRes.value) {
-          const best = mcxRes.value?.bestTrade || mcxRes.value?.data?.bestTrade;
-          if (best && (best.confidence || 0) >= minConf) {
+          const best = mcxRes.value?.bestTrade;
+          if (best && best.grade !== "NO_TRADE" && (best.score || 0) >= minConf) {
             lines.push(`\nMCX Commodity:`);
-            lines.push(`${best.symbol} — ${best.direction} | ${best.confidence}% | Entry ₹${best.entry} | SL ₹${best.stopLoss}`);
+            lines.push(`${best.symbol} — ${best.direction} | ${best.score}% | Entry ₹${best.entry} | SL ₹${best.stopLoss} | T ₹${best.target}`);
           }
         }
         return lines.join("\n") || "No high-accuracy setups found across any instrument";
@@ -1835,12 +1836,11 @@ ${changes.join("\n")}`;
 
     case "get_mcx_data": {
       try {
-        const mcxSym = args.symbol || "CRUDEOIL";
-        const res = await fetch(BASE + "/api/mcx?symbol=" + mcxSym, { signal: AbortSignal.timeout(15000) });
+        const mcxSym = String(args.symbol || "CRUDEOIL").trim().toUpperCase();
+        const res = await fetch(BASE + "/api/mcx?symbol=" + encodeURIComponent(mcxSym), { signal: AbortSignal.timeout(15000) });
         const data = await res.json();
-        if (!data.success) return "Failed to fetch MCX data for " + mcxSym;
-        const q = data.data?.quote || data.data || {};
-        return "MCX " + mcxSym + ":\nLTP: ₹" + (q.ltp || q.lastPrice || "N/A") + "\nChange: " + (q.change || 0) + " (" + (q.changePct || 0) + "%)\nDay High: ₹" + (q.dayHigh || "N/A") + " | Day Low: ₹" + (q.dayLow || "N/A") + "\nVolume: " + (q.volume || 0).toLocaleString("en-IN") + "\nSource: " + (q.source || "MOAPI");
+        if (!data.success) return data.error || ("Failed to fetch MCX data for " + mcxSym);
+        return formatMCXQuoteToolResponse(mcxSym, data.quote);
       } catch { return "Error fetching MCX data"; }
     }
 

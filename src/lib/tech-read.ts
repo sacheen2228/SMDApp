@@ -84,70 +84,78 @@ export function atrSeries(c: Candle[], period = 10): (number | undefined)[] {
 /** ADX (Average Directional Index, default period 14).
  *  Returns adx line (0-100) and +di/-di lines as (number | undefined)[] arrays.
  *  Higher ADX = stronger trend; lower ADX = chop / ranging market.
+ *  Wilder smoothing on TR / +DM / −DM, then DI, then DX, then ADX = smoothed DX.
  */
 export function adxSeries(c: Candle[], period = 14): { adx: (number | undefined)[]; pdi: (number | undefined)[]; mdi: (number | undefined)[] } {
   const n = c.length;
-  if (n <= period) return { adx: new Array(n).fill(undefined), pdi: new Array(n).fill(undefined), mdi: new Array(n).fill(undefined) };
+  const undef = () => new Array(n).fill(undefined) as (number | undefined)[];
+  if (n <= period) return { adx: undef(), pdi: undef(), mdi: undef() };
 
-  // True Range components (reuse logic from atrSeries)
-  const tr: number[] = new Array(n).fill(undefined);
-  const plusDM: number[] = new Array(n).fill(undefined);
-  const minusDM: number[] = new Array(n).fill(undefined);
+  const tr: (number | undefined)[] = new Array(n).fill(undefined);
+  const plusDM: (number | undefined)[] = new Array(n).fill(undefined);
+  const minusDM: (number | undefined)[] = new Array(n).fill(undefined);
 
   for (let i = 1; i < n; i++) {
-    const trVal = Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c));
-    tr[i] = trVal;
-
-    const plus = c[i].h - c[i - 1].h;
-    const minus = c[i - 1].l - c[i].l;
-
-    if (plus > 0) plusDM[i] = plus; else plusDM[i] = 0;
-    if (minus > 0) minusDM[i] = minus; else minusDM[i] = 0;
-    // if both +DM and -DM are positive, take the larger one (this is how Wilder's typically handles it,
-    // but the standard is: if +DM > -DM use +DM, if -DM > +DM use -DM, if equal both are 0)
-    // We'll keep them separate and let the smoothing handle it.
+    tr[i] = Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c));
+    const up = c[i].h - c[i - 1].h;
+    const down = c[i - 1].l - c[i].l;
+    plusDM[i] = up > 0 && up > down ? up : 0;
+    minusDM[i] = down > 0 && down > up ? down : 0;
   }
 
-  // Wilder's smoothing: EMA-like with (period-1) multiplier
-  const smooth = (values: number[], initIdx: number): number => {
+  // Wilder-smoothed series: first value at index `period` = mean of [1..period],
+  // then smooth = (prev * (period-1) + current) / period.
+  const wilder = (src: (number | undefined)[]): (number | undefined)[] => {
+    const out: (number | undefined)[] = new Array(n).fill(undefined);
     let sum = 0;
-    for (let i = 1; i <= period; i++) sum += values[i];
+    for (let i = 1; i <= period; i++) sum += src[i] ?? 0;
     let val = sum / period;
+    out[period] = val;
     for (let i = period + 1; i < n; i++) {
-      val = (val * (period - 1) + values[i]) / period;
+      val = (val * (period - 1) + (src[i] ?? 0)) / period;
+      out[i] = val;
     }
-    return val;
+    return out;
   };
 
-  const trAvg = smooth(tr, 1);
-  const plusAvg = smooth(plusDM, 1);
-  const minusAvg = smooth(minusDM, 1);
+  const trS = wilder(tr);
+  const plusS = wilder(plusDM);
+  const minusS = wilder(minusDM);
 
-  const dx: number[] = new Array(n).fill(undefined);
-  const pdi: number[] = new Array(n).fill(undefined);
-  const mdi: number[] = new Array(n).fill(undefined);
-
+  const pdi: (number | undefined)[] = new Array(n).fill(undefined);
+  const mdi: (number | undefined)[] = new Array(n).fill(undefined);
+  const dx: (number | undefined)[] = new Array(n).fill(undefined);
   for (let i = period; i < n; i++) {
-    const sumDI = plusAvg[i] + minusAvg[i];
-    if (sumDI > 0) {
-      dx[i] = Math.abs(plusAvg[i] - minusAvg[i]) / sumDI * 100;
-      pdi[i] = plusAvg[i] / sumDI * 100;
-      mdi[i] = minusAvg[i] / sumDI * 100;
-    }
+    const t = trS[i];
+    if (t == null || t <= 0) continue;
+    const p = ((plusS[i] ?? 0) / t) * 100;
+    const m = ((minusS[i] ?? 0) / t) * 100;
+    pdi[i] = p;
+    mdi[i] = m;
+    const sum = p + m;
+    dx[i] = sum > 0 ? (Math.abs(p - m) / sum) * 100 : 0;
   }
 
-  // ADX is smoothed DX
+  // ADX = Wilder-smoothed DX. First ADX at index 2*period-1 = mean of DX[period..2*period-1].
   const adx: (number | undefined)[] = new Array(n).fill(undefined);
-  // Use the same Wilder smoothing on DX
-  let dxSum = 0;
-  for (let i = period; i < period + period; i++) if (dx[i] != null) dxSum += dx[i];
-  let adxVal = dxSum / period;
-  if (adxVal != null && !isNaN(adxVal)) adx[period + period - 1] = adxVal;
-
-  for (let i = period + period; i < n; i++) {
-    if (dx[i] != null) {
-      adxVal = (adxVal * (period - 1) + dx[i]) / period;
-      adx[i] = adxVal;
+  const first = 2 * period - 1;
+  if (first < n) {
+    let sum = 0;
+    let count = 0;
+    for (let i = period; i <= first && i < n; i++) {
+      const dxi = dx[i];
+      if (dxi != null) { sum += dxi; count++; }
+    }
+    if (count > 0) {
+      let val = sum / count;
+      adx[first] = val;
+      for (let i = first + 1; i < n; i++) {
+        const dxi = dx[i];
+        if (dxi != null) {
+          val = (val * (period - 1) + dxi) / period;
+          adx[i] = val;
+        }
+      }
     }
   }
 
@@ -407,6 +415,7 @@ export function analyzeTf(tf: string, candlesIn: Candle[], symbol: string, p: Te
   if (flat) warnings.push("SuperTrend flipped within the last 12 bars — trend-following signals are whipsawing");
   return {
     tf, bars: c.length, close: c[n].c, atr: atrNow,
+    adx: adxNow, pdi: pdiNow, mdi: mdiNow,
     st: { dir: st.dir[n], line: st.line[n], barsSinceFlip: st.lastFlip != null ? n - st.lastFlip : undefined },
     ema: em, vwap: vw, vsVwap: vw == null ? "NA" : c[n].c >= vw ? "ABOVE" : "BELOW",
     structure: structure(c), pools, sweeps: detectSweeps(c, pools, atrNow), fvg: fairValueGaps(c), warnings,

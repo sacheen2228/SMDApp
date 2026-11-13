@@ -5,6 +5,8 @@ import type { SDMOptionStrike, ScoreObject } from "@/types/sdm";
 import { buildOptionPlan } from "./option-plan";
 import { getLotSizeStrict } from "./symbol-config";
 import { getRiskFreeRate, isExpiryToday, parseExpiryDateLoose } from "./greeks";
+import { computeMaxPain } from "./sdm-oianalysis";
+import { BRAIN_FLAGS } from "./brain-flags";
 
 // ─── 1. PCR Score ────────────────────────────────────────────────
 // Put-Call Ratio: total PE OI / total CE OI
@@ -1071,6 +1073,84 @@ export interface FullAnalysis {
 
 // runFullAnalysis: legacy analysis function used by API route
 // Returns a basic analysis object; the new SDM bot does richer analysis client-side
+
+/**
+ * Phase 6 — multi-factor OI vote for the Simple Tab (SIMPLE_ENGINE=v2).
+ * Real chain data only: PCR, near-ATM OI-change balance, ATM OI wall vs spot,
+ * max-pain pull. Same fail-closed NEUTRAL as the legacy PCR path. No candles,
+ * no fabricated premiums.
+ */
+function directionV2(
+  strikes: SDMOptionStrike[],
+  spot: number,
+  pcr: number,
+  maxPain: number,
+): { sentiment: "bullish" | "bearish" | "neutral"; confidence: number; direction: "CALL" | "PUT" | "NEUTRAL" } {
+  const THRESHOLD = 0.15;
+  const weights = { pcr: 0.35, oiChange: 0.3, wall: 0.2, maxPain: 0.15 };
+
+  // 1) PCR vote — same bands as legacy
+  const pcrVote = pcr > 1.2 ? 1 : pcr < 0.75 ? -1 : 0;
+
+  // 2) OI-change balance on strikes within ±3% of spot (near-ATM)
+  const near = strikes.filter((s) => Math.abs(s.strike - spot) <= spot * 0.03);
+  let ceChg = 0;
+  let peChg = 0;
+  for (const s of near) {
+    if (s.ce) ceChg += s.ce.oiChg;
+    if (s.pe) peChg += s.pe.oiChg;
+  }
+  const oiTotal = Math.abs(ceChg) + Math.abs(peChg);
+  // Call writing = bearish (call side building); put writing = bullish
+  const oiVote = oiTotal > 0 ? (peChg - ceChg) / oiTotal : 0; // ∈ [-1, 1]
+
+  // 3) ATM OI wall: which side holds more near-ATM OI
+  let atmCeOi = 0;
+  let atmPeOi = 0;
+  const atm = strikes.find((s) => s.strike === spot) ??
+    near.reduce<SDMOptionStrike | null>(
+      (best, s) =>
+        !best || Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best,
+      null,
+    );
+  if (atm) {
+    // Aggregate wall = max single-strike OI per side within near window
+    for (const s of near) {
+      if (s.ce && s.ce.oi > atmCeOi) atmCeOi = s.ce.oi;
+      if (s.pe && s.pe.oi > atmPeOi) atmPeOi = s.pe.oi;
+    }
+  }
+  const wallTotal = atmCeOi + atmPeOi;
+  const wallVote = wallTotal > 0 ? (atmPeOi - atmCeOi) / wallTotal : 0; // put-heavy = +1
+
+  // 4) Max-pain pull: spot above max pain → bullish (writers want price down to pain… wait)
+  // Sellers win if spot settles AT max pain. Spot ABOVE max pain → pain is below →
+  // gravity pulls down → bearish. Spot BELOW max pain → gravity up → bullish.
+  const painDist = maxPain !== 0 ? (spot - maxPain) / (maxPain || 1) : 0;
+  const painVote = painDist > 0.002 ? -1 : painDist < -0.002 ? 1 : 0;
+
+  const score =
+    pcrVote * weights.pcr +
+    oiVote * weights.oiChange +
+    wallVote * weights.wall +
+    painVote * weights.maxPain;
+
+  // Strict threshold: a single factor (max pain alone = 0.15) must not flip
+  // a fully flat chain off NEUTRAL — need genuine multi-factor agreement.
+  if (score > THRESHOLD) {
+    // Directional confidence in [45, 100] — never the neutral 40 floor
+    const confidence = Math.min(100, 45 + score * 55);
+    return { sentiment: "bullish", confidence, direction: "CALL" };
+  }
+  if (score < -THRESHOLD) {
+    const confidence = Math.min(100, 45 + Math.abs(score) * 55);
+    return { sentiment: "bearish", confidence, direction: "PUT" };
+  }
+  return { sentiment: "neutral", confidence: 40, direction: "NEUTRAL" };
+}
+
+export { directionV2 };
+
 export function runFullAnalysis(
   strikes: SDMOptionStrike[],
   spotPrice: number,
@@ -1102,45 +1182,55 @@ export function runFullAnalysis(
     }
   }
 
-  // Max pain calculation
-  for (const test of strikes) {
-    let pain = 0;
-    for (const s of strikes) {
-      if (s.ce) pain += Math.abs(test.strike - s.strike) * s.ce.oi;
-      if (s.pe) pain += Math.abs(test.strike - s.strike) * s.pe.oi;
-    }
-    if (pain < minPain) {
-      minPain = pain;
-      maxPain = test.strike;
-    }
-  }
+  // Max pain — single calculator (sdm-oianalysis.computeMaxPain)
+  maxPain = computeMaxPain(strikes) || spotPrice;
+  minPain = 0; // retained for any external reader; pain minimum not exposed
 
   const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
   // PE has historically lost far more than CE on this book (0/571 wins).
   // Require a stronger bearish PCR before emitting BUY PUT, and score
   // bearish confidence more conservatively than bullish.
   const pcrVal = pcr ?? 1;
-  const sentiment = pcrVal > 1.2 ? "bullish" : pcrVal < 0.75 ? "bearish" : "neutral";
-  const confidence = Math.min(100, Math.max(20,
-    pcrVal > 1.2 ? 50 + (pcrVal - 1.2) * 50
-    : pcrVal < 0.75 ? 45 + (0.75 - pcrVal) * 40
-    : 40));
+
+  // Direction engine (Phase 6): legacy = PCR-only; v2 = multi-factor OI vote.
+  // Both share the same fail-closed NEUTRAL rules — NEUTRAL never invents a leg.
+  let sentiment: string;
+  let confidence: number;
+  let action = "WAIT";
+  let direction = "NEUTRAL";
+
+  if (BRAIN_FLAGS.simpleEngine === "v2") {
+    const v2 = directionV2(strikes, spotPrice, pcrVal, maxPain);
+    sentiment = v2.sentiment;
+    confidence = v2.confidence;
+    direction = v2.direction;
+    action =
+      direction === "CALL" ? "BUY CALL" : direction === "PUT" ? "BUY PUT" : "WAIT";
+  } else {
+    sentiment = pcrVal > 1.2 ? "bullish" : pcrVal < 0.75 ? "bearish" : "neutral";
+    confidence = Math.min(100, Math.max(20,
+      pcrVal > 1.2 ? 50 + (pcrVal - 1.2) * 50
+      : pcrVal < 0.75 ? 45 + (0.75 - pcrVal) * 40
+      : 40));
+    if (sentiment === "bullish") { action = "BUY CALL"; direction = "CALL"; }
+    else if (sentiment === "bearish") { action = "BUY PUT"; direction = "PUT"; }
+  }
 
   // Calculate days to expiry — loose parse (Breeze/DD-MMM-YYYY/ISO)
   const today = new Date();
   const expiry = parseExpiryDateLoose(expiryDate, today) ?? new Date(expiryDate);
   const daysToExpiry = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  // Determine action based on sentiment
-  let action = "WAIT";
-  let direction = "NEUTRAL";
-  if (sentiment === "bullish") { action = "BUY CALL"; direction = "CALL"; }
-  else if (sentiment === "bearish") { action = "BUY PUT"; direction = "PUT"; }
-
-  // Find ATM data for entry/tp/sl
+  // Find ATM data for entry/tp/sl — ONLY when a real direction was voted.
+  // NEUTRAL must not pick a PE premium just because isCall was false (D-1).
   const atmData = strikes.find(s => s.strike === atmStrike);
   const isCall = direction === "CALL";
-  const rawEntry = isCall ? (atmData?.ce?.ltp || 0) : (atmData?.pe?.ltp || 0);
+  const isPut = direction === "PUT";
+  const rawEntry = isCall
+    ? (atmData?.ce?.ltp || 0)
+    : isPut
+      ? (atmData?.pe?.ltp || 0)
+      : 0;
 
   // Reject entries below minimum premium — stale/closing data produces unrealistic values
   // NIFTY/BANKNIFTY/SENSEX options rarely trade below ₹5; anything below is likely stale
@@ -1160,7 +1250,7 @@ export function runFullAnalysis(
   // The instrument symbol is not a parameter of runFullAnalysis — take it from the
   // option chain rows (the ticker symbol) and fall back to NIFTY for lot sizing.
   const chainSymbol = String(symbol || "NIFTY").toUpperCase();
-  const plan = entryPrice > 0
+  const plan = entryPrice > 0 && (isCall || isPut)
     ? buildOptionPlan({
         symbol: chainSymbol,
         optionType: isCall ? "CE" : "PE",
@@ -1173,10 +1263,10 @@ export function runFullAnalysis(
 
   // FAIL CLOSED: no house plan → NO TRADE. The old code fell back to a ±15% stop
   // with a 1.15 target (R:R 1:1) — a plan the ledger proves loses money.
-  const planError = entryPrice > 0 && !plan
+  const planError = entryPrice > 0 && (isCall || isPut) && !plan
     ? `no valid option plan for ₹${entryPrice.toFixed(2)} — the stop or the targets do not fit inside the premium`
     : "";
-  if (!plan) {
+  if (entryPrice > 0 && !plan && (isCall || isPut)) {
     action = "WAIT";
     direction = "NEUTRAL";
   }
@@ -1184,6 +1274,22 @@ export function runFullAnalysis(
   const tp1 = plan?.targets[0] ?? 0;
   const tp2 = plan?.targets[1] ?? plan?.targets[0] ?? 0;
   const tp3 = plan?.targets[2] ?? plan?.targets[1] ?? plan?.targets[0] ?? 0;
+
+  // Re-read direction AFTER every force-WAIT above so optionType/entry never
+  // claim a leg the action does not allow (D-1).
+  const finalIsCall = direction === "CALL";
+  const finalIsPut = direction === "PUT";
+  const optionType: "CE" | "PE" | undefined = finalIsCall
+    ? "CE"
+    : finalIsPut
+      ? "PE"
+      : undefined;
+  const finalEntry = finalIsCall || finalIsPut ? entryPrice : 0;
+  const finalStop = finalIsCall || finalIsPut ? stopLoss : 0;
+  const finalTp1 = finalIsCall || finalIsPut ? tp1 : 0;
+  const finalTp2 = finalIsCall || finalIsPut ? tp2 : 0;
+  const finalTp3 = finalIsCall || finalIsPut ? tp3 : 0;
+  const finalPlan = finalIsCall || finalIsPut ? plan : null;
 
   // Find highest CE/PE OI for gamma walls
   let maxCEOI = 0;
@@ -1245,38 +1351,40 @@ export function runFullAnalysis(
       action,
       strike: atmStrike,
       direction,
-      optionType: isCall ? "CE" : "PE",
+      // D-1: only a voted CALL/PUT owns a leg. NEUTRAL → undefined (never PE).
+      optionType,
       sdmScore: Math.round(confidence),
       riskLevel,
       oibuildup,
       gammaWallSupport: peWallStrike,
       gammaWallResistance: ceWallStrike,
-      entryPrice,
+      entryPrice: finalEntry,
       idealBuyRange: {
-        low: entryPrice > 0 ? Math.round(entryPrice * 0.95) : 0,
-        high: entryPrice > 0 ? Math.round(entryPrice * 1.05) : 0,
+        low: finalEntry > 0 ? Math.round(finalEntry * 0.95) : 0,
+        high: finalEntry > 0 ? Math.round(finalEntry * 1.05) : 0,
       },
       lateEntryWarning: daysToExpiry <= 1,
-      stopLoss,
+      stopLoss: finalStop,
       // The house plan: the stop is a RUPEE risk (20% of the amount deployed) and
       // the targets are 2R / 3R / 4R of it.
-      stopLossReason: plan
-        ? `rupee-risk stop ${plan.stopPctOfPremium ? (plan.stopPctOfPremium * 100).toFixed(0) : "20"}% below entry (${plan.riskPoints.toFixed(2)} pts = 1R) — invalidate if spot crosses ${maxPain}`
+      stopLossReason: finalPlan
+        ? `rupee-risk stop ${finalPlan.stopPctOfPremium ? (finalPlan.stopPctOfPremium * 100).toFixed(0) : "20"}% below entry (${finalPlan.riskPoints.toFixed(2)} pts = 1R) — invalidate if spot crosses ${maxPain}`
         : planError || `no plan — invalidate if spot crosses ${maxPain}`,
-      tp1Pct: entryPrice > 0 && tp1 > 0 ? Math.round(((tp1 - entryPrice) / entryPrice) * 100) : 0,
-      tp1,
-      tp2Pct: entryPrice > 0 && tp2 > 0 ? Math.round(((tp2 - entryPrice) / entryPrice) * 100) : 0,
-      tp2,
-      tp3Pct: entryPrice > 0 && tp3 > 0 ? Math.round(((tp3 - entryPrice) / entryPrice) * 100) : 0,
-      tp3,
+      tp1Pct: finalEntry > 0 && finalTp1 > 0 ? Math.round(((finalTp1 - finalEntry) / finalEntry) * 100) : 0,
+      tp1: finalTp1,
+      tp2Pct: finalEntry > 0 && finalTp2 > 0 ? Math.round(((finalTp2 - finalEntry) / finalEntry) * 100) : 0,
+      tp2: finalTp2,
+      tp3Pct: finalEntry > 0 && finalTp3 > 0 ? Math.round(((finalTp3 - finalEntry) / finalEntry) * 100) : 0,
+      tp3: finalTp3,
       trailingTarget: confidence >= 65,
       reasons: [
-        sentiment === "bullish" ? `Bullish PCR at ${pcr.toFixed(2)}` : "",
-        sentiment === "bearish" ? `Bearish PCR at ${pcr.toFixed(2)}` : "",
+        sentiment === "bullish" ? `Bullish PCR at ${pcr?.toFixed(2)}` : "",
+        sentiment === "bearish" ? `Bearish PCR at ${pcr?.toFixed(2)}` : "",
+        sentiment === "neutral" ? `Neutral PCR at ${pcr?.toFixed(2)} — no leg` : "",
         `Max Pain at ${maxPain}`,
         `ATM Strike: ${atmStrike}`,
         confidence >= 65 ? `High confidence (${confidence.toFixed(0)}%)` : "",
-        plan ? `House plan: stop ${plan.riskPoints.toFixed(2)} pts (1R), targets 2R/3R/4R` : "",
+        finalPlan ? `House plan: stop ${finalPlan.riskPoints.toFixed(2)} pts (1R), targets 2R/3R/4R` : "",
         planError,
       ].filter(Boolean),
     },

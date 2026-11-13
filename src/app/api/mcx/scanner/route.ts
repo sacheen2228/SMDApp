@@ -3,6 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { runMCXScanner, getBestMCXTrade, getMCXScannerSummary } from '@/lib/mcx/scanner';
+import { isMCXTradeEligible } from '@/lib/mcx/types';
 
 export async function GET(request: Request) {
   try {
@@ -28,7 +29,9 @@ export async function GET(request: Request) {
 
     // Full scanner results
     const results = await runMCXScanner();
-    const tradeable = results.filter(r => r.grade !== 'NO_TRADE');
+    const tradeable = results.filter(
+      r => r.grade !== 'NO_TRADE' && isMCXTradeEligible(r.symbol)
+    );
 
     return NextResponse.json({
       success: true,

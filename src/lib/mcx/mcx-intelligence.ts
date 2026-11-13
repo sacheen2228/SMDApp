@@ -16,14 +16,6 @@ import { analyzeMCXVolatility, type MCXVolatilityResult } from './mcx-volatility
 import { analyzeMCXOptionIntel, calculateOptionRR, type MCXOptionIntelResult } from './mcx-option-intel';
 import { scoreMCXCandidate, DEFAULT_MCX_WEIGHTS, type MCXScoreResult } from './mcx-scorer';
 
-// ── Yahoo candle fetching (same as scanner) ──
-const MCX_TO_YAHOO: Record<MCXCommodity, string> = {
-  CRUDEOIL: 'CL=F', CRUDEOILM: 'CL=F',
-  NATURALGAS: 'NG=F', NATGASMINI: 'NG=F',
-  GOLD: 'GC=F', GOLDM: 'GC=F', GOLDGUINEA: 'GC=F',
-  SILVER: 'SI=F', SILVERM: 'SI=F', SILVERMIC: 'SI=F',
-};
-
 interface Candle {
   time: number;
   open: number;
@@ -39,41 +31,11 @@ const INTEL_CACHE_TTL = 60_000; // 60s
 const candleCache = new Map<string, { candles: Candle[]; ts: number }>();
 
 // ── Fetch candles ──
+// MO API / Breeze expose no MCX candle/OHLC feed, so there is no real candle
+// source for commodities. Return empty rather than fabricating candles from
+// a banned or nonexistent provider.
 async function fetchCandles(symbol: MCXCommodity): Promise<Candle[]> {
-  const yahooSym = MCX_TO_YAHOO[symbol];
-  if (!yahooSym) return [];
-  const cached = candleCache.get(yahooSym);
-  if (cached && Date.now() - cached.ts < 300_000) return cached.candles;
-
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(6000),
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result?.timestamp || !result?.indicators?.quote?.[0]) return [];
-
-    const ts = result.timestamp;
-    const q = result.indicators.quote[0];
-    const candles: Candle[] = [];
-    for (let i = 0; i < ts.length; i++) {
-      const close = q.close?.[i];
-      if (close == null) continue;
-      candles.push({
-        time: ts[i],
-        open: q.open?.[i] ?? close,
-        high: q.high?.[i] ?? close,
-        low: q.low?.[i] ?? close,
-        close,
-        volume: q.volume?.[i] || 0,
-      });
-    }
-    if (candles.length > 0) candleCache.set(yahooSym, { candles, ts: Date.now() });
-    return candles;
-  } catch { return []; }
+  return [];
 }
 
 // ── Intelligence for a single instrument ──
@@ -167,7 +129,9 @@ export async function analyzeMCXInstrument(
   const score = direction === 'LONG' ? longScore : shortScore;
   const optionCandidate = direction === 'LONG' ? optionIntel.bestCE : optionIntel.bestPE;
 
-  if (score.total >= 50 && optionCandidate && currentPrice > 0) {
+  // No MCX candle source exists in MO/Breeze, so honest futures entry/SL/target
+  // levels cannot be derived — never fabricate them.
+  if (candles.length > 0 && score.total >= 50 && optionCandidate && currentPrice > 0) {
     // Calculate entry/SL/Target from structure
     const atr = volatility.atr;
     let entry = currentPrice;

@@ -86,3 +86,6 @@ data/voice-config.json
 
 # nse-options-signal skill runtime state (snapshots, context, locks, logs)
 skills/nse-options-signal/data/
+
+# Breeze multi-day candle caches (regenerable via mc-confidence-gate)
+data/cache/

@@ -116,9 +116,23 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-function scoreOI(oiChg: number, ltp: number, prevLtp: number): { score: number; label: string } {
+function scoreOI(
+  oiChg: number,
+  ltp: number,
+  prevLtp: number,
+): { score: number; label: string } {
   const absChg = Math.abs(oiChg);
   if (absChg < SIGNAL_CONFIG.OI_SIGNIFICANT) return { score: 0, label: "OI flat" };
+
+  // Unknown previous premium (<= 0 / missing) → direction is unknown.
+  // Report OI movement only — never invent Long/Short buildup from absolute ltp.
+  if (!(prevLtp > 0) || !(ltp > 0)) {
+    const score = clamp((absChg / 100000) * 15, 0, 15);
+    return {
+      score: oiChg > 0 ? score : -score,
+      label: oiChg > 0 ? "OI rising" : "OI falling",
+    };
+  }
 
   const priceUp = ltp > prevLtp;
   const oiUp = oiChg > 0;
@@ -208,13 +222,16 @@ export function evaluateStrikeSignal(
   // ── PCR / Max Pain skew ──
   const spotAboveMaxPain = spot > maxPain;
   const spotBelowMaxPain = spot < maxPain;
-  const trendUp = ceLtp > cePrevLtp; // rough price direction proxy
+  // Trend proxy only when a real previous premium exists — never invent "up"
+  // from absolute ltp > 0 (D-4).
+  const trendKnown = cePrevLtp > 0 && ceLtp > 0;
+  const trendUp = trendKnown ? ceLtp > cePrevLtp : null;
 
-  if (pcr < SIGNAL_CONFIG.PCR_BULLISH && spotBelowMaxPain && trendUp) {
+  if (pcr < SIGNAL_CONFIG.PCR_BULLISH && spotBelowMaxPain && trendUp === true) {
     ceConf += 20;
     reasons.push("PCR < 0.9 + below Max Pain + trending up → bias calls");
   }
-  if (pcr > SIGNAL_CONFIG.PCR_BEARISH && spotAboveMaxPain && !trendUp) {
+  if (pcr > SIGNAL_CONFIG.PCR_BEARISH && spotAboveMaxPain && trendUp === false) {
     peConf += 20;
     reasons.push("PCR > 1.1 + above Max Pain + trending down → bias puts");
   }
