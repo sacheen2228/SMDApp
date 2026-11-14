@@ -19,7 +19,9 @@ import {
 } from "@/components/ui/select";
 import { getCurrentSession } from "@/lib/market-session";
 import { dataSourceBadge } from "@/lib/data-source-label";
+import { analyzeSMC, type SMCResult } from "@/lib/smc-layer";
 import {
+  Atom,
   ArrowUp,
   ArrowDown,
   Clock,
@@ -56,6 +58,9 @@ interface MarketSummary {
   atmStrike: number;
   totalCallOI: number;
   totalPutOI: number;
+  callOiChange?: number | null;
+  putOiChange?: number | null;
+  maxPain?: number;
 }
 
 interface OptionSide {
@@ -113,6 +118,8 @@ interface SimpleModeProps {
   marketClosed?: boolean;
   /** Quant toolkit block (forward/EM/VRP/skew/scorecard) from /api/option-chain analysis. */
   quant?: import("@/lib/quant-toolkit").QuantBlock | null;
+  /** SMC layer result (sweep + CHoCH + displacement + FVG + order block). */
+  smc?: SMCResult | null;
 }
 
 function fmt(n: number | undefined | null): string {
@@ -228,6 +235,7 @@ export const SimpleMode = memo(function SimpleMode({
   barStamp,
   marketClosed,
   quant,
+  smc,
 }: SimpleModeProps) {
   const rec = recommendation;
   const confirmations = confirmationsProp || rec?.confirmations || [];
@@ -246,6 +254,7 @@ export const SimpleMode = memo(function SimpleMode({
   const liveVIXRaw = summary?.indiaVIX ?? (rec?.marketContext?.vix > 0 ? rec.marketContext.vix : undefined);
   const vixLive = liveVIXRaw != null && Number.isFinite(liveVIXRaw) && liveVIXRaw > 0;
   const liveVIX = liveVIXRaw ?? 15;
+  const dte = selectedExpiry ? expiries?.find((e) => e.date === selectedExpiry)?.daysToExpiry ?? rec?.daysToExpiry ?? 0 : rec?.daysToExpiry ?? 0;
   const liveMaxPain = rec?.marketContext?.maxPain;
   const liveATM = summary?.atmStrike ?? rec?.strike ?? 0;
   const liveATMValid = liveATM != null && Number.isFinite(liveATM) && liveATM > 0;
@@ -868,6 +877,424 @@ export const SimpleMode = memo(function SimpleMode({
               Baselines are zero-drift references, not forecasts. No win probability is produced.
             </p>
           </div>
+        )}
+
+        {/* 5c. SMC Layer (objective price/volume/OI behaviour only) */}
+        <div className="rounded-xl border bg-card p-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Shield className="w-4 h-4 text-blue-500" />
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+              SMC Layer ({smc?.scorePoints ?? 0}/2)
+            </span>
+            <span className={`ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded ${
+              !smc ? "bg-muted text-muted-foreground" :
+              smc.scorePoints >= 2 ? "bg-emerald-500/15 text-emerald-500" :
+              smc.scorePoints === 1 ? "bg-yellow-500/15 text-yellow-500" :
+              "bg-muted text-muted-foreground"
+            }`}>
+              {!smc ? "N/A" : smc.scorePoints === 2 ? "STRONG" : smc.scorePoints === 1 ? "WEAK" : "NONE"}
+            </span>
+          </div>
+
+          {!smc && (
+            <div className="h-32 flex flex-col items-center justify-center text-muted-foreground">
+              <p className="text-[10px]">No candle data available</p>
+              <p className="text-[9px] text-muted-foreground/60 mt-1">
+                SMC needs real 5m candles (Breeze). Market closed or feed down.
+              </p>
+            </div>
+          )}
+
+          {smc && (
+            <>
+              {/* Structure timeline + trend + premium/discount + liquidity grabs */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] mb-2">
+                <span className="font-bold text-muted-foreground">Trend</span>
+                <span className={`font-bold ${smc.structureTrend === "UP" ? "text-emerald-500" : smc.structureTrend === "DOWN" ? "text-red-500" : "text-yellow-500"}`}>
+                  {smc.structureTrend === "UP" ? "▲ UP (HH/HL)" : smc.structureTrend === "DOWN" ? "▼ DOWN (LH/LL)" : "— SIDEWAYS"}
+                </span>
+                <span className="text-muted-foreground">Zone</span>
+                <span className={`font-bold ${smc.premiumDiscount.zone === "premium" ? "text-red-500" : smc.premiumDiscount.zone === "discount" ? "text-emerald-500" : "text-muted-foreground"}`}>
+                  {smc.premiumDiscount.zone === "none" ? "—" : `${smc.premiumDiscount.zone.toUpperCase()}${smc.premiumDiscount.positionPct != null ? ` ${smc.premiumDiscount.positionPct.toFixed(0)}%` : ""}`}
+                </span>
+                <span className="text-muted-foreground">Grabs</span>
+                <span className="font-bold text-blue-400">{smc.liquidityGrabs}</span>
+                <span className="text-muted-foreground">EQ H/L</span>
+                <span className="font-bold text-blue-400">{smc.equalLevels.length}</span>
+              </div>
+
+              {/* Premium/discount visual bar */}
+              {smc.premiumDiscount.mid != null && smc.premiumDiscount.swingLow != null && smc.premiumDiscount.swingHigh != null && (
+                <div className="mb-2">
+                  <div className="flex justify-between text-[8px] text-muted-foreground mb-0.5">
+                    <span>Low {smc.premiumDiscount.swingLow.toFixed(0)}</span>
+                    <span>Mid {smc.premiumDiscount.mid.toFixed(0)}</span>
+                    <span>High {smc.premiumDiscount.swingHigh.toFixed(0)}</span>
+                  </div>
+                  <div className="relative h-2 rounded bg-muted overflow-hidden">
+                    <div className="absolute inset-y-0 left-0 w-1/2 bg-emerald-500/25" />
+                    <div className="absolute inset-y-0 right-0 w-1/2 bg-red-500/25" />
+                    {smc.premiumDiscount.positionPct != null && (
+                      <div
+                        className="absolute top-0 bottom-0 w-0.5 bg-foreground"
+                        style={{ left: `${smc.premiumDiscount.positionPct}%` }}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Structure timeline chips */}
+              {smc.structure.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {smc.structure.slice(-8).map((e, i) => (
+                    <span
+                      key={`${e.type}-${e.price}-${i}`}
+                      className={`text-[8px] px-1 py-0.5 rounded font-bold ${
+                        e.type === "BOS" || e.type === "CHOCH"
+                          ? e.dir === "bullish" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+                          : e.type === "HH" || e.type === "HL"
+                          ? "bg-emerald-500/10 text-emerald-500"
+                          : "bg-red-500/10 text-red-500"
+                      }`}
+                      title={`${e.type} @${e.price.toFixed(2)} ${e.time}`}
+                    >
+                      {e.type} {e.price.toFixed(0)}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Equal highs/lows */}
+              {smc.equalLevels.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[9px] font-bold text-muted-foreground mb-0.5">Equal Levels (liquidity pools)</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[9px]">
+                    {smc.equalLevels.map((eq) => (
+                      <span key={`${eq.side}-${eq.price}`} className={eq.swept ? "text-orange-400" : "text-blue-400"}>
+                        {eq.side === "high" ? "EQH" : "EQL"} {eq.price.toFixed(0)} ×{eq.count}
+                        {eq.swept ? " ⚡swept" : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Order blocks + FVGs with distance */}
+              {(smc.orderBlocks.length > 0 || smc.fvgs.some((f) => !f.filled)) && (
+                <div className="mb-2">
+                  <p className="text-[9px] font-bold text-muted-foreground mb-0.5">Zones (OB / FVG)</p>
+                  <div className="space-y-0.5">
+                    {smc.orderBlocks.slice(0, 3).map((ob, i) => {
+                      const mid = (ob.lo + ob.hi) / 2;
+                      const dist = ((mid - smc.spot) / smc.spot * 100);
+                      return (
+                        <div key={`ob-${i}`} className="flex justify-between text-[9px]">
+                          <span className="text-muted-foreground">OB {ob.dir} {ob.lo.toFixed(0)}–{ob.hi.toFixed(0)}</span>
+                          <span className={`font-bold ${dist >= 0 ? "text-red-400" : "text-emerald-400"}`}>
+                            {dist >= 0 ? "+" : ""}{dist.toFixed(2)}%
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {smc.fvgs.filter((f) => !f.filled).slice(0, 3).map((f, i) => {
+                      const mid = (f.lo + f.hi) / 2;
+                      const dist = ((mid - smc.spot) / smc.spot * 100);
+                      return (
+                        <div key={`fvg-${i}`} className="flex justify-between text-[9px]">
+                          <span className="text-muted-foreground">FVG {f.dir} {f.lo.toFixed(0)}–{f.hi.toFixed(0)}</span>
+                          <span className={`font-bold ${dist >= 0 ? "text-red-400" : "text-emerald-400"}`}>
+                            {dist >= 0 ? "+" : ""}{dist.toFixed(2)}%
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Gates table */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mb-2">
+                <div className="flex justify-between border-b pb-0.5">
+                  <span className="text-muted-foreground">G16 Sweep+CHOCH+Disp</span>
+                  <span className={`font-bold ${smc.g16.passed ? "text-emerald-500" : "text-red-500"}`}>
+                    {smc.g16.passed ? "PASS" : "FAIL"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-0.5">
+                  <span className="text-muted-foreground">G17 Level Confluence</span>
+                  <span className={`font-bold ${smc.g17.passed ? "text-emerald-500" : "text-red-500"}`}>
+                    {smc.g17.passed ? "PASS" : "FAIL"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-0.5">
+                  <span className="text-muted-foreground">G18 Retest+Zone</span>
+                  <span className={`font-bold ${smc.g18.passed ? "text-emerald-500" : "text-red-500"}`}>
+                    {smc.g18.passed ? "PASS" : "FAIL"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b pb-0.5">
+                  <span className="text-muted-foreground">G19 Stop Placement</span>
+                  <span className={`font-bold ${smc.g19.passed ? "text-emerald-500" : "text-red-500"}`}>
+                    {smc.g19.passed ? "PASS" : "FAIL"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Score reason */}
+              <p className="text-[9px] text-muted-foreground/70 mb-2">{smc.scoreReason}</p>
+
+              {/* Marked levels table */}
+              <div className="overflow-x-auto mb-2">
+                <table className="w-full text-[9px]">
+                  <thead>
+                    <tr className="text-muted-foreground border-b">
+                      <th className="text-left pb-1">Level</th>
+                      <th className="text-right pb-1">Price</th>
+                      <th className="text-right pb-1">Dist</th>
+                      <th className="text-right pb-1">Swept</th>
+                      <th className="text-right pb-1">Close-Back</th>
+                      <th className="text-right pb-1">Vol</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {smc.tableRows.map((r, i) => (
+                      <tr key={`${r.level}-${r.price}-${i}`} className="border-b border-border/50">
+                        <td className="text-left pb-0.5">{r.level}</td>
+                        <td className="text-right pb-0.5 tabular-nums">{r.price.toFixed(0)}</td>
+                        <td className="text-right pb-0.5 tabular-nums">{r.distPts.toFixed(0)} ({r.distPct})</td>
+                        <td className={`text-right pb-0.5 ${r.swept === "YES" ? "text-emerald-500" : "text-muted-foreground"}`}>{r.swept}</td>
+                        <td className={`text-right pb-0.5 ${r.closeBack === "YES" ? "text-emerald-500" : "text-muted-foreground"}`}>{r.closeBack}</td>
+                        <td className="text-right pb-0.5 tabular-nums">{r.volVsAvg}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Sweeps */}
+              {smc.sweeps.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[9px] font-bold text-muted-foreground mb-1">Sweeps</p>
+                  <div className="space-y-0.5">
+                    {smc.sweeps.map((s, i) => (
+                      <div key={`${s.levelKind}-${s.breakBarIdx}-${s.levelPrice}`} className="flex justify-between text-[9px]">
+                        <span className="text-muted-foreground">{`${s.levelKind} @${s.levelPrice.toFixed(0)}`}</span>
+                        <span className={`font-bold ${s.closeBackInside ? "text-emerald-500" : "text-red-500"}`}>
+                          {`break ${(s.breakPct * 100).toFixed(3)}% | close-back ${s.closeBackInside ? "YES" : "NO"} | vol ${(s.volumeVsAvg ?? 0).toFixed(2)}x | ${s.barsAgo} bars ago`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Footprints */}
+              {smc.footprints.length > 0 && (
+                <p className="text-[9px] text-emerald-500 mb-1">
+                  Footprints: {smc.footprints.join(", ")}
+                </p>
+              )}
+
+              {/* CHoCH after sweep */}
+              {smc.choch.length > 0 && (
+                <p className="text-[9px] text-blue-400 mb-1">
+                  CHoCH: {smc.choch.map((c) => `${c.dir} @${c.swingPrice.toFixed(0)} (${c.barsAgo} bars ago)`).join(", ")}
+                </p>
+              )}
+
+              {/* Honest note */}
+              <p className="text-[9px] text-muted-foreground/60 mt-1">
+                SMC describes observable price/volume/OI behaviour only. No "operator" or "smart money" intent inferred.
+              </p>
+            </>
+          )}
+        </div>
+
+        {/* 5d. OI Buildup + Mini Chain + Greek Logic */}
+        <div className="rounded-xl border bg-card p-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <BarChart3 className="w-4 h-3 text-indigo-500" />
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">OI / Chain / Greeks</span>
+          </div>
+
+          {/* Net OI change (session) */}
+          {summary && (summary.callOiChange != null || summary.putOiChange != null) && (
+            <div className="grid grid-cols-2 gap-2 text-[10px] mb-2">
+              <div className="flex justify-between border-b pb-0.5">
+                <span className="text-muted-foreground">CE ΔOI (session)</span>
+                <span className={`font-bold tabular-nums ${(summary.callOiChange ?? 0) >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                  {(summary.callOiChange ?? 0) >= 0 ? "+" : ""}{formatIndian(summary.callOiChange ?? 0)}
+                </span>
+              </div>
+              <div className="flex justify-between border-b pb-0.5">
+                <span className="text-muted-foreground">PE ΔOI (session)</span>
+                <span className={`font-bold tabular-nums ${(summary.putOiChange ?? 0) >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                  {(summary.putOiChange ?? 0) >= 0 ? "+" : ""}{formatIndian(summary.putOiChange ?? 0)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* OI buildup classification (per-strike patterns aggregated) */}
+          {oiSummary && oiSummary.classifications.length > 0 && (() => {
+            let lb = 0, sb = 0, sc = 0, lu = 0;
+            for (const c of oiSummary.classifications) {
+              if (c.callPattern === "LONG_BUILDUP") lb++;
+              if (c.callPattern === "SHORT_BUILDUP") sb++;
+              if (c.callPattern === "SHORT_COVERING") sc++;
+              if (c.callPattern === "LONG_UNWINDING") lu++;
+              if (c.putPattern === "LONG_BUILDUP") lb++;
+              if (c.putPattern === "SHORT_BUILDUP") sb++;
+              if (c.putPattern === "SHORT_COVERING") sc++;
+              if (c.putPattern === "LONG_UNWINDING") lu++;
+            }
+            const total = lb + sb + sc + lu;
+            if (total === 0) return null;
+            return (
+              <div className="mb-2">
+                <p className="text-[9px] font-bold text-muted-foreground mb-1">OI Buildup ({total} classified strikes)</p>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px]">
+                  <div className="flex justify-between"><span className="text-emerald-500">Long Buildup</span><span className="font-bold">{lb}</span></div>
+                  <div className="flex justify-between"><span className="text-red-400">Short Buildup</span><span className="font-bold">{sb}</span></div>
+                  <div className="flex justify-between"><span className="text-emerald-400">Short Covering</span><span className="font-bold">{sc}</span></div>
+                  <div className="flex justify-between"><span className="text-red-500">Long Unwinding</span><span className="font-bold">{lu}</span></div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Fresh writing + traps detail */}
+          {oiSummary && (oiSummary.freshWriting.length > 0 || oiSummary.traps.length > 0) && (
+            <div className="mb-2 space-y-0.5">
+              {oiSummary.freshWriting.slice(0, 3).map((f: any, i: number) => (
+                <div key={`fw-${i}`} className="flex justify-between text-[9px]">
+                  <span className="text-muted-foreground">Fresh writing {f.side} {f.strike}</span>
+                  <span className="font-bold text-blue-400">+{formatIndian(f.oiChange)}</span>
+                </div>
+              ))}
+              {oiSummary.traps.slice(0, 3).map((t: any, i: number) => (
+                <div key={`tr-${i}`} className="flex justify-between text-[9px]">
+                  <span className="text-muted-foreground">{t.type === "CE_TRAP" ? "CE trap" : "PE trap"} {t.strike}</span>
+                  <span className="font-bold text-orange-400">{formatIndian(t.trappedOI)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Mini chain ATM±2 */}
+          {chainData && chainData.length > 0 && summary?.atmStrike ? (() => {
+            const atm = summary.atmStrike;
+            const rows = chainData
+              .filter((r) => Math.abs(r.strike - atm) <= 1000)
+              .sort((a, b) => a.strike - b.strike)
+              .slice(0, 5);
+            if (!rows.length) return null;
+            return (
+              <div className="overflow-x-auto">
+                <p className="text-[9px] font-bold text-muted-foreground mb-1">Chain ATM±2 (live)</p>
+                <table className="w-full text-[9px]">
+                  <thead>
+                    <tr className="text-muted-foreground border-b">
+                      <th className="text-right pb-1">CE OI</th>
+                      <th className="text-right pb-1">CE Δ</th>
+                      <th className="text-right pb-1">LTP</th>
+                      <th className="text-center pb-1">Strike</th>
+                      <th className="text-left pb-1">LTP</th>
+                      <th className="text-right pb-1">PE Δ</th>
+                      <th className="text-right pb-1">PE OI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => {
+                      const isAtm = r.strike === atm;
+                      return (
+                        <tr key={r.strike} className={`border-b border-border/50 ${isAtm ? "bg-muted/40 font-bold" : ""}`}>
+                          <td className="text-right pb-0.5 tabular-nums text-red-400">{r.ce ? formatIndian(r.ce.oi) : "—"}</td>
+                          <td className={`text-right pb-0.5 tabular-nums ${(r.ce?.oiChg ?? 0) >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                            {r.ce ? `${(r.ce.oiChg ?? 0) >= 0 ? "+" : ""}${formatIndian(r.ce.oiChg)}` : "—"}
+                          </td>
+                          <td className="text-right pb-0.5 tabular-nums">{r.ce?.ltp?.toFixed(1) ?? "—"}</td>
+                          <td className="text-center pb-0.5 tabular-nums">{r.strike}</td>
+                          <td className="text-left pb-0.5 tabular-nums">{r.pe?.ltp?.toFixed(1) ?? "—"}</td>
+                          <td className={`text-right pb-0.5 tabular-nums ${(r.pe?.oiChg ?? 0) >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                            {r.pe ? `${(r.pe.oiChg ?? 0) >= 0 ? "+" : ""}${formatIndian(r.pe.oiChg)}` : "—"}
+                          </td>
+                          <td className="text-right pb-0.5 tabular-nums text-emerald-400">{r.pe ? formatIndian(r.pe.oi) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })() : (
+            <p className="text-[9px] text-muted-foreground/60">Chain data unavailable — mini chain needs live option chain.</p>
+          )}
+
+          {/* Greek logic summary */}
+          {greeks && (
+            <div className="mt-2 pt-2 border-t border-border/50">
+              <p className="text-[9px] font-bold text-muted-foreground mb-1">Greek Logic (traded leg)</p>
+              <div className="grid grid-cols-3 gap-x-2 text-[9px]">
+                <div className="flex justify-between"><span className="text-muted-foreground">Δ</span><span className="font-bold">{greeks.delta != null ? greeks.delta.toFixed(2) : "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Θ%</span><span className="font-bold">{greeks.theta != null && greeks.premium > 0 ? ((Math.abs(greeks.theta) / greeks.premium) * 100).toFixed(1) : "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">IV</span><span className="font-bold">{greeks.iv != null ? greeks.iv.toFixed(1) : "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Γ</span><span className="font-bold">{greeks.gamma != null ? greeks.gamma.toFixed(4) : "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">V</span><span className="font-bold">{greeks.vega != null ? greeks.vega.toFixed(2) : "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Prem</span><span className="font-bold">{greeks.premium > 0 ? greeks.premium.toFixed(1) : "—"}</span></div>
+              </div>
+              <p className="text-[8px] text-muted-foreground/60 mt-1">
+                Δ = direction risk · Θ% = theta decay %/day · Γ = gamma accel · V = vol sensitivity. Black-Scholes on exchange IV.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* 5e. India VIX & Math */}
+        {liveVIXRaw != null && Number.isFinite(liveVIXRaw) && liveVIXRaw > 0 ? (
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Atom className="w-4 h-3 text-orange-500" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">India VIX & Math</span>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Live VIX</span>
+                <span className="font-bold tabular-nums text-base">{liveVIX.toFixed(1)}%</span>
+                <Badge
+                  className={`${liveVIX > 25 ? "bg-red-500 text-white" : liveVIX > 20 ? "bg-orange-500 text-white" : liveVIX > 15 ? "bg-yellow-400 text-black" : liveVIX > 12 ? "bg-green-100 text-black" : "bg-emerald-500 text-white"} text-[9px] px-1.5`}
+                >
+                  {liveVIX > 25
+                    ? "FEAR"
+                    : liveVIX > 20
+                      ? "Elevated"
+                      : liveVIX > 15
+                        ? "Normal"
+                        : liveVIX > 12
+                          ? "Complacent"
+                          : "Low Vol"}
+                </Badge>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Daily 1σ move</span>
+                <span className="font-bold tabular-nums text-base">
+                  {spotPrice != null ? (spotPrice * liveVIX / 100 / Math.sqrt(252)).toFixed(0) : "—"} ₹
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Exp move ({dte}d)</span>
+                <span className="font-bold tabular-nums text-base">
+                  {spotPrice != null && dte > 0 ? (spotPrice * liveVIX / 100 * Math.sqrt(dte / 365)).toFixed(0) : "—"} ₹
+                </span>
+              </div>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                Daily 1σ = spot × VIX/100 / √252 · Exp move = spot × VIX/100 × √(DTE/365) · Source: NSE India VIX
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">India VIX not published — derived values hidden</p>
         )}
 
         {/* 6. Quick Actions */}

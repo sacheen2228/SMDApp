@@ -6,8 +6,8 @@
  * theta-gamma breakeven, Breeden-Litzenberger risk-neutral mass between OI
  * walls, skew, IV-vs-RV variance-risk premium, Bollinger %B/bandwidth
  * percentile, VWAP z-score, GEX proxy (reuses gex-engine), debit-spread math,
- * sizing + breakeven p*, and the 9-factor scorecard (0-2 each) whose verdict
- * is BUY CE / BUY PE / SKIP with qualitative confidence only.
+ * sizing + breakeven p*, and the scorecard (0-2 each, SMC capped at 2)
+ * whose verdict is BUY CE / BUY PE / SKIP with qualitative confidence only.
  *
  * HONESTY RULES (hard):
  *  - Every function returns `available: false` + null fields when its inputs
@@ -15,7 +15,12 @@
  *  - Model outputs are labeled baselines under assumptions, NOT forecasts.
  *  - No win probability is ever produced. The first-passage number is the
  *    zero-drift NULL hypothesis; the scorecard emits qualitative confidence.
+ *  - SMC contributes at most 2 scorecard points; never overrides failed OI
+ *    or Greeks gates (wall proximity / theta-negative always force SKIP).
  */
+
+import { analyzeSMC } from "./smc-layer";
+import { atrSeries, liquidityPools, type Candle } from "./tech-read";
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -472,6 +477,8 @@ export interface ScorecardResult {
   confidence: "Low" | "Medium" | "High";
   agreeingLayers: number; // of trend/trigger/OI/flow layers
   notes: string[];
+  /** SMC market structure at vote time — the direction the trigger checks against. null = unavailable. */
+  smcTrend: "UP" | "DOWN" | "SIDEWAYS" | null;
 }
 
 export interface ScorecardInput {
@@ -489,6 +496,9 @@ export interface ScorecardInput {
   liquidityCost: "good" | "ok" | "wide" | "unknown";
   timingOk: boolean | null; // inside user windows, not first 15m, no loss-cap breach
   spotDistToWallPct: number | null; // % distance to the OPPOSING wall (gate ~0.12-0.16%)
+  smcScore: 0 | 1 | 2 | null; // SMC layer: sweep+CHOCH+displacement, capped at 2
+  /** SMC structure trend (UP/DOWN/SIDEWAYS) — triggers a SKIP when it opposes the vote. null/omitted = unavailable. */
+  smcTrend?: "UP" | "DOWN" | "SIDEWAYS" | null;
 }
 
 /**
@@ -544,7 +554,9 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
   } else {
     wallScore = 1;
     wallNote = "spot between walls";
-    if (input.rnMass.mass != null && input.rnMass.mass > 0.4 && input.rnMass.negativeCount <= 2) {
+    // RN mass: only count toward score and display when noisy strikes are within threshold (≤2)
+    const rnMassVisible = input.rnMass.mass != null && input.rnMass.mass > 0.4 && input.rnMass.negativeCount <= 2;
+    if (rnMassVisible) {
       wallScore = 2;
       wallNote += `, RN mass ${(input.rnMass.mass * 100).toFixed(0)}% between walls`;
     } else if (input.rnMass.mass == null) {
@@ -611,7 +623,21 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
     note: input.timingOk == null ? "clock unavailable" : input.timingOk ? "inside windows, risk caps clean" : "outside windows or risk cap hit",
   });
 
+  // 10. SMC layer (sweep + CHoCH + displacement, capped at 2 — refinement only)
+  let smcScr: 0 | 1 | 2 | null = null;
+  let smcNote = "";
+  if (input.smcScore == null) {
+    smcScr = null;
+    smcNote = "SMC layer unavailable";
+  } else {
+    smcScr = input.smcScore;
+    smcNote = `SMC ${smcScr}/2`;
+    if (input.smcScore === 0) smcNote += " (no SMC gates passed)";
+  }
+  rows.push({ factor: "SMC layer", score: smcScr, note: smcNote });
+
   const total = rows.reduce((s, r) => s + (r.score ?? 0), 0);
+  const maxTotal = rows.reduce((s, r) => s + (r.score == null ? 0 : 2), 0);
 
   // Direction layers that must agree: trend, trigger, buildup
   const dirTrend = input.trendTf === "up" ? 1 : input.trendTf === "down" ? -1 : 0;
@@ -626,18 +652,40 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
   const opposing = (dirTrend * dirTrigger < 0) || (dirTrend * dirBuildup < 0);
   const agreeingLayers = Math.max(bullVotes, bearVotes);
 
+  // SMC guard: never override failed OI or Greeks gates
+  const oiFailed = wallScore === 0;
+  const greeksFailed = greekScore === 0;
+  const smcCannotOverride = oiFailed || greeksFailed;
+  const smcTrend = input.smcTrend ?? null;
+
   let verdict: ScorecardResult["verdict"] = "SKIP";
-  if (!opposing && agreeingLayers >= 3 && total >= 8) {
+  if (!opposing && agreeingLayers >= 3 && total >= 8 && !smcCannotOverride) {
     verdict = bullVotes >= 3 ? "BUY_CE" : bearVotes >= 3 ? "BUY_PE" : "SKIP";
   }
   if (input.spotDistToWallPct != null && input.spotDistToWallPct <= 0.14) {
     notes.push(`price within ${input.spotDistToWallPct.toFixed(2)}% of opposing OI wall — SKIP per wall-proximity gate`);
     verdict = "SKIP";
   }
+  if (smcCannotOverride && verdict !== "SKIP") {
+    notes.push(`OI or Greeks gate failed — SMC cannot override, verdict forced to SKIP`);
+    verdict = "SKIP";
+  }
+
+  // SMC TRADE TRIGGER: structure OPPOSING the voted direction forces SKIP.
+  // Adds skips ONLY — never promotes SKIP→BUY, never revives a failed
+  // OI/Greeks gate. null (no/insufficient candles) and SIDEWAYS carry no
+  // directional opinion → no veto, honest unavailable.
+  if (verdict !== "SKIP" && (smcTrend === "UP" || smcTrend === "DOWN")) {
+    const opposes = (verdict === "BUY_CE" && smcTrend === "DOWN") || (verdict === "BUY_PE" && smcTrend === "UP");
+    if (opposes) {
+      notes.push(`SMC structure ${smcTrend} opposes ${verdict} — trade trigger SKIP`);
+      verdict = "SKIP";
+    }
+  }
 
   const confidence: ScorecardResult["confidence"] = total >= 13 && agreeingLayers >= 4 ? "High" : total >= 9 ? "Medium" : "Low";
 
-  return { rows, total, maxTotal: 18, verdict, confidence, agreeingLayers, notes };
+  return { rows, total, maxTotal, verdict, confidence, agreeingLayers, notes, smcTrend };
 }
 
 // ─── Hard-rule clock gates ────────────────────────────────────────
@@ -895,6 +943,45 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
     triggerTf = bull ? "up" : bear ? "down" : "range";
   }
 
+  // 10. SMC layer — real 5m candles → sweep/CHOCH/displacement score (0-2).
+  // Only G16+G17 feed scorePoints (G18/G19 are display-only), so the
+  // pre-scorecard direction does not distort the score. <50 bars → null
+  // (honest unavailable). Failures stay null — never invent a score.
+  // structureTrend rides along as the SMC TRADE TRIGGER (opposing → SKIP).
+  let smcScore: 0 | 1 | 2 | null = null;
+  let smcTrend: "UP" | "DOWN" | "SIDEWAYS" | null = null;
+  if (bars.length >= 50) {
+    try {
+      const smcCandles: Candle[] = bars.map((b, i) => ({
+        t: b.time || i * 300000,
+        o: b.open,
+        h: b.high,
+        l: b.low,
+        c: b.close,
+        v: b.volume,
+      }));
+      const atrArr = atrSeries(smcCandles, 14);
+      const atrNow = atrArr[atrArr.length - 1];
+      const pools = atrNow != null && atrNow > 0
+        ? liquidityPools(smcCandles, input.symbol || "NIFTY", atrNow, 2)
+        : [];
+      const avgVolume = smcCandles.reduce((s, c) => s + (c.v ?? 0), 0) / smcCandles.length;
+      const smc = analyzeSMC({
+        candles: smcCandles,
+        spot: input.spot,
+        pools,
+        avgVolume,
+        direction: "call", // score is direction-agnostic (G16/G17 only)
+        oiStrikeNearSpot: atmRow?.strike ?? null,
+      });
+      smcScore = smc.scorePoints === 2 ? 2 : smc.scorePoints === 1 ? 1 : 0;
+      smcTrend = smc.structureTrend;
+    } catch {
+      smcScore = null;
+      smcTrend = null;
+    }
+  }
+
   const sc = scorecard({
     flowBias: input.flowBias ?? "unknown",
     trendTf: trend15,
@@ -912,6 +999,8 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
     liquidityCost,
     timingOk: timing.ok,
     spotDistToWallPct: walls ? walls.spotDistToWallPct : null,
+    smcScore,
+    smcTrend,
   });
 
   // Reasons (honest, quant-evidence lines)

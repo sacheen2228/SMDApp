@@ -31,6 +31,55 @@ function loadEnv(): void {
 loadEnv();
 
 import cron from "node-cron";
+
+// ─── Catch‑up missed eod‑fetch dates ───────────────────────────────────
+// Run once on service start: re‑fetch any trading day that lacks a _status.json
+// in the EOD archive (up to 7 trading days back).  The eod-fetch job is
+// scheduled @ 19:05 IST; if the service was down at that time we re‑run it
+// so no data day is permanently missing.
+async function catchUpMissedEodFetch(): Promise<void> {
+  try {
+    const eodDir = path.resolve(process.cwd(), "data", "eod");
+    // fast scan: any eod dir without _status.json → missed
+    const missed: string[] = [];
+    for (const d of fs.readdirSync(eodDir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))) {
+      if (!fs.existsSync(path.join(eodDir, d, "_status.json"))) missed.push(d);
+      else {
+        const st = JSON.parse(fs.readFileSync(path.join(eodDir, d, "_status.json"), "utf8"));
+        for (const [, v] of Object.entries(st)) if (!v?.ok) missed.push(d);
+      }
+    }
+    // re‑fetch up to 7 days back, skipping days older than 24 h
+    const now = new Date();
+    for (const d of missed.slice(0, 7)) {
+      const dDate = new Date(d.replace(/-/g, "/"));
+      const age = now.getTime() - dDate.getTime();
+      if (age > 24 * 60 * 60 * 1000) continue;
+      console.log(`[catchUp] re‑running eod-fetch for ${d} (age=${Math.round(age/60000)} min)`);
+      const { runSkillJob } = await import("@/lib/orchestrator/skill-jobs");
+      await runSkillJob({
+        name: "eod-fetch",
+        schedule: "5 19 * * 1-5",
+        command: [
+          "bash",
+          path.join(process.cwd(), "scripts", "cron_job.sh"),
+          "--name", "eod-fetch",
+          "--timeout", "3600000",
+          "--retries", "2",
+          "--delay", "60",
+          "--", "--retry-until", "22:00",
+        ],
+      });
+      console.log(`[catchUp] eod-fetch re‑run completed for ${d}`);
+    }
+  } catch (e) {
+    console.error("[catchUp] error:", e);
+  }
+}
+
+catchUpMissedEodFetch().then(() => {
+  console.log("[catchUp] catch‑up complete, starting cron schedule…");
+});
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
 import { todayDDMMYYYYIST, positioningFreshness, latestParticipantDate, hasParticipantDataForDate } from "@/lib/institutional-positioning-engine";
