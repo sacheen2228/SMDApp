@@ -305,7 +305,7 @@ export function generateMultiAlerts(
   }
 
   // Filter out low-conviction trades — only show setups with meaningful R:R
-  const filtered = candidates.filter(a => a.confidence >= 65 && a.rr >= 1.5);
+  const filtered = candidates.filter(a => a.confidence >= 65 && a.rr >= 2);
 
   // Sort by confidence descending, top 3
   return filtered.sort((a, b) => b.confidence - a.confidence).slice(0, 3);

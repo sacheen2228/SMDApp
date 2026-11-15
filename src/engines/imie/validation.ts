@@ -34,9 +34,9 @@ export function validateTrade(input: ValidationInput): ValidationResult {
     rejectReasons.push(`Confidence ${confidence.toFixed(0)}% below minimum 70%`);
   }
 
-  // 3. R:R < 1.5
-  if (rr < 1.5) {
-    rejectReasons.push(`Risk:Reward ${rr.toFixed(2)} below minimum 1.5`);
+  // 3. R:R < 2
+  if (rr < 2) {
+    rejectReasons.push(`Risk:Reward ${rr.toFixed(2)} below minimum 2`);
   }
 
   // 4. Trend conflicts with auction / smart money

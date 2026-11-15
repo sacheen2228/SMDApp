@@ -518,7 +518,7 @@ export async function GET(request: NextRequest) {
     // SENSEX/BANKEX are not on NSE). When the winner's near-the-money legs
     // lack IV, copy the exchange's own IV by strike so applyGreeks can compute
     // delta/gamma. Never an estimate — a leg still without IV stays null.
-    if (chainStrikes.length && source !== 'nse-api' && source !== 'bse-api') {
+    if (chainStrikes.length && source !== 'nse-api') {
       const spotForIv = chainData.spotPrice || chainData.summary?.spotPrice || 0;
       if (needsIvEnrichment(chainStrikes, spotForIv)) {
         try {

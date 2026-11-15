@@ -70,7 +70,7 @@ const DEFAULT_SCAN_CONFIG: ScanConfig = {
   equityPriceFilter: 1000,
   minLiquidity: 50,
   minSignalStrength: 60,
-  minRr: 1.5,
+  minRr: 2,
   maxOpportunities: 50,
   includeIndices: true,
   includeEquities: true,

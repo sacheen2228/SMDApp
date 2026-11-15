@@ -193,6 +193,58 @@ export async function getSnapshotVersion(
   }
 }
 
+export interface MultiDayOiTrend {
+  date: string;
+  timestamp: string;
+  spot: number | null;
+  pcr: number | null;
+  totalCallOI: number;
+  totalPutOI: number;
+  totalCallOIChg: number;
+  totalPutOIChg: number;
+  netOIChg: number;
+  dayOverDayCallOIChg?: number;
+  dayOverDayPutOIChg?: number;
+  dayOverDaySpotChg?: number;
+  buildupClass?: string;
+  strikes: Array<{
+    strike: number;
+    ceOi: number;
+    peOi: number;
+    ceOiChg: number;
+    peOiChg: number;
+    netOiChg: number;
+  }>;
+}
+
+/** Multi-day ΔOI trend analytics — per-strike OI change across multiple trading days. */
+export async function getMultiDayOiTrend(
+  symbol: string,
+  days = 5,
+): Promise<MultiDayOiTrend[]> {
+  const q = new URLSearchParams({ symbol, days: String(days) });
+  try {
+    const data = await getJson(`${MARKET_HISTORY_BASE}/api/multi-day-oi-trend?${q.toString()}`);
+    return data.trends ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Available dates for a symbol (for date range selection UI). */
+export async function getAvailableDates(
+  symbol: string,
+  limit = 10,
+): Promise<string[]> {
+  const q = new URLSearchParams({ symbol, limit: String(limit) });
+  try {
+    const data = await getJson(`${MARKET_HISTORY_BASE}/api/available-dates?${q.toString()}`);
+    return data.dates ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getStatus(): Promise<MarketHistoryStatus> {
   return getJson(`${MARKET_HISTORY_BASE}/api/status`);
 }

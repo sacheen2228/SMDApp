@@ -254,7 +254,7 @@ function synthesizeVerdict(d: Omit<ProResearchDossier, "verdict" | "confidence" 
   const r = d.risk;
 
   // Directional agreement per research angle (need 2+ of 5 agreeing)
-  const techBull = t.rvol >= 1.2 && t.adx >= 20 && t.weeklyTrend !== "DOWN" && t.riskReward >= 1.5;
+  const techBull = t.rvol >= 1.2 && t.adx >= 20 && t.weeklyTrend !== "DOWN" && t.riskReward >= 2;
   const fundBull = f.available && f.score >= 60;
   const fundBear = f.available && (f.score <= 35 || f.redFlags.length > 0);
   const newsBull = n.score >= 60;
@@ -347,7 +347,7 @@ export async function runProResearch(candidate: WeeklyCandidate): Promise<ProRes
   let optionPlan: OptionPlan | null = null;
   let optionStrike: number | null = null;
   let optionType: "CE" | "PE" | null = null;
-  if (candidate.weeklyTrend !== "DOWN" || candidate.riskReward >= 1.5) {
+  if (candidate.weeklyTrend !== "DOWN" || candidate.riskReward >= 2) {
     const optType: "CE" | "PE" = candidate.weeklyTrend === "DOWN" ? "PE" : "CE";
     const step = candidate.price < 1000 ? 50 : 100;
     const optStrike = Math.round(candidate.price / step) * step;

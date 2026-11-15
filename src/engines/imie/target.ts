@@ -74,7 +74,7 @@ export function generateTargetPlan(
   const maxTarget = targets[targets.length - 1];
   const overallRR = risk > 0 ? Math.abs(maxTarget.price - entry.price) / risk : 0;
 
-  if (risk < price * 0.0005 || overallRR < 1.5) return null;
+  if (risk < price * 0.0005 || overallRR < 2) return null;
 
   // Position sizing
   const confidence = Math.min(0.95, topDest.probability / 100 * (targets[0].probability / 100));
@@ -344,7 +344,7 @@ function calculateTargets(
   for (const node of directionNodes.slice(0, 10)) {
     const dist = Math.abs(node.price - entryPrice);
     const rr = risk > 0 ? dist / risk : 0;
-    if (rr < 1.5) continue;
+    if (rr < 2) continue;
 
     const score = calculateTargetScore(node, entryPrice, dist, rr, auction, sm, of, oi, vol, isLong);
     const source = SOURCE_MAP[node.node.type] || 'LIQUIDITY';

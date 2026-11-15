@@ -22,9 +22,9 @@ export function validateTrade(
   confidence = confidence / (Object.keys(aiScore.engines).length || 1);
   dataQuality = Math.max(0, dataQuality);
 
-  // 1. RR >= 1.5
-  if (riskReward === null || riskReward < 1.5) {
-    warnings.push(`RR ${riskReward?.toFixed(2) || 'N/A'}:1 < 1.5 — trade rejected`);
+  // 1. RR >= 2
+  if (riskReward === null || riskReward < 2) {
+    warnings.push(`RR ${riskReward?.toFixed(2) || 'N/A'}:1 < 2 — trade rejected`);
   } else {
     warnings.push(`RR ${riskReward.toFixed(2)}:1 ✓`);
   }

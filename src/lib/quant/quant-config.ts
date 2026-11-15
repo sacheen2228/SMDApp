@@ -8,7 +8,7 @@
 export const QUANT_FLAGS = {
   enabled: process.env.QUANT_ENABLED === "1", // default OFF
   mode: (process.env.QUANT_MODE === "PAPER" ? "PAPER" : "SHADOW") as "SHADOW" | "PAPER", // default SHADOW
-  minRewardRisk: 1.5,
+  minRewardRisk: 2,
   perTradeRiskPct: 2, // % of paper capital risked per trade (rupee risk model)
   dailyLossCapPct: 6,
   // Trade-count / concurrency caps are OFF by default (null = unlimited):

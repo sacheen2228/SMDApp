@@ -242,7 +242,7 @@ function scoreSwingStock(
   if (rr > 2.5) {
     bullScore += 10;
     reasoning.push(`Excellent R:R ${rr.toFixed(1)}:1`);
-  } else if (rr > 1.5) {
+  } else if (rr > 2) {
     bullScore += 7;
     reasoning.push(`Good R:R ${rr.toFixed(1)}:1`);
   } else {

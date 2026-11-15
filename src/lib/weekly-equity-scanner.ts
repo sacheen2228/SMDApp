@@ -440,7 +440,7 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     if (rsi >= 62) bearCase = "RSI close to overbought — pullback risk before continuation.";
     else if (weeklyTrend === "DOWN") bearCase = "Weekly timeframe still bearish — daily bounce may fail.";
     else if (rvol >= 3) bearCase = "Volume spike may be short-covering rather than fresh buying.";
-    else if (rr < 1.5) bearCase = "Reward-to-risk below 1.5 at current entry.";
+    else if (rr < 2) bearCase = "Reward-to-risk below 2 at current entry.";
     else bearCase = "Broad-market or sector weakness could stall momentum.";
     if (!bearCase) bearCase = "Sector rotation away from this group would stall momentum.";
 

@@ -10,6 +10,8 @@ import {
   getSnapshotsSummary,
   getSessionCandles,
   getChainOiHistory,
+  getMultiDayOiTrend,
+  getAvailableDates,
   getSnapshotIntegrityRows,
   getSnapshotVersion,
   getTotalSnapshots,
@@ -181,6 +183,25 @@ apiRouter.get("/chain-oi-history", (req: Request, res: Response) => {
   if (!symbol) return res.status(400).json({ error: "symbol_required" });
   const snapshots = getChainOiHistory(symbol, date);
   return res.json({ success: true, symbol, count: snapshots.length, snapshots });
+});
+
+// Multi-day ΔOI trend analytics — per-strike OI change across multiple trading days.
+// Powers the OI Flow tab's multi-day view and the ΔOI trend chart.
+apiRouter.get("/multi-day-oi-trend", (req: Request, res: Response) => {
+  const { symbol, days } = req.query as Record<string, string | undefined>;
+  if (!symbol) return res.status(400).json({ error: "symbol_required" });
+  const daysNum = days ? parseInt(days, 10) : 5;
+  const trends = getMultiDayOiTrend(symbol, daysNum);
+  return res.json({ success: true, symbol, days: daysNum, count: trends.length, trends });
+});
+
+// Available dates for a symbol (for date range selection UI)
+apiRouter.get("/available-dates", (req: Request, res: Response) => {
+  const { symbol, limit } = req.query as Record<string, string | undefined>;
+  if (!symbol) return res.status(400).json({ error: "symbol_required" });
+  const limitNum = limit ? parseInt(limit, 10) : 10;
+  const dates = getAvailableDates(symbol, limitNum);
+  return res.json({ success: true, symbol, count: dates.length, dates });
 });
 
 apiRouter.get("/integrity", (req: Request, res: Response) => {

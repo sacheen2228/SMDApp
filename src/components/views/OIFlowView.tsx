@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Panel, StatCell } from "@/components/ui/panel";
-import { getChainOiHistory, type ChainOiSnapshot } from "@/lib/market-history-client";
+import { getChainOiHistory, getMultiDayOiTrend, type ChainOiSnapshot } from "@/lib/market-history-client";
 import { buildOptionPlan, PLAN_CONFIG, type OptionPlan } from "@/lib/option-plan";
 import { evaluateSignalVeto, type VetoResult } from "@/lib/signal-veto";
 import { getLotSizeStrict } from "@/lib/symbol-config";
@@ -898,6 +898,9 @@ export function OIFlowView() {
         </div>
       </Panel>
 
+      {/* ═══ Multi-day ΔOI Trend ─── */}
+      <MultiDayOiTrendPanel symbol={symbol} />
+
       {/* ═══ Legend ─── */}
       <div className="grid gap-4 md:grid-cols-2">
         <Panel title="How each strike is classified" subtitle="spot direction × OI change">
@@ -915,5 +918,168 @@ export function OIFlowView() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+/* ═══════════ Multi-day ΔOI Trend Panel ═══════════ */
+function MultiDayOiTrendPanel({ symbol }: { symbol: string }) {
+  const [days, setDays] = useState(5);
+  const { data: trends, isLoading } = useQuery({
+    queryKey: ["multiDayOiTrend", symbol, days],
+    queryFn: () => getMultiDayOiTrend(symbol, days),
+    refetchInterval: 60_000, // refresh every minute
+  });
+
+  if (isLoading) {
+    return (
+      <Panel title="Multi-day ΔOI Trend" subtitle="Session-over-session OI change">
+        <div className="h-32 flex items-center justify-center ty-text-xs text-ty-muted-fg">
+          Loading trend data...
+        </div>
+      </Panel>
+    );
+  }
+
+  if (!trends || trends.length === 0) {
+    return (
+      <Panel title="Multi-day ΔOI Trend" subtitle="Session-over-session OI change">
+        <div className="h-32 flex items-center justify-center ty-text-xs text-ty-muted-fg">
+          No historical OI data available
+        </div>
+      </Panel>
+    );
+  }
+
+  const latest = trends[trends.length - 1];
+  const buildupMeta = latest.buildupClass ? CLASS_META[latest.buildupClass] : null;
+
+  return (
+    <Panel title="Multi-day ΔOI Trend" subtitle={`${days}-day session-over-session OI change`}>
+      <div className="space-y-4">
+        {/* Day selector */}
+        <div className="flex items-center gap-2">
+          <span className="ty-text-xs text-ty-muted-fg">Days:</span>
+          {[3, 5, 10].map((d) => (
+            <Button
+              key={d}
+              variant={days === d ? "default" : "ghost"}
+              size="sm"
+              className="h-6 text-[10px] px-2"
+              onClick={() => setDays(d)}
+            >
+              {d}D
+            </Button>
+          ))}
+        </div>
+
+        {/* Latest day summary */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="p-2 rounded-lg bg-[#0d1117] border border-white/5">
+            <div className="ty-text-[10px] text-ty-muted-fg uppercase">Spot</div>
+            <div className="ty-text-sm font-semibold text-foreground">{latest.spot?.toFixed(2) ?? "—"}</div>
+            {latest.dayOverDaySpotChg != null && (
+              <div className={`ty-text-[10px] ${latest.dayOverDaySpotChg >= 0 ? "text-ty-up" : "text-ty-down"}`}>
+                {latest.dayOverDaySpotChg >= 0 ? "+" : ""}{latest.dayOverDaySpotChg.toFixed(2)}
+              </div>
+            )}
+          </div>
+          <div className="p-2 rounded-lg bg-[#0d1117] border border-white/5">
+            <div className="ty-text-[10px] text-ty-muted-fg uppercase">PCR</div>
+            <div className="ty-text-sm font-semibold text-foreground">{latest.pcr?.toFixed(2) ?? "—"}</div>
+          </div>
+          <div className="p-2 rounded-lg bg-[#0d1117] border border-white/5">
+            <div className="ty-text-[10px] text-ty-muted-fg uppercase">Net OI Δ</div>
+            <div className={`ty-text-sm font-semibold ${latest.netOIChg >= 0 ? "text-ty-up" : "text-ty-down"}`}>
+              {fmtLakh(latest.netOIChg)}
+            </div>
+          </div>
+          <div className="p-2 rounded-lg bg-[#0d1117] border border-white/5">
+            <div className="ty-text-[10px] text-ty-muted-fg uppercase">Buildup</div>
+            <div className={`ty-text-sm font-semibold ${buildupMeta?.dot || "text-foreground"}`}>
+              {buildupMeta?.label ?? "—"}
+            </div>
+          </div>
+        </div>
+
+        {/* Daily trend table */}
+        <div className="overflow-x-auto">
+          <table className="w-full ty-text-xs">
+            <thead>
+              <tr className="border-b border-white/5">
+                <th className="text-left py-1 px-2 text-ty-muted-fg font-medium">Date</th>
+                <th className="text-right py-1 px-2 text-ty-muted-fg font-medium">Spot</th>
+                <th className="text-right py-1 px-2 text-ty-muted-fg font-medium">PCR</th>
+                <th className="text-right py-1 px-2 text-ty-muted-fg font-medium">Call OI</th>
+                <th className="text-right py-1 px-2 text-ty-muted-fg font-medium">Put OI</th>
+                <th className="text-right py-1 px-2 text-ty-muted-fg font-medium">Net OI Δ</th>
+                <th className="text-center py-1 px-2 text-ty-muted-fg font-medium">Buildup</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trends.map((t, i) => {
+                const meta = t.buildupClass ? CLASS_META[t.buildupClass] : null;
+                return (
+                  <tr key={t.date} className="border-b border-white/5 hover:bg-white/5">
+                    <td className="py-1 px-2 text-foreground">{t.date.slice(5)}</td>
+                    <td className="py-1 px-2 text-right text-foreground">{t.spot?.toFixed(0) ?? "—"}</td>
+                    <td className="py-1 px-2 text-right text-foreground">{t.pcr?.toFixed(2) ?? "—"}</td>
+                    <td className="py-1 px-2 text-right text-foreground">{fmtLakh(t.totalCallOI)}</td>
+                    <td className="py-1 px-2 text-right text-foreground">{fmtLakh(t.totalPutOI)}</td>
+                    <td className={`py-1 px-2 text-right ${t.netOIChg >= 0 ? "text-ty-up" : "text-ty-down"}`}>
+                      {fmtLakh(t.netOIChg)}
+                    </td>
+                    <td className="py-1 px-2 text-center">
+                      {meta ? (
+                        <span className={`inline-flex items-center gap-1 ${meta.dot}`}>
+                          <span className={`size-1.5 rounded-full ${meta.bar}`} />
+                          {meta.label}
+                        </span>
+                      ) : (
+                        <span className="text-ty-muted-fg">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Top OI movers (latest day) */}
+        {latest.strikes.length > 0 && (
+          <div className="space-y-2">
+            <div className="ty-text-xs text-ty-muted-fg font-medium">Top OI Movers ({latest.date})</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="ty-text-[10px] text-ty-muted-fg mb-1">Largest CE OI Increase</div>
+                {latest.strikes
+                  .filter(s => s.ceOiChg > 0)
+                  .sort((a, b) => b.ceOiChg - a.ceOiChg)
+                  .slice(0, 3)
+                  .map(s => (
+                    <div key={`ce-${s.strike}`} className="flex justify-between ty-text-[10px] py-0.5">
+                      <span className="text-foreground">{s.strike}</span>
+                      <span className="text-ty-up">+{fmtLakh(s.ceOiChg)}</span>
+                    </div>
+                  ))}
+              </div>
+              <div>
+                <div className="ty-text-[10px] text-ty-muted-fg mb-1">Largest PE OI Increase</div>
+                {latest.strikes
+                  .filter(s => s.peOiChg > 0)
+                  .sort((a, b) => b.peOiChg - a.peOiChg)
+                  .slice(0, 3)
+                  .map(s => (
+                    <div key={`pe-${s.strike}`} className="flex justify-between ty-text-[10px] py-0.5">
+                      <span className="text-foreground">{s.strike}</span>
+                      <span className="text-ty-up">+{fmtLakh(s.peOiChg)}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }

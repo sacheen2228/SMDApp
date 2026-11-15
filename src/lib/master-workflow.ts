@@ -329,7 +329,7 @@ const DEFAULT_WORKFLOW_CONFIG = {
   equityPriceFilter: 1000,
   minSignalStrength: 60,
   minLiquidity: 50,
-  minRr: 1.5,
+  minRr: 2,
   interval: '5m',
   limit: 300,
 };

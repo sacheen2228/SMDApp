@@ -28,7 +28,7 @@ export interface QuantRuntimeConfig {
 export interface QuantTuning {
   /** Strategy winner gate — raw strategy score must clear this (default 55). */
   minScore?: number;
-  /** Plan R:R gate (default QUANT_FLAGS.minRewardRisk = 1.5). */
+  /** Plan R:R gate (default QUANT_FLAGS.minRewardRisk = 2). */
   minRewardRisk?: number;
   /** Max new trades per day — null = unlimited (the default: quality gates only). */
   maxTradesPerDay?: number | null;

@@ -48,7 +48,7 @@ export interface ScannerStockSetup {
 const DEFAULT_BUDGET = 20_000;
 
 /** Minimum reward:risk for a stock setup (matches the option-path gate). */
-const MIN_RR = 1.5;
+const MIN_RR = 2;
 
 export interface ScannerStockValidation {
   ok: boolean;

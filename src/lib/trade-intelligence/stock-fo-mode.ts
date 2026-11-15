@@ -296,8 +296,8 @@ function scoreStock(
     ? Math.abs(target1 - entry) / Math.abs(entry - stopLoss)
     : 0;
 
-// Explicit R:R gate: minimum 1.5:1 risk-reward for option trades
-const minRR = direction !== "NO_TRADE" && (direction === "BUY_CE" || direction === "BUY_PE") ? 1.5 : 0;
+// Explicit R:R gate: minimum 2:1 risk-reward for option trades
+const minRR = direction !== "NO_TRADE" && (direction === "BUY_CE" || direction === "BUY_PE") ? 2 : 0;
 const rrGated = riskReward >= minRR ? riskReward : 0;
 
   // Instrument — real ATM premium from the chain (never IV-as-premium);

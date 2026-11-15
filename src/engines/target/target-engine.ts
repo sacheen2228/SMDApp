@@ -399,7 +399,6 @@ function scoreTarget(
   let rrScore = 0;
   if (rr >= 3) rrScore = 90;
   else if (rr >= 2) rrScore = 75;
-  else if (rr >= 1.5) rrScore = 60;
   else rrScore = 20;
   score += (rrScore / 100) * (weights.riskReward / 100) * 100;
 
@@ -476,7 +475,7 @@ export function generateTargets(
       const rr = stopDistance > 0 ? moveDist / stopDistance : 0;
       return { ...t, score: s, riskReward: rr };
     })
-    .filter(t => t.score >= 70 && t.riskReward >= 1.5)
+    .filter(t => t.score >= 70 && t.riskReward >= 2)
     .sort((a, b) => b.score - a.score);
 
   const tp1 = scored.length > 0 ? scored[0] : null;
