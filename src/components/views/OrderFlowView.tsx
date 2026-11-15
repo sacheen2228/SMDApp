@@ -233,7 +233,9 @@ function MoneyFlowSankey({ sectors, movers }: { sectors: SectorNode[]; movers: A
 
 /* ══════════════════════════ VIEW ══════════════════════════ */
 export function OrderFlowView() {
-  const [symbol, setSymbol] = useState("NIFTY");
+  const urlAtoms: any = (window as any).__SMD_URL_ATOMS__;
+  const initSymbol = urlAtoms?.symbol || "NIFTY";
+  const [symbol, setSymbol] = useState(initSymbol);
   const [view, setView] = useState("money");
 
   const { data, isLoading, error } = useQuery<OrderFlowData>({

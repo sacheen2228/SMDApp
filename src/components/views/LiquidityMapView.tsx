@@ -118,8 +118,11 @@ const LAYERS = [
 ] as const;
 
 export function LiquidityMapView() {
-  const [symbol, setSymbol] = useState("NIFTY");
-  const [tf, setTf] = useState<Tf>("15m");
+  const urlAtom: any = (window as any).__LIQUIDITY_URL_ATOM__;
+  const initSymbol = urlAtom?.symbol || "NIFTY";
+  const initTf: Tf = urlAtom?.tf || "15m";
+  const [symbol, setSymbol] = useState(initSymbol);
+  const [tf, setTf] = useState(initTf);
   const [active, setActive] = useState<Set<string>>(new Set(LAYERS.map((l) => l.key)));
 
   const { data, isLoading, error } = useQuery<LiquidityData>({

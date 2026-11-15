@@ -97,7 +97,9 @@ function fetchOptionPulse(symbol: string, expiry?: string) {
 }
 
 export function OptionPulseView() {
-  const [symbol, setSymbol] = useState("NIFTY");
+  const urlAtoms: any = (window as any).__SMD_URL_ATOMS__;
+  const initSymbol = urlAtoms?.symbol || "NIFTY";
+  const [symbol, setSymbol] = useState(initSymbol);
   const [expiry, setExpiry] = useState<string | undefined>(undefined);
   const { data, isLoading, error, refetch, isRefetching } = useQuery<OptionPulseData>({
     queryKey: ["option-pulse", symbol, expiry],

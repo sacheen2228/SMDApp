@@ -252,7 +252,9 @@ function FactorRow({ f }: { f: ConfirmFactor }) {
 
 /* ══════════════════════════ VIEW ══════════════════════════ */
 export function OIFlowView() {
-  const [symbol, setSymbol] = useState("NIFTY");
+  const urlAtoms: any = (window as any).__SMD_URL_ATOMS__;
+  const initSymbol = urlAtoms?.symbol || "NIFTY";
+  const [symbol, setSymbol] = useState(initSymbol);
   const [expiry, setExpiry] = useState(""); // "" = nearest
   const [replayIdx, setReplayIdx] = useState<number | null>(null); // null = live
   const [playing, setPlaying] = useState(false);

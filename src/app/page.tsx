@@ -359,19 +359,38 @@ export default function TradingDashboard() {
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'credit' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
-  // Support URL-based viewMode and displayMode initialization — allows new-tabs
-  // to open a specific view/mode, and direct URLs to work. Only applies on mount
-  // (before user interaction), so it never overrides an explicit user selection.
+  // Support URL-based viewMode, displayMode, and chart init — allows new-tabs
+  // to open a specific view/mode/symbol/tf, and direct URLs to work. Only applies
+  // on mount (before user interaction), so it never overrides an explicit user selection.
 useEffect(() => {
   const searchParams = new URLSearchParams(window.location.search);
   const hashParams = new URLSearchParams(window.location.hash);
   const urlViewMode = searchParams.get('viewMode') || hashParams.get('viewMode');
   const urlDisplayMode = searchParams.get('displayMode') || hashParams.get('displayMode');
+  const urlSymbol = searchParams.get('symbol') || hashParams.get('symbol');
+  const urlTf = searchParams.get('tf') || hashParams.get('tf');
   if (urlViewMode) {
     setViewMode(urlViewMode as any);
   }
   if (urlDisplayMode) {
     setDisplayMode(urlDisplayMode as any);
+  }
+  // Store symbol/tf on a per-view atom so components can read them on mount.
+  // Each component owns its own key under (window).__SMD_URL_ATOMS__.
+  if (urlSymbol || urlTf) {
+    let atoms: any = (window as any).__SMD_URL_ATOMS__;
+    if (!atoms) {
+      atoms = {};
+      (window as any).__SMD_URL_ATOMS__ = atoms;
+    }
+    // Only set non-empty values so a view that doesn't use symbol/tf
+    // doesn't get overridden by liquidity params.
+    if (urlSymbol) {
+      atoms.symbol = urlSymbol;
+    }
+    if (urlTf) {
+      atoms.tf = urlTf;
+    }
   }
 }, []);
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
