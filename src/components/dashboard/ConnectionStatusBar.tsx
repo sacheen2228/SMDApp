@@ -97,9 +97,11 @@ export function ConnectionStatusBar() {
   if (!health) return null;
 
   const getIndicator = (key: string, label: string) => {
-    const check = health.checks[key];
+    const check = health?.checks?.[key];
     const isOk = check?.status === 'OK' || check?.status === 'CONNECTED' || check?.status === 'LIVE';
     const isWarn = check?.status === 'WARNING' || check?.status === 'RECONNECTING' || check?.status === 'DELAYED';
+
+    if (!check) return null;
 
     return (
       <Tooltip>
@@ -113,9 +115,9 @@ export function ConnectionStatusBar() {
         </TooltipTrigger>
         <TooltipContent>
           <div className="text-xs space-y-1">
-            <div className="font-medium">{label}: {check?.status || 'UNKNOWN'}</div>
-            {check?.message && <div className="text-muted-foreground">{check.message}</div>}
-            {check?.latencyMs && <div className="text-muted-foreground">Latency: {check.latencyMs}ms</div>}
+            <div className="font-medium">{label}: {check.status}</div>
+            {check.message && <div className="text-muted-foreground">{check.message}</div>}
+            {check.latencyMs && <div className="text-muted-foreground">Latency: {check.latencyMs}ms</div>}
           </div>
         </TooltipContent>
       </Tooltip>
@@ -123,9 +125,9 @@ export function ConnectionStatusBar() {
   };
 
   // Determine overall data source
-  const yahooStatus = health.checks['data_YAHOO']?.status;
-  const breezeStatus = health.checks['broker_ICICI_BREEZE']?.status;
-  const motilalStatus = health.checks['broker_MOTILAL']?.status;
+  const yahooStatus = health?.checks?.['data_YAHOO']?.status;
+  const breezeStatus = health?.checks?.['broker_ICICI_BREEZE']?.status;
+  const motilalStatus = health?.checks?.['broker_MOTILAL']?.status;
 
   let dataSourceLabel = 'DATA UNAVAILABLE';
   let dataSourceColor = 'bg-red-500';

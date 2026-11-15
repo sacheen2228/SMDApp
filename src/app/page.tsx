@@ -359,6 +359,21 @@ export default function TradingDashboard() {
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'credit' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
+  // Support URL-based viewMode and displayMode initialization — allows new-tabs
+  // to open a specific view/mode, and direct URLs to work. Only applies on mount
+  // (before user interaction), so it never overrides an explicit user selection.
+useEffect(() => {
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash);
+  const urlViewMode = searchParams.get('viewMode') || hashParams.get('viewMode');
+  const urlDisplayMode = searchParams.get('displayMode') || hashParams.get('displayMode');
+  if (urlViewMode) {
+    setViewMode(urlViewMode as any);
+  }
+  if (urlDisplayMode) {
+    setDisplayMode(urlDisplayMode as any);
+  }
+}, []);
   const [displayMode, setDisplayMode] = useState<'simple' | 'pro'>('simple');
   const [showSidebar, setShowSidebar] = useState(true);
   const [selectedAnalysisStock, setSelectedAnalysisStock] = useState<string | null>(null);
@@ -1022,22 +1037,34 @@ export default function TradingDashboard() {
             </Button>
             <Button variant={viewMode === 'options' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'options' ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/25' : 'text-muted-foreground hover:text-rose-500'}`}
-              onClick={() => { setViewMode('options'); setDisplayMode('pro'); }}>
+              onClick={() => { 
+                
+                window.open('?viewMode=options&displayMode=pro', '_blank');
+              }}>
               <Activity className="h-2.5 w-2.5 mr-0.5" /> Option Pulse
             </Button>
             <Button variant={viewMode === 'oiflow' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'oiflow' ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25' : 'text-muted-foreground hover:text-indigo-500'}`}
-              onClick={() => { setViewMode('oiflow'); setDisplayMode('pro'); }}>
+              onClick={() => { 
+                
+                window.open('?viewMode=oiflow&displayMode=pro', '_blank');
+              }}>
               <BarChart3 className="h-2.5 w-2.5 mr-0.5" /> OI Flow
             </Button>
             <Button variant={viewMode === 'liq' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'liq' ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/25' : 'text-muted-foreground hover:text-purple-500'}`}
-              onClick={() => { setViewMode('liq'); setDisplayMode('pro'); }}>
+              onClick={() => { 
+                
+                window.open('?viewMode=liq&displayMode=pro', '_blank');
+              }}>
               <Target className="h-2.5 w-2.5 mr-0.5" /> Liquidity
             </Button>
             <Button variant={viewMode === 'orderflow' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'orderflow' ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/25' : 'text-muted-foreground hover:text-cyan-500'}`}
-              onClick={() => { setViewMode('orderflow'); setDisplayMode('pro'); }}>
+              onClick={() => { 
+                
+                window.open('?viewMode=orderflow&displayMode=pro', '_blank');
+              }}>
               <Zap className="h-2.5 w-2.5 mr-0.5" /> Order Flow
             </Button>
             </div>
