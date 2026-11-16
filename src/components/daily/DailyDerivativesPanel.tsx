@@ -15,6 +15,7 @@ import {
   Target,
   BarChart2,
   Zap,
+  Compass,
 } from "lucide-react";
 
 interface Signal {
@@ -52,6 +53,20 @@ interface TradePlanCard {
   reason: string;
 }
 
+interface DirectionVote {
+  factor: string;
+  vote: "CALL" | "PUT" | "NEUTRAL";
+  detail: string;
+}
+
+interface DirectionBias {
+  side: "CALL" | "PUT" | "NEUTRAL";
+  callVotes: number;
+  putVotes: number;
+  confidence: number;
+  votes: DirectionVote[];
+}
+
 interface DailyDerivativesReport {
   underlying: "NIFTY" | "SENSEX";
   timestamp: string;
@@ -76,6 +91,7 @@ interface DailyDerivativesReport {
   sentimentScore: number;
   tradePlans: TradePlanCard[];
   preferredSide: "CALL" | "PUT" | null;
+  directionBias: DirectionBias;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
@@ -307,6 +323,42 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
             </div>
           </div>
 
+          {/* Direction Bias — which side and why */}
+          {report.directionBias && (
+            <div className={`rounded-lg border p-3 ${report.directionBias.side === "CALL" ? "border-emerald-500/40 bg-emerald-500/5" : report.directionBias.side === "PUT" ? "border-rose-500/40 bg-rose-500/5" : "border-border/50 bg-card/50"}`}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <Compass className="h-4 w-4 text-violet-400" />
+                  <span className="text-[11px] font-bold text-foreground">Direction</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-mono text-muted-foreground">
+                    {report.directionBias.callVotes} CE vs {report.directionBias.putVotes} PE · {report.directionBias.confidence}% conf
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    report.directionBias.side === "CALL" ? "bg-emerald-500/20 text-emerald-400"
+                    : report.directionBias.side === "PUT" ? "bg-rose-500/20 text-rose-400"
+                    : "bg-amber-500/20 text-amber-400"
+                  }`}>
+                    {report.directionBias.side === "NEUTRAL" ? "NO EDGE — WAIT" : `GO ${report.directionBias.side === "CALL" ? "CE" : "PE"}`}
+                  </span>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-1">
+                {report.directionBias.votes.map((v, i) => (
+                  <div key={i} className={`rounded p-1.5 text-[9px] ${
+                    v.vote === "CALL" ? "bg-emerald-500/10" : v.vote === "PUT" ? "bg-rose-500/10" : "bg-muted/40"
+                  }`}>
+                    <div className={`font-bold ${v.vote === "CALL" ? "text-emerald-400" : v.vote === "PUT" ? "text-rose-400" : "text-muted-foreground"}`}>
+                      {v.factor}: {v.vote === "NEUTRAL" ? "—" : v.vote}
+                    </div>
+                    <div className="text-muted-foreground leading-snug mt-0.5">{v.detail}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Trade Plans — Strike • Entry • SL • TP */}
           <div className="bg-card/50 border border-border/50 rounded-lg p-3">
             <div className="flex items-center justify-between mb-2">
@@ -336,6 +388,11 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                           {preferred && (
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-500/20 text-violet-300">
                               ★ PREFERRED ({report.preferredSide})
+                            </span>
+                          )}
+                          {!preferred && report.preferredSide && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-muted text-muted-foreground">
+                              against bias
                             </span>
                           )}
                           {p.otmSteps > 0 && (

@@ -62,6 +62,23 @@ export interface TradePlanCard {
   reason: string;
 }
 
+/** One factor's directional vote — visible reasoning, never a hidden weight. */
+export interface DirectionVote {
+  factor: string;
+  vote: "CALL" | "PUT" | "NEUTRAL";
+  detail: string;
+}
+
+/** Aggregated directional verdict from the deterministic factor votes. */
+export interface DirectionBias {
+  side: "CALL" | "PUT" | "NEUTRAL";
+  callVotes: number;
+  putVotes: number;
+  /** majority share of the CAST votes (0 when no side has any vote) */
+  confidence: number;
+  votes: DirectionVote[];
+}
+
 export interface OptionStrike {
   strike: number;
   call?: {
@@ -123,6 +140,7 @@ export interface DailyDerivativesReport {
   sentimentScore: number;
   tradePlans: TradePlanCard[];
   preferredSide: "CALL" | "PUT" | null;
+  directionBias: DirectionBias;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
@@ -361,6 +379,80 @@ export class DailyDerivativesService {
     return { sentiment, score };
   }
 
+  /**
+   * Deterministic directional verdict — 5 factor votes, each visible.
+   * No hidden weights, no network: everything comes from the chain,
+   * the candle signals and the VIX already fetched for this report.
+   */
+  private computeDirectionBias(args: {
+    spot: number;
+    pcr: number;
+    maxPain: number;
+    topCallOI: { oiChange: number }[];
+    topPutOI: { oiChange: number }[];
+    latestSignals: Signal[];
+    sentimentScore: number;
+  }): DirectionBias {
+    const votes: DirectionVote[] = [];
+
+    // 1. PCR band — put-heavy OI is bullish demand, call-heavy is bearish
+    votes.push(
+      args.pcr > 1
+        ? { factor: "PCR", vote: "CALL", detail: `PCR ${args.pcr.toFixed(2)} — put-heavy (bullish)` }
+        : args.pcr < 0.85
+          ? { factor: "PCR", vote: "PUT", detail: `PCR ${args.pcr.toFixed(2)} — call-heavy (bearish)` }
+          : { factor: "PCR", vote: "NEUTRAL", detail: `PCR ${args.pcr.toFixed(2)} — balanced` }
+    );
+
+    // 2. Max-pain position — spot above pain = put writers defend (bull), below = call writers press (bear)
+    votes.push(
+      args.spot > args.maxPain
+        ? { factor: "Max Pain", vote: "CALL", detail: `spot ${args.spot.toFixed(0)} above MP ${args.maxPain} — upward pin` }
+        : args.spot < args.maxPain
+          ? { factor: "Max Pain", vote: "PUT", detail: `spot ${args.spot.toFixed(0)} below MP ${args.maxPain} — downward pin` }
+          : { factor: "Max Pain", vote: "NEUTRAL", detail: `spot at MP ${args.maxPain}` }
+    );
+
+    // 3. OI shifts — net put OI build near/below spot = support; net call OI build = resistance
+    const netPut = args.topPutOI.reduce((a, t) => a + (t.oiChange || 0), 0);
+    const netCall = args.topCallOI.reduce((a, t) => a + (t.oiChange || 0), 0);
+    votes.push(
+      netPut > netCall
+        ? { factor: "OI Shift", vote: "CALL", detail: `put ΔOI +${netPut.toLocaleString("en-IN")} vs call ΔOI ${netCall >= 0 ? "+" : ""}${netCall.toLocaleString("en-IN")} — support building` }
+        : netCall > netPut
+          ? { factor: "OI Shift", vote: "PUT", detail: `call ΔOI +${netCall.toLocaleString("en-IN")} vs put ΔOI ${netPut >= 0 ? "+" : ""}${netPut.toLocaleString("en-IN")} — resistance building` }
+          : { factor: "OI Shift", vote: "NEUTRAL", detail: "top-strike OI flat" }
+    );
+
+    // 4. Candle signals (EMA9/15 + ADX/ATR) — the most recent setup's side
+    const last = args.latestSignals[0];
+    votes.push(
+      !last
+        ? { factor: "Candles", vote: "NEUTRAL", detail: "no fresh setups" }
+        : last.side === "LONG"
+          ? { factor: "Candles", vote: "CALL", detail: `${last.type} LONG @ ${last.entry.toFixed(0)} (strength ${last.strength})` }
+          : { factor: "Candles", vote: "PUT", detail: `${last.type} SHORT @ ${last.entry.toFixed(0)} (strength ${last.strength})` }
+    );
+
+    // 5. Sentiment (VIX + PCR composite)
+    votes.push(
+      args.sentimentScore >= 60
+        ? { factor: "Sentiment", vote: "CALL", detail: `score ${args.sentimentScore}/100` }
+        : args.sentimentScore <= 40
+          ? { factor: "Sentiment", vote: "PUT", detail: `score ${args.sentimentScore}/100` }
+          : { factor: "Sentiment", vote: "NEUTRAL", detail: `score ${args.sentimentScore}/100` }
+    );
+
+    const callVotes = votes.filter(v => v.vote === "CALL").length;
+    const putVotes = votes.filter(v => v.vote === "PUT").length;
+    const cast = callVotes + putVotes;
+    const side: DirectionBias["side"] =
+      callVotes > putVotes ? "CALL" : putVotes > callVotes ? "PUT" : "NEUTRAL";
+    const confidence = cast > 0 ? Math.round((Math.max(callVotes, putVotes) / cast) * 100) : 0;
+
+    return { side, callVotes, putVotes, confidence, votes };
+  }
+
   async getDailyDerivativesReport(params: {
     underlying: "NIFTY" | "SENSEX";
     expiryISO?: string;
@@ -501,15 +593,14 @@ export class DailyDerivativesService {
 
     const { sentiment, score } = this.getSentiment(indiaVix, pcr);
 
-    // Trade plans — canonical `selectStrike` picks the tradable ATM..OTM
-    // contract per side (gate rules: budget fit, |delta| ≥ 0.35 when
-    // published), then `buildOptionPlan` prices the SL/TP ladder on it.
-    // Both sides are shown honestly; the preferred side follows sentiment/PCR
-    // (neutral tie-break: spot vs max pain).
+    // Directional verdict — 5 visible factor votes (PCR, max pain, OI shifts,
+    // candle signals, sentiment). The ★ follows the majority; a split or
+    // vote-less tape shows NO EDGE honestly instead of a coin-flip pick.
+    const directionBias = this.computeDirectionBias({
+      spot, pcr, maxPain, topCallOI, topPutOI, latestSignals, sentimentScore: score,
+    });
     const preferredSide: "CALL" | "PUT" | null =
-      sentiment === "Bullish" || sentiment === "Extreme Greed" || pcr > 1 ? "CALL"
-      : sentiment === "Bearish" || sentiment === "Extreme Fear" || pcr < 0.85 ? "PUT"
-      : spot > maxPain ? "CALL" : spot < maxPain ? "PUT" : null;
+      directionBias.side === "NEUTRAL" ? null : directionBias.side;
 
     const tradePlans: TradePlanCard[] = [];
     const lotSize = getLotSizeStrict(underlying);
@@ -528,6 +619,12 @@ export class DailyDerivativesService {
           entryPremium: sel.entry,
           lotSize,
         });
+        // The canonical engine flags `rr < minOptionRR` with raw float math —
+        // a 1.9999999999999982 rounds to the 2.00 gate and would print a
+        // false "will be blocked" warning. Drop that note when it rounds clean.
+        const cleanNotes = (plan?.notes ?? []).filter(
+          n => !(n.includes("below the gate's") && Math.round((plan?.rr ?? 0) * 100) / 100 >= 2)
+        );
         tradePlans.push({
           optionType: sel.optionType,
           strike: sel.strike,
@@ -541,7 +638,7 @@ export class DailyDerivativesService {
           tradable: !!plan?.tradable,
           otmSteps: sel.otmSteps,
           reason: plan
-            ? `${sel.reason}${plan.notes.length ? ` — ${plan.notes.join(" · ")}` : ""}`
+            ? `${sel.reason}${cleanNotes.length ? ` — ${cleanNotes.join(" · ")}` : ""}`
             : `${sel.reason} — no valid SL/TP ladder`,
         });
       }
@@ -580,6 +677,7 @@ export class DailyDerivativesService {
       sentimentScore: score,
       tradePlans,
       preferredSide,
+      directionBias,
       candleSource: candleResult.source,
       candleInterval: candleResult.intervalLabel,
       candleDegraded: candleResult.degraded,
@@ -624,6 +722,8 @@ ${r.latestSignals.length === 0 ? "  No recent signals (candles not available)" :
   r.latestSignals.map(s => `  [${s.type}] ${s.side} @ ${s.entry.toFixed(0)} | Strength: ${s.strength}`).join("\n")}
 
 ── Trade Plans (SL/TP ladder, TP 2R/3R/4R) ──
+Direction       : ${r.directionBias.side === "NEUTRAL" ? "NO EDGE" : `GO ${r.directionBias.side === "CALL" ? "CE" : "PE"}`} (${r.directionBias.callVotes} CE vs ${r.directionBias.putVotes} PE, ${r.directionBias.confidence}% conf)
+${r.directionBias.votes.map(v => `  ${v.vote === "NEUTRAL" ? "·" : "✓"} [${v.factor}] ${v.vote} — ${v.detail}`).join("\n")}
 ${r.tradePlans.length === 0 ? "  No tradable contract found" :
   r.tradePlans.map(p => `  ${p.optionType} ${p.strike}${p.optionType === (r.preferredSide === "PUT" ? "PE" : "CE") ? " ★" : ""} | Entry: ${p.entry} | SL: ${p.stopLoss} | TP: ${p.targets.join(" / ") || "-"} | ${p.lots} lot${p.lots === 1 ? "" : "s"} ₹${Math.round(p.deployed).toLocaleString("en-IN")}${p.tradable ? "" : " — NOT TRADABLE"}`).join("\n")}
 Candles         : ${r.candleCount} @ ${r.candleInterval} (${r.candleSource}${r.candleDegraded ? ` — ${r.candleDegraded}` : ""})
