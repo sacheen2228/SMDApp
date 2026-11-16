@@ -299,7 +299,7 @@ export { BreezeConnect };
 // ─── Auto-Retry Wrapper (with concurrent refresh protection) ──────
 // Wraps any Breeze SDK call and retries once on auth errors (401/403/token expired).
 // Uses shared refresh promise to prevent duplicate refresh attempts.
-const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED'];
+const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED', 'ERROR'];
 
 export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>): Promise<T> {
   if (!store.currentApiSession) {

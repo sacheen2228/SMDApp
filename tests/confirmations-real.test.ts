@@ -21,16 +21,13 @@
 import { describe, test, expect } from "bun:test";
 import {
   evaluateConfirmations,
-  confirmTradeGate,
   confirmSummary,
   type TrendReadInput,
-  type TriggerReadInput,
 } from "@/lib/signal-persistence";
 
 const trend = (o: Partial<TrendReadInput>): TrendReadInput => ({
   stDir: 1, emaRel: "ABOVE", emaChop: false, structureTrend: "UP", ...o,
 });
-const trigger = (hits: string[], opposing: string[] = []): TriggerReadInput => ({ hits, opposing });
 
 describe("Trend check — real SuperTrend/EMA/structure reads only", () => {
   test("CALL with SuperTrend up + EMA above + structure UP → pass", () => {
@@ -84,39 +81,26 @@ describe("Trend check — real SuperTrend/EMA/structure reads only", () => {
   });
 });
 
-describe("Trigger check — real 5m closed-bar trigger evidence only", () => {
-  test("hit in favour with no opposing evidence → pass, detail carries the real evidence", () => {
-    const t = evaluateConfirmations({
+describe("no trigger check — the confirmations are READ-ONLY context", () => {
+  // The Simple tab issues no trade action, so there is no trigger check and
+  // no trigger gate. A regression that reintroduces either would silently
+  // re-arm a trade path on a tab that is meant to be display-only.
+  test("evaluateConfirmations emits no 'Trigger' check", () => {
+    const names = evaluateConfirmations({
       direction: "CALL",
-      triggerRead: trigger(["BOS_UP on a closed candle"]),
-    }).find((x) => x.name === "Trigger")!;
-    expect(t.available).toBe(true);
-    expect(t.pass).toBe(true);
-    expect(t.detail).toContain("BOS_UP");
+      trendRead: trend({}),
+      rvol: 1.4,
+      pcr: 1.1,
+      vsVwap: "ABOVE",
+    }).map((c) => c.name);
+    expect(names).not.toContain("Trigger");
+    expect(names).toContain("Trend");
+    expect(names).toContain("VWAP");
   });
 
-  test("opposing evidence only → fail as 'against'", () => {
-    const t = evaluateConfirmations({
-      direction: "CALL",
-      triggerRead: trigger([], ["fresh opposite EMA cross"]),
-    }).find((x) => x.name === "Trigger")!;
-    expect(t.pass).toBe(false);
-    expect(t.detail).toContain("against");
-  });
-
-  test("no trigger evidence → fail, card stays WAIT", () => {
-    const t = evaluateConfirmations({
-      direction: "CALL",
-      triggerRead: trigger([], []),
-    }).find((x) => x.name === "Trigger")!;
-    expect(t.available).toBe(true);
-    expect(t.pass).toBe(false);
-  });
-
-  test("no trigger read → unavailable", () => {
-    const t = evaluateConfirmations({ direction: "CALL", triggerRead: null })
-      .find((x) => x.name === "Trigger")!;
-    expect(t.available).toBe(false);
+  test("the module exports no trade gate", async () => {
+    const mod = await import("@/lib/signal-persistence");
+    expect((mod as Record<string, unknown>).confirmTradeGate).toBeUndefined();
   });
 });
 
@@ -180,61 +164,20 @@ describe("OI / PCR check — real PCR, unchanged thresholds", () => {
   });
 });
 
-describe("confirmTradeGate — the playbook rule: Trigger AND (Trend OR VWAP)", () => {
-  const all = (o: {
-    triggerRead?: TriggerReadInput | null; trendRead?: TrendReadInput | null;
-    vsVwap?: "ABOVE" | "BELOW" | "NA" | null;
-  }) =>
-    evaluateConfirmations({
+describe("the context reads never gate a trade", () => {
+  // The old confirmTradeGate turned these reads into a BUY/WAIT verdict.
+  // It is gone: the confirmations report, they do not decide.
+  test("every check is a plain read — no verdict field anywhere", () => {
+    const checks = evaluateConfirmations({
       direction: "CALL",
-      triggerRead: o.triggerRead ?? trigger(["fresh BULLISH EMA cross + SuperTrend + VWAP side"]),
-      trendRead: o.trendRead ?? trend({}),
-      vsVwap: o.vsVwap ?? "ABOVE",
+      trendRead: trend({}),
       rvol: 1.4,
       pcr: 1.1,
-    });
-
-  test("trigger + trend aligned → TRADE (BUY)", () => {
-    const g = confirmTradeGate(all({}));
-    expect(g.tradeable).toBe(true);
-  });
-
-  test("trigger fires but trend against and VWAP against → WAIT (never BUY)", () => {
-    const g = confirmTradeGate(all({
-      trendRead: trend({ stDir: -1, emaRel: "BELOW", structureTrend: "DOWN" }),
-      vsVwap: "BELOW",
-    }));
-    expect(g.tradeable).toBe(false);
-  });
-
-  test("trigger fires, trend against, but VWAP agrees → TRADE (VWAP is the alternate)", () => {
-    const g = confirmTradeGate(all({
-      trendRead: trend({ stDir: -1, emaRel: "BELOW", structureTrend: "DOWN" }),
       vsVwap: "ABOVE",
-    }));
-    expect(g.tradeable).toBe(true);
-  });
-
-  test("no trigger → WAIT even when everything else passes", () => {
-    const g = confirmTradeGate(all({ triggerRead: trigger([], []) }));
-    expect(g.tradeable).toBe(false);
-  });
-
-  test("trigger data unavailable → WAIT (fail closed, never fabricate a pass)", () => {
-    const checks = evaluateConfirmations({
-      direction: "CALL", triggerRead: null, trendRead: trend({}), vsVwap: "ABOVE",
     });
-    const g = confirmTradeGate(checks);
-    expect(g.tradeable).toBe(false);
-  });
-
-  test("trend AND vwap both unavailable → WAIT even with a trigger", () => {
-    const checks = evaluateConfirmations({
-      direction: "CALL", triggerRead: trigger(["BOS_UP on a closed candle"]),
-      trendRead: null, vsVwap: "NA",
-    });
-    const g = confirmTradeGate(checks);
-    expect(g.tradeable).toBe(false);
+    for (const c of checks) {
+      expect(Object.keys(c).sort()).toEqual(["available", "detail", "name", "pass"]);
+    }
   });
 });
 
@@ -311,31 +254,29 @@ describe("Delta check — real |delta| vs the gate's minAbsDelta (0.35)", () => 
 });
 
 describe("confirmSummary — unavailable checks never pad the ratio", () => {
-  test("5 checks with 3 unavailable → pass/total counts only available", () => {
+  test("4 checks with 2 unavailable → pass/total counts only available", () => {
     const checks = evaluateConfirmations({
       direction: "CALL",
       trendRead: trend({}),
-      triggerRead: trigger(["BOS_UP on a closed candle"]),
       rvol: null,        // no volume on index spot candles
       vsVwap: "NA",      // no volume → no VWAP side
       pcr: 1.2,
     });
     const s = confirmSummary(checks);
-    expect(s.total).toBe(3);      // trend, trigger, pcr only (adx/atm unavailable)
-    expect(s.pass).toBe(3);
+    expect(s.total).toBe(2);      // trend + pcr only (volume/vwap unavailable)
+    expect(s.pass).toBe(2);
     expect(s.pct).toBe(100);
   });
 
-  test("6th check (ADX) counts when available", () => {
+  test("ADX counts when available", () => {
     const checks = evaluateConfirmations({
       direction: "CALL",
       trendRead: trend({}),
-      triggerRead: trigger(["BOS_UP on a closed candle"]),
       pcr: 1.2,
       adxRead: { adx: 24, pdi: 28, mdi: 19 },
     });
     const s = confirmSummary(checks);
-    expect(s.total).toBe(4);      // trend, trigger, pcr, adx (volume/vwap unavailable)
-    expect(s.pass).toBe(4);
+    expect(s.total).toBe(3);      // trend, pcr, adx (volume/vwap unavailable)
+    expect(s.pass).toBe(3);
   });
 });

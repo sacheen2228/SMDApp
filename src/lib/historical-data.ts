@@ -182,6 +182,44 @@ async function fetchNSEDailyCandles(symbol: string, limit: number): Promise<Cand
 }
 
 /**
+ * Breeze getHistoricalDatav2 accepts only 1second/1minute/5minute/30minute/1day.
+ * For any other intraday interval (15m, 1h, …) we fetch real 5m bars and
+ * aggregate them into session-aligned buckets — real data only, never a
+ * different timeframe dressed up as the requested one.
+ */
+const AGGREGATE_FROM_5M: Record<string, number> = {
+  '3m': 3,
+  '15m': 15,
+  '1h': 60,
+  '4h': 240,
+};
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const SESSION_OPEN_MS = 9 * 60 * 60 * 1000 + 15 * 60 * 1000; // 09:15 IST
+
+function aggregate5m(candles: Candle[], targetMinutes: number): Candle[] {
+  const bucketMs = targetMinutes * 60_000;
+  const groups = new Map<number, Candle>();
+  for (const c of candles) {
+    const ist = c.time + IST_OFFSET_MS;
+    const istDay = Math.floor(ist / 86_400_000) * 86_400_000;
+    const sessionOpen = istDay + SESSION_OPEN_MS - IST_OFFSET_MS;
+    const key = istDay + Math.floor((c.time - sessionOpen) / bucketMs);
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, { ...c });
+    } else {
+      g.high = Math.max(g.high, c.high);
+      g.low = Math.min(g.low, c.low);
+      g.close = c.close;
+      g.volume += c.volume;
+      if (c.time > g.time) g.time = c.time;
+    }
+  }
+  return [...groups.values()].sort((a, b) => a.time - b.time);
+}
+
+/**
  * The candle series for `symbol`.
  *
  * Returns [] when no real source has the data — the caller then reports
@@ -192,11 +230,26 @@ export async function getHistoricalCandles(
   interval: string = '5m',
   limit: number = 300
 ): Promise<Candle[]> {
+  const iv = String(interval || '').toLowerCase();
+  const aggMinutes = AGGREGATE_FROM_5M[iv];
+
+  if (aggMinutes) {
+    // 3 bars of 5m per 15m bar (2 per 30m…): over-fetch then bucket.
+    const raw = await fetchBreezeCandles(symbol, '5m', limit * Math.ceil(aggMinutes / 5) + 10);
+    if (raw.length > 0) {
+      return aggregate5m(raw, aggMinutes).slice(-limit);
+    }
+    console.warn(
+      `[Historical Data] No real 5m source to aggregate ${symbol} @ ${interval} — returning an empty series`
+    );
+    return [];
+  }
+
   const breeze = await fetchBreezeCandles(symbol, interval, limit);
   if (breeze.length > 0) return breeze;
 
   // The exchange's free daily history — a DAILY request only.
-  if (DAILY_INTERVALS.has(String(interval || '').toLowerCase())) {
+  if (DAILY_INTERVALS.has(iv)) {
     const nse = await fetchNSEDailyCandles(symbol, limit);
     if (nse.length > 0) return nse;
   }

@@ -1,0 +1,33 @@
+{
+  "heatmap": {
+    "weighted_return_pct": 0,
+    "pct_weight_green": 0,
+    "sensex_weighted_pct": 0,
+    "top3_share_pct": 0,
+    "sector_rotation_aligned": false
+  },
+  "oi_spurts": {
+    "bullish_weight": 0,
+    "bearish_weight": 0,
+    "total_weight": 0,
+    "most_active_bias": 0
+  },
+  "preopen": {
+    "gap_pct": 0,
+    "ad_ratio": 0,
+    "close_auction_bias": 0
+  },
+  "week52": {
+    "high_count": 0,
+    "low_count": 0,
+    "heavyweights_at_high": 0,
+    "sector_cluster_matching_index": false
+  },
+  "heavyweights": [],
+  "fii_bse": {
+    "agrees": false
+  },
+  "news": {
+    "unavailable": true
+  }
+}

@@ -459,6 +459,14 @@ export function isTradeAllowed(
   const action = direction === 'CALL' ? 'BUY_CALL' : 'BUY_PUT';
 
   if (s.allowedActions.includes(action)) {
+    // Only block after 3:30 PM IST (market close)
+    const istNow = getISTMinutes();
+    if (istNow >= 930) { // 3:30 PM IST — market close
+      return {
+        allowed: false,
+        reason: '3:30 PM IST — market close, no new entries',
+      };
+    }
     return { allowed: true, reason: '' };
   }
 

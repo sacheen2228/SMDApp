@@ -11,12 +11,17 @@
 SMDApp is a browser-based trading terminal that pulls **live** option-chain and market data for the
 five major Indian indices, runs a 14-factor options-quality scoring engine (SDM) and a classical
 technical-analysis engine (ML/TA), and presents everything through
-two views:
+multiple views:
 
 - **Simple Mode** — a beginner-friendly card with the live PCR, India VIX, ATM strike, max pain,
   CE/PE OI, the current SDM trade recommendation, and a one-click "Go Pro" switch.
 - **Pro / Terminal Mode** — full option chain, Greeks heatmaps, Smart Money (ICT/SMC) panel,
   FII/DII flow, news sentiment, and more.
+- **Daily Derivatives** — comprehensive derivatives dashboard with India VIX, PCR, Max Pain, OI
+  walls (Call/Put), ATM strike + IV + Greeks (Delta/Gamma/Theta/Vega), top 5 Call/Put OI strikes,
+  technical signals (EMA9/15 + ADX/ATR: CROSSOVER, PULLBACK, BREAKOUT), and market sentiment
+  (Extreme Greed → Extreme Fear).
+- **BTST** — AI-powered next-day swing scanner (6-factor score, ATR-based risk).
 
 It also ships an **AI chat agent** ("Angel") that can answer questions about any index, run scans,
 pull news/correlation/gap analysis, and even place simulated trade plans — all through a hybrid
@@ -65,11 +70,12 @@ fabricated quote.
 ## 3. Architecture at a glance
 
 ```
-Browser (React)  ──React Query──▶  /api/option-chain   ──▶ ICICI Breeze → MOAPI → NSE / BSE → Moneycontrol → 503 (NO_DATA)
-                                       /api/scanner        ──▶ live stock quotes + candle chain (Breeze/MO/NSE)
-                                       /api/sdm-signal     ──▶ signal-engine (SDM/0DTE)
-                                       /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
-                                       /api/intraday-scan  ──▶ Telegram (secret-gated cron)
+Browser (React)  ──React Query──▶  /api/option-chain     ──▶ ICICI Breeze → MOAPI → NSE / BSE → Moneycontrol → 503 (NO_DATA)
+                                        /api/daily-derivatives  ──▶ canonical data layer (NSE/BSE/MOAPI) + signals
+                                        /api/scanner        ──▶ live stock quotes + candle chain (Breeze/MO/NSE)
+                                        /api/sdm-signal     ──▶ signal-engine (SDM/0DTE)
+                                        /api/sdm-chat       ──▶ LLM (Groq/OpenRouter)
+                                        /api/intraday-scan  ──▶ Telegram (secret-gated cron)
                                         /api/daily-digest   ──▶ Telegram morning digest
 
 Zustand store  ◀── option chain / spot / selection
@@ -86,18 +92,21 @@ node-cron       ──▶ dailyScanCron.ts ──▶ scan/premarket jobs ──�
 
 | File | Role |
 |---|---|
-| `src/app/page.tsx` | Main UI — both views, wires live `summary` + `recommendation` |
+| `src/app/page.tsx` | Main UI — all views/tabs, wires live data |
 | `src/app/api/option-chain/route.ts` | Core API: orchestrates data sources + SDM analysis. Envelope `{success, source, lastUpdate, data, analysis}` |
+| `src/app/api/daily-derivatives/route.ts` | Daily Derivatives API: NSE/BSE/MOAPI chain + signals (EMA/ADX/ATR), PCR, Max Pain, OI walls, ATM Greeks, sentiment |
 | `src/lib/icici-breeze/` | ICICI Breeze auth, option chain, orders, positions |
 | `src/lib/nse-api.ts` | NSE India scraper (primary NSE live source) |
 | `src/lib/sdm-engine.ts` | SDM 14-factor scoring engine |
 | `src/lib/sdm-recommendation.ts` | V2 recommendation orchestrator |
 | `src/lib/signal-engine.ts` | Market structure / smart money / flow / 0DTE analytics |
+| `src/lib/DailyDerivatives.ts` | Daily Derivatives service: canonical chain + EMA9/15+ADX/ATR signals + Black-Scholes Greeks |
 | `src/lib/intraday-scanner.ts` | Stock scanner — **live quotes + 3mo daily candles → real RSI/EMA/MACD/ADX/ATR** |
 | `src/lib/ml-engine.ts` | Classical TA indicators (`Candle`, `calculateRSI`/`calculateEMA`/`calculateADX`) |
 | `src/lib/sdmChat.ts` / `llmResolve.ts` / `historyStore.ts` | Hybrid chat intent resolution |
 | `src/lib/sendIntradayAlerts.ts` / `dailyScan.ts` / `dailyDigest.ts` / `telegramSend.ts` / `stockUniverse.ts` | Daily digest + intraday alert pipeline |
 | `src/components/dashboard/SimpleMode.tsx` / `ScannerPanel.tsx` / `AgentChat.tsx` | Main UI panels |
+| `src/components/daily/DailyDerivativesPanel.tsx` | Daily Derivatives tab UI (VIX, PCR, Max Pain, OI walls, ATM Greeks, signals, sentiment) |
 
 ---
 
@@ -253,6 +262,7 @@ This section records the actual work done so the design decisions are easy to re
 | `bun run lint` | ESLint (lenient) |
 | `systemctl --user start smdapp-cron` | Run the alert scheduler (`scripts/dailyScanCron.ts`) |
 | `curl "http://localhost:3000/api/intraday-scan?secret=$DAILY_SCAN_SECRET"` | Trigger an intraday scan manually |
+| `curl "http://localhost:3000/api/daily-derivatives?symbol=NIFTY"` | Get Daily Derivatives report |
 
 ---
 

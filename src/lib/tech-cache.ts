@@ -59,6 +59,27 @@ export function isFresh(snap: TechSnapshot | undefined, tf: TechTf, nowMs = Date
   return nowMs - snap.computedAt <= TF_TTL_MS[tf];
 }
 
+/**
+ * Is the snapshot ACTIONABLE right now?
+ *
+ * `isFresh` only asks "was this recomputed recently?" — after the market
+ * closes the route keeps recomputing the SAME old candles every TTL, so
+ * computedAt stays fresh while the data itself is hours old. Acting on that
+ * read (a "confirmed" BUY on yesterday's structure) is the stale-signal bug.
+ *
+ * This check looks at the BAR's own timestamp (`asOf`): the last closed bar
+ * must be within two bar intervals of now. During a live session the last
+ * closed bar is at most one interval old, so this always holds; after the
+ * close it stops holding within two intervals and every downstream consumer
+ * treats the read as unavailable instead of as fresh evidence.
+ */
+export function isCurrent(snap: TechSnapshot | undefined, tf: TechTf, nowMs = Date.now()): boolean {
+  if (!snap || snap.error) return false;
+  if (!isFresh(snap, tf, nowMs)) return false;
+  if (!snap.asOf) return false;
+  return nowMs - snap.asOf <= TF_TTL_MS[tf] * 2;
+}
+
 /** Store a computed snapshot (used by the refresh route/job). */
 export function putSnapshot(snap: TechSnapshot): void {
   cache.set(key(snap.symbol, snap.tf), snap);

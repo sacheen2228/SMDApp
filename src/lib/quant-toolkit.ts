@@ -19,8 +19,8 @@
  *    or Greeks gates (wall proximity / theta-negative always force SKIP).
  */
 
-import { analyzeSMC } from "./smc-layer";
-import { atrSeries, liquidityPools, type Candle } from "./tech-read";
+import { analyzeSMCFromCandles } from "./smc-layer";
+import { structure, swings, type Candle } from "./tech-read";
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -495,7 +495,11 @@ export interface ScorecardInput {
   crossIndexAgreement: "agree" | "disagree" | "unknown";
   liquidityCost: "good" | "ok" | "wide" | "unknown";
   timingOk: boolean | null; // inside user windows, not first 15m, no loss-cap breach
-  spotDistToWallPct: number | null; // % distance to the OPPOSING wall (gate ~0.12-0.16%)
+  spotDistToWallPct: number | null; // % distance to the NEAREST OI wall
+  /** % distance to the support wall (PE wall BELOW spot) — null when absent. */
+  spotDistToSupportPct?: number | null;
+  /** % distance to the resistance wall (CE wall ABOVE spot) — null when absent. */
+  spotDistToResistancePct?: number | null;
   smcScore: 0 | 1 | 2 | null; // SMC layer: sweep+CHOCH+displacement, capped at 2
   /** SMC structure trend (UP/DOWN/SIDEWAYS) — triggers a SKIP when it opposes the vote. null/omitted = unavailable. */
   smcTrend?: "UP" | "DOWN" | "SIDEWAYS" | null;
@@ -545,9 +549,16 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
   // 4. OI walls + risk-neutral mass
   let wallScore: 0 | 1 | 2 | null = null;
   let wallNote = "";
-  if (input.oiWalls.supportK == null || input.oiWalls.resistanceK == null) {
+  if (input.oiWalls.supportK == null && input.oiWalls.resistanceK == null) {
     wallScore = null;
     wallNote = "walls unavailable";
+  } else if (input.oiWalls.supportK == null || input.oiWalls.resistanceK == null) {
+    // One side only (no PE wall below spot, or no CE wall above). There is no
+    // "between walls" band — the setup is unbounded on one side.
+    wallScore = 0;
+    wallNote = input.oiWalls.supportK == null
+      ? "no PE wall below spot (support side unbounded)"
+      : "no CE wall above spot (resistance side unbounded)";
   } else if (input.oiWalls.spotBetweenWalls === false) {
     wallScore = 0;
     wallNote = "spot outside walls (no edge)";
@@ -637,7 +648,15 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
   rows.push({ factor: "SMC layer", score: smcScr, note: smcNote });
 
   const total = rows.reduce((s, r) => s + (r.score ?? 0), 0);
-  const maxTotal = rows.reduce((s, r) => s + (r.score == null ? 0 : 2), 0);
+  // The denominator is the FULL possible score (every factor × 2), NOT the
+  // sum over the factors that happened to be scorable. The old code excluded
+  // unavailable factors from the denominator, so MISSING DATA made the ratio
+  // look BETTER: 8 of 14 scorable points read as 57%, while the same 8
+  // points against the full 20 read as 40%. That inverted the penalty for
+  // missing evidence — the confidence mapping (sdm-engine) divides by this
+  // number, so less data produced a higher confidence. Missing factors now
+  // cost points in the denominator (they render as "n/a" and score 0).
+  const maxTotal = rows.length * 2;
 
   // Direction layers that must agree: trend, trigger, buildup
   const dirTrend = input.trendTf === "up" ? 1 : input.trendTf === "down" ? -1 : 0;
@@ -659,11 +678,30 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
   const smcTrend = input.smcTrend ?? null;
 
   let verdict: ScorecardResult["verdict"] = "SKIP";
-  if (!opposing && agreeingLayers >= 3 && total >= 8 && !smcCannotOverride) {
+  // Verdict threshold on the FULL 20-point scale (10 factors × 2). 11 points
+  // is a majority of all possible evidence — the old `total >= 8` was set
+  // against a denominator that EXCLUDED unavailable factors, so it silently
+  // meant "8 of whatever happened to be measurable" and passed a setup with
+  // only four factors scored.
+  if (!opposing && agreeingLayers >= 3 && total >= 11 && !smcCannotOverride) {
     verdict = bullVotes >= 3 ? "BUY_CE" : bearVotes >= 3 ? "BUY_PE" : "SKIP";
   }
-  if (input.spotDistToWallPct != null && input.spotDistToWallPct <= 0.14) {
-    notes.push(`price within ${input.spotDistToWallPct.toFixed(2)}% of opposing OI wall — SKIP per wall-proximity gate`);
+  // Wall-proximity gate — the wall OPPOSING the trade direction is what
+  // invalidates the thesis: for a BUY_CE it is the support below spot, for a
+  // BUY_PE the resistance above. The old code compared the NEAREST wall, so a
+  // long could be blocked for sitting near its own target (the resistance
+  // above) — the wrong wall entirely.
+  // When the direction-specific distance is unavailable, fall back to the
+  // nearest-wall distance (conservative: it can only block more, never less).
+  const wallGatePct =
+    verdict === "BUY_CE"
+      ? (input.spotDistToSupportPct ?? input.spotDistToWallPct)
+      : verdict === "BUY_PE"
+        ? (input.spotDistToResistancePct ?? input.spotDistToWallPct)
+        : input.spotDistToWallPct;
+  if (wallGatePct != null && wallGatePct <= 0.14) {
+    const wallSide = verdict === "BUY_CE" ? "support (PE wall below)" : verdict === "BUY_PE" ? "resistance (CE wall above)" : "OI wall";
+    notes.push(`price within ${wallGatePct.toFixed(2)}% of ${wallSide} — SKIP per wall-proximity gate`);
     verdict = "SKIP";
   }
   if (smcCannotOverride && verdict !== "SKIP") {
@@ -683,7 +721,12 @@ export function scorecard(input: ScorecardInput): ScorecardResult {
     }
   }
 
-  const confidence: ScorecardResult["confidence"] = total >= 13 && agreeingLayers >= 4 ? "High" : total >= 9 ? "Medium" : "Low";
+  // Qualitative confidence — thresholds are absolute points against the FULL
+  // 20-point scale (10 factors × 2). They are deliberately NOT expressed as a
+  // ratio of `maxTotal`, because a ratio lets missing factors flatter the
+  // score (8/14 scorable would read as "Medium" while being 8/20 overall).
+  const confidence: ScorecardResult["confidence"] =
+    total >= 15 && agreeingLayers >= 4 ? "High" : total >= 11 ? "Medium" : "Low";
 
   return { rows, total, maxTotal, verdict, confidence, agreeingLayers, notes, smcTrend };
 }
@@ -753,7 +796,18 @@ export interface QuantBlock {
   vwapZ: { z: number; vwap: number } | null;
   gex: { flip: number | null; regime: string } | null;
   rnMass: { mass: number; negativeCount: number } | null;
-  walls: { supportK: number; resistanceK: number; spotDistToWallPct: number; spotBetweenWalls: boolean } | null;
+  walls: {
+    /** Highest-OI PE strike BELOW spot (support). null when there is none. */
+    supportK: number | null;
+    /** Highest-OI CE strike ABOVE spot (resistance). null when there is none. */
+    resistanceK: number | null;
+    supportOi: number | null;
+    resistanceOi: number | null;
+    spotDistToWallPct: number | null;
+    spotDistToSupportPct?: number | null;
+    spotDistToResistancePct?: number | null;
+    spotBetweenWalls: boolean;
+  } | null;
   buildup: string;
   timing: { ok: boolean; reason: string };
   scorecard: ScorecardResult | null;
@@ -761,29 +815,48 @@ export interface QuantBlock {
   assumptions: string[];
 }
 
-function aggregateTrend(candles: Candle5[], aggMinutes: number): "up" | "down" | "range" | "unknown" {
-  if (!candles.length) return "unknown";
-  const per = Math.max(1, Math.round(aggMinutes / 5));
-  const agg: number[] = [];
-  for (let i = 0; i + per <= candles.length; i += per) {
-    const win = candles.slice(i, i + per);
-    agg.push(win[win.length - 1].close);
+/**
+ * 15m trend read — the CANONICAL market-structure engine (tech-read.
+ * `structure()`), NOT a local pivot heuristic.
+ *
+ * The old implementation counted local 2-bar pivots on the aggregated close
+ * series and reported "range" whenever it could not find 2 highs and 2 lows.
+ * That is a DIFFERENT market-structure definition from the one the
+ * Confirmations panel uses (tech-cache → analyzeTf → structure.trend), so the
+ * two cards could disagree on the same market — one saying "Trend UP", the
+ * other scoring "Trend TF 0/2".
+ *
+ * Now: aggregate 5m → 15m (exact OHLC merge), then run the same
+ * `structure()` engine the rest of the app uses. A read that needs more
+ * history than we have returns "unknown" (honest) instead of guessing
+ * "range".
+ */
+function structureTrend15(bars: Candle5[]): "up" | "down" | "range" | "unknown" {
+  if (!bars.length) return "unknown";
+  // Aggregate 3×5m → 15m (exact: open=first, high=max, low=min, close=last).
+  const per = 3;
+  const agg: Candle[] = [];
+  for (let i = 0; i + per <= bars.length; i += per) {
+    const win = bars.slice(i, i + per);
+    agg.push({
+      t: (i + per - 1) * 300_000,
+      o: win[0].open,
+      h: Math.max(...win.map((b) => b.high)),
+      l: Math.min(...win.map((b) => b.low)),
+      c: win[win.length - 1].close,
+      v: win.reduce((s, b) => s + (b.volume || 0), 0),
+    });
   }
+  // `structure()` needs at least 2 confirmed swings each side (k=2) → 8+ bars.
   if (agg.length < 8) return "unknown";
-  // swing pivots (window 2) → last two highs / lows
-  const highs: number[] = [];
-  const lows: number[] = [];
-  for (let i = 2; i < agg.length - 2; i++) {
-    if (agg[i] > agg[i - 1] && agg[i] > agg[i - 2] && agg[i] >= agg[i + 1] && agg[i] >= agg[i + 2]) highs.push(agg[i]);
-    if (agg[i] < agg[i - 1] && agg[i] < agg[i - 2] && agg[i] <= agg[i + 1] && agg[i] <= agg[i + 2]) lows.push(agg[i]);
-  }
-  if (highs.length < 2 || lows.length < 2) return "range";
-  const hh = highs[highs.length - 1] > highs[highs.length - 2];
-  const hl = lows[lows.length - 1] > lows[lows.length - 2];
-  const lh = highs[highs.length - 1] < highs[highs.length - 2];
-  const ll = lows[lows.length - 1] < lows[lows.length - 2];
-  if (hh && hl) return "up";
-  if (lh && ll) return "down";
+  const st = structure(agg, 2, 3);
+  if (st.trend === "UP") return "up";
+  if (st.trend === "DOWN") return "down";
+  // RANGE is only honest when the engine actually had enough history to
+  // decide (2 highs + 2 lows). Otherwise it defaulted to RANGE inside
+  // `structure()` — that case is reported as unknown, not as a range read.
+  const { highs, lows } = swings(agg, 2);
+  if (highs.length < 2 || lows.length < 2) return "unknown";
   return "range";
 }
 
@@ -844,7 +917,7 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
   const vz = bars.length >= 5 ? vwapZ(bars) : null;
   const bb = bars.length >= 30 ? bbStats(bars) : null;
   const rv = bars.length >= 20 ? realizedVol(bars.map((b) => b.close)) : null;
-  const trend15 = aggregateTrend(bars, 15);
+  const trend15 = structureTrend15(bars);
 
   // G. VRP
   const vrp = atmIv != null && rv?.available ? varianceRiskPremium(atmIv, rv.value.rvPct) : null;
@@ -861,34 +934,55 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
     // Here we mark unavailable unless strikes carry gamma+oi (checked by caller wiring).
   } catch { /* ignore */ }
 
-  // Walls (near-ATM ±3%)
+  // Walls (near-ATM ±3%) — SIDE-CHECKED, the same rule the OI card uses
+  // (sdm-oianalysis.computeSupportResistance):
+  //   resistance = highest-OI CE strike ABOVE spot
+  //   support    = highest-OI PE strike BELOW spot
+  // The old code picked the highest-OI CE and PE strikes anywhere in the band
+  // and then sorted them by price, so a wall could be labelled "support" while
+  // sitting ABOVE spot — a support that can never be reached. A wall on the
+  // wrong side of spot is not a wall; it is now null (honest unavailable).
   let walls: QuantBlock["walls"] = null;
   const band = input.spot * 0.03;
-  let maxCE = { k: 0, oi: 0 };
-  let maxPE = { k: 0, oi: 0 };
+  let maxCE = { k: 0, oi: 0 }; // resistance — CE OI above spot
+  let maxPE = { k: 0, oi: 0 }; // support — PE OI below spot
   for (const s of strikes) {
     if (Math.abs(s.strike - input.spot) > band) continue;
-    if (s.ce && s.ce.oi > maxCE.oi) maxCE = { k: s.strike, oi: s.ce.oi };
-    if (s.pe && s.pe.oi > maxPE.oi) maxPE = { k: s.strike, oi: s.pe.oi };
+    if (s.strike > input.spot && s.ce && s.ce.oi > maxCE.oi) maxCE = { k: s.strike, oi: s.ce.oi };
+    if (s.strike < input.spot && s.pe && s.pe.oi > maxPE.oi) maxPE = { k: s.strike, oi: s.pe.oi };
   }
-  if (maxCE.k > 0 && maxPE.k > 0) {
-    const lo = Math.min(maxCE.k, maxPE.k);
-    const hi = Math.max(maxCE.k, maxPE.k);
+  if (maxCE.k > 0 || maxPE.k > 0) {
+    // Distance to the wall OPPOSING the trade direction is what blocks a
+    // trade; the gate uses the nearest wall, so the card shows the same
+    // number the scorecard acted on.
+    const distToCe = maxCE.k > 0 ? Math.abs(maxCE.k - input.spot) : Infinity;
+    const distToPe = maxPE.k > 0 ? Math.abs(input.spot - maxPE.k) : Infinity;
+    const nearest = Math.min(distToCe, distToPe);
     walls = {
-      supportK: Math.min(maxPE.k, maxCE.k) === maxPE.k ? maxPE.k : maxCE.k,
-      resistanceK: Math.max(maxCE.k, maxPE.k) === maxCE.k ? maxCE.k : maxPE.k,
-      spotDistToWallPct: (Math.min(Math.abs(hi - input.spot), Math.abs(input.spot - lo)) / input.spot) * 100,
-      spotBetweenWalls: input.spot > lo && input.spot < hi,
+      supportK: maxPE.k > 0 ? maxPE.k : null,
+      resistanceK: maxCE.k > 0 ? maxCE.k : null,
+      supportOi: maxPE.k > 0 ? maxPE.oi : null,
+      resistanceOi: maxCE.k > 0 ? maxCE.oi : null,
+      spotDistToWallPct: Number.isFinite(nearest) ? (nearest / input.spot) * 100 : null,
+      spotDistToSupportPct: Number.isFinite(distToPe) ? (distToPe / input.spot) * 100 : null,
+      spotDistToResistancePct: Number.isFinite(distToCe) ? (distToCe / input.spot) * 100 : null,
+      // "Between walls" only when BOTH sides exist and spot is inside them.
+      spotBetweenWalls:
+        maxCE.k > 0 && maxPE.k > 0 && input.spot > maxPE.k && input.spot < maxCE.k,
     };
-    void lo; void hi;
   } else {
     unavailable.push("near-ATM OI walls unavailable");
   }
 
-  // F. RN mass between walls
-  const rn = tteYears != null && walls
+  // F. RN mass between walls — needs BOTH sides (support below, resistance
+  // above). With one side missing there is no "between walls" band, so the
+  // mass is honestly unavailable rather than computed over a bogus range.
+  const rn = tteYears != null && walls && walls.supportK != null && walls.resistanceK != null
     ? riskNeutralMass(strikes, r, tteYears, walls.supportK, walls.resistanceK)
     : null;
+  if (tteYears != null && walls && (walls.supportK == null || walls.resistanceK == null)) {
+    unavailable.push("RN mass needs both a support (PE below spot) and a resistance (CE above spot)");
+  }
   if (rn && !rn.available) unavailable.push(`RN mass: ${rn.reason}`);
 
   // Buildup (ΔOI near ATM ±3% + session price change)
@@ -948,34 +1042,32 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
   // pre-scorecard direction does not distort the score. <50 bars → null
   // (honest unavailable). Failures stay null — never invent a score.
   // structureTrend rides along as the SMC TRADE TRIGGER (opposing → SKIP).
+  // The SMC maths lives in ONE place (smc-layer.analyzeSMCFromCandles) — the
+  // Simple Tab card uses the same helper, so the card and the scorecard can
+  // never disagree.
   let smcScore: 0 | 1 | 2 | null = null;
   let smcTrend: "UP" | "DOWN" | "SIDEWAYS" | null = null;
   if (bars.length >= 50) {
     try {
-      const smcCandles: Candle[] = bars.map((b, i) => ({
-        t: b.time || i * 300000,
-        o: b.open,
-        h: b.high,
-        l: b.low,
-        c: b.close,
-        v: b.volume,
-      }));
-      const atrArr = atrSeries(smcCandles, 14);
-      const atrNow = atrArr[atrArr.length - 1];
-      const pools = atrNow != null && atrNow > 0
-        ? liquidityPools(smcCandles, input.symbol || "NIFTY", atrNow, 2)
-        : [];
-      const avgVolume = smcCandles.reduce((s, c) => s + (c.v ?? 0), 0) / smcCandles.length;
-      const smc = analyzeSMC({
-        candles: smcCandles,
+      const smc = analyzeSMCFromCandles({
+        candles: bars.map((b, i) => ({
+          t: b.time || i * 300000,
+          o: b.open,
+          h: b.high,
+          l: b.low,
+          c: b.close,
+          v: b.volume,
+        })),
         spot: input.spot,
-        pools,
-        avgVolume,
+        symbol: input.symbol || "NIFTY",
         direction: "call", // score is direction-agnostic (G16/G17 only)
         oiStrikeNearSpot: atmRow?.strike ?? null,
+        minBars: 50,
       });
-      smcScore = smc.scorePoints === 2 ? 2 : smc.scorePoints === 1 ? 1 : 0;
-      smcTrend = smc.structureTrend;
+      if (smc) {
+        smcScore = smc.scorePoints === 2 ? 2 : smc.scorePoints === 1 ? 1 : 0;
+        smcTrend = smc.structureTrend;
+      }
     } catch {
       smcScore = null;
       smcTrend = null;
@@ -999,6 +1091,8 @@ export function analyzeQuant(strikes: QuantStrike[], input: QuantAnalyzeInput): 
     liquidityCost,
     timingOk: timing.ok,
     spotDistToWallPct: walls ? walls.spotDistToWallPct : null,
+    spotDistToSupportPct: walls ? walls.spotDistToSupportPct ?? null : null,
+    spotDistToResistancePct: walls ? walls.spotDistToResistancePct ?? null : null,
     smcScore,
     smcTrend,
   });

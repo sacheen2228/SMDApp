@@ -363,14 +363,6 @@ export interface TrendReadInput {
   structureTrend: "UP" | "DOWN" | "RANGE";
 }
 
-/** REAL trigger read — mapped from the 5m triggerLayer evidence. */
-export interface TriggerReadInput {
-  /** Trigger evidence in favour (e.g. "BOS_UP on a closed candle"). */
-  hits: string[];
-  /** Trigger evidence against the direction. */
-  opposing: string[];
-}
-
 /** REAL ADX/DI read — mapped from the 15m TfRead (adx/pdi/mdi). */
 export interface AdxReadInput {
   adx: number;
@@ -394,10 +386,13 @@ export interface GreeksReadInput {
  *
  * Every check is scored from real data only:
  *   • Trend    — SuperTrend + EMA (chop-suppressed) + structure (15m TfRead)
- *   • Trigger  — closed-bar trigger hits/opposing (5m triggerLayer)
  *   • Volume   — real last-bar RVOL vs the 20-bar average
  *   • OI / PCR — real PCR
  *   • VWAP     — real vsVwap ("NA" when the candles carry no volume)
+ *
+ * These are READ-ONLY context reads. They report what the market is doing;
+ * they never gate, arm or trigger a trade — there is no trigger check and no
+ * trigger gate in this module.
  *
  * Missing data yields an UNAVAILABLE check that does NOT count toward the
  * pass/total ratio — unavailable data is never turned into a pass or a lie.
@@ -407,8 +402,6 @@ export function evaluateConfirmations(input: {
   direction: "CALL" | "PUT";
   /** Real 15m trend read, or null when the snapshot is missing/stale. */
   trendRead?: TrendReadInput | null;
-  /** Real 5m trigger read, or null when the snapshot is missing/stale. */
-  triggerRead?: TriggerReadInput | null;
   /** Real relative volume (last bar vs prior 20-bar avg), or null when no volume data. */
   rvol?: number | null;
   /** PCR: call/put OI ratio. >1 bullish-leaning, <0.9 bearish-leaning. */
@@ -453,29 +446,7 @@ export function evaluateConfirmations(input: {
     });
   }
 
-  // ── 2. Trigger (REAL: closed-bar evidence from the 5m trigger layer) ──
-  const tg = input.triggerRead ?? null;
-  if (tg) {
-    const pass = tg.hits.length > 0 && tg.opposing.length === 0;
-    const detail =
-      tg.hits.length && tg.opposing.length
-        ? `trigger mixed: ${tg.hits.join("; ")} | against: ${tg.opposing.join("; ")}`
-        : tg.hits.length
-          ? tg.hits.join("; ")
-          : tg.opposing.length
-            ? `trigger against: ${tg.opposing.join("; ")}`
-            : "no trigger on closed candles";
-    checks.push({ name: "Trigger", pass, detail, available: true });
-  } else {
-    checks.push({
-      name: "Trigger",
-      pass: false,
-      detail: "trigger read unavailable (no fresh 5m snapshot)",
-      available: false,
-    });
-  }
-
-  // ── 3. Volume confirmation (REAL RVOL; null = no volume data) ──
+  // ── 2. Volume confirmation (REAL RVOL; null = no volume data) ──
   const rvol = input.rvol;
   if (rvol != null && Number.isFinite(rvol) && rvol > 0) {
     checks.push({
@@ -493,7 +464,7 @@ export function evaluateConfirmations(input: {
     });
   }
 
-  // ── 4. OI / PCR alignment (REAL PCR) ──
+  // ── 3. OI / PCR alignment (REAL PCR) ──
   const pcr = input.pcr;
   if (pcr != null && Number.isFinite(pcr) && pcr > 0) {
     const pcrPass = wantBullish ? pcr > 1.0 : pcr < 0.9;
@@ -512,7 +483,7 @@ export function evaluateConfirmations(input: {
     });
   }
 
-  // ── 5. VWAP side (REAL vsVwap; "NA" = no volume → unavailable) ──
+  // ── 4. VWAP side (REAL vsVwap; "NA" = no volume → unavailable) ──
   const vsVwap = input.vsVwap;
   if (vsVwap === "ABOVE" || vsVwap === "BELOW") {
     checks.push({
@@ -532,7 +503,7 @@ export function evaluateConfirmations(input: {
     });
   }
 
-  // ── 6. ADX / DI (REAL: trend strength + directional DI from the 15m read) ──
+  // ── 5. ADX / DI (REAL: trend strength + directional DI from the 15m read) ──
   const ax = input.adxRead ?? null;
   if (ax && Number.isFinite(ax.adx) && Number.isFinite(ax.pdi) && Number.isFinite(ax.mdi)) {
     const diAgrees = wantBullish ? ax.pdi > ax.mdi : ax.mdi > ax.pdi;
@@ -554,7 +525,7 @@ export function evaluateConfirmations(input: {
     });
   }
 
-  // ── 7. Delta (REAL: the leg's live |delta| vs the gate's minAbsDelta 0.35) ──
+  // ── 6. Delta (REAL: the leg's live |delta| vs the gate's minAbsDelta 0.35) ──
   const gr = input.greeksRead ?? null;
   const legDelta = gr && gr.delta != null && Number.isFinite(Number(gr.delta)) && Number(gr.delta) !== 0
     ? Number(gr.delta)
@@ -581,38 +552,8 @@ export function evaluateConfirmations(input: {
   return checks;
 }
 
-/** The trade gate behind the card's BUY/WAIT verdict — the playbook rule:
- *  a real trigger fires AND (real trend agrees OR real VWAP side agrees).
- *  Unavailable checks never count as passes; with no trigger or no
- *  trend/VWAP agreement the gate stays closed (WAIT), never fabricated open.
- */
-export function confirmTradeGate(checks: ConfirmationCheck[]): {
-  tradeable: boolean;
-  rule: string;
-} {
-  const get = (name: string) => checks.find((c) => c.name === name);
-  const trigger = get("Trigger");
-  const trend = get("Trend");
-  const vwap = get("VWAP");
-
-  const triggerPass = !!trigger?.available && trigger.pass;
-  const trendPass = !!trend?.available && trend.pass;
-  const vwapPass = !!vwap?.available && vwap.pass;
-  const contextOk = trendPass || vwapPass;
-
-  return {
-    tradeable: triggerPass && contextOk,
-    rule: triggerPass
-      ? contextOk
-        ? "trigger + context aligned"
-        : "trigger fired but no trend/VWAP agreement"
-      : trigger?.available
-        ? "no trigger on closed candles"
-        : "trigger unavailable",
-  };
-}
-
-/** Count how many checks pass — only counts checks with available data. */
+/** Count how many checks pass — only counts checks with available data.
+ *  This is a READ-ONLY tally of market context; it gates nothing. */
 export function confirmSummary(checks: ConfirmationCheck[]): {
   pass: number;
   total: number;

@@ -240,13 +240,12 @@ export async function GET(request: NextRequest) {
     let candles15m: any[] = [];
     try {
       const { getHistoricalCandles } = await import("@/lib/historical-data");
-      const candle5mResult = await getHistoricalCandles(symbol, "5m", 50);
-      candles5m = candle5mResult.candles || [];
+      // getHistoricalCandles returns Candle[] directly (not { candles })
+      candles5m = (await getHistoricalCandles(symbol, "5m", 50)) || [];
     } catch {}
     try {
       const { getHistoricalCandles } = await import("@/lib/historical-data");
-      const candle15mResult = await getHistoricalCandles(symbol, "15m", 50);
-      candles15m = candle15mResult.candles || [];
+      candles15m = (await getHistoricalCandles(symbol, "15m", 50)) || [];
     } catch {}
 
     // Previous day OHLC — use real Breeze data or derive from chain
@@ -275,7 +274,7 @@ export async function GET(request: NextRequest) {
       spotPrice,
       symbol,
       selectedExpiry,
-      { "5m": candles5m },
+      { "5m": candles5m, "15m": candles15m },
       vix,
       source,
       new Date().toISOString(),

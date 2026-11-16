@@ -142,6 +142,54 @@ export async function getSnapshotsSummary(
   return data.snapshots ?? [];
 }
 
+// ── IV Rank for the buyer-confluence gate ─────────────────────────
+// The gate's `ivRank` was a hardcoded 50 — scoreIVRank hard-blocks at >= 50,
+// so every recommendation was a guaranteed NO_TRADE. The sidecar records
+// india_vix every minute; the percentile of the live VIX within that history
+// is the honest rank we can compute here (10+ days of data, not a 52-week
+// range — but real, never fabricated). india_vix is market-wide, so the
+// NIFTY history serves every symbol (stocks record no rows of their own).
+
+let ivHistoryCache: { vals: number[]; ts: number } | null = null;
+const IV_HISTORY_TTL_MS = 60_000;
+const IV_HISTORY_RETRY_MS = 15_000; // after a failed refresh, retry in 15s
+const IV_HISTORY_MIN = 20;         // < 20 readings = no honest percentile
+const IV_HISTORY_TIMEOUT_MS = 2_500; // hot path — never hang on the sidecar
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("iv-history timeout")), ms)),
+  ]);
+}
+
+/**
+ * Percentile (0-100) of `currentVix` within recorded india_vix history.
+ * null = no honest rank available (no history / sidecar down / VIX unknown).
+ * The consumer must treat null as UNKNOWN — never as 50, never as a block.
+ */
+export async function computeIvRank(currentVix: number): Promise<number | null> {
+  if (!(currentVix > 0)) return null;
+  if (!ivHistoryCache || Date.now() - ivHistoryCache.ts > IV_HISTORY_TTL_MS) {
+    try {
+      const rows = await withTimeout(getSnapshotsSummary("NIFTY"), IV_HISTORY_TIMEOUT_MS);
+      const vals = rows
+        .map((r) => r.india_vix)
+        .filter((v): v is number => typeof v === "number" && v > 0);
+      ivHistoryCache = { vals, ts: Date.now() };
+    } catch {
+      // Throttle retries the way fetchFiiDiiData does: a failed refresh is
+      // re-attempted in 15s, not on every call. Stale vals stay usable.
+      if (!ivHistoryCache) ivHistoryCache = { vals: [], ts: Date.now() };
+      ivHistoryCache.ts = Date.now() - IV_HISTORY_TTL_MS + IV_HISTORY_RETRY_MS;
+    }
+  }
+  const vals = ivHistoryCache.vals;
+  if (vals.length < IV_HISTORY_MIN) return null;
+  const atOrBelow = vals.filter((v) => v <= currentVix).length;
+  return Math.round((atOrBelow / vals.length) * 100);
+}
+
 export async function getSessionCandles(
   symbol: string,
   interval: string,

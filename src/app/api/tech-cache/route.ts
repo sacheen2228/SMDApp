@@ -7,7 +7,7 @@ import { fetchCandles, triggerLayer, type Candle } from "@/lib/tech-read";
 import { getindexFuturesCandles, isIndexSymbol } from "@/lib/index-futures-candles";
 import { aggregateCandles } from "@/lib/technical-snapshot";
 import {
-  CACHE_SYMBOLS, TF_TTL_MS, buildSnapshot, cacheStats, getSnapshot, isFresh, prune, type TechTf,
+  CACHE_SYMBOLS, TF_TTL_MS, buildSnapshot, cacheStats, getSnapshot, isCurrent, isFresh, prune, type TechTf,
 } from "@/lib/tech-cache";
 
 export const dynamic = "force-dynamic";
@@ -85,8 +85,14 @@ export async function GET(req: NextRequest) {
       continue;
     }
     const r = snap.read;
+    // `fresh` = the snapshot was recomputed recently.
+    // `current` = the underlying BAR is recent enough to act on (the last
+    // closed bar is within two intervals of now). After the close the route
+    // keeps recomputing the same old candles, so `fresh` stays true while the
+    // evidence itself is stale — consumers must gate on `current`.
     snapshots[tf] = {
       fresh: isFresh(snap, tf),
+      current: isCurrent(snap, tf),
       asOf: snap.asOf,
       computedAt: snap.computedAt,
       bars: r.bars,
@@ -121,7 +127,9 @@ export async function GET(req: NextRequest) {
     symbol,
     snapshots,
     // REAL relative volume from the 5m candles; null when they carry no volume.
-    rvol: snap5?.rvol ?? null,
+    // Only reported when the underlying bar is CURRENT — a stale bar's RVOL
+    // must not be scored as live volume evidence.
+    rvol: isCurrent(snap5, "5m") ? snap5?.rvol ?? null : null,
   });
 }
 

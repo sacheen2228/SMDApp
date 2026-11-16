@@ -62,7 +62,7 @@ function classifyOIPattern(
   return { strike: strike.strike, callPattern, putPattern };
 }
 
-export { classifyOIPattern };
+export { classifyOIPattern, classifyFromOi };
 
 // ─── Fresh Writing Detection ──────────────────────────────────────
 //

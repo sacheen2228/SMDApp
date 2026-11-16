@@ -89,3 +89,6 @@ skills/nse-options-signal/data/
 
 # Breeze multi-day candle caches (regenerable via mc-confidence-gate)
 data/cache/
+
+# MOAPI service runtime logs
+moapi-service/*.Log

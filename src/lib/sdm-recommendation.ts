@@ -38,7 +38,7 @@ import { calculateGEX } from './gex-engine';
 import { analyzeMarketStructure } from './market-structure';
 import { analyzeMultiTimeframe } from './multi-timeframe';
 import { analyzeVolume } from './volume-analysis';
-import { analyzeOptionChain } from './sdm-oianalysis';
+import { analyzeOptionChain, classifyFromOi } from './sdm-oianalysis';
 import { computeQualityScore } from './sdm-scores';
 import { findSellerSLLevels } from './sdm-sellersl';
 import { determineSmartEntry } from './smart-entry';
@@ -59,6 +59,9 @@ import { getLotSizeStrict } from './symbol-config';
 import { isExpiryToday, parseExpiryDateLoose } from './greeks';
 import { toIsoExpiry } from './expiry-date';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from './buyer-confluence-engine';
+import { fetchFiiDiiData } from './fii-dii';
+import { computeIvRank } from './market-history-client';
+import { calculateRSI, calculateEMA, calculateADX } from './ml-engine';
 // THE house plan + the ONE sizing model (2026-10-20):
 //   option-plan.ts  → the stop is a RUPEE risk (20% of the amount DEPLOYED) and the
 //                     targets are 2R / 3R / 4R of it.
@@ -668,8 +671,13 @@ function buildWatchList(
 
   if (!shouldPopulate) return watchList;
 
+  // SIDE-CHECKED walls — resistance = highest-OI CE strike ABOVE spot,
+  // support = highest-OI PE strike BELOW spot (same rule as
+  // sdm-oianalysis.computeSupportResistance and the quant toolkit). The old
+  // code ranked the whole chain by OI and then labelled the winner
+  // "support"/"resistance" regardless of which side of spot it sat on.
   const topCE = optionChain
-    .filter((s) => s.ce)
+    .filter((s) => s.ce && s.strike > spot)
     .sort((a, b) => (b.ce?.oi ?? 0) - (a.ce?.oi ?? 0))
     .slice(0, 3);
 
@@ -686,7 +694,7 @@ function buildWatchList(
   }
 
   const topPE = optionChain
-    .filter((s) => s.pe)
+    .filter((s) => s.pe && s.strike < spot)
     .sort((a, b) => (b.pe?.oi ?? 0) - (a.pe?.oi ?? 0))
     .slice(0, 3);
 
@@ -1205,27 +1213,125 @@ export async function generateTradeRecommendation(
     else if (direction === 'CALL' || direction === 'PUT') {
       const now = new Date();
       const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const dirIsCall = direction === 'CALL';
+
+      // ── Real gate inputs (2026-11-16) ──
+      // This block used to be all placeholders — ivRank: 50 is a permanent
+      // hard block (scoreIVRank blocks at >= 50) and fiiNet 0 / oiPattern
+      // NEUTRAL / rsi 50 / trends NEUTRAL could never reach the 75-point
+      // NORMAL-VIX threshold, so NO_TRADE was mathematically inevitable.
+      // Unknown data now scores 0 and claims nothing; it never fabricates.
+      const fiiPromise = fetchFiiDiiData().catch(() => null);
+      const fiiDii = await Promise.race([
+        fiiPromise,
+        new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+      ]);
+      const ivRank = await computeIvRank(vixNum).catch(() => null);
+
+      // OI intelligence from the chain's own oiChg + the recent spot
+      // direction (candles). classifyOIPattern needs a PREV leg for premium
+      // direction — this path never has one, so its patterns are always null.
+      // Feeding SPOT's direction into the 4-way matrix makes the output the
+      // UNDERLYING read directly for both legs (no PE flip needed: spot-down
+      // + PE-OI-up classifies as SHORT_BUILDUP, which is exactly what the
+      // scorer wants for a PE buy).
+      const lastClose = primaryCandles[primaryCandles.length - 1]?.close;
+      const firstClose = primaryCandles[0]?.close;
+      const spotDir: 'UP' | 'DOWN' | 'FLAT' | null =
+        primaryCandles.length >= 2 && lastClose !== undefined && firstClose !== undefined
+          ? lastClose > firstClose ? 'UP' : lastClose < firstClose ? 'DOWN' : 'FLAT'
+          : null;
+      const legOiChg = dirIsCall
+        ? (atmStrikeData?.ce?.oiChg ?? 0)
+        : (atmStrikeData?.pe?.oiChg ?? 0);
+      const oiPattern: ConfluenceInput['oiPattern'] =
+        spotDir === null || legOiChg === 0
+          ? 'NEUTRAL'
+          : classifyFromOi(legOiChg, spotDir) ?? 'NEUTRAL';
+
+      // Nifty/BankNifty trends: only the QUERIED index gets a real read from
+      // its own multi-TF consensus; the other stays NEUTRAL (unknown — one
+      // symbol's candles say nothing about the other, and a fabricated match
+      // would fake the 5-point correlation bonus).
+      const biasToTrend = (bias: string): 'BULLISH' | 'BEARISH' | 'NEUTRAL' =>
+        bias === 'STRONG_BULLISH' || bias === 'BULLISH' ? 'BULLISH'
+        : bias === 'STRONG_BEARISH' || bias === 'BEARISH' ? 'BEARISH'
+        : 'NEUTRAL';
+      const queriedTrend = consensus.status === 'OK'
+        ? biasToTrend(consensus.overallBias) : 'NEUTRAL';
+
+      // Technicals from the real candles (fallbacks match the old
+      // placeholders: RSI 50 / ADX 20 when the series is too short).
+      const closes = primaryCandles.map((c) => c.close);
+      const rsiVal = calculateRSI(primaryCandles);
+      const adxVal = calculateADX(primaryCandles);
+      const ema20 = calculateEMA(closes, 20);
+      const ema50 = calculateEMA(closes, 50);
+      const ema20Above50 = closes.length >= 20 && ema20.length > 0 && ema50.length > 0
+        ? ema20[ema20.length - 1] > ema50[ema50.length - 1]
+        : false; // unknown → no bonus, never a fabricated "bullish"
+
+      // Real opening gap: today's first open vs the last close of a prior
+      // session. Early in the day the 50-bar window still reaches back to
+      // yesterday (exactly when the 15-min gap-trap rule applies); later the
+      // window is all-today and 0 is harmless (trap window long passed).
+      const istDayKey = (ms: number) =>
+        new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const todayKey = istDayKey(now.getTime());
+      let priorClose = 0;
+      let todayOpen = 0;
+      for (const c of primaryCandles) {
+        const k = istDayKey(c.time);
+        if (k < todayKey) priorClose = c.close;
+        else if (k === todayKey && todayOpen === 0) todayOpen = c.open;
+      }
+      const gapPercent = priorClose > 0 && todayOpen > 0
+        ? ((todayOpen - priorClose) / priorClose) * 100
+        : 0;
+
       const confluenceInput: ConfluenceInput = {
-        fiiNet: 0, diiNet: 0, fiiFutLongRatio: 0.5, fiiNet5dAvg: 0,
+        fiiNet: fiiDii?.available ? fiiDii.latest.fiiNet : 0,
+        diiNet: fiiDii?.available ? fiiDii.latest.diiNet : 0,
+        // Unknown ratio sits in the 0.4-0.6 no-bonus band (the engine scores
+        // directionally from it; 0.5 is NOT claimed as observed data).
+        fiiFutLongRatio: fiiDii?.fiiFutLongRatio ?? 0.5,
+        fiiNet5dAvg: fiiDii?.fiiNet5dAvg ?? 0,
         pcr: pcr, maxPain: maxPain, spotPrice: spot,
-        ceOIBuildup: false, peOIBuildup: false, oiPattern: 'NEUTRAL',
-        ivRank: 50,
+        ceOIBuildup: (atmStrikeData?.ce?.oiChg ?? 0) > 0,
+        peOIBuildup: (atmStrikeData?.pe?.oiChg ?? 0) > 0,
+        oiPattern,
+        ivRank, // null = unknown history → no bonus, no block (never 50)
         // The ATM IV the chain actually carries. 0 = the chain published no
         // ATM IV (UNKNOWN) — the old `|| 15` invented a "normal" 15% IV.
         atmIV: Math.max(atmStrikeData?.ce?.iv ?? 0, atmStrikeData?.pe?.iv ?? 0),
         ivTrend: 'STABLE',
         atmStraddlePrice: 0, expectedMove: 0,
         gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
-        indiaVix: vixNum ?? 0, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
+        indiaVix: vixNum ?? 0,
+        adx: adxVal,
+        niftyTrend: symbol === 'NIFTY' ? queriedTrend : 'NEUTRAL',
+        bankNiftyTrend: symbol === 'BANKNIFTY' ? queriedTrend : 'NEUTRAL',
         currentHour: ist.getHours(), currentMinute: ist.getMinutes(),
-        isExpiryDay: session?.isExpiryDay || false,
-        daysToExpiry: session?.daysToExpiry || 7,
+        // SessionInfo carries neither field (they were always undefined →
+        // `|| 7` / `|| false` placeholders, so the designed D-1/D-0 expiry
+        // penalty never fired). The function-level values are computed from
+        // the REAL expiry date above.
+        isExpiryDay,
+        daysToExpiry,
         dayOfWeek: ist.getDay(),
-        rsi: 50, adxTechnical: 25, ema20Above50: true, higherHighs: true,
-        gapPercent: 0,
-        direction: direction === 'CALL' ? 'CE' : 'PE',
+        rsi: rsiVal, adxTechnical: adxVal, ema20Above50,
+        higherHighs: marketStructure.trend === 'UPTREND',
+        gapPercent,
+        direction: dirIsCall ? 'CE' : 'PE',
       };
       const confluence: ConfluenceResult = scoreBuyerConfluence(confluenceInput);
+      // One line per actionable signal: without it a silent WAIT flip is
+      // indistinguishable from a broken pipeline when alerts stop firing.
+      console.log(
+        `[SDM][confluence] ${symbol} ${direction}: score ${confluence.totalScore} grade ${confluence.grade} ` +
+        `action ${confluence.action} ivRank ${confluenceInput.ivRank ?? 'null'} ` +
+        (confluence.hardBlocks.length ? `blocks=[${confluence.hardBlocks.join('; ')}]` : 'blocks=[]')
+      );
       // Block if confluence says NO_TRADE (score below threshold) OR hardBlocks exist
       if (confluence.action === 'NO_TRADE' || confluence.hardBlocks.length > 0) {
         direction = 'WAIT';
@@ -1538,355 +1644,8 @@ function buildWAITRecommendation(
     expectedMove: vixNum !== null
       ? spot * (vixNum / 100) * Math.sqrt(daysToExpiry / 365)
       : 0,
-    expectedMoveAvailable: vixNum !== null,
+expectedMoveAvailable: vixNum !== null,
     consensus: undefined,
-    qualityScore,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// BACKWARD COMPATIBILITY — generateRecommendation wrapper
-// ═══════════════════════════════════════════════════════════════════
-
-export function generateRecommendation(
-  optionChain: SDMOptionStrike[],
-  spotPrice: number,
-  symbol: string,
-  expiryDate: string,
-  currentTime: Date,
-  vix?: number,
-  tradesTakenToday: number = 0,
-  lastUpdate?: string,
-  source: string = 'simulation'
-): SDMRecommendation {
-  // Legacy callers pass candles as empty — synthesize from the data we have
-  // The new engine will use analyzeMarketStructure with primaryCandles
-  const candles: Record<string, CandleData[]> = {};
-
-  // Use synchronous path: call the async function but handle it synchronously
-  // Since all V2 modules are synchronous, this is safe
-  let result: SDMRecommendation | null = null;
-
-  // We run the async function — in practice it completes synchronously
-  // because all V2 modules are synchronous
-  // The VIX is passed through AS IS — a missing VIX stays missing (the
-  // engine then reports the expected move as UNKNOWN and proposes no trade).
-  // The old `vix ?? 15` turned a missing feed into a calm-market trade.
-  generateTradeRecommendation(
-    optionChain, spotPrice, symbol, expiryDate,
-    candles, vix, source,
-    lastUpdate || new Date().toISOString()
-  ).then((r) => { result = r; });
-
-  // Since generateTradeRecommendation uses only sync V2 modules, it resolves immediately
-  // However, to be safe for the legacy interface, we return a synchronous result
-  // by running the same logic inline
-
-  // Fallback: if the async call didn't resolve yet, compute synchronously
-  if (result) return result;
-
-  // Synchronous fallback — same logic as generateTradeRecommendation
-  return generateRecommendationSync(
-    optionChain, spotPrice, symbol, expiryDate,
-    currentTime, vix ?? null, tradesTakenToday, lastUpdate, source
-  );
-}
-
-// ─── Synchronous Fallback (same logic, no async) ──────────────────
-
-function generateRecommendationSync(
-  optionChain: SDMOptionStrike[],
-  spot: number,
-  symbol: string,
-  expiryDate: string,
-  currentTime: Date,
-  vix: number | null,
-  tradesTakenToday: number,
-  lastUpdate: string | undefined,
-  source: string
-): SDMRecommendation {
-  // The REAL contract lot — null when it is not known (never a guess).
-  const lot = getLotSizeStrict(symbol);
-  const lotSize = lot ?? 1; // the honest per-unit amount
-  const vixNum = knownVix(vix);
-  const daysToExpiry = computeDaysToExpiry(expiryDate);
-  const isExpiryDay = isExpiryToday(expiryDate, currentTime instanceof Date ? currentTime : new Date());
-  const mode: DayMode = isExpiryDay ? 'SCALPER' : 'SWING';
-  const timeInMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
-  const currentWindow = computeExpiryWindow(isExpiryDay, timeInMinutes);
-  const lastUpdateStr = lastUpdate || new Date().toISOString();
-
-  const healthReport = buildDataHealthReport(optionChain, spot, lastUpdateStr, source);
-
-  if (healthReport.status === 'OFFLINE') {
-    return buildWAITRecommendation(
-      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
-      lot, healthReport, 'Data health OFFLINE'
-    );
-  }
-
-  // Use option chain data as primary candles proxy (legacy callers don't provide candles)
-  // Build minimal candle data from option chain for structure analysis
-  const syntheticCandles: CandleData[] = optionChain.slice(0, 30).map((s, i) => ({
-    time: Date.now() - (30 - i) * 60000,
-    open: s.ce?.ltp || s.pe?.ltp || 0,
-    high: (s.ce?.ltp || 0) * 1.02,
-    low: (s.ce?.ltp || 0) * 0.98,
-    close: s.ce?.ltp || s.pe?.ltp || 0,
-    volume: (s.ce?.volume ?? 0) + (s.pe?.volume ?? 0),
-  })).filter((c) => c.close > 0);
-
-  const candles: Record<string, CandleData[]> = { '5m': syntheticCandles };
-
-  const primaryCandles = syntheticCandles;
-  const gexResult = calculateGEX(optionChain, spot);
-  // Structure, volume, and ATR from synthetic candles are unreliable —
-  // use neutral defaults when real candles aren't available.
-  const marketStructure = syntheticCandles.length > 5
-    ? { ...analyzeMarketStructure(primaryCandles), confidence: Math.min(analyzeMarketStructure(primaryCandles).confidence || 0, 30) }
-    : { trend: 'NEUTRAL' as const, bias: 'NEUTRAL' as const, structure: 'RANGE' as const, confidence: 0, support: spot * 0.99, resistance: spot * 1.01, swingHighs: [], swingLows: [] };
-  const consensus = { direction: 'NEUTRAL' as const, confidence: 0, timeframeSummary: [] };
-  const volumeAnalysis = { status: 'LOW_DATA' as const, totalVolume: 0, avgVolume: 0, volumeRatio: 0, vwap: spot, absorption: false, exhaustion: false, unusualActivity: [] };
-  const oiAnalysis = analyzeOptionChain(optionChain, spot);
-  const atr = spot * 0.005; // Default 0.5% ATR when no real candles
-
-  // Direction
-  const dirResult = determineDirection(consensus, oiAnalysis, gexResult, marketStructure, spot, institutionalFilter);
-  const isCallDir = dirResult.direction !== 'PUT';
-
-  let direction: TradeDirection;
-  if (dirResult.direction === 'NEUTRAL' || dirResult.confidence < 15) {
-    direction = 'WAIT';
-  } else {
-    direction = isCallDir ? 'CALL' : 'PUT';
-  }
-  if (isExpiryDay && currentWindow === 'theta' && direction !== 'WAIT') {
-    direction = 'WAIT';
-  }
-
-  // Seller SL
-  const sellerSLResult = findSellerSLLevels(optionChain, spot, gexResult, marketStructure, volumeAnalysis, oiAnalysis);
-
-  // Quality score
-  const tempIsCall = direction === 'CALL' || direction === 'SELL_CALL';
-  const tempStrike = findATMStrike(optionChain, spot);
-  const tempEntry = tempIsCall ? (tempStrike?.ce?.ltp || 0) : (tempStrike?.pe?.ltp || 0);
-  // The house plan (rupee-risk stop, 2R/3R/4R targets) — never the old ±15% 1:1.
-  const tempLevels = buildHouseLevels({
-    entry: tempEntry,
-    isCall: tempIsCall,
-    symbol,
-    lotSize: lot ?? 1,
-  });
-  const tempSL = tempLevels.sl;
-  const tempTP1 = tempLevels.tp1;
-
-  const qualityInput: QualityScoreInput = {
-    // 0 = the VIX is UNKNOWN (never a fabricated 15) — the volatility factor
-    // then reads conservatively instead of scoring a "calm market".
-    spot, candles, optionChain, gexResult, marketStructure, consensus,
-    volumeAnalysis, oiAnalysis, vix: vixNum ?? 0, currentWindow,
-    tradeDirection: tempIsCall ? 'CALL' : 'PUT',
-    entryPrice: tempEntry, stopLoss: tempSL, target1: tempTP1,
-  };
-  const qualityScore = computeQualityScore(qualityInput);
-
-  if (qualityScore.overall < 50) {
-    return buildWAITRecommendation(
-      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
-      lot, healthReport,
-      `Quality score ${qualityScore.overall} (grade ${qualityScore.grade}) below 50`,
-      undefined, qualityScore, sellerSLResult, gexResult, marketStructure,
-      consensus, volumeAnalysis, oiAnalysis, atr
-    );
-  }
-
-  // Strike selection
-  const finalIsCall = tempIsCall;
-  const strikeResult = selectStrike(
-    optionChain, spot, finalIsCall ? 'CALL' : 'PUT', atr, tempEntry, tempSL,
-    isExpiryDay, currentWindow, qualityScore.grade
-  );
-  const finalStrike = strikeResult.strike;
-  const finalStrikeType = strikeResult.strikeType;
-  const finalData = optionChain.find((s) => s.strike === finalStrike);
-  const finalEntry = finalIsCall ? (finalData?.ce?.ltp || 0) : (finalData?.pe?.ltp || 0);
-
-  const finalLevels = buildHouseLevels({
-    entry: finalEntry,
-    isCall: finalIsCall,
-    symbol,
-    lotSize: lot ?? 1,
-  });
-
-  // FAIL CLOSED: no house plan → no trade (never a ±15% / 1:1 fallback).
-  if (finalLevels.error) {
-    return buildWAITRecommendation(
-      spot, symbol, expiryDate, daysToExpiry, isExpiryDay, mode,
-      currentWindow, timeInMinutes, currentTime, vix, source, lastUpdateStr,
-      lot, healthReport,
-      finalLevels.error,
-      'NO_TRADE',
-      qualityScore, sellerSLResult, gexResult, undefined,
-      undefined, undefined, oiAnalysis, atr
-    );
-  }
-
-  // Confidence
-  const confidence = clamp(Math.round(qualityScore.overall * 0.6 + dirResult.confidence * 0.4), 0, 100);
-
-  if (direction !== 'WAIT') {
-    if (isExpiryDay && currentWindow === 'danger' && confidence < 68) direction = 'WAIT';
-    else if (isExpiryDay && confidence < 60) direction = 'WAIT';
-    else if (!isExpiryDay && confidence < 55) direction = 'WAIT';
-  }
-
-  // Smart entry
-  let smartEntryResult: SmartEntryResult;
-  if (direction === 'WAIT') {
-    smartEntryResult = {
-      action: 'WAIT_VOLUME_CONFIRMATION', reason: 'Direction is WAIT',
-      currentPrice: spot, referenceLevel: spot, atr, distanceFromLevel: 0,
-      volumeRatio: 1, status: 'OK',
-    };
-  } else {
-    smartEntryResult = determineSmartEntry(
-      spot, finalIsCall ? 'CALL' : 'PUT', finalEntry,
-      primaryCandles, marketStructure, volumeAnalysis, optionChain
-    );
-  }
-
-  // Position sizing — THE PER-TRADE MODEL (₹20,000 deployed, 20% of it at risk)
-  const capital = GATE_CONFIG.capital;                     // ₹25,000 — the real account
-  const baseBudget = Math.min(GATE_CONFIG.tradeBudget, capital);
-  const sessionMultiplier = getPositionSizeMultiplier(getCurrentSession()) || 1;
-  const vegaFactor = (vixNum !== null && vixNum > 20)
-    ? Math.max(1 - (Math.min(vixNum / 14, 3) - 1) * 0.4, 0.4)
-    : 1;
-  const deployedBudget = Math.floor(baseBudget * sessionMultiplier * vegaFactor);
-
-  // No ₹ sizing without the REAL lot (an unknown lot ⇒ no ₹ amount).
-  const ps = lot !== null
-    ? positionSize({ capital, entry: finalEntry, sl: finalLevels.sl, lotSize: lot })
-    : null;
-  const riskPerLot = ps && ps.riskPerLot > 0 ? ps.riskPerLot : 0;
-  const affordableLots = lot !== null && finalEntry > 0
-    ? Math.floor(deployedBudget / (finalEntry * lot))
-    : 0;
-  const clampedLots = ps ? Math.max(0, Math.min(ps.lots, affordableLots)) : 0;
-
-  const positionSizing: PositionSizing = {
-    lots: clampedLots,
-    quantity: clampedLots * lotSize,
-    riskAmount: clampedLots * riskPerLot,
-    positionValue: finalEntry * clampedLots * lotSize,
-    maxLoss: clampedLots * riskPerLot,
-  };
-
-  const riskReward = finalEntry > finalLevels.sl && finalEntry > 0
-    ? Math.round((finalLevels.tp2 - finalEntry) / (finalEntry - finalLevels.sl) * 10) / 10
-    : 0;
-
-  const premiumFairValue = computePremiumFairValue(optionChain, spot, finalEntry, finalIsCall ? 'CALL' : 'PUT');
-  const probabilities = computeLiveProbabilities(
-    finalEntry, finalLevels.tp1, finalLevels.tp2, finalLevels.tp3,
-    finalLevels.sl, spot, finalStrike, vixNum ?? 0, daysToExpiry, finalIsCall ? 'CALL' : 'PUT'
-  );
-
-  const dataHealth: DataHealth = {
-    score: healthReport.score, latency: healthReport.latencyMs,
-    lastUpdate: lastUpdateStr,
-    status: healthReport.score >= 80 ? 'LIVE' : healthReport.score >= 50 ? 'STALE' : 'OFFLINE',
-    source, missingFields: healthReport.issues,
-  };
-
-  const totalCEOI = optionChain.reduce((sum, s) => sum + (s.ce?.oi ?? 0), 0);
-  const totalPEOI = optionChain.reduce((sum, s) => sum + (s.pe?.oi ?? 0), 0);
-  const pcr = totalCEOI > 0 && totalPEOI > 0 ? Math.round((totalPEOI / totalCEOI) * 100) / 100 : null;
-  const maxPain = oiAnalysis.status === 'OK' ? oiAnalysis.maxPain : spot;
-
-  const marketContext: MarketContext = {
-    spot, change: 0, changePercent: 0, pcr, maxPain,
-    // 0 = UNKNOWN (no VIX feed) — never a fabricated 15.
-    vix: vixNum ?? 0,
-    vixAvailable: vixNum !== null,
-    trend: marketStructure.trend === 'UPTREND' ? 'bullish'
-          : marketStructure.trend === 'DOWNTREND' ? 'bearish' : 'sideways',
-    regime: qualityScore.overall >= 70 ? 'trending' : 'ranging',
-    atr,
-  };
-
-  const watchList = buildWatchList(optionChain, spot, confidence, isExpiryDay, currentWindow);
-  const whyThisTrade = buildWhyThisTrade(qualityScore, consensus, gexResult, sellerSLResult, smartEntryResult, finalIsCall ? 'CALL' : 'PUT');
-  const sdmScores = buildSDMScores(gexResult, marketStructure, consensus, volumeAnalysis, oiAnalysis, sellerSLResult, optionChain, spot);
-  const sellerSLZone = buildSellerSLZone(sellerSLResult, optionChain, spot);
-  const gammaThetaData = buildGammaThetaData(gexResult, optionChain, spot, vixNum ?? 0);
-
-  // UNKNOWN without a real VIX (never a 15%-VIX guess).
-  const expectedMove = vixNum !== null
-    ? spot * (vixNum / 100) * Math.sqrt(daysToExpiry / 365)
-    : 0;
-  const expectedMoveAvailable = vixNum !== null;
-  const holdingTimeEstimate = estimateHoldingTime(isExpiryDay, currentWindow, smartEntryResult.action);
-  const timeSensitiveNote = getTimeSensitiveNote(isExpiryDay, currentWindow, smartEntryResult.action);
-
-  let windowTimeRemaining = 'N/A';
-  if (isExpiryDay) {
-    if (currentWindow === 'gamma') windowTimeRemaining = `${Math.max(0, 630 - timeInMinutes)} min remaining`;
-    else if (currentWindow === 'theta') windowTimeRemaining = `${Math.max(0, 810 - timeInMinutes)} min remaining`;
-    else if (currentWindow === 'danger') windowTimeRemaining = `${Math.max(0, 930 - timeInMinutes)} min remaining`;
-  }
-
-  const maxTrades = isExpiryDay ? 4 : Infinity;
-  const reason = dirResult.reasons.slice(0, 2).join('; ') || `Quality ${qualityScore.overall} (${qualityScore.grade})`;
-  const smartEntry: SmartEntryAction = direction === 'WAIT' ? 'WAIT_VOLUME_CONFIRMATION' : smartEntryResult.action;
-  const smartExit: SmartExitAction = direction === 'WAIT' ? 'EXIT' : 'HOLD';
-  const marketRegime: MarketRegime = qualityScore.overall >= 75 ? 'trending'
-    : qualityScore.overall >= 55 ? 'ranging' : 'mean_reversion';
-  const tradeGrade = qualityScore.grade;
-
-  return {
-    direction,
-    strike: finalStrike,
-    strikeType: finalStrikeType,
-    entry: finalEntry,
-    tp1: finalLevels.tp1,
-    tp2: finalLevels.tp2,
-    tp3: finalLevels.tp3,
-    sl: finalLevels.sl,
-    confidence,
-    riskReward,
-    isExpiryDay,
-    daysToExpiry,
-    currentWindow,
-    windowTimeRemaining,
-    tradesTakenToday,
-    tradesRemaining: isExpiryDay ? Math.max(0, maxTrades - tradesTakenToday) : 999,
-    mode,
-    sellerSLZone,
-    gammaThetaData,
-    marketContext,
-    watchList,
-    whyThisTrade,
-    sdmScores,
-    reason,
-    timeSensitiveNote,
-    smartEntry,
-    smartExit,
-    premiumFairValue,
-    probabilities,
-    tradeGrade,
-    dataHealth,
-    positionSizing,
-    marketRegime,
-    holdingTimeEstimate,
-    expectedMove,
-    expectedMoveAvailable,
-    lotSize,
-    lotSizeKnown: lot !== null,
-    consensus,
     qualityScore,
   };
 }

@@ -8,7 +8,7 @@ import { OIChangePanel } from "./OIChangePanel";
 import type { SDMRecommendation } from "@/types/sdm";
 import type { FullAnalysis } from "@/lib/sdm-engine";
 import { Badge } from "@/components/ui/badge";
-import { confirmSummary, confirmTradeGate } from "@/lib/signal-persistence";
+import { confirmSummary } from "@/lib/signal-persistence";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -19,11 +19,10 @@ import {
 } from "@/components/ui/select";
 import { getCurrentSession } from "@/lib/market-session";
 import { dataSourceBadge } from "@/lib/data-source-label";
-import { analyzeSMC, type SMCResult } from "@/lib/smc-layer";
+import { readPcr } from "@/lib/pcr-reading";
+import { type SMCResult } from "@/lib/smc-layer";
 import {
   Atom,
-  ArrowUp,
-  ArrowDown,
   Clock,
   Shield,
   Target,
@@ -120,6 +119,10 @@ interface SimpleModeProps {
   quant?: import("@/lib/quant-toolkit").QuantBlock | null;
   /** SMC layer result (sweep + CHoCH + displacement + FVG + order block). */
   smc?: SMCResult | null;
+  /** Real freshness from the API (LIVE | FRESH | DELAYED | STALE | UNAVAILABLE).
+   *  The old isLive = dataSource !== 'simulation' badge claimed LIVE on closed /
+   *  stale / weekend chains — the exchange's own freshness label is the truth. */
+  freshness?: string | null;
 }
 
 function fmt(n: number | undefined | null): string {
@@ -140,25 +143,15 @@ function formatIndian(num: number | undefined | null): string {
   return num.toString();
 }
 
-// ─── Pivot Points (Camarilla-style) ──────────────────────────────
-function computePivots(spot: number) {
-  const range = spot * 0.012;
-  return {
-    r3: spot + range * 3,
-    r2: spot + range * 2,
-    r1: spot + range,
-    pivot: spot,
-    s1: spot - range,
-    s2: spot - range * 2,
-    s3: spot - range * 3,
-  };
-}
-
 // ─── Market Mood (1-5 scale) ────────────────────────────────────
+// Uses the CANONICAL PCR bands (lib/pcr-reading) so the mood never
+// contradicts the PCR caption on the same card (the old copy used its own
+// cut-offs: 1.30/0.70 here vs 1.20/0.80 in the caption).
 function computeMood(pcr: number, vix: number): { score: number; label: string; color: string } {
   let score = 3;
-  if (pcr > 1.3) score += 1;
-  else if (pcr < 0.7) score -= 1;
+  const pcrBias = readPcr(pcr).bias;
+  if (pcrBias === "bullish") score += 1;
+  else if (pcrBias === "bearish") score -= 1;
   if (vix > 20) score -= 1;
   else if (vix < 12) score += 1;
   score = Math.max(1, Math.min(5, score));
@@ -236,16 +229,11 @@ export const SimpleMode = memo(function SimpleMode({
   marketClosed,
   quant,
   smc,
+  freshness,
 }: SimpleModeProps) {
   const rec = recommendation;
   const confirmations = confirmationsProp || rec?.confirmations || [];
-  const { pass: confirmPass, total: confirmTotal, pct: confirmPct } = confirmSummary(confirmations);
-  // The BUY/WAIT verdict follows the playbook gate on REAL reads only:
-  // a closed-bar trigger fires AND (real trend agrees OR real VWAP side
-  // agrees). Unavailable checks never count as passes — no fabricated BUY.
-  const gate = confirmTradeGate(confirmations);
-  const confirmedEnough = gate.tradeable;
-  const gateReason = gate.rule;
+  const { pass: confirmPass, total: confirmTotal } = confirmSummary(confirmations);
 
   // Live data from summary (falls back to recommendation, then defaults)
   const livePCR = summary?.pcr ?? rec?.marketContext?.pcr ?? 0;
@@ -260,13 +248,18 @@ export const SimpleMode = memo(function SimpleMode({
   const liveATMValid = liveATM != null && Number.isFinite(liveATM) && liveATM > 0;
   const liveCEOI = summary?.totalCallOI ?? 0;
   const livePEOI = summary?.totalPutOI ?? 0;
-  const isLive = dataSource && dataSource !== 'simulation';
+  const isLive = freshness === "LIVE";
 
-  const pivots = computePivots(spotPrice);
+  // ONE PCR reading for every card on this tab (canonical bands) — the old
+  // code had four different cut-offs, so the same PCR could read "Neutral"
+  // on one card and "Bearish Flow" on another.
+  const pcrReading = readPcr(livePCR);
+  const oiPcrReading = readPcr(oiSummary?.pcrOI);
   const mood = computeMood(livePCR, liveVIX);
 
   // Derive direction from the VOTED direction first (D-1: optionType only
-  // exists for a real CALL/PUT). WAIT always wins — never fall through to BUY.
+  // exists for a real CALL/PUT). This is the engine's BIAS — it is shown as
+  // information only. The Simple tab issues no trade action.
   const isCall = rec?.direction === "CALL" || rec?.optionType === "CE";
   const isPut = rec?.direction === "PUT" || rec?.optionType === "PE";
   const isWait = rec?.direction === "WAIT" || (!isCall && !isPut);
@@ -280,27 +273,19 @@ export const SimpleMode = memo(function SimpleMode({
     D: "bg-red-500 text-white",
   };
 
-  const actionLabel = isLoading
-    ? "ANALYZING"
-    : isWait
-      ? "NO TRADE"
-      : !confirmedEnough && confirmTotal > 0
-        ? "WATCH"
-        : isCall
-          ? "BUY CALL"
-          : isPut
-            ? "BUY PUT"
-            : "NO TRADE";
-  const actionIcon = isLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : isWait ? <Pause className="w-5 h-5" /> : isCall ? <ArrowUp className="w-5 h-5" /> : isPut ? <ArrowDown className="w-5 h-5" /> : <Pause className="w-5 h-5" />;
+  // The Simple tab is READ-ONLY ANALYSIS. It never renders a BUY CALL /
+  // BUY PUT action and never arms a trade: there is no trigger gate, no
+  // trigger confirmation and no trade plan on this tab. The engine's
+  // directional read is still reported as a BIAS (what it is watching),
+  // but the verdict itself is always NO TRADE here.
+  const actionLabel = isLoading ? "ANALYZING" : "NO TRADE";
+  const actionIcon = isLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Pause className="w-5 h-5" />;
   const actionColor = isLoading
     ? "border-muted bg-muted/20"
-    : isWait
-    ? "border-muted bg-muted/30"
-    : isCall
-    ? "border-emerald-500/50 bg-emerald-500/10"
-    : isPut
-    ? "border-red-500/50 bg-red-500/10"
     : "border-muted bg-muted/30";
+  // The bias label is informational — it names the leg the engine watches,
+  // it is not an instruction to trade it.
+  const biasLabel = isWait ? "NO BIAS" : isCall ? "CALL BIAS" : "PUT BIAS";
 
   return (
     <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto overflow-auto">
@@ -312,6 +297,20 @@ export const SimpleMode = memo(function SimpleMode({
           <Badge variant="outline" className="text-[10px]">{symbol === "NIFTY" ? "NIFTY 50" : symbol}</Badge>
           {isLive && (
             <Badge className="text-[9px] bg-emerald-600 text-white h-5 px-1.5">LIVE</Badge>
+          )}
+          {!isLive && freshness && freshness !== "LIVE" && (
+            <Badge
+              className={`text-[9px] text-white h-5 px-1.5 ${
+                freshness === "STALE" || freshness === "UNAVAILABLE"
+                  ? "bg-red-600"
+                  : freshness === "DELAYED"
+                    ? "bg-orange-600"
+                    : "bg-zinc-600"
+              }`}
+              title={`Data freshness: ${freshness}`}
+            >
+              {freshness}
+            </Badge>
           )}
           {marketClosed && (
             <Badge className="text-[9px] bg-zinc-600 text-white h-5 px-1.5">CLOSED</Badge>
@@ -343,7 +342,14 @@ export const SimpleMode = memo(function SimpleMode({
       {/* ─── LIVE MARKET STATS STRIP ─── */}
       {summary && (
         <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-muted/30 border text-xs overflow-x-auto">
-          <span className="text-muted-foreground font-semibold uppercase tracking-wider text-[10px]">LIVE</span>
+          <span
+            className={`text-muted-foreground font-semibold uppercase tracking-wider text-[10px] ${
+              isLive ? "text-emerald-500" : ""
+            }`}
+            title={freshness ? `Data freshness: ${freshness}` : undefined}
+          >
+            {isLive ? "LIVE" : freshness || "DATA"}
+          </span>
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">VIX</span>
             <span className="font-bold tabular-nums">{summary.indiaVIX != null ? `${fmt(summary.indiaVIX)}%` : "—"}</span>
@@ -351,7 +357,7 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="w-px h-4 bg-border" />
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">PCR</span>
-            <span className={`font-bold tabular-nums ${summary.pcr > 1.2 ? "text-emerald-500" : summary.pcr < 0.7 ? "text-red-500" : ""}`}>
+            <span className={`font-bold tabular-nums ${pcrReading.bias === "neutral" ? "" : pcrReading.tone}`}>
               {summary.pcr?.toFixed(2) ?? "—"}
             </span>
           </div>
@@ -382,7 +388,7 @@ export const SimpleMode = memo(function SimpleMode({
       <div className={`rounded-xl border ${actionColor} p-4`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${isLoading ? "bg-muted" : isWait ? "bg-muted" : isCall ? "bg-emerald-500/20" : "bg-red-500/20"}`}>
+            <div className="p-2 rounded-lg bg-muted">
               {actionIcon}
             </div>
             <div>
@@ -392,17 +398,30 @@ export const SimpleMode = memo(function SimpleMode({
               ) : (
                 <p className="text-sm text-muted-foreground">
                   {symbol} {rec.strike} {isCall ? "CE" : isPut ? "PE" : "—"}
+                  {` · ${biasLabel}`}
                   {strikeInfo ? ` · ${strikeInfo.isAtm ? "ATM" : `${strikeInfo.otmSteps} OTM`}` : ""}
                   {greeks?.delta != null ? ` · Δ ${greeks.delta.toFixed(2)}` : ""}
-                  {` · ${isLive ? "Live Data" : "Simulation"}`}
+                  {` · ${isLive ? "Live Data" : freshness ? `${freshness} data` : dataSource || "Data"}`}
                 </p>
               )}
             </div>
           </div>
           {!isLoading && (
             <div className="text-right">
-              <div className="text-3xl font-black tabular-nums">{rec.confidence}%</div>
-              <Badge className={`${gradeColors[rec.tradeGrade]} text-[10px]`}>Grade {rec.tradeGrade}</Badge>
+              {/* This tab issues no trade action, so it shows no trade
+                  confidence and no trade grade. The quant scorecard's verdict
+                  and score are the real read; with no scorecard, say so. */}
+              <div className="text-xl font-black tabular-nums">—</div>
+              <Badge className="bg-muted text-muted-foreground text-[10px]">
+                {quant?.scorecard?.verdict === "SKIP" ? "SKIP" : "NO SETUP"}
+              </Badge>
+              {quant?.scorecard && (
+                <div className="mt-1">
+                  <Badge variant="outline" className="text-[10px]">
+                    {quant.scorecard.total}/{quant.scorecard.maxTotal} · {quant.scorecard.confidence}
+                  </Badge>
+                </div>
+              )}
               {rec.qualityScore && (
                 <div className="mt-1">
                   <Badge
@@ -421,42 +440,27 @@ export const SimpleMode = memo(function SimpleMode({
                   </Badge>
                 </div>
               )}
+              {/* Context reads only — a tally of what the market is doing,
+                  not a gate and not a confirmation of a trade. */}
               {confirmTotal > 0 && (
                 <Badge
                   className={`text-[10px] ${
-                    confirmedEnough
-                      ? "bg-emerald-600 text-white"
-                      : confirmPass === 0
-                        ? "bg-red-600 text-white"
-                        : "bg-yellow-600 text-white"
+                    confirmPass === 0
+                      ? "bg-red-600 text-white"
+                      : "bg-yellow-600 text-white"
                   }`}
                 >
-                  {`Confirm: ${confirmPass}/${confirmTotal}`}
+                  {`Context ${confirmPass}/${confirmTotal}`}
                 </Badge>
               )}
             </div>
           )}
         </div>
-        {!isLoading && rec.entry > 0 && (
+        {/* The Entry / SL / T1 / T2 / R:R / lot-sizing strip is deliberately
+            NOT rendered here: those are a trade plan, and this tab issues no
+            trade. The live levels live in the Pro tab and in the alerts. */}
+        {!isLoading && (oiSummary?.freshWriting.length || oiSummary?.traps.length) ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 pt-3 border-t border-border/50 text-xs">
-            <span>Entry <span className="font-bold">{fmtCurrency(rec.entry)}</span></span>
-            <span className="text-red-500">SL <span className="font-bold">{fmtCurrency(rec.sl)}</span></span>
-            <span className="text-emerald-500">T1 <span className="font-bold">{fmtCurrency(rec.tp1)}</span></span>
-            <span className="text-emerald-500">T2 <span className="font-bold">{fmtCurrency(rec.tp2)}</span></span>
-            {rec.riskReward > 0 && <span className="text-muted-foreground">R:R 1:{rec.riskReward}</span>}
-            {/* REAL sizing from the plan builder — lots / ₹ deployed / ₹ at risk. */}
-            {(() => {
-              const ps: any = rec?.positionSizing;
-              if (!ps || ps.lots == null) return null;
-              if (ps.tradable) return (
-                <span className="text-blue-400 font-bold">
-                  {ps.lots} lot{ps.lots > 1 ? "s" : ""} · ₹{Math.round(ps.deployed).toLocaleString("en-IN")} · risk ₹{Math.round(ps.riskAmount).toLocaleString("en-IN")}
-                </span>
-              );
-              return (
-                <span className="text-orange-400 font-bold">0 lots — 1 lot ₹{Math.round(ps.lotCost).toLocaleString("en-IN")} over budget → NO TRADE</span>
-              );
-            })()}
             {oiSummary && oiSummary.freshWriting.length > 0 && (
               <span className="text-blue-500 font-bold">📊 OI Writing</span>
             )}
@@ -464,7 +468,7 @@ export const SimpleMode = memo(function SimpleMode({
               <span className="text-orange-500 font-bold">⚠️ OI Trap</span>
             )}
           </div>
-        )}
+        ) : null}
         {rec?.reason && (
           <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{rec.reason}</p>
         )}
@@ -532,7 +536,7 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="space-y-0.5">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">PCR (OI)</span>
-                <span className={`font-bold tabular-nums ${oiSummary.pcrOI > 1 ? "text-emerald-500" : oiSummary.pcrOI < 0.9 ? "text-red-500" : "text-yellow-500"}`}>
+                <span className={`font-bold tabular-nums ${oiPcrReading.bias === "neutral" ? "text-yellow-500" : oiPcrReading.tone}`}>
                   {oiSummary.pcrOI.toFixed(2)}
                 </span>
               </div>
@@ -583,7 +587,7 @@ export const SimpleMode = memo(function SimpleMode({
           <div className="mt-3 p-3 rounded-lg bg-muted/40 border border-border/50 text-xs">
             <div className="flex items-center gap-2 mb-1">
               <Shield className="w-3 h-3 text-blue-500" />
-              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Confirmation</span>
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Market Context</span>
               {barStamp?.asOf5m ? (
                 <span className="text-[9px] text-muted-foreground">
                   {new Date(barStamp.asOf5m).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })} {barStamp.fresh5m ? "5m" : "15m"} candle
@@ -594,11 +598,9 @@ export const SimpleMode = memo(function SimpleMode({
                 </span>
               ) : null}
               <span className={`ml-2 text-[10px] ${
-                confirmedEnough
-                  ? "bg-emerald-600 text-white"
-                  : confirmPass === 0
-                    ? "bg-red-600 text-white"
-                    : "bg-yellow-600 text-white"
+                confirmPass === 0
+                  ? "bg-red-600 text-white"
+                  : "bg-yellow-600 text-white"
               } px-1.5`}>
                 {confirmPass}/{confirmTotal}
               </span>
@@ -632,13 +634,11 @@ export const SimpleMode = memo(function SimpleMode({
                   </span>
                 </div>
               ))}
-              {!confirmedEnough && confirmTotal > 0 && (
-                <p className="text-[10px] text-red-500/80 mt-1">
-                  {gateReason === "trigger + context aligned"
-                    ? "Not enough confirmations to trade — wait for structure + trigger alignment"
-                    : `WAIT: ${gateReason}`}
-                </p>
-              )}
+              {/* These are READ-ONLY context reads. Nothing here confirms,
+                  arms or triggers a trade — the tab issues no trade action. */}
+              <p className="text-[9px] text-muted-foreground/70 mt-1">
+                Context reads only — no trigger, no trade action on this tab.
+              </p>
             </div>
           </div>
         )}
@@ -658,7 +658,7 @@ export const SimpleMode = memo(function SimpleMode({
               <span className="font-bold tabular-nums text-base">{liveATMValid ? liveATM : "—"}</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Entry Prem</span>
+              <span className="text-muted-foreground">Leg Prem</span>
               <span className="font-bold tabular-nums text-base">{rec?.entry && rec.entry > 0 ? fmtCurrency(rec.entry) : "—"}</span>
             </div>
             <div className="flex justify-between text-sm">
@@ -708,10 +708,23 @@ export const SimpleMode = memo(function SimpleMode({
           </div>
           <div className="space-y-0.5 text-xs tabular-nums">
             {(() => {
-              const rows: Array<{ label: string; value: number | null; tone: string }> = [
-                { label: "R — CE WALL", value: rec?.gammaWallResistance || quant?.walls?.resistanceK || null, tone: "text-emerald-500 font-medium" },
+              // A wall is only shown on the CORRECT side of spot: resistance
+              // above, support below. A "support" printed above spot is
+              // unreachable and a "resistance" below it is already broken —
+              // both are fake levels, so they are dropped, not relabelled.
+              const rawResistance = rec?.gammaWallResistance || quant?.walls?.resistanceK || null;
+              const rawSupport = rec?.gammaWallSupport || quant?.walls?.supportK || null;
+              const resistance = rawResistance != null && rawResistance > spotPrice ? rawResistance : null;
+              const support = rawSupport != null && rawSupport < spotPrice ? rawSupport : null;
+              // Wall STRENGTH (open interest) is only known for walls the
+              // quant toolkit measured; the gamma walls carry no OI, so their
+              // strength is honestly absent rather than invented.
+              const fmtOi = (oi: number | null | undefined) =>
+                oi == null ? "" : ` · OI ${(oi / 1000).toFixed(0)}k`;
+              const rows: Array<{ label: string; value: number | null; tone: string; suffix?: string }> = [
+                { label: "R — CE WALL", value: resistance, tone: "text-emerald-500 font-medium", suffix: fmtOi(quant?.walls?.resistanceK === resistance ? quant?.walls?.resistanceOi : null) },
                 { label: "PIVOT (SPOT)", value: spotPrice || null, tone: "font-bold text-primary border-t border-border pt-0.5" },
-                { label: "S — PE WALL", value: rec?.gammaWallSupport || quant?.walls?.supportK || null, tone: "text-red-500 font-medium" },
+                { label: "S — PE WALL", value: support, tone: "text-red-500 font-medium", suffix: fmtOi(quant?.walls?.supportK === support ? quant?.walls?.supportOi : null) },
                 { label: "MAX PAIN", value: rec?.marketContext?.maxPain || null, tone: "text-muted-foreground" },
                 { label: "SESSION VWAP", value: quant?.vwapZ?.vwap ?? null, tone: "text-muted-foreground" },
               ];
@@ -722,7 +735,7 @@ export const SimpleMode = memo(function SimpleMode({
               return visible.map((r) => (
                 <div key={r.label} className={`flex justify-between ${r.tone}`}>
                   <span className="text-muted-foreground">{r.label}</span>
-                  <span className="font-semibold">{fmt(r.value)}</span>
+                  <span className="font-semibold">{fmt(r.value)}{r.suffix ? <span className="text-[9px] font-normal text-muted-foreground">{r.suffix}</span> : null}</span>
                 </div>
               ));
             })()}
@@ -757,7 +770,7 @@ export const SimpleMode = memo(function SimpleMode({
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">PCR</span>
-              <span className={`font-bold tabular-nums text-base ${livePCR > 1.2 ? "text-emerald-500" : livePCR < 0.8 ? "text-red-500" : ""}`}>
+              <span className={`font-bold tabular-nums text-base ${pcrReading.bias === "neutral" ? "" : pcrReading.tone}`}>
                 {livePCR.toFixed(2)}
               </span>
             </div>
@@ -765,9 +778,7 @@ export const SimpleMode = memo(function SimpleMode({
               <span className="text-muted-foreground">VIX</span>
               <span className="font-bold tabular-nums text-base">{vixLive ? liveVIX.toFixed(1) : "—"}</span>
             </div>
-            <p className="text-[10px] text-muted-foreground/70 mt-1">
-              {livePCR > 1.2 ? "Bullish — put writing dominates" : livePCR < 0.8 ? "Bearish — call writing dominates" : "Balanced market"}
-            </p>
+            <p className="text-[10px] text-muted-foreground/70 mt-1">{pcrReading.detail}</p>
           </div>
         </div>
 
@@ -788,14 +799,14 @@ export const SimpleMode = memo(function SimpleMode({
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">PCR</span>
-              <span className={`font-bold tabular-nums text-base ${livePCR > 1.1 ? "text-emerald-500" : livePCR < 0.9 ? "text-red-500" : "text-yellow-500"}`}>
+              <span className={`font-bold tabular-nums text-base ${pcrReading.bias === "neutral" ? "text-yellow-500" : pcrReading.tone}`}>
                 {livePCR.toFixed(2)}
               </span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">Direction</span>
-              <span className={`font-bold text-base ${livePCR > 1.1 ? "text-emerald-500" : livePCR < 0.9 ? "text-red-500" : "text-yellow-500"}`}>
-                {livePCR > 1.1 ? "Bullish Flow" : livePCR < 0.9 ? "Bearish Flow" : "Neutral"}
+              <span className={`font-bold text-base ${pcrReading.bias === "neutral" ? "text-yellow-500" : pcrReading.tone}`}>
+                {pcrReading.bias === "bullish" ? "Bullish Flow" : pcrReading.bias === "bearish" ? "Bearish Flow" : "Neutral"}
               </span>
             </div>
           </div>
@@ -846,7 +857,12 @@ export const SimpleMode = memo(function SimpleMode({
             {/* Scorecard — every row shown; unknown = null shown honestly */}
             {quant.scorecard && (
               <div className="mt-2 pt-2 border-t border-border">
-                <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Scorecard (0-2 × 9)</p>
+                {/* The row count comes from the scorecard itself — the label
+                    used to say "× 9" while 10 rows rendered (SMC was added
+                    as the 10th factor). */}
+                <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">
+                  Scorecard (0-2 × {quant.scorecard.rows.length})
+                </p>
                 <div className="space-y-0.5">
                   {quant.scorecard.rows.map((r) => (
                     <div key={r.factor} className="flex justify-between text-[10px]">
@@ -900,7 +916,8 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="h-32 flex flex-col items-center justify-center text-muted-foreground">
               <p className="text-[10px]">No candle data available</p>
               <p className="text-[9px] text-muted-foreground/60 mt-1">
-                SMC needs real 5m candles (Breeze). Market closed or feed down.
+                SMC needs real 5m candles (Breeze/NSE). The chain response carried no
+                usable intraday series — market closed or the feed was down.
               </p>
             </div>
           )}
@@ -1277,9 +1294,9 @@ export const SimpleMode = memo(function SimpleMode({
                 </Badge>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Daily 1σ move</span>
+                <span className="text-muted-foreground">Today's move (1d)</span>
                 <span className="font-bold tabular-nums text-base">
-                  {spotPrice != null ? (spotPrice * liveVIX / 100 / Math.sqrt(252)).toFixed(0) : "—"} ₹
+                  {spotPrice != null ? (spotPrice * liveVIX / 100 * Math.sqrt(1 / 365)).toFixed(0) : "—"} ₹
                 </span>
               </div>
               <div className="flex justify-between text-sm">
@@ -1289,7 +1306,7 @@ export const SimpleMode = memo(function SimpleMode({
                 </span>
               </div>
               <p className="text-[10px] text-muted-foreground/70 mt-1">
-                Daily 1σ = spot × VIX/100 / √252 · Exp move = spot × VIX/100 × √(DTE/365) · Source: NSE India VIX
+                Today's move (1d) = spot × VIX/100 × √(1/365) · Exp move = spot × VIX/100 × √(DTE/365) · one annualized VIX → both consistent (1d move ≤ exp move for DTE ≥ 1) · Source: NSE India VIX
               </p>
             </div>
           </div>
@@ -1314,8 +1331,8 @@ export const SimpleMode = memo(function SimpleMode({
               Switch to Pro Chain
             </Button>
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>Grade</span>
-              <Badge className={`${rec?.tradeGrade ? gradeColors[rec.tradeGrade] : "bg-gray-500 text-white"} text-[10px] px-1.5`}>{rec?.tradeGrade || "—"}</Badge>
+              <span>Setup Grade</span>
+              <Badge className={`${rec?.tradeGrade && rec.tradeGrade !== "—" ? gradeColors[rec.tradeGrade] : "bg-gray-500 text-white"} text-[10px] px-1.5`}>{rec?.tradeGrade || "—"}</Badge>
             </div>
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Mode</span>
@@ -1328,7 +1345,7 @@ export const SimpleMode = memo(function SimpleMode({
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Data</span>
               <span className={`font-semibold ${isLive ? "text-emerald-500" : "text-yellow-500"}`}>
-                {dataSource ? dataSourceBadge(dataSource).display : "—"}
+                {dataSource ? dataSourceBadge(dataSource, freshness).display : "—"}
               </span>
             </div>
           </div>
@@ -1340,7 +1357,12 @@ export const SimpleMode = memo(function SimpleMode({
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">OI NIFTY</span>
-            <Badge className="text-[9px] bg-emerald-600 text-white">LIVE</Badge>
+            <Badge
+              className={`text-[9px] text-white ${isLive ? "bg-emerald-600" : "bg-zinc-600"}`}
+              title={freshness ? `Data freshness: ${freshness}` : undefined}
+            >
+              {isLive ? "LIVE" : freshness || "DATA"}
+            </Badge>
           </div>
           <div className="text-xs text-muted-foreground">{symbol} {spotPrice.toLocaleString("en-IN")}</div>
         </div>

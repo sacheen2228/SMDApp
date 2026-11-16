@@ -1268,7 +1268,12 @@ export function runFullAnalysis(
           sentiment = "bearish"; direction = "PUT"; action = "BUY PUT";
           confidence = Math.min(90, Math.round(45 + (sc.total / sc.maxTotal) * 50));
         } else {
-          sentiment = "neutral"; direction = "NEUTRAL"; action = "WAIT"; confidence = 40;
+          // A SKIP is not a "40% confident" setup — it is NO TRADE. The 40
+          // was a neutral placeholder that the card rendered as a big
+          // "40% / Grade C", which reads like a weak signal still on the
+          // table. Zero says "no setup"; the scorecard's own score and
+          // verdict (shown on the card) carry the information.
+          sentiment = "neutral"; direction = "NEUTRAL"; action = "WAIT"; confidence = 0;
         }
       }
     } catch (e) {
@@ -1352,14 +1357,21 @@ export function runFullAnalysis(
   const finalTp3 = finalIsCall || finalIsPut ? tp3 : 0;
   const finalPlan = finalIsCall || finalIsPut ? plan : null;
 
-  // Find highest CE/PE OI for gamma walls
+  // Find highest CE/PE OI for gamma walls — SIDE-CHECKED, the same rule the
+  // OI card and the quant toolkit use (sdm-oianalysis.computeSupportResistance):
+  //   resistance = highest-OI CE strike ABOVE spot
+  //   support    = highest-OI PE strike BELOW spot
+  // The old code took the highest-OI CE/PE strike ANYWHERE in the chain, so a
+  // "support" could sit ABOVE spot (unreachable) and a "resistance" BELOW it.
+  // When the side has no wall, the strike stays 0 (falsy) — the card then
+  // falls back to the quant walls and never shows a fake level.
   let maxCEOI = 0;
-  let ceWallStrike = maxPain;
+  let ceWallStrike = 0;
   let maxPEOI = 0;
-  let peWallStrike = maxPain;
+  let peWallStrike = 0;
   for (const s of strikes) {
-    if (s.ce && s.ce.oi > maxCEOI) { maxCEOI = s.ce.oi; ceWallStrike = s.strike; }
-    if (s.pe && s.pe.oi > maxPEOI) { maxPEOI = s.pe.oi; peWallStrike = s.strike; }
+    if (s.strike > spotPrice && s.ce && s.ce.oi > maxCEOI) { maxCEOI = s.ce.oi; ceWallStrike = s.strike; }
+    if (s.strike < spotPrice && s.pe && s.pe.oi > maxPEOI) { maxPEOI = s.pe.oi; peWallStrike = s.strike; }
   }
 
   // Build strike list for old dashboard
@@ -1474,9 +1486,13 @@ export function runFullAnalysis(
     },
     oiAnalysis: { totalCallOI: totalCEOI, totalPutOI: totalPEOI, pcr, maxPain, sentiment },
     gammaWalls: [
-      { strike: peWallStrike, type: "support", greeks: 0, description: `Strongest PE support @ ${peWallStrike} — ${(maxPEOI / 100000).toFixed(1)}L OI` },
-      { strike: atmStrike, type: "neutral", greeks: 0, description: `ATM strike` },
-      { strike: ceWallStrike, type: "resistance", greeks: 0, description: `Strongest CE resistance @ ${ceWallStrike} — ${(maxCEOI / 100000).toFixed(1)}L OI` },
+      ...(peWallStrike > 0
+        ? [{ strike: peWallStrike, type: "support" as const, greeks: 0, description: `Strongest PE support @ ${peWallStrike} — ${(maxPEOI / 100000).toFixed(1)}L OI` }]
+        : []),
+      { strike: atmStrike, type: "neutral" as const, greeks: 0, description: `ATM strike` },
+      ...(ceWallStrike > 0
+        ? [{ strike: ceWallStrike, type: "resistance" as const, greeks: 0, description: `Strongest CE resistance @ ${ceWallStrike} — ${(maxCEOI / 100000).toFixed(1)}L OI` }]
+        : []),
     ],
     moneyFlow: {
       direction: sentiment === "bullish" ? "bullish" : sentiment === "bearish" ? "bearish" : "neutral",

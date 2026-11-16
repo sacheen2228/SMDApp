@@ -44,6 +44,7 @@ import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
 import ExpiryPlanPanel from '@/components/dashboard/ExpiryPlanPanel';
+import DailyDerivativesPanel from '@/components/daily/DailyDerivativesPanel';
 import SignalStrip from '@/components/dashboard/SignalStrip';
 import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
 import { evaluateStrikeSignal } from '@/lib/signal-engine';
@@ -51,6 +52,7 @@ import { runMLAnalysis } from '@/lib/ml-engine';
 import { analyzeOptionChain } from '@/lib/sdm-oianalysis';
 import { evaluateConfirmations } from '@/lib/signal-persistence';
 import { selectStrike, buildOptionPlan, type ChainRowLike, type SelectedStrike, type OptionPlan } from '@/lib/option-plan';
+import { analyzeSMCFromCandles } from '@/lib/smc-layer';
 import type { GreeksReadInput } from '@/lib/signal-persistence';
 
 import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
@@ -209,13 +211,10 @@ function FullChainView({ chainData, maxOI, maxCallOI, maxPutOI, atmStrike, spot,
   const signalMap = useMemo(() => {
     const map = new Map<number, any>();
     for (const r of rows) {
-      // Derive price direction from moneyness (no historical LTP available):
-      //   ITM CALL → premium naturally higher → simulate prev<curr → price up
-      //   OTM CALL → premium naturally lower → simulate prev>curr → price down
-      //   ITM PUT  → premium naturally higher → simulate prev<curr → price up
-      //   OTM PUT  → premium naturally lower → simulate prev>curr → price down
-      const cePrevLtp = r.ce ? (r.strike > spot ? r.ce.ltp * 1.5 : 0) : 0;
-      const pePrevLtp = r.pe ? (r.strike < spot ? r.pe.ltp * 1.5 : 0) : 0;
+      // Use real previous LTP from chain data if available, otherwise 0 (unknown)
+      // No fake simulation based on moneyness — unknown prevLtp = direction unknown
+      const cePrevLtp = r.ce?.prevLtp ?? 0;
+      const pePrevLtp = r.pe?.prevLtp ?? 0;
       const signal = evaluateStrikeSignal(
         r.strike, spot, atmStrike, maxPain, pcr,
         r.ce?.ltp ?? 0, r.ce?.oi ?? 0, r.ce?.oiChg ?? 0,
@@ -444,7 +443,14 @@ useEffect(() => {
         if (!res.ok) throw new Error('Failed to fetch');
         const json = await res.json();
         const base = json.data || json;
-        return { ...base, analysis: json.analysis };
+        // The exchange-aware freshness label (LIVE | FRESH | DELAYED | STALE |
+        // UNAVAILABLE) travels with the payload — the UI must show THAT, never
+        // a guess from the provider name.
+        return {
+          ...base,
+          analysis: json.analysis,
+          freshness: json.freshness?.freshness ?? json.provenance?.freshness ?? base.freshness ?? null,
+        };
       } finally {
         clearTimeout(timeout);
       }
@@ -592,11 +598,45 @@ useEffect(() => {
     return { sel, plan, greeks, lotSize };
   }, [data, symbol]);
 
+  // SMC layer for the Simple Tab card — computed from the REAL 5m candles the
+  // option-chain response already carries (data.candles). The card used to be
+  // hardwired to N/A because nothing ever passed the `smc` prop, while the
+  // scorecard scored the very same candles server-side. Both now run through
+  // the ONE helper (smc-layer.analyzeSMCFromCandles) on the same series.
+  // The direction follows the traded leg so the premium/discount and stop
+  // gates (G18/G19) are evaluated on the correct side.
+  const smcResult = useMemo(() => {
+    const raw = data as any;
+    const candles = Array.isArray(raw?.candles) ? raw.candles : [];
+    const spot = raw?.summary?.spotPrice || raw?.analysis?.spotPrice || 0;
+    if (!candles.length || !(spot > 0)) return null;
+    const rec = raw?.analysis?.recommendation;
+    const dir = rec?.optionType === "CE" ? "call" : rec?.optionType === "PE" ? "put"
+      : rec?.direction === "CALL" ? "call" : rec?.direction === "PUT" ? "put" : "call";
+    try {
+      return analyzeSMCFromCandles({
+        candles,
+        spot,
+        symbol,
+        direction: dir as "call" | "put",
+        oiStrikeNearSpot: raw?.summary?.atmStrike ?? null,
+      });
+    } catch {
+      return null;
+    }
+  }, [data, symbol]);
+
   // Confirmation checks for SimpleMode card — tells the user WHEN to take a
   // trade. Every check is scored from REAL reads only: the 15m trend read,
   // the 5m closed-bar trigger, real RVOL, real PCR, real vsVwap, real ADX/DI,
   // and the traded leg's real |delta|. Missing data marks a check UNAVAILABLE
   // (not counted, never a fabricated pass).
+  //
+  // STALENESS GATE: the technical reads are only used while the underlying
+  // BAR is current (`current`, not just `fresh`) and the market session is
+  // open. `fresh` only says the snapshot was recomputed recently — after the
+  // close the route keeps recomputing the same old candles, so a 14:59
+  // structure would otherwise stay "confirmed" overnight.
   const confirmations = useMemo(() => {
     const raw = data as any;
     const rec = raw?.analysis?.recommendation;
@@ -608,31 +648,26 @@ useEffect(() => {
     const peOI = summaryData.totalPutOI || 0;
     const pcr = ceOI > 0 ? peOI / ceOI : summaryData.pcr ?? null;
 
+    // A closed market has no live structure to confirm a trade with.
+    const sessionOpen = getCurrentSession("index").session !== "closed";
     const snap15 = techData?.snapshots?.["15m"];
     const snap5 = techData?.snapshots?.["5m"];
-    const trendRead = snap15?.fresh && snap15?.trend ? snap15.trend : null;
+    const read15Current = sessionOpen && !!snap15?.current;
+    const read5Current = sessionOpen && !!snap5?.current;
+
+    const trendRead = read15Current && snap15?.trend ? snap15.trend : null;
     const adxRead = trendRead && trendRead.adx != null && trendRead.pdi != null && trendRead.mdi != null
       ? { adx: trendRead.adx, pdi: trendRead.pdi, mdi: trendRead.mdi }
-      : null;
-
-    const triggerLayer =
-      snap5?.fresh ? snap5.triggers?.[dir === "CALL" ? "call" : "put"] : null;
-    const triggerRead = triggerLayer
-      ? {
-          hits: triggerLayer.state === "agree" ? [triggerLayer.evidence] : [],
-          opposing: triggerLayer.state === "against" ? [triggerLayer.evidence] : [],
-        }
       : null;
 
     return evaluateConfirmations({
       direction: dir,
       trendRead,
-      triggerRead,
       adxRead,
       greeksRead: strikeSel.greeks,
       rvol: techData?.rvol ?? null,
       pcr: pcr && pcr > 0 ? pcr : null,
-      vsVwap: snap5?.fresh && snap5?.vsVwap ? snap5.vsVwap : null,
+      vsVwap: read5Current && snap5?.vsVwap ? snap5.vsVwap : null,
     });
   }, [data, techData, strikeSel]);
 
@@ -665,6 +700,9 @@ useEffect(() => {
     const strike = sel ? sel.strike : rec.strike;
     const rr = entry && sl && entry !== sl ? Math.abs((tp1 - entry) / (entry - sl)) : 0;
     const score = rec.sdmScore ?? 0;
+    // Grade is meaningful only for a real setup. A no-trade (score 0 after
+    // the SKIP fix) must not be labelled "Grade C" — it is no setup at all.
+    const hasSetup = rec.optionType === "CE" || rec.optionType === "PE";
     const raw: SignalRec = {
       direction: rec.optionType === "CE" ? "CALL" : rec.optionType === "PE" ? "PUT" : rec.direction,
       confidence: Math.round(rec.confidence || 0),
@@ -674,8 +712,9 @@ useEffect(() => {
       tp2,
       tp3,
       strike,
-      tradeGrade:
-        score >= 75 ? "A+" : score >= 65 ? "A" : score >= 55 ? "B+" : score >= 45 ? "B" : "C",
+      tradeGrade: !hasSetup
+        ? "—"
+        : score >= 75 ? "A+" : score >= 65 ? "A" : score >= 55 ? "B+" : score >= 45 ? "B" : "C",
       reason: Array.isArray(rec.reasons) ? rec.reasons.join(" · ") : (rec.reasons || ""),
       riskReward: Math.round(rr * 10) / 10,
       confirmations,
@@ -1187,8 +1226,8 @@ useEffect(() => {
             {data?.dataSource && (
               <>
                 <div className="w-px h-3 bg-border" />
-                <Badge className="text-[8px]" variant={dataSourceBadge(data.dataSource).isLive ? 'default' : 'outline'}>
-                  {dataSourceBadge(data.dataSource).label}
+                <Badge className="text-[8px]" variant={dataSourceBadge(data.dataSource, (data as any)?.freshness).isLive ? 'default' : 'outline'}>
+                  {dataSourceBadge(data.dataSource, (data as any)?.freshness).label}
                 </Badge>
               </>
             )}
@@ -1230,6 +1269,8 @@ useEffect(() => {
               onExpiryChange={setSelectedExpiry}
               oiSummary={oiSummary}
               quant={(data as any)?.analysis?.quant ?? null}
+              freshness={(data as any)?.freshness ?? null}
+              smc={smcResult}
               confirmations={confirmations}
               atrInfo={{
                 tf15: (techData as any)?.snapshots?.["15m"]?.atr ?? null,
@@ -1324,7 +1365,12 @@ useEffect(() => {
             selectedExpiry={selectedExpiry}
           />
         </div>
- ) : viewMode === 'zerohero' ? (
+        ) : viewMode === 'daily' ? (
+        /* ═══════ DAILY DERIVATIVES ═══════ */
+        <div className="flex-1 overflow-hidden">
+          <DailyDerivativesPanel symbol={symbol} />
+        </div>
+        ) : viewMode === 'zerohero' ? (
         /* ═══════ ZERO HERO SCANNER ═══════ */
         <div className="flex-1 overflow-hidden">
           <ZeroHeroLiveTerminal />

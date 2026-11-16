@@ -11,7 +11,16 @@ export interface HealthReport {
   status: 'HEALTHY' | 'DEGRADED' | 'STALE' | 'CRITICAL' | 'OFFLINE';
   score: number;
   issues: string[];
+  freshnessMs: number;
+  latencyMs: number;
 }
+
+// Alias used by validation-gate.ts and sdm-recommendation.ts
+export type DataHealthReport = HealthReport;
+
+// Consumed by types/canonical.ts (DataProvenance)
+export type DataFreshness = 'LIVE' | 'FRESH' | 'DELAYED' | 'STALE' | 'HISTORICAL' | 'RECOVERED' | 'UNAVAILABLE' | 'GLOBAL_REFERENCE';
+export type DataStatus = 'AVAILABLE' | 'PARTIAL' | 'STALE' | 'ERROR' | 'UNAVAILABLE';
 
 // ─── Thresholds ──────────────────────────────────────────────────
 const THRESHOLDS = {
@@ -108,5 +117,5 @@ export function evaluateDataHealth(input: HealthInput): DataHealthReport {
     status = 'CRITICAL';
   }
 
-  return { status, score, issues };
+  return { status, score, issues, freshnessMs, latencyMs: input.latencyMs };
 }

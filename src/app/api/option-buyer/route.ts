@@ -4,6 +4,8 @@
 import { NextResponse } from 'next/server';
 import { fetchLiveOptionChain } from '@/lib/live-option-chain';
 import { scoreBuyerConfluence, type ConfluenceInput, type ConfluenceResult } from '@/lib/buyer-confluence-engine';
+import { fetchFiiDiiData } from '@/lib/fii-dii';
+import { computeIvRank } from '@/lib/market-history-client';
 import { getCurrentSession } from '@/lib/market-session';
 import { parseExpiryDateLoose } from '@/lib/greeks';
 import { buildOptionPlan } from '@/lib/option-plan';
@@ -106,6 +108,17 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
   const expiryDate = parseExpiryDateLoose(data.selectedExpiry, now) ?? new Date(data.selectedExpiry);
   const daysToExpiry = Math.max(1, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
 
+  // Real gate inputs, fetched ONCE for the whole strike loop. The old
+  // placeholders (ivRank: 50, fiiNet: 0) scored every strike from fiction —
+  // 50 is a permanent IV-rank hard block in scoreIVRank. Unknown → null/0,
+  // never a fabricated value (fetch failures are caught inside both helpers).
+  const fiiPromise = fetchFiiDiiData().catch(() => null);
+  const fiiDii = await Promise.race([
+    fiiPromise,
+    new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+  ]);
+  const ivRank = await computeIvRank(summary.indiaVIX || 0).catch(() => null);
+
   // Score each strike near ATM (±5 strikes)
   const atmStrike = summary.atmStrike;
   const nearbyStrikes = strikes.filter((s: any) =>
@@ -116,11 +129,14 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
     // Score CE
     if (strike.ce && strike.ce.ltp > 1) {
       const confluenceInput: ConfluenceInput = {
-        fiiNet: 0, diiNet: 0, fiiFutLongRatio: 0.5, fiiNet5dAvg: 0,
+        fiiNet: fiiDii?.available ? fiiDii.latest.fiiNet : 0,
+        diiNet: fiiDii?.available ? fiiDii.latest.diiNet : 0,
+        fiiFutLongRatio: fiiDii?.fiiFutLongRatio ?? 0.5,
+        fiiNet5dAvg: fiiDii?.fiiNet5dAvg ?? 0,
         pcr: summary.pcr || 1, maxPain: summary.maxPain, spotPrice,
         ceOIBuildup: (strike.ce.oiChg || 0) > 0, peOIBuildup: false,
         oiPattern: 'NEUTRAL',
-        ivRank: 50, atmIV: summary.indiaVIX || 15, ivTrend: 'STABLE',
+        ivRank, atmIV: summary.indiaVIX || 15, ivTrend: 'STABLE',
         atmStraddlePrice: 0, expectedMove: 0,
         gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
         indiaVix: summary.indiaVIX || 15, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',
@@ -155,11 +171,14 @@ async function analyzeSymbol(symbol: string): Promise<{ trades: OptionBuyerTrade
     // Score PE
     if (strike.pe && strike.pe.ltp > 1) {
       const confluenceInput: ConfluenceInput = {
-        fiiNet: 0, diiNet: 0, fiiFutLongRatio: 0.5, fiiNet5dAvg: 0,
+        fiiNet: fiiDii?.available ? fiiDii.latest.fiiNet : 0,
+        diiNet: fiiDii?.available ? fiiDii.latest.diiNet : 0,
+        fiiFutLongRatio: fiiDii?.fiiFutLongRatio ?? 0.5,
+        fiiNet5dAvg: fiiDii?.fiiNet5dAvg ?? 0,
         pcr: summary.pcr || 1, maxPain: summary.maxPain, spotPrice,
         ceOIBuildup: false, peOIBuildup: (strike.pe.oiChg || 0) > 0,
         oiPattern: 'NEUTRAL',
-        ivRank: 50, atmIV: summary.indiaVIX || 15, ivTrend: 'STABLE',
+        ivRank, atmIV: summary.indiaVIX || 15, ivTrend: 'STABLE',
         atmStraddlePrice: 0, expectedMove: 0,
         gammaFlipLevel: 0, dealerGexRegime: 'LONG_GAMMA',
         indiaVix: summary.indiaVIX || 15, adx: 25, niftyTrend: 'NEUTRAL', bankNiftyTrend: 'NEUTRAL',

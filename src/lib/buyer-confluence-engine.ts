@@ -18,7 +18,8 @@ export interface ConfluenceInput {
   oiPattern: 'LONG_BUILDUP' | 'SHORT_BUILDUP' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NEUTRAL';
 
   // Section 4: Greeks / IV
-  ivRank: number;              // 0-100 (current IV percentile in 52-week range)
+  ivRank: number | null;      // 0-100 percentile of current IV in recorded history.
+                              // null = UNKNOWN (no history) → no bonus, no hard block.
   atmIV: number;               // ATM implied volatility %
   ivTrend: 'RISING' | 'FALLING' | 'STABLE';
 
@@ -178,7 +179,13 @@ function scoreOI(
 }
 
 // ─── IV Rank Scoring (Section 4) ───
-function scoreIVRank(ivRank: number): { score: number; allowed: boolean; note: string } {
+function scoreIVRank(ivRank: number | null): { score: number; allowed: boolean; note: string } {
+  // UNKNOWN rank (no recorded history) earns no bonus and blocks nothing:
+  // claiming "premiums too expensive" without data would be as wrong as
+  // claiming they are cheap. The live VIX regime gate still covers fear.
+  if (ivRank === null || !Number.isFinite(ivRank)) {
+    return { score: 0, allowed: true, note: 'IV Rank unavailable — no premium-cost signal' };
+  }
   if (ivRank < 25) return { score: 15, allowed: true, note: 'IV Rank < 25: BUYING ZONE — premiums cheap' };
   if (ivRank < 50) return { score: 10, allowed: true, note: 'IV Rank 25-50: OK, require higher confluence' };
   return { score: 0, allowed: false, note: `IV Rank ${ivRank}: NO BUYING — premiums too expensive` };
