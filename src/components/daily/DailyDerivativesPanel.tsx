@@ -18,6 +18,8 @@ import {
   Zap,
   Compass,
   RotateCcw,
+  Crosshair,
+  ShieldCheck,
 } from "lucide-react";
 
 interface Signal {
@@ -103,6 +105,65 @@ interface DailyDerivativesReport {
   candleDegraded: string | null;
   candleCount: number;
   warmupBars: number;
+  sellerIntel?: SellerIntel;
+}
+
+interface SellerIntel {
+  symbol: string;
+  asOf: string;
+  lotSize: number;
+  verdict: {
+    signal: "BUY_CE" | "BUY_PE" | "WAIT";
+    direction: "BULLISH" | "BEARISH" | "NEUTRAL";
+    score: number;
+    confidence: number;
+    reasons: string[];
+    warnings: string[];
+    entryConfirmed: boolean;
+    requiresRetest: boolean;
+  };
+  market: {
+    underlyingChangePct: number;
+    vwap: number;
+    currentPrice: number;
+    breakoutConfirmed: boolean;
+    retestConfirmed: boolean;
+  };
+  zones: {
+    strike: number;
+    type: "CE" | "PE";
+    status: string;
+    zoneLow: number;
+    zoneHigh: number;
+    pressureScore: number;
+    classification: string;
+    direction: string;
+  }[];
+  topWriting: SellerBoardRow[];
+  topCovering: SellerBoardRow[];
+  exposure: {
+    callDex: number;
+    putDex: number;
+    netDex: number;
+    totalGex: number;
+    gammaFlip: number;
+    dealerRegime: string;
+    dealerBias: string;
+    gammaWalls: { strike: number; type: "CE" | "PE"; gex: number; oi: number }[];
+  };
+  dataNotes: string[];
+}
+
+interface SellerBoardRow {
+  strike: number;
+  type: "CE" | "PE";
+  oi: number;
+  oiChangePct: number;
+  premiumChangePct: number;
+  classification: string;
+  score: number;
+  volumeRatio: number;
+  delta: number;
 }
 
 interface ApiResponse {
@@ -475,6 +536,184 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               </div>
             )}
           </div>
+
+          {/* Seller Intelligence — OI · Greeks · Pressure · Invalidation */}
+          {report.sellerIntel && (
+            <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Crosshair className="h-4 w-4 text-sky-400" />
+                  <span className="text-[11px] font-bold text-foreground">Seller Intelligence — OI · Greeks · Pressure · Invalidation</span>
+                </div>
+                <span className="text-[9px] text-muted-foreground">zero-lag · same chain fetch</span>
+              </div>
+
+              {/* Verdict */}
+              <div className="flex items-center flex-wrap gap-2 mb-2">
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    report.sellerIntel.verdict.signal === "BUY_CE"
+                      ? "bg-emerald-500/20 text-emerald-400"
+                      : report.sellerIntel.verdict.signal === "BUY_PE"
+                        ? "bg-rose-500/20 text-rose-400"
+                        : "bg-amber-500/15 text-amber-400"
+                  }`}
+                >
+                  {report.sellerIntel.verdict.signal === "WAIT" ? "WAIT" : report.sellerIntel.verdict.signal.replace("_", " ")}
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  score {report.sellerIntel.verdict.score}/100 · conf {report.sellerIntel.verdict.confidence}%
+                </span>
+                <span className={`text-[10px] font-bold ${
+                  report.sellerIntel.verdict.direction === "BULLISH" ? "text-emerald-400"
+                    : report.sellerIntel.verdict.direction === "BEARISH" ? "text-rose-400"
+                      : "text-muted-foreground"
+                }`}>
+                  {report.sellerIntel.verdict.direction}
+                </span>
+                {report.sellerIntel.verdict.entryConfirmed && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-300">entry confirmed</span>
+                )}
+                {report.sellerIntel.verdict.requiresRetest && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-300">needs retest</span>
+                )}
+              </div>
+              {(report.sellerIntel.verdict.reasons.length > 0 || report.sellerIntel.verdict.warnings.length > 0) && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {report.sellerIntel.verdict.reasons.map(r => (
+                    <span key={r} className="px-1.5 py-0.5 rounded text-[9px] bg-sky-500/10 text-sky-300 font-mono">{r}</span>
+                  ))}
+                  {report.sellerIntel.verdict.warnings.map(w => (
+                    <span key={w} className="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/10 text-amber-300 font-mono">{w}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Exposure — DEX / GEX */}
+              <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">DEX CE</div>
+                  <div className="font-mono text-rose-300 font-bold">₹{formatNumber(Math.round(report.sellerIntel.exposure.callDex))}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">DEX PE</div>
+                  <div className="font-mono text-emerald-300 font-bold">₹{formatNumber(Math.round(report.sellerIntel.exposure.putDex))}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">Net DEX</div>
+                  <div className={`font-mono font-bold ${report.sellerIntel.exposure.netDex >= 0 ? "text-rose-300" : "text-emerald-300"}`}>
+                    ₹{formatNumber(Math.round(report.sellerIntel.exposure.netDex))}
+                  </div>
+                </div>
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">GEX total</div>
+                  <div className="font-mono text-sky-300 font-bold">₹{formatNumber(Math.round(report.sellerIntel.exposure.totalGex))}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">Γ flip</div>
+                  <div className="font-mono text-foreground font-bold">{report.sellerIntel.exposure.gammaFlip > 0 ? report.sellerIntel.exposure.gammaFlip.toFixed(0) : "—"}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-1.5 text-center">
+                  <div className="text-muted-foreground">Dealer</div>
+                  <div className={`text-[9px] font-bold ${report.sellerIntel.exposure.dealerRegime === "LONG_GAMMA" ? "text-emerald-400" : report.sellerIntel.exposure.dealerRegime === "SHORT_GAMMA" ? "text-rose-400" : "text-muted-foreground"}`}>
+                    {report.sellerIntel.exposure.dealerRegime} · {report.sellerIntel.exposure.dealerBias}
+                  </div>
+                </div>
+              </div>
+
+              {/* Market confirmation strip */}
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-muted-foreground mb-2 font-mono">
+                <span>chg {report.sellerIntel.market.underlyingChangePct >= 0 ? "+" : ""}{report.sellerIntel.market.underlyingChangePct.toFixed(2)}%</span>
+                <span>VWAP {report.sellerIntel.market.vwap.toFixed(0)}</span>
+                <span className={report.sellerIntel.market.currentPrice > report.sellerIntel.market.vwap ? "text-emerald-400" : "text-rose-400"}>
+                  price {report.sellerIntel.market.currentPrice.toFixed(0)}
+                </span>
+                <span className={report.sellerIntel.market.breakoutConfirmed ? "text-emerald-400" : ""}>
+                  breakout {report.sellerIntel.market.breakoutConfirmed ? "✓" : "✗"}
+                </span>
+                <span className={report.sellerIntel.market.retestConfirmed ? "text-emerald-400" : ""}>
+                  retest {report.sellerIntel.market.retestConfirmed ? "✓" : "✗"}
+                </span>
+              </div>
+
+              {/* Writing / Covering boards */}
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div>
+                  <div className="text-[9px] font-bold text-rose-400 mb-1">Writer pressure (OI added)</div>
+                  {report.sellerIntel.topWriting.length === 0 ? (
+                    <div className="text-[9px] text-muted-foreground">none ≥2% ΔOI</div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {report.sellerIntel.topWriting.map((r, i) => (
+                        <div key={i} className="flex items-center justify-between text-[9px] font-mono bg-rose-500/5 rounded px-1.5 py-1">
+                          <span className="text-foreground">{r.strike} {r.type}</span>
+                          <span className={r.oiChangePct >= 0 ? "text-rose-300" : "text-emerald-300"}>
+                            ΔOI {r.oiChangePct >= 0 ? "+" : ""}{r.oiChangePct.toFixed(1)}%
+                          </span>
+                          <span className={r.premiumChangePct >= 0 ? "text-emerald-300" : "text-rose-300"}>
+                            prem {r.premiumChangePct >= 0 ? "+" : ""}{r.premiumChangePct.toFixed(1)}%
+                          </span>
+                          <span className="text-muted-foreground">sc {r.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-[9px] font-bold text-emerald-400 mb-1">Short covering (OI pulled)</div>
+                  {report.sellerIntel.topCovering.length === 0 ? (
+                    <div className="text-[9px] text-muted-foreground">none ≥2% ΔOI</div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {report.sellerIntel.topCovering.map((r, i) => (
+                        <div key={i} className="flex items-center justify-between text-[9px] font-mono bg-emerald-500/5 rounded px-1.5 py-1">
+                          <span className="text-foreground">{r.strike} {r.type}</span>
+                          <span className="text-emerald-300">ΔOI {r.oiChangePct.toFixed(1)}%</span>
+                          <span className={r.premiumChangePct >= 0 ? "text-emerald-300" : "text-rose-300"}>
+                            prem {r.premiumChangePct >= 0 ? "+" : ""}{r.premiumChangePct.toFixed(1)}%
+                          </span>
+                          <span className="text-muted-foreground">sc {r.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Seller zones / invalidation */}
+              {report.sellerIntel.zones.length > 0 && (
+                <div className="mb-1">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <ShieldCheck className="h-3 w-3 text-sky-400" />
+                    <span className="text-[9px] font-bold text-foreground">Seller zones — invalidation levels</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {report.sellerIntel.zones.slice(0, 8).map((z, i) => (
+                      <span
+                        key={i}
+                        title={`${z.classification} · score ${z.pressureScore} · ${z.direction}`}
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
+                          z.status === "PRESSURE_BUILDING" ? "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                            : z.status === "POTENTIAL_COVERING" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                              : z.status === "DEFENDED_CANDIDATE" ? "border-sky-500/40 bg-sky-500/10 text-sky-300"
+                                : z.status === "INVALIDATED" ? "border-border/40 bg-muted/30 text-muted-foreground line-through"
+                                  : "border-border/40 bg-muted/20 text-muted-foreground"
+                        }`}
+                      >
+                        {z.strike} {z.type} · {z.zoneLow.toFixed(0)}–{z.zoneHigh.toFixed(0)} · {z.status.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {report.sellerIntel.dataNotes.length > 0 && (
+                <div className="text-[8px] text-muted-foreground/80 font-mono leading-snug">
+                  {report.sellerIntel.dataNotes.join(" · ")}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Top Call OI */}
           <div className="bg-card/50 border border-border/50 rounded-lg p-3">

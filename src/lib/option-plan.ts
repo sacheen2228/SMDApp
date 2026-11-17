@@ -347,6 +347,8 @@ function roundTick(x: number): number {
 export interface ChainLegLike {
   ltp: number | null;
   delta?: number | null;
+  /** Where delta came from — "bs" gets an honest "(BS)" suffix in the strike reason. */
+  deltaSource?: "provider" | "bs" | null;
   oi?: number | null;
   oiChange?: number | null;
   iv?: number | null;
@@ -365,6 +367,8 @@ export interface SelectedStrike {
   /** Real premium of the selected leg (its live ltp). */
   entry: number;
   delta: number | null;
+  /** "provider" = exchange/broker greeks, "bs" = Black-Scholes from live IV. */
+  deltaSource: "provider" | "bs" | null;
   iv: number | null;
   oi: number | null;
   /** Strikes away from ATM (0 = ATM). */
@@ -416,26 +420,31 @@ export function selectStrike(input: {
     if (cost > budget) { budgetFail = true; continue; }        // 1 lot does not fit the cap → skip
 
     const delta = leg.delta != null && Number.isFinite(Number(leg.delta)) ? Number(leg.delta) : null;
+    const deltaSource = leg.deltaSource === "provider" || leg.deltaSource === "bs" ? leg.deltaSource : null;
     if (delta != null) sawDelta.push(true);
     if (delta != null && Math.abs(delta) < GATE_CONFIG.minAbsDelta) {
       deltaBandFail = Math.abs(delta);
       continue;                                                // lottery ticket
     }
 
+    const deltaLabel = delta == null
+      ? "delta unavailable — nearest tradable ATM..OTM contract"
+      : `|delta| ${Math.abs(delta).toFixed(2)}${deltaSource === "bs" ? " (BS)" : ""}`;
     return {
       strike: row.strike,
       optionType,
       entry: ltp,
       delta,
+      deltaSource,
       iv: leg.iv != null && Number.isFinite(Number(leg.iv)) ? Number(leg.iv) : null,
       oi: leg.oi != null && Number.isFinite(Number(leg.oi)) ? Number(leg.oi) : null,
       otmSteps: step,
       isAtm: step === 0,
       reason: delta == null
-        ? "delta unavailable — nearest tradable ATM..OTM contract"
+        ? deltaLabel
         : step === 0
-          ? `ATM · |delta| ${Math.abs(delta).toFixed(2)} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`
-          : `${step} step${step > 1 ? "s" : ""} OTM · |delta| ${Math.abs(delta).toFixed(2)} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`,
+          ? `ATM · ${deltaLabel} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`
+          : `${step} step${step > 1 ? "s" : ""} OTM · ${deltaLabel} · 1 lot ₹${Math.round(cost).toLocaleString("en-IN")}`,
     };
   }
 

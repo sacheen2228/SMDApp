@@ -7,6 +7,7 @@ import { calculateGreeks, parseExpiryDateLoose, impliedVolFromPremium } from "@/
 import { getNSEIndiaVIX } from "@/lib/nse-api";
 import { fetchCandlesWithFallback } from "@/lib/market/candle-chain";
 import { buildOptionPlan, selectStrike, assessTargets, type TargetReach } from "@/lib/option-plan";
+import { buildSellerIntel, type SellerIntelReport } from "@/lib/seller-intelligence";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 
 // ====================== TYPES ======================
@@ -156,6 +157,8 @@ export interface DailyDerivativesReport {
   warmupBars: number;
   dataSource: string;
   freshness: string;
+  /** Seller Intelligence — OI classification, DEX/GEX, invalidation zones, verdict. */
+  sellerIntel?: SellerIntelReport;
 }
 
 // ====================== INDICATOR (kept pure) ======================
@@ -722,8 +725,10 @@ export class DailyDerivativesService {
 
     // 3. Indicator Signals (if we have candles)
     let latestSignals: Signal[] = [];
+    let allSignals: Signal[] = [];
     if (candles.length > 0) {
       const { signals } = emaCrossAdxAtr(candles, { adxMin: 20 });
+      allSignals = signals;
       latestSignals = signals.slice(-5).reverse();
     }
 
@@ -953,6 +958,44 @@ export class DailyDerivativesService {
     const expiry = chain.expiry || expiryISO || "";
     const dte = daysToExpiry || 0;
 
+    // Seller Intelligence — same chain fetch, zero extra network. VWAP and
+    // day-open come from today's candles; only today's signals confirm
+    // breakout/retest (a yesterday breakout must not confirm today's entry).
+    const todayStr = istDate(0);
+    const isTodayCandle = (t: number | string) =>
+      new Date(t).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === todayStr;
+    const todayCandles = candles.filter(c => isTodayCandle(c.time));
+    let vwap = 0;
+    if (todayCandles.length > 0) {
+      let pv = 0;
+      let vol = 0;
+      for (const c of todayCandles) {
+        const tp = (c.high + c.low + c.close) / 3;
+        const v = c.volume || 0;
+        pv += tp * v;
+        vol += v;
+      }
+      vwap = vol > 0 ? pv / vol : todayCandles.reduce((s, c) => s + c.close, 0) / todayCandles.length;
+    }
+    const dayOpen = todayCandles[0]?.open ?? candles[0]?.open ?? spot;
+    const todaysSignals = allSignals.filter(s => isTodayCandle(s.time));
+    const sellerIntel: SellerIntelReport = buildSellerIntel({
+      symbol: underlying,
+      expiry,
+      spot,
+      lotSize: lotSize ?? 0,
+      strikes: (chain.strikes || []).map((s: any) => ({
+        strike: Number(s.strike),
+        ce: s.ce,
+        pe: s.pe,
+      })),
+      // No VWAP yet (pre-market / no volume) → fall back to spot so neither
+      // above-nor-below passes and the verdict stays WAIT honestly.
+      vwap: vwap > 0 ? vwap : spot,
+      dayOpen,
+      latestSignals: todaysSignals,
+    });
+
     return {
       underlying,
       timestamp: new Date().toISOString(),
@@ -986,6 +1029,7 @@ export class DailyDerivativesService {
       warmupBars: need,
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
+      sellerIntel,
     };
   }
 

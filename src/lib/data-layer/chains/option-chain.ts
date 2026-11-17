@@ -13,6 +13,7 @@
 // nothing in this module creates a trade or selects a strike.
 
 import { classifyFreshness, collectedFreshness, providerTimestamp } from '@/lib/api-freshness';
+import { calculateGreeks } from '@/lib/greeks';
 import type { OptionChainData, OptionStrike, OptionLeg, ProviderResult } from '@/lib/data-layer/types';
 
 // ── Exchange routing ────────────────────────────────────────────────
@@ -217,6 +218,127 @@ function roundIv(iv: number | null): number | null {
   return Math.round(iv * 100) / 100;
 }
 
+// ── Per-strike greeks: provider first, Black-Scholes(IV) as the honest
+//    fallback, null when neither is possible. ─────────────────────────
+//
+// WHY: the engine-path normalizer used to drop delta/gamma/theta/vega
+// entirely, so selectStrike saw no delta anywhere ("delta unavailable")
+// and assessTargets ran its TP math on a 0.50 guess. NSE publishes greeks;
+// Breeze/MO often ship IV only (or `Number(x) || 0` zeros) — from a live IV
+// the BS delta IS computable and is labelled "bs", never passed off as
+// provider data. No IV → null, honestly.
+
+export interface DerivedGreeks {
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  deltaSource: "provider" | "bs" | null;
+}
+
+/** Years to expiry from an ISO date at the 15:30 IST session end; floor = 0.002. */
+function tYears(expiry: string | null | undefined, now: Date = new Date()): number | null {
+  const iso = toIsoDate(expiry);   // accepts "2026-11-17" | "17-Nov-2026" | "17 Nov 2026"
+  if (!iso) return null;
+  const end = Date.parse(`${iso}T15:30:00+05:30`);
+  if (!Number.isFinite(end)) return null;
+  const days = (end - now.getTime()) / 86_400_000;
+  return Math.max(days / 365, 0.002);
+}
+
+export function deriveLegGreeks(
+  raw: { delta?: any; gamma?: any; theta?: any; vega?: any; iv?: any },
+  spot: number,
+  strike: number,
+  expiryIso: string | null | undefined,
+  isCall: boolean,
+): DerivedGreeks {
+  const d = Number(raw?.delta);
+  const g = Number(raw?.gamma);
+  const th = Number(raw?.theta);
+  const v = Number(raw?.vega);
+  const hasProvider =
+    Number.isFinite(d) && Number.isFinite(g) && Number.isFinite(th) &&
+    (d !== 0 || g !== 0 || th !== 0);   // all-zero = "unknown" sentinel, not a real greek
+  if (hasProvider) {
+    return {
+      delta: d, gamma: g, theta: th,
+      vega: Number.isFinite(v) ? v : null,
+      deltaSource: "provider",
+    };
+  }
+
+  const ivPct = Number(raw?.iv);
+  const T = tYears(expiryIso);
+  if (
+    Number.isFinite(ivPct) && ivPct > 0 &&
+    Number.isFinite(spot) && spot > 0 &&
+    Number.isFinite(strike) && strike > 0 &&
+    T != null && T > 0
+  ) {
+    const gv = calculateGreeks(spot, strike, T, ivPct / 100, isCall);
+    if (Number.isFinite(gv.delta) && (gv.delta !== 0 || gv.gamma !== 0)) {
+      return { delta: gv.delta, gamma: gv.gamma, theta: gv.theta, vega: gv.vega, deltaSource: "bs" };
+    }
+  }
+
+  return { delta: null, gamma: null, theta: null, vega: null, deltaSource: null };
+}
+
+function mapLeg(
+  leg: any,
+  spot: number,
+  strike: number,
+  expiryIso: string | null | undefined,
+  isCall: boolean,
+): OptionLeg | null {
+  if (!leg) return null;
+  const gk = deriveLegGreeks(leg, spot, strike, expiryIso, isCall);
+  const num = (x: any): number | null => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
+  const oiChange = num(leg.oiChange) ?? num(leg.oiChg);
+  return {
+    ltp: num(leg.ltp),
+    oi: num(leg.oi),
+    oiChange,
+    oiChg: num(leg.oiChg) ?? oiChange,   // both names — type says oiChange, legacy readers use oiChg
+    volume: num(leg.volume),
+    iv: num(leg.iv),
+    bid: num(leg.bid),
+    ask: num(leg.ask),
+    rho: num(leg.rho),
+    delta: gk.delta,
+    gamma: gk.gamma,
+    theta: gk.theta,
+    vega: gk.vega,
+    deltaSource: gk.deltaSource,
+  };
+}
+
+/**
+ * The ONE mapper for market-data-service engine payloads → canonical strikes.
+ * Keeps provider greeks, derives BS(IV) greeks when the provider ships none,
+ * and emits `oiChange` + `oiChg` so every consumer reads the real ΔOI.
+ */
+export function mapEngineStrikes(
+  rawStrikes: any[],
+  spot: number,
+  expiryIso: string | null | undefined,
+): OptionStrike[] {
+  const out: OptionStrike[] = [];
+  for (const s of rawStrikes || []) {
+    const rawStrike = s?.strike;
+    if (rawStrike == null || rawStrike === '') continue;
+    const strike = Number(rawStrike);
+    if (!Number.isFinite(strike)) continue;
+    out.push({
+      strike,
+      ce: mapLeg(s.ce, spot, strike, expiryIso, true),
+      pe: mapLeg(s.pe, spot, strike, expiryIso, false),
+    });
+  }
+  return out;
+}
+
 // ── Normalise NSE format (.records.data) ────────────────────────────
 
 function normalizeNseChain(
@@ -268,35 +390,58 @@ function normalizeNseChain(
 
     const strikes: OptionStrike[] = [];
     const rawArr = raw?.records?.data ?? [];
+    const spotVal = Number(raw?.records?.underlyingValue) || 0;
     for (const row of rawArr) {
       const strike = row?.strikePrice ?? row?.strike ?? null;
       if (strike === null || isNaN(strike)) continue;
 
+      const ceGk = deriveLegGreeks(
+        {
+          delta: row?.CE?.greeks?.delta, gamma: row?.CE?.greeks?.gamma,
+          theta: row?.CE?.greeks?.theta, vega: row?.CE?.greeks?.vega,
+          iv: row?.CE?.impliedVolatility,
+        },
+        spotVal, Number(strike), selected, true,
+      );
       const ce: OptionLeg = {
         ltp: row?.CE?.lastPrice ?? null,
         volume: row?.CE?.totalTradedVolume ?? row?.CE?.totalTradedQuantity ?? null,
         oi: row?.CE?.openInterest ?? null,
         oiChange: row?.CE?.changeinOpenInterest ?? null,
+        oiChg: row?.CE?.changeinOpenInterest ?? null,
         iv: row?.CE?.impliedVolatility ?? null,
         bid: row?.CE?.bidprice ?? row?.CE?.bid ?? null,
         ask: row?.CE?.askPrice ?? row?.CE?.ask ?? null,
-        delta: row?.CE?.greeks?.delta ?? null,
-        gamma: row?.CE?.greeks?.gamma ?? null,
-        theta: row?.CE?.greeks?.theta ?? null,
+        delta: ceGk.delta,
+        gamma: ceGk.gamma,
+        theta: ceGk.theta,
+        vega: ceGk.vega,
+        deltaSource: ceGk.deltaSource,
         rho: row?.CE?.greeks?.rho ?? null,
       };
 
+      const peGk = deriveLegGreeks(
+        {
+          delta: row?.PE?.greeks?.delta, gamma: row?.PE?.greeks?.gamma,
+          theta: row?.PE?.greeks?.theta, vega: row?.PE?.greeks?.vega,
+          iv: row?.PE?.impliedVolatility,
+        },
+        spotVal, Number(strike), selected, false,
+      );
       const pe: OptionLeg = {
         ltp: row?.PE?.lastPrice ?? null,
         volume: row?.PE?.totalTradedVolume ?? row?.PE?.totalTradedQuantity ?? null,
         oi: row?.PE?.openInterest ?? null,
         oiChange: row?.PE?.changeinOpenInterest ?? null,
+        oiChg: row?.PE?.changeinOpenInterest ?? null,
         iv: row?.PE?.impliedVolatility ?? null,
         bid: row?.PE?.bidprice ?? row?.PE?.bid ?? null,
         ask: row?.PE?.askPrice ?? row?.PE?.ask ?? null,
-        delta: row?.PE?.greeks?.delta ?? null,
-        gamma: row?.PE?.greeks?.gamma ?? null,
-        theta: row?.PE?.greeks?.theta ?? null,
+        delta: peGk.delta,
+        gamma: peGk.gamma,
+        theta: peGk.theta,
+        vega: peGk.vega,
+        deltaSource: peGk.deltaSource,
         rho: row?.PE?.greeks?.rho ?? null,
       };
 
@@ -335,45 +480,11 @@ function normalizeBseChain(
   try {
     const strikes: OptionStrike[] = [];
     const rawArr = raw?.Table ?? [];
-    for (const row of rawArr) {
-      const strike = parseFloat(row?.Strike_Price1);
-      if (isNaN(strike)) continue;
 
-      // One row per strike holds BOTH sides: PE fields are unprefixed,
-      // CE fields carry a `C_` prefix (see legacy `bse-api.ts` mapping).
-      const ce: OptionLeg = {
-        ltp: parseNum(row?.C_Last_Trd_Price),
-        volume: parseNum(row?.C_Vol_Traded),
-        oi: parseNum(row?.C_Open_Interest),
-        oiChange: parseNum(row?.C_Absolute_Change_OI),
-        iv: roundIv(parseNum(row?.C_IV)),
-        bid: parseNum(row?.C_BidPrice),
-        ask: parseNum(row?.C_OfferPrice),
-        delta: null,
-        gamma: null,
-        theta: null,
-        rho: null,
-      };
-
-      const pe: OptionLeg = {
-        ltp: parseNum(row?.Last_Trd_Price),
-        volume: parseNum(row?.Vol_Traded),
-        oi: parseNum(row?.Open_Interest),
-        oiChange: parseNum(row?.Absolute_Change_OI),
-        iv: roundIv(parseNum(row?.IV)),
-        bid: parseNum(row?.BidPrice),
-        ask: parseNum(row?.OfferPrice),
-        delta: null,
-        gamma: null,
-        theta: null,
-        rho: null,
-      };
-
-      strikes.push({ strike, ce, pe });
-    }
-
+    // Expiry + spot first — the BS(IV) greek fallback needs both while the
+    // legs are being built. BSE stamps the contract on every row
+    // (format: "22 Oct 2026").
     const collectedAt = new Date().toISOString();
-    // BSE stamps the contract on every row (format: "22 Oct 2026").
     const rowExpiry: string | null =
       rawArr.find((r: any) => r?.EXPIRY_DT || r?.ExpiryDate || r?.expiryDate)?.EXPIRY_DT ??
       rawArr.find((r: any) => r?.EXPIRY_DT || r?.ExpiryDate || r?.expiryDate)?.ExpiryDate ??
@@ -403,6 +514,53 @@ function normalizeBseChain(
 
     if (failure) {
       return { data: null, fallbackUsed: true, source: 'BSE', fallbackReason: failure };
+    }
+
+    const spotVal = Number(raw?.UndlVal ?? raw?.UlaValue) || 0;
+    for (const row of rawArr) {
+      const strike = parseFloat(row?.Strike_Price1);
+      if (isNaN(strike)) continue;
+
+      // One row per strike holds BOTH sides: PE fields are unprefixed,
+      // CE fields carry a `C_` prefix (see legacy `bse-api.ts` mapping).
+      // BSE publishes no greeks — IV only — so delta comes from BS(IV).
+      const ceGk = deriveLegGreeks({ iv: row?.C_IV }, spotVal, strike, selected, true);
+      const ce: OptionLeg = {
+        ltp: parseNum(row?.C_Last_Trd_Price),
+        volume: parseNum(row?.C_Vol_Traded),
+        oi: parseNum(row?.C_Open_Interest),
+        oiChange: parseNum(row?.C_Absolute_Change_OI),
+        oiChg: parseNum(row?.C_Absolute_Change_OI),
+        iv: roundIv(parseNum(row?.C_IV)),
+        bid: parseNum(row?.C_BidPrice),
+        ask: parseNum(row?.C_OfferPrice),
+        delta: ceGk.delta,
+        gamma: ceGk.gamma,
+        theta: ceGk.theta,
+        vega: ceGk.vega,
+        deltaSource: ceGk.deltaSource,
+        rho: null,
+      };
+
+      const peGk = deriveLegGreeks({ iv: row?.IV }, spotVal, strike, selected, false);
+      const pe: OptionLeg = {
+        ltp: parseNum(row?.Last_Trd_Price),
+        volume: parseNum(row?.Vol_Traded),
+        oi: parseNum(row?.Open_Interest),
+        oiChange: parseNum(row?.Absolute_Change_OI),
+        oiChg: parseNum(row?.Absolute_Change_OI),
+        iv: roundIv(parseNum(row?.IV)),
+        bid: parseNum(row?.BidPrice),
+        ask: parseNum(row?.OfferPrice),
+        delta: peGk.delta,
+        gamma: peGk.gamma,
+        theta: peGk.theta,
+        vega: peGk.vega,
+        deltaSource: peGk.deltaSource,
+        rho: null,
+      };
+
+      strikes.push({ strike, ce, pe });
     }
 
     const data: CanonicalOptionChain = {
@@ -482,29 +640,10 @@ export async function getOptionChain(
 
   if (env.available && env.data) {
     const raw: any = env.data;
-    const strikes: OptionStrike[] = (raw.strikes || []).map((s: any) => ({
-      strike: Number(s.strike),
-      ce: s.ce ? {
-        ltp: s.ce.ltp == null ? null : Number(s.ce.ltp),
-        oi: s.ce.oi == null ? null : Number(s.ce.oi),
-        oiChg: s.ce.oiChg == null ? null : Number(s.ce.oiChg),
-        volume: s.ce.volume == null ? null : Number(s.ce.volume),
-        iv: s.ce.iv == null ? null : Number(s.ce.iv),
-        bid: s.ce.bid == null ? null : Number(s.ce.bid),
-        ask: s.ce.ask == null ? null : Number(s.ce.ask),
-      } : null,
-      pe: s.pe ? {
-        ltp: s.pe.ltp == null ? null : Number(s.pe.ltp),
-        oi: s.pe.oi == null ? null : Number(s.pe.oi),
-        oiChg: s.pe.oiChg == null ? null : Number(s.pe.oiChg),
-        volume: s.pe.volume == null ? null : Number(s.pe.volume),
-        iv: s.pe.iv == null ? null : Number(s.pe.iv),
-        bid: s.pe.bid == null ? null : Number(s.pe.bid),
-        ask: s.pe.ask == null ? null : Number(s.pe.ask),
-      } : null,
-    }));
     const spotPrice = Number(raw.spotPrice) || 0;
     const chainExpiry = raw.selectedExpiry || raw.expiry || null;
+    // Single mapper: keeps provider greeks, BS(IV) fallback, both oiChange names.
+    const strikes: OptionStrike[] = mapEngineStrikes(raw.strikes, spotPrice, chainExpiry);
     const chain: any = {
       underlying: symbol,
       spot: spotPrice,

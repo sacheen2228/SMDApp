@@ -34,6 +34,8 @@ export interface OptionLeg {
   volume: number | null;
   oi: number | null;
   oiChange: number | null;
+  /** Legacy alias emitted alongside `oiChange` — older consumers read `oiChg`. */
+  oiChg?: number | null;
   iv: number | null;
   bid: number | null;
   ask: number | null;
@@ -41,6 +43,9 @@ export interface OptionLeg {
   gamma: number | null;
   theta: number | null;
   rho: number | null;
+  vega?: number | null;
+  /** Where `delta` came from: the provider's own greeks, our BS(IV) computation, or unknown. */
+  deltaSource?: "provider" | "bs" | null;
 }
 
 export interface OptionChainData {

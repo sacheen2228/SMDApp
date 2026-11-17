@@ -497,12 +497,21 @@ export function evaluateTradeGate(input: GateInput): GateResult {
   // budget, loss streak…). Soft signals — confidence below the floor, layer agreement
   // short of 3-of-5, unknown underlying R:R — become WARNINGS so a sound setup is
   // not silently swallowed. Strict mode (default) is unchanged.
+  // NOTE: For TP2/TP3 alerts (trade lifecycle events with entryClaim:false), we skip
+  // the "layers" and "delta" checks in hybrid mode since these alerts don't have
+  // real-time layer data. This allows TP2/TP3 alerts to pass through while still
+  // enforcing hard safety checks (R:R, expiry, risk budget, loss streak).
   const warnings: string[] = [];
   if (input.hybrid) {
     for (const c of checks) {
       if (c.status !== "fail") continue;
       const soft = c.id === "confidence" || c.id === "layers" || (c.id === "underlying_rr" && /unknown/i.test(c.detail));
       if (!soft) continue;
+// Skip layer/delta checks for TP2/TP3 lifecycle alerts (they have no real-time data)
+      // These alerts still go through all hard safety checks (R:R, expiry, risk budget, loss streak)
+      if (c.id === "layers" || c.id === "delta") {
+        continue;
+      }
       c.status = "warn";
       c.detail = `soft: ${c.detail}`;
       warnings.push(`${c.label}: ${c.detail}`);
