@@ -8,10 +8,15 @@ import { createHash } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import { GATE_CONFIG } from "./agent-brain-gate";
 import { BRAIN_FLAGS } from "./brain-flags";
-import { tierFromWarnings } from "./signal-veto";
 import { reliabilityTable, bandCalibration, type ReliabilityBand } from "./confidence-calibration";
 
-export { tierFromWarnings };
+/** A = zero warnings, B = exactly 1 warning, C = ≥2 warnings, NONE = any hard fail. */
+export function tierFromWarnings(warnings: string[], hardFail: boolean): Tier {
+  if (hardFail) return "NONE";
+  if (warnings.length === 0) return "A";
+  if (warnings.length === 1) return "B";
+  return "C";
+}
 
 let prisma: PrismaClient | null = null;
 function db(): PrismaClient {

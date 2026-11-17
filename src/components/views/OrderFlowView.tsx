@@ -263,7 +263,7 @@ export function OrderFlowView() {
     (data?.candles ?? []).slice(-100).forEach((c) => {
       const delta = c.close >= c.open ? c.volume : -c.volume;
       cum += delta;
-      out.push({ t: new Date(c.time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false }), v: cum });
+      out.push({ t: new Date(c.time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }), v: cum });
     });
     return out;
   }, [data?.candles]);

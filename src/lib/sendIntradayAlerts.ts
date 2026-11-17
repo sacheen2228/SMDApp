@@ -692,7 +692,7 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
             ...(scanData?.dataSources || {}),
             chain: chainSrc ? `${chainSrc}${chainAge}` : undefined,
           });
-          const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+          const ymd = new Date().toLocaleDateString('en-CA', { timeZone: "Asia/Kolkata" }).replace(/-/g, '');
           const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? 'NOEXP'}-${ymd}`;
           const sent = await sendTradeAlert({
             symbol: stock.symbol,

@@ -11,6 +11,7 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const underlying = (searchParams.get("symbol") || "NIFTY").toUpperCase() as "NIFTY" | "SENSEX";
+    const refreshPlan = searchParams.get("refresh") === "1";
 
     if (!["NIFTY", "SENSEX"].includes(underlying)) {
       return NextResponse.json({ success: false, error: "Invalid symbol. Use NIFTY or SENSEX" }, { status: 400 });
@@ -21,6 +22,7 @@ export async function GET(req: NextRequest) {
     const report = await service.getDailyDerivativesReport({
       underlying,
       interval: "5minute",
+      refreshPlan,
     });
 
     return NextResponse.json({ success: true, data: report });

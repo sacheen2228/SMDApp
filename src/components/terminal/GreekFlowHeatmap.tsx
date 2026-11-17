@@ -315,7 +315,7 @@ export default function GreekFlowHeatmap({ onTrade }: { onTrade?: (strike: numbe
       const json = await res.json();
       if (json.success && json.result) {
         setResult(json.result);
-        setLastUpdate(new Date().toLocaleTimeString());
+        setLastUpdate(new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }));
         setError(null);
       } else {
         setError(json.error || "Failed");

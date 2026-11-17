@@ -131,7 +131,7 @@ export default function ConfigProfiles() {
                 <div>
                   <div className="text-[11px] font-bold">{p.name}</div>
                   <div className="text-[9px] text-muted-foreground">
-                    Saved: {new Date(p.timestamp).toLocaleString("en-IN")} · {parsed.version ? `v${parsed.version}` : ""}
+                    Saved: {new Date(p.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} · {parsed.version ? `v${parsed.version}` : ""}
                   </div>
                 </div>
                 <div className="flex gap-1">

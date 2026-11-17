@@ -152,7 +152,8 @@ describe("positionSize", () => {
     // 3 lots (₹58,500) would breach the cap.
     const r = positionSize({ entry: 300, sl: 280, lotSize: 65 });
     expect(r.lots).toBe(2);
-    expect(r.riskAmount).toBe(2600);
+    expect(r.riskAmount).toBe(9000);      // the risk BUDGET = 20% of ₹45,000
+    expect(r.maxLoss).toBe(2600);         // actual: 2 lots × ₹1,300
     expect(r.capitalRequired).toBe(39000);
   });
 
@@ -468,7 +469,7 @@ describe("hybrid mode (old brain generates, new brain vetoes)", () => {
     expect(res.verdict).toBe("TRADE");
     expect(res.checks.find((c) => c.id === "confidence")!.status).toBe("pass");
     expect(res.checks.find((c) => c.id === "layers")!.status).toBe("warn");
-    expect(res.warnings!.join(" ")).toMatch(/layers/i);
+    expect(res.warnings!.join(" ")).toMatch(/layer agreement/i);
   });
   test("hard safety fails still block in hybrid mode", () => {
     const res = evaluateTradeGate(baseInput({ hybrid: true, optionRR: 1.0 }));

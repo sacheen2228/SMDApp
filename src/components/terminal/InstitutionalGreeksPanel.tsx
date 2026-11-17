@@ -517,7 +517,7 @@ export function InstitutionalGreeksPanel({
             }`}
           >Charts</button>
           {loading && <Activity className="h-3 w-3 animate-spin" />}
-          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}</span>}
         </div>
       </div>
 

@@ -563,7 +563,7 @@ export const WeeklyEquityScannerPanel = memo(function WeeklyEquityScannerPanel()
 
         {/* Timestamp */}
         <div className="text-center text-[9px] text-muted-foreground pb-4">
-          Scan completed at: {new Date(result.timestamp).toLocaleString("en-IN")}
+          Scan completed at: {new Date(result.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
           <br />
           Data source: {dataSource || "NSE daily history"} · Data quality: {result.dataQuality}
         </div>

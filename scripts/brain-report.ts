@@ -6,7 +6,7 @@
 import { PrismaClient } from "@prisma/client";
 import { wilson } from "../src/lib/agent-brain-gate";
 import { reliabilityTable, calibrationDrift, type CalibrationSample } from "../src/lib/confidence-calibration";
-import { tierFromWarnings } from "../src/lib/signal-veto";
+import { tierFromWarnings } from "../src/lib/candidate-log";
 import { cacheStats } from "../src/lib/tech-cache";
 
 const LEDGER = process.env.AUDIT_URL || "http://localhost:4001";

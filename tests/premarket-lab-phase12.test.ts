@@ -338,7 +338,7 @@ describe("P12 fetch freshness", () => {
 });
 
 describe("P12 isolation — no production trade path imports", async () => {
-  test("lab modules do not import sendTradeAlert / evaluateSignalVeto / telegram", async () => {
+  test("lab modules do not import sendTradeAlert / telegram", async () => {
     const files = [
       "src/lib/premarket-lab/daily-pipeline.ts",
       "src/lib/premarket-lab/outcome-attach.ts",
@@ -347,12 +347,12 @@ describe("P12 isolation — no production trade path imports", async () => {
     ];
     const root = process.cwd();
     // Match real imports/usages, not prose comments like "Never calls sendTradeAlert"
-    const badImport = /from\s+["'][^"']*telegram[^"']*["']|import\s*\{[^}]*sendTradeAlert|import\s*\{[^}]*evaluateSignalVeto|require\([^)]*telegram/;
+    const badImport = /from\s+["'][^"']*telegram[^"']*["']|import\s*\{[^}]*sendTradeAlert|require\([^)]*telegram/;
     for (const f of files) {
       const src = fs.readFileSync(path.join(root, f), "utf8");
       expect(badImport.test(src)).toBe(false);
       // No dynamic import of veto/alert modules
-      expect(src).not.toMatch(/import\(\s*["'][^"']*(signal-veto|telegram)[^"']*["']\s*\)/);
+      expect(src).not.toMatch(/import\(\s*["'][^"']*telegram[^"']*["']\s*\)/);
     }
   });
 });

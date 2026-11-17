@@ -82,6 +82,7 @@ const fmtTs = (ts: string | null): string => {
   if (!ts) return "—";
   try {
     return new Date(ts).toLocaleTimeString("en-IN", {
+      timeZone: "Asia/Kolkata",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,

@@ -388,7 +388,7 @@ export default function PaperTradingTab() {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <span className="text-[9px] text-muted-foreground w-12">
-                            {new Date(trade.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                            {new Date(trade.createdAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}
                           </span>
                           <span className="text-[10px] font-bold">{trade.underlying}</span>
                           <Badge variant="outline" className={`text-[8px] ${trade.optionType === "CE" ? "text-blue-500" : "text-rose-500"}`}>
@@ -431,7 +431,7 @@ export default function PaperTradingTab() {
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-1.5">
                           <span className="text-[9px] text-muted-foreground w-12">
-                            {new Date(obs.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                            {new Date(obs.createdAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}
                           </span>
                           <span className="text-[10px] font-bold">{obs.underlying}</span>
                           <Badge variant="outline" className="text-[8px] bg-muted text-muted-foreground">NO_TRADE</Badge>

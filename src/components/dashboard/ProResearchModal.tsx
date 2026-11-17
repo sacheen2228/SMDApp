@@ -274,7 +274,7 @@ export const ProResearchModal = memo(function ProResearchModal({
               <p className="text-[9px] text-muted-foreground leading-relaxed text-center">
                 Educational/informational research only, not financial advice. Verify independently and consult a qualified advisor before trading.
                 <br />
-                Data: {dossier.dataSource} · {new Date(dossier.timestamp).toLocaleString("en-IN")}
+                Data: {dossier.dataSource} · {new Date(dossier.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
               </p>
             </div>
           </>

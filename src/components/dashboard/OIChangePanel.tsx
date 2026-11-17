@@ -67,13 +67,13 @@ function toRow(r: any): OiStrikeRow {
 
 function fmtTime(ts: number | string): string {
   const d = typeof ts === "string" ? new Date(ts) : new Date(ts);
-  return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function fmtDayTitle(iso: string | null): string {
   const d = iso ? new Date(iso) : new Date();
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short" });
+  return d.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", day: "2-digit", month: "short" });
 }
 
 function fmtRefresh(iso: string | null): string {

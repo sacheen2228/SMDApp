@@ -119,7 +119,7 @@ export default function IndustryHeatmapPanel() {
             <div className="text-base font-semibold text-white">Market Heatmap</div>
             <div className="text-xs text-zinc-400 mt-0.5">Every industry's average move today. Click one to see its stocks.</div>
             <div className="text-[10px] text-zinc-500 mt-1 flex items-center gap-2">
-              <span>data as of {new Date().toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'})}</span>
+              <span>data as of {new Date().toLocaleDateString('en-GB',{ timeZone: "Asia/Kolkata", weekday:'short',day:'2-digit',month:'short'})}</span>
               <span className="bg-zinc-800 px-1 rounded">checked {lastChecked}</span>
               <span className="bg-zinc-800 px-1 rounded">{data.provenance?.sourceLabel || 'NSE/BSE • Moneycontrol'}</span>
               <span>Daily bars from NSE/BSE via Moneycontrol, refreshed each collector cycle — intraday moves lag the live price by up to a cycle.</span>

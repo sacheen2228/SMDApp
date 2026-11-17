@@ -1480,7 +1480,7 @@ export function runFullAnalysis(
     },
     spot: { spot: spotPrice, atmStrike, change: 0, changePct: 0 },
     expiry: {
-      label: (parseExpiryDateLoose(expiryDate, new Date()) ?? new Date(expiryDate)).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+      label: (parseExpiryDateLoose(expiryDate, new Date()) ?? new Date(expiryDate)).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" }),
       daysToExpiry,
       date: expiryDate,
     },

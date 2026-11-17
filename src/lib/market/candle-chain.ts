@@ -104,7 +104,8 @@ async function attemptMORecovery(): Promise<boolean> {
 }
 
 function isToday(dateStr: string): boolean {
-  return dateStr === new Date().toISOString().slice(0, 10);
+  // IST date — toISOString() is UTC and reports the previous day before 05:30 IST.
+  return dateStr === new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 }
 
 function errMsg(e: any): string {

@@ -39,14 +39,14 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
     expect(p.riskAmount / p.deployed).toBeCloseTo(PLAN_CONFIG.riskPctOfDeployed, 5);
   });
 
-  test("default sizing uses the live ₹20k deployment budget", () => {
+  test("default sizing uses the live ₹45k deployment budget", () => {
     expect(lotsForBudget(300, 65, 20_000)).toBe(1);   // ₹19,500 per lot
     expect(lotsForBudget(150, 65, 20_000)).toBe(2);   // ₹9,750 per lot
     expect(lotsForBudget(100, 65, 20_000)).toBe(3);   // ₹6,500 per lot
     const p = buildOptionPlan({ symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65 })!;
-    expect(p.lots).toBe(2);
-    expect(p.units).toBe(130);
-    expect(p.deployed).toBe(19_500);
+    expect(p.lots).toBe(4);                           // floor(45,000 / 9,750)
+    expect(p.units).toBe(260);
+    expect(p.deployed).toBe(39_000);
   });
 
   test("the stop is capped at 35% of the premium and the rupee risk shrinks with it", () => {
@@ -117,8 +117,8 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
   test("PE and CE of the same premium produce the SAME geometry (audit regression: ADANIPORTS 1840 PE)", () => {
     // The reported defect: "Buy ADANIPORTS 1840 PE @ ₹39.1 | SL ₹46.9 |
     // T1 ₹23.45 | T2 ₹15.65 | T3 ₹7.8" — SL above entry, targets below.
-    // 1 lot = 500 units; the FIXED ₹2,000 risk cap → ₹4 premium points:
-    // SL 35.10, T1 47.10… (the old 20%-of-deployed model gave ₹7.82 → SL 31.28)
+    // 1 lot = 500 units; risk = 20% of deployed = ₹3,910 → ₹7.82 premium
+    // points: SL 31.28, T1 54.72… (the FIXED ₹2,000-cap era gave SL 35.10)
     const pe = buildOptionPlan({
       symbol: "ADANIPORTS", optionType: "PE", entryPremium: 39.1, lotSize: 500, lots: 1,
     })!;
@@ -126,7 +126,8 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
       symbol: "ADANIPORTS", optionType: "CE", entryPremium: 39.1, lotSize: 500, lots: 1,
     })!;
     expect(pe.stopLoss).toBeLessThan(39.1);
-    expect(pe.stopLoss).toBeCloseTo(39.1 - 2_000 / 500, 0); // ≈ 35.10 (±tick)
+    // 20% of (39.1 × 500) = ₹3,910 → 7.82 pts → SL ≈ 31.28 (±tick)
+    expect(pe.stopLoss).toBeCloseTo(39.1 - (39.1 * 500 * 0.2) / 500, 1);
     expect(pe.targets[0]).toBeGreaterThan(39.1);
     // identical levels for CE and PE of the same premium
     expect(pe.stopLoss).toBe(ce.stopLoss);
@@ -162,16 +163,3 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
   });
 });
 
-describe("session cutoff — no new option premium buys after 13:00 IST", () => {
-  test("an option alert after 13:00 IST is hard-blocked", async () => {
-    const { evaluateSignalVeto } = await import("@/lib/signal-veto");
-    const istHour = new Date(Date.now() + 5.5 * 3600_000).getUTCHours();
-    if (istHour < 13) return; // only meaningful after 13:00 IST
-    const r = evaluateSignalVeto({
-      symbol: "NIFTY", action: "BUY CE", optionType: "CE", strike: 22600,
-      entry: 100, stopLoss: 80, tp1: 140, confidence: 75, source: "test",
-    });
-    expect(r.verdict).toBe("BLOCK");
-    expect(r.fails.join(" ")).toMatch(/13:00/);
-  });
-});

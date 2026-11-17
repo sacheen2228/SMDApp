@@ -190,7 +190,7 @@ export function LiquidityMapView() {
     const lastDay = candles.length ? istDay(candles[candles.length - 1].time) : "";
     const sessionCandles = candles.filter((c) => istDay(c.time) === lastDay);
     const lastSessionLabel = candles.length
-      ? new Date(candles[candles.length - 1].time).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" })
+      ? new Date(candles[candles.length - 1].time).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" })
       : "";
 
     // VWAP (last session only)

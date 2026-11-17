@@ -312,7 +312,7 @@ export async function runEveningMode(opts: RunOpts = {}): Promise<{ ok: boolean;
 
   // append + telegram (off‑hours gate)
   const msgLines = picks.map((p) => formatPick(p));
-  const header = `Tomorrow's watchlist (${new Date(opts.nowMs ?? Date.now()).toLocaleDateString("en‑IN")})`;
+  const header = `Tomorrow's watchlist (${new Date(opts.nowMs ?? Date.now()).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })})`;
   const body = [header, ...msgLines, "\nScore = rule‑based move potential, NOT a guaranteed probability."].join("\n");
 
   // telegram gate — use the shared shouldSuppressSend helper
@@ -359,7 +359,7 @@ export async function runPreopenMode(opts: RunOpts = {}): Promise<{ ok: boolean;
     .slice(0, 5);
 
   const msgLines = picks.map((p) => formatPick(p)); // will be empty if no picks yet
-  const header = `Pre‑open ranking (${new Date(opts.nowMs ?? Date.now()).toLocaleDateString("en‑IN")})`;
+  const header = `Pre‑open ranking (${new Date(opts.nowMs ?? Date.now()).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })})`;
   const body = [header, ...msgLines, "\nGap computed from pre‑open data."].join("\n");
 
   return { ok: true, message: body };
@@ -386,7 +386,7 @@ export async function runWatchMode(opts: RunOpts = {}): Promise<{ ok: boolean; m
 
   const deduped = [...new Set(alerts)]; // simple in‑run dedup
   const message = deduped.length
-    ? `Watch alerts ${new Date(opts.nowMs ?? Date.now()).toLocaleTimeString()}:\n` + deduped.join("\n")
+    ? `Watch alerts ${new Date(opts.nowMs ?? Date.now()).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}:\n` + deduped.join("\n")
     : "no alerts this interval";
 
   return { ok: true, message };
@@ -422,7 +422,7 @@ export async function runPlanMode(opts: RunOpts = {}): Promise<{ ok: boolean; me
     // Telegram would fire here if within window
   }
 
-  const header = `Trade plan ${new Date(opts.nowMs ?? Date.now()).toLocaleTimeString()}`;
+  const header = `Trade plan ${new Date(opts.nowMs ?? Date.now()).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}`;
   const body = [header, ...lines, "\n(plan mode – Telegram send gated 09:10‑15:30 IST)"].join("\n");
   return { ok: true, message: body };
 }

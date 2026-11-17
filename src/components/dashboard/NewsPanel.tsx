@@ -432,7 +432,7 @@ export const NewsPanel = memo(function NewsPanel({ symbol }: { symbol: string })
 
         {/* Timestamp */}
         <div className="text-center text-[9px] text-muted-foreground pb-4">
-          Last updated: {new Date(data.timestamp).toLocaleString("en-IN")}
+          Last updated: {new Date(data.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
         </div>
       </div>
     </div>

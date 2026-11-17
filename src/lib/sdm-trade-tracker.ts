@@ -4,7 +4,7 @@
 
 // Deterministic trade ID — same setup gets same ID across restarts
 function makeTradeId(symbol: string, strike: number, optionType: string, expiry: string, direction: string): string {
-  const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+  const ymd = new Date().toLocaleDateString('en-CA', { timeZone: "Asia/Kolkata" }).replace(/-/g, '');
   return `SCAN-${direction}-${symbol}-${strike}-${optionType}-${expiry}-${ymd}`;
 }
 
@@ -39,7 +39,7 @@ async function ensureCacheLoaded(): Promise<void> {
 function dbTradeToRecord(t: any): TradeRecord {
   return {
     id: t.tradeId,
-    time: new Date(t.entryTime).toLocaleTimeString("en-IN", { hour12: false }),
+    time: new Date(t.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }),
     direction: t.type as TradeRecord["direction"],
     strike: t.strike,
     entry: t.entryPrice,
@@ -164,7 +164,7 @@ export async function addTrade(
 
   const trade: TradeRecord = {
     id: tradeId,
-    time: now.toLocaleTimeString("en-IN", { hour12: false }),
+    time: now.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }),
     direction,
     strike,
     entry,
@@ -237,7 +237,7 @@ export function partialExit(
     : (trade.entry - price) * exitQuantity;
 
   trade.partialExits.push({
-    time: new Date().toLocaleTimeString("en-IN", { hour12: false }),
+    time: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }),
     percent,
     price,
     pnl,

@@ -155,7 +155,7 @@ export default function TradeJournal() {
                 <td className="px-2 py-1 font-bold">{t.symbol}</td>
                 <td className={`px-2 py-1 ${t.type === "CALL" ? "text-emerald-400" : "text-red-400"}`}>{t.type}</td>
                 <td className="px-2 py-1">{t.strike}</td>
-                <td className="px-2 py-1 text-muted-foreground">{new Date(t.entryTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</td>
+                <td className="px-2 py-1 text-muted-foreground">{new Date(t.entryTime).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" })}</td>
                 <td className="px-2 py-1">{t.entryPrice}</td>
                 <td className="px-2 py-1">{t.exitPrice ?? "—"}</td>
                 <td className={`px-2 py-1 font-bold ${(t.pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>

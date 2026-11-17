@@ -227,7 +227,7 @@ class AlertEngine {
       `<b>Symbol:</b> ${alert.symbol}\n` +
       `<b>Message:</b> ${alert.message}\n` +
       `<b>Severity:</b> ${alert.severity}\n` +
-      `<b>Time:</b> ${new Date(alert.timestamp).toLocaleString()}\n\n` +
+      `<b>Time:</b> ${new Date(alert.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}\n\n` +
       (alert.data ? `<b>Data:</b> <code>${JSON.stringify(alert.data, null, 2)}</code>` : "");
 
     await fetch(`https://api.telegram.org/bot${this.config.telegramBotToken}/sendMessage`, {

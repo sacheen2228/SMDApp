@@ -26,8 +26,9 @@ const DEFAULT_RISK_PER_TRADE_PCT = GATE_CONFIG.riskPctOfTrade; // 20% of the DEP
 // ─── Loss caps (2026-10-20) ─────────────────────────────────────────
 // THE CAPS ARE DERIVED FROM THE PER-TRADE MODEL, not from a % of a big account:
 //
-//   maxRiskPerTrade = FIXED ₹2,000 (20% of deployed, hard-capped)  (one stop)
-//   maxDailyLoss    = min(capital × 40%, 2 stops)      = ₹4,000  (16% of ₹25,000)
+//   maxRiskPerTrade = REFERENCE ₹4,000 stop (daily-streak rule only — the
+//                     per-trade risk itself = 20% of deployed, NO cap, 2026-11-17)
+//   maxDailyLoss    = min(capital × 40%, 2 stops)      = ₹8,000
 //   maxWeeklyLoss   = min(capital, daily × 2)         = ₹8,000  (32% of ₹25,000)
 //   maxMonthlyLoss  = min(capital, weekly × 2)        = ₹16,000 (64% of ₹25,000 — never more)
 //
@@ -63,7 +64,8 @@ export const RISK_LIMITS = {
   perTradeBudget: GATE_CONFIG.tradeBudget,
   /** risk = 20% of the amount deployed */
   riskPctOfTrade: GATE_CONFIG.riskPctOfTrade,
-  /** ₹ at risk on ONE trade — FIXED ₹2,000 cap (20% of deployed, never more) */
+  /** ₹ reference stop — daily-streak rule (2 stops end the day). NOT a per-trade cap:
+   *  per-trade risk = 20% of deployed, uncapped (user rule, 2026-11-17). */
   maxRiskPerTrade: RISK_PER_TRADE_AMOUNT,
   /** ₹ loss that ends the day (two stops) */
   maxDailyLoss: DAILY_LOSS_CAP,
@@ -98,11 +100,11 @@ export function perTradeDeploymentBudget(capital?: number): number {
   return Math.min(GATE_CONFIG.tradeBudget, acct);
 }
 
-/** ₹ at risk on ONE trade — 20% of the amount deployed, capped at the fixed per-trade risk. */
+/** ₹ at risk on ONE trade — 20% of the amount deployed (no fixed cap, user rule 2026-11-17). */
 export function perTradeRiskBudget(deployedAmount: number, riskPct = DEFAULT_RISK_PER_TRADE_PCT): number {
   const deployed = Number(deployedAmount) || 0;
   const pct = Math.min(GATE_CONFIG.riskPctOfTrade, Math.max(0.1, Number(riskPct) || DEFAULT_RISK_PER_TRADE_PCT));
-  return Math.min(GATE_CONFIG.maxRiskPerTrade, (deployed * pct) / 100);
+  return (deployed * pct) / 100;
 }
 
 // ─── Default Risk Config ──────────────────────────────────────────
@@ -392,11 +394,11 @@ export function evaluateConcurrentExposure(
       `risk ${inr(totalRisk)} exceeds the ${inr(riskCap)} risk budget (open ${inr(openRisk)} + new ${inr(newRisk)})`,
     );
   }
-  // ONE trade may never risk more than the fixed per-trade cap — regardless
-  // of how much headroom the open book has.
-  if (newRisk > limits.maxRiskPerTrade) {
+  // ONE trade may never risk more than the house RULE allows: riskPct% of what
+  // it deploys (a stop wider than that is a fat-finger, not a plan).
+  if (newDeployed > 0 && newRisk > (newDeployed * GATE_CONFIG.riskPctOfTrade) / 100 + 1) {
     reasons.push(
-      `risk ${inr(newRisk)} exceeds the ${inr(limits.maxRiskPerTrade)} per-trade risk cap — tighten the stop or use a spread`,
+      `risk ${inr(newRisk)} exceeds ${GATE_CONFIG.riskPctOfTrade}% of the ${inr(newDeployed)} deployed — tighten the stop`,
     );
   }
   return { blocked: reasons.length > 0, reasons, limits };
@@ -463,7 +465,7 @@ export function modelTradeExposure(input: {
       : RISK_LIMITS.perTradeBudget;
     return {
       deployed: worst,
-      risk: Math.min(RISK_LIMITS.maxRiskPerTrade, worst * (GATE_CONFIG.riskPctOfTrade / 100)),
+      risk: worst * (GATE_CONFIG.riskPctOfTrade / 100),
       lots: 0,
       unknown: true,
     };
@@ -487,7 +489,7 @@ export function modelTradeExposure(input: {
     // Not sizeable under the house model → the exposure is unknown → worst case.
     return {
       deployed: RISK_LIMITS.perTradeBudget,
-      risk: RISK_LIMITS.maxRiskPerTrade,
+      risk: RISK_LIMITS.perTradeBudget * (GATE_CONFIG.riskPctOfTrade / 100),
       lots: Math.max(0, ps.lots),
       unknown: true,
     };

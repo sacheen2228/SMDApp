@@ -273,7 +273,7 @@ export function AdminSettings() {
 
             {status?.lastConnectedAt && (
               <div className="text-xs text-muted-foreground">
-                Last connected: {new Date(status.lastConnectedAt).toLocaleString()}
+                Last connected: {new Date(status.lastConnectedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
               </div>
             )}
 

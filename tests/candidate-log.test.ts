@@ -1,78 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { evaluateSignalVeto, tierFromWarnings } from "@/lib/signal-veto";
 import { simulateOutcome, promotionEligible } from "@/lib/candidate-resolver";
-import { configHash } from "@/lib/candidate-log";
+import { configHash, tierFromWarnings } from "@/lib/candidate-log";
 import type { Candle } from "@/lib/tech-read";
 
-const base = {
-  nowMs: Date.parse("2026-07-15T10:05:00+05:30"), // before the 13:00 option-buy cutoff
-  symbol: "NIFTY", action: "BUY CE", optionType: "CE" as const, strike: 25200,
-  // The premium must be AFFORDABLE under the per-trade deployment cap (the veto
-  // blocks a candidate whose entry × lot size does not fit the ₹20,000 budget):
-  // 1 NIFTY lot (65) at ₹150 = ₹9,750 ✓.
-  entry: 150, stopLoss: 120, tp1: 210, confidence: 70,
-};
-
-describe("veto — fail closed on missing critical fields", () => {
-  test("missing stop blocks", () => {
-    const r = evaluateSignalVeto({ ...base, stopLoss: undefined });
-    expect(r.verdict).toBe("BLOCK");
-    expect(r.hardFail).toBe(true);
-    expect(r.suppress).toBe(true);
-    expect(r.reasons.join(" ")).toMatch(/missing stop/i);
-  });
-  test("missing target blocks (R:R not computable)", () => {
-    const r = evaluateSignalVeto({ ...base, tp1: undefined });
-    expect(r.verdict).toBe("BLOCK");
-    expect(r.reasons.join(" ")).toMatch(/target/i);
-  });
-  test("missing expiry blocks only when the caller can supply it", () => {
-    const lenient = evaluateSignalVeto({ ...base, expiry: undefined });
-    expect(lenient.hardFail).toBe(false);
-    const strict = evaluateSignalVeto({ ...base, expiry: undefined, requireExpiry: true });
-    expect(strict.verdict).toBe("BLOCK");
-    expect(strict.reasons.join(" ")).toMatch(/expiry/i);
-  });
-  test("missing spot blocks only when the caller can supply it", () => {
-    const strict = evaluateSignalVeto({ ...base, spot: undefined, requireSpot: true });
-    expect(strict.verdict).toBe("BLOCK");
-    expect(strict.reasons.join(" ")).toMatch(/spot/i);
-  });
-});
-
-describe("veto — BTST path stays untouched", () => {
-  test("BTST source is never blocked or warned", () => {
-    const r = evaluateSignalVeto({ ...base, source: "BTST:scanner", stopLoss: 400, tp1: 100, confidence: 10 });
-    expect(r.verdict).toBe("PASS");
-    expect(r.suppress).toBe(false);
-    expect(r.tier).toBe("A");
-  });
-});
-
-describe("veto — shadow mode never loosens a hard gate", () => {
-  test("hard fail suppresses even in shadow mode", () => {
-    const r = evaluateSignalVeto({ ...base, tp1: 180 }); // R:R 1.0
-    expect(r.wouldBlock).toBe(true);
-    expect(r.suppress).toBe(true);
-    expect(r.tier).toBe("NONE");
-  });
-  test("quality signal is a warning, never a hard fail", () => {
-    const r = evaluateSignalVeto({ ...base, confidence: 40 });
-    expect(r.hardFail).toBe(false);
-    expect(r.wouldBlock).toBe(true);
-    expect(r.tier).toBe("B");
-    expect(r.sizeFactor).toBe(0.5);
-  });
-});
-
-describe("tiering", () => {
-  test("A / B / C / NONE mapping", () => {
-    expect(tierFromWarnings([], false)).toBe("A");
-    expect(tierFromWarnings(["one"], false)).toBe("B");
-    expect(tierFromWarnings(["one", "two"], false)).toBe("C");
-    expect(tierFromWarnings([], true)).toBe("NONE");
-  });
-});
 
 describe("candidate resolver — deterministic simulation", () => {
   const mk = (t: number, o: number, h: number, l: number, c: number): Candle => ({ t, o, h, l, c });

@@ -143,7 +143,7 @@ export function MotilalStatus() {
               <div>Verified: {session.verified ? 'Yes' : 'No'}</div>
               <div>Access Token: {session.hasAccessToken ? 'Yes' : 'No'}</div>
               {session.expiresAt > 0 && (
-                <div>Expires: {new Date(session.expiresAt).toLocaleString()}</div>
+                <div>Expires: {new Date(session.expiresAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</div>
               )}
             </div>
           )}

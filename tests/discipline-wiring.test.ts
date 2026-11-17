@@ -1,77 +1,52 @@
 // tests/discipline-wiring.test.ts
 //
-// Source-contract tests (same pattern as tests/safety-guards.test.ts): the
-// account-level risk caps and the discipline veto must be enforced on EVERY
-// alert producer — including the two paths that send via telegramSend
-// directly instead of the sendTradeAlert funnel.
+// Source-contract tests: the account-level risk caps must be enforced on the
+// ONE central alert funnel (sendTradeAlert in src/lib/telegram.ts) that every
+// producer — scanners, SDM, Zero Hero, BTST, the intraday cron — flows through.
 //
-// Evidence (trade-audit ledger, 353 closed OPTION trades): entries after
-// 13:00 IST won 16% of 119 trades (−₹7.2L); the veto's BLOCK bucket was
-// dominated by exactly these scanners' rows. A producer that bypasses the
-// funnel bypasses the day-loss cap too — "a blown day must not produce
-// another trade from any brain" (signal-veto.ts §0).
+// The discipline veto (src/lib/signal-veto.ts) was REMOVED at the user's
+// direction; these tests pin what still stands after that removal:
+//   • option SELL/SHORT is never alerted as a buy-path candidate
+//   • the day-loss + concurrent-exposure caps (checkSignalRiskLimits) run
+//     BEFORE any send, in both the gate helper and the send path
+//   • every candidate that reaches the send stage is logged to candidate_log
+//   • SL/TP notifications are lifecycle events on registered trades — they
+//     bypass the entry gates by design
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 
 const read = (p: string) => readFileSync(p, "utf-8");
 
-describe("discipline wiring — every producer obeys the caps + veto", () => {
-  test("the intraday direct-send path checks risk caps BEFORE alerting", () => {
+describe("discipline wiring — every producer obeys the caps via the funnel", () => {
+  test("the intraday cron path flows through the sendTradeAlert funnel", () => {
     const src = read("src/lib/sendIntradayAlerts.ts");
+    expect(src).toContain('from "@/lib/telegram"');
+    expect(src).toContain("evaluateTradeGate");
+    expect(src).toContain("sendTradeAlert");
+  });
+
+  test("the funnel blocks option SELL/SHORT (instrument-aware)", () => {
+    const src = read("src/lib/telegram.ts");
+    expect(src).toContain("option selling not allowed");
+  });
+
+  test("the funnel checks the account risk caps BEFORE sending", () => {
+    const src = read("src/lib/telegram.ts");
     expect(src).toContain("checkSignalRiskLimits");
-    // the check must run before the send call in the new-entry loop
-    const loopIdx = src.indexOf("for (const c of topCandidates)");
-    const riskIdx = src.indexOf("checkSignalRiskLimits", loopIdx);
-    const sendIdx = src.indexOf("sendTelegramMessage(chatId", loopIdx);
+    // in sendTradeAlertInner the risk block must precede the send call
+    const sendIdx = src.indexOf("sent = await sendTelegramMessage(msg)");
+    const riskIdx = src.indexOf("checkSignalRiskLimits({");
     expect(riskIdx).toBeGreaterThan(-1);
     expect(sendIdx).toBeGreaterThan(riskIdx);
   });
 
-  test("the intraday path runs the discipline veto and logs blocked candidates", () => {
+  test("the funnel logs every candidate that reaches the send stage", () => {
+    const src = read("src/lib/telegram.ts");
+    expect(src).toContain("logCandidate(");
+  });
+
+  test("SL/TP hits are lifecycle events — detected on registered trades, not gated as entries", () => {
     const src = read("src/lib/sendIntradayAlerts.ts");
-    expect(src).toContain("evaluateSignalVeto");
-    expect(src).toContain("logCandidate");
-    expect(src).toContain("wouldBlock: true");
-  });
-
-  test("a WARN verdict annotates the alert (halve size), never silently passes", () => {
-    const src = read("src/lib/sendIntradayAlerts.ts");
-    expect(src).toContain("halve size");
-  });
-
-  test("the BTST path enforces the account caps (its option gates stay exempt by design)", () => {
-    const src = read("src/app/api/btst/route.ts");
-    expect(src).toContain("checkSignalRiskLimits");
-    // blocked candidates are logged to the candidate ledger, not just skipped
-    expect(src).toContain("logCandidate");
-    // the response reports how many were risk-blocked (observable, not silent)
-    expect(src).toContain("riskBlocked");
-  });
-
-  test("exit notifications (SL/TP hits) are NOT vetoed — the veto gates ENTRIES only", () => {
-    const src = read("src/lib/sendIntradayAlerts.ts");
-    // the SL/TP hit loops must send directly (they are lifecycle events on
-    // already-registered trades, not new candidates)
-    const exitLoop = src.indexOf('formatSLTPHit(trade, "SL")');
-    const riskInExit = src.indexOf("checkSignalRiskLimits", exitLoop - 200);
-    // no risk check may sit between the SL-hit loop and its send
-    const exitSend = src.indexOf("sendTelegramMessage(chatId", exitLoop);
-    expect(exitSend).toBeGreaterThan(-1);
-    expect(riskInExit === -1 || riskInExit > exitSend).toBe(true);
-  });
-
-  test("the register funnel never invents a stop", () => {
-    const src = read("src/app/api/trade/register/route.ts");
-    // the CODE must not carry the fabricated default (the comment documenting
-    // the old bug may mention it)
-    expect(src).not.toContain("Number(sl) || Number(entry) * 0.78");
-    expect(src).toContain("no invented stop");
-  });
-
-  test("ZeroHero registration failures are surfaced (no silent .catch on the fetch)", () => {
-    const src = read("src/components/terminal/ZeroHeroTerminal.tsx");
-    // the register call logs failures instead of swallowing them
-    expect(src).toContain("registration(s) FAILED");
-    expect(src).toContain('body?.error ?? res.statusText');
+    expect(src).toContain("checkSLTP");
   });
 });

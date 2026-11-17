@@ -45,7 +45,7 @@ import { getMCXSession } from "@/lib/mcx/session";
 
 // Deterministic trade ID — same setup gets same ID across restarts
 function makeTradeId(symbol: string, strike: number, optionType: string, expiry: string, direction: string): string {
-  const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+  const ymd = new Date().toLocaleDateString('en-CA', { timeZone: "Asia/Kolkata" }).replace(/-/g, '');
   return `SCAN-${direction}-${symbol}-${strike}-${optionType}-${expiry}-${ymd}`;
 }
 
@@ -597,7 +597,7 @@ export async function sendIndividualSignals(
       continue;
     }
 
-    const ymd = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+    const ymd = new Date().toLocaleDateString('en-CA', { timeZone: "Asia/Kolkata" }).replace(/-/g, '');
     const tradeId = makeTradeId(s.symbol, s.strike ?? 0, s.type ?? 'EQ', s.expiry ?? 'NOEXP', s.side);
     await register({
       id: tradeId,

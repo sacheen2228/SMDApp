@@ -7,11 +7,7 @@ import {
   markSignalSent,
   isSignalDuplicateOrLowerQuality,
 } from "./signalTracker";
-import { evaluateSignalVeto } from "./signal-veto";
-import { logCandidate, calibrationBandFor } from "./candidate-log";
-import { cachedLayers } from "./tech-cache";
-import { structureLayer, triggerLayer } from "./tech-read";
-import { BRAIN_FLAGS } from "./brain-flags";
+import { logCandidate } from "./candidate-log";
 import { checkSignalRiskLimits } from "./risk-state.server";
 import { isAlertsOwner } from "./alerts-owner";
 import {
@@ -260,41 +256,6 @@ export async function evaluateTradeGate(params: {
     return { blocked: true, reasons };
   }
 
-  // Calibration band for the stated confidence (cached, DB-free on the hot path).
-  const calibrationBand = await calibrationBandFor(params.confidence);
-  // Cached technical read — O(1), no network. Cold cache → warning, never a block.
-  const optType = params.optionType === 'CE' || params.optionType === 'PE' ? params.optionType : undefined;
-  const dir = optType === 'CE' ? 'call' : optType === 'PE' ? 'put' : undefined;
-  const tech = dir
-    ? cachedLayers(params.symbol, '15m', dir, structureLayer, triggerLayer)
-    : undefined;
-  // HYBRID veto: old brain (scanners / SDM / Zero Hero) generates candidates;
-  // this layer only blocks or warns — it never creates signals.
-  const veto = evaluateSignalVeto({
-    symbol: params.symbol,
-    action: params.action,
-    optionType: optType,
-    strike: params.strike,
-    entry: params.entry,
-    stopLoss: params.stopLoss,
-    tp1: params.tp1,
-    confidence: params.confidence,
-    spot: params.spot,
-    expiry: params.expiry,
-    source: params.source,
-    requireExpiry: params.requireExpiry,
-    requireSpot: params.requireSpot,
-    nowMs: params.nowMs,
-    calibrationBand,
-    tech: tech
-      ? { structure: tech.structure?.state, trigger: tech.trigger?.state, stale: tech.stale }
-      : undefined,
-  });
-  if (veto.suppress) {
-    reasons.push(...veto.reasons);
-    return { blocked: true, reasons };
-  }
-
   const riskCheck = await checkSignalRiskLimits({
     symbol: params.symbol,
     entry: params.entry ?? null,
@@ -374,71 +335,6 @@ export async function sendTradeAlertInner(params: {
     return false;
   }
 
-  // Calibration band for the stated confidence (cached, DB-free on the hot path).
-  const calibrationBand = await calibrationBandFor(params.confidence);
-  // Cached technical read — O(1), no network. Cold cache → warning, never a block.
-  const optType = params.type === "CE" || params.type === "PE" ? params.type : undefined;
-  const dir = optType === "CE" ? "call" : optType === "PE" ? "put" : undefined;
-  const tech = dir
-    ? cachedLayers(params.symbol, "15m", dir, structureLayer, triggerLayer)
-    : undefined;
-  // HYBRID veto: old brain (scanners / SDM / Zero Hero) generates candidates;
-  // this layer only blocks or warns — it never creates signals.
-  const veto = evaluateSignalVeto({
-    symbol: params.symbol,
-    action: params.action,
-    optionType: optType,
-    strike: params.strike,
-    entry: params.entry,
-    stopLoss: params.stopLoss,
-    tp1: params.target1,
-    confidence: params.confidence,
-    spot: params.spot,
-    expiry: params.expiry,
-    source: params.source,
-    requireExpiry: params.requireExpiry,
-    requireSpot: params.requireSpot,
-    nowMs: params.nowMs,
-    calibrationBand,
-    tech: tech
-      ? { structure: tech.structure?.state, trigger: tech.trigger?.state, stale: tech.stale }
-      : undefined,
-  });
-  let vetoWarn = "";
-  if (veto.suppress) {
-    console.log(`[Telegram] VETO BLOCK ${params.symbol}: ${veto.reasons.join("; ")}`);
-    // log the blocked candidate too (every candidate is logged, sent or not)
-    void logCandidate({
-      source: params.source || "unknown",
-      symbol: params.symbol,
-      direction: params.action,
-      strike: params.strike,
-      expiry: params.expiry ?? null,
-      underlyingSpot: params.spot ?? null,
-      entryPremium: params.entry ?? null,
-      stopPremium: params.stopLoss ?? null,
-      targetPremium: params.target1 ?? null,
-      underlyingStop: params.underlyingStop ?? null,
-      underlyingTarget: params.underlyingTarget ?? null,
-      confidence: params.confidence,
-      calibratedConfidence: veto.calibratedConfidence,
-      rr: rrOf(params.entry, params.stopLoss, params.target1, params.action),
-      gateVerdict: veto.verdict,
-      tier: veto.tier,
-      warnings: veto.warnings,
-      fails: veto.fails,
-      sent: false,
-      wouldBlock: true,
-    });
-    return false;
-  }
-  if (veto.verdict === "WARN") {
-    const safeReasons = veto.reasons.map((r) => escapeHtml(r)).join("; ");
-    vetoWarn = BRAIN_FLAGS.tiering
-      ? `\n🏷 Tier ${veto.tier}: ${safeReasons}`
-      : `\n⚠ ${safeReasons} — halve size`;
-  }
-
   // DAY-LOSS + CONCURRENT-EXPOSURE GATE (2026-10-20).
   // The scanner / Zero-Hero / master-bot / SDM paths all reach Telegram through
   // this funnel, so this is where the loss caps and the consecutive-loss rule
@@ -511,14 +407,14 @@ export async function sendTradeAlertInner(params: {
   const px = (v?: number) => (isCashEquity ? cashPx(v) : v == null ? "" : `₹${v}`);
   const mtfLine = (params.mtf
     ? `\n📐 MTF: ${escapeHtml(params.mtf.direction)} (${escapeHtml(params.mtf.trendDirection)} trend, score ${params.mtf.compositeScore})`
-    : '') + vetoWarn;
+    : '');
   const msg = params.message?.trim() || `
 ${emoji} <b>${sourceLabel}</b>
 
 📊 <b>${escapeHtml(params.symbol)}</b> — ${isCashEquity ? "EQUITY" : escapeHtml(params.type)}
 ⚡ Action: <b>${escapeHtml(params.action)}</b>
 ${params.strike > 0 ? `🎯 Strike: <b>${params.strike.toLocaleString("en-IN")}</b>` : ""}
-💪 Confidence: <b>${veto.calibratedConfidence}%</b>${veto.calibratedConfidence !== params.confidence ? ` <i>(stated ${params.confidence}%)</i>` : ""}${mtfLine}
+💪 Confidence: <b>${params.confidence}%</b>${mtfLine}
 ${params.entryZone
   ? `💰 Entry: ${px(params.entry)} <i>(zone ₹${params.entryZone.low.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}–₹${params.entryZone.high.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</i>`
   : params.entry ? `💰 Entry: ${px(params.entry)}` : ""}
@@ -620,17 +516,12 @@ ${isCashEquity && params.lots && params.deployedAmount
     underlyingStop: params.underlyingStop ?? null,
     underlyingTarget: params.underlyingTarget ?? null,
     confidence: params.confidence,
-    calibratedConfidence: veto.calibratedConfidence,
+    calibratedConfidence: params.confidence,
     rr: rrOf(params.entry, params.stopLoss, params.target1, params.action),
-    gateVerdict: veto.verdict,
-    tier: veto.tier,
-    layerStates: tech
-      ? { structure: tech.structure?.state ?? "unknown", trigger: tech.trigger?.state ?? "unknown", techStale: tech.stale }
-      : null,
-    warnings: veto.warnings,
-    fails: veto.fails,
+    gateVerdict: "PASS",
+    tier: "NONE",
     sent,
-    wouldBlock: veto.wouldBlock,
+    wouldBlock: false,
   });
   if (sent) {
     markSignalSent(sig, params.confidence, params.source || "sdm-engine");

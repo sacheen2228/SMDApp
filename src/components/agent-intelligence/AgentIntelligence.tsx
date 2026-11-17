@@ -185,7 +185,7 @@ export function AgentIntelligence() {
             <CardContent>
               <div className="text-2xl font-bold">{health.averageLatency}ms</div>
               <div className="text-xs text-muted-foreground">
-                Last: {health.lastHeartbeat ? new Date(health.lastHeartbeat).toLocaleTimeString() : 'N/A'}
+                Last: {health.lastHeartbeat ? new Date(health.lastHeartbeat).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }) : 'N/A'}
               </div>
             </CardContent>
           </Card>
@@ -238,7 +238,7 @@ export function AgentIntelligence() {
                   </div>
                   <div className="text-xs text-muted-foreground">
                     Last heartbeat: {agent.lastHeartbeatAt
-                      ? new Date(agent.lastHeartbeatAt).toLocaleTimeString()
+                      ? new Date(agent.lastHeartbeatAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })
                       : 'Never'}
                   </div>
                 </div>
@@ -283,7 +283,7 @@ export function AgentIntelligence() {
                     {signal.thesis}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
-                    {new Date(signal.timestamp).toLocaleTimeString()}
+                    {new Date(signal.timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}
                   </div>
                 </div>
               ))}

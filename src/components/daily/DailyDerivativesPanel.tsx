@@ -3,6 +3,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { TargetReach } from "@/lib/option-plan";
 import {
   CalendarClock,
   TrendingUp,
@@ -16,12 +17,13 @@ import {
   BarChart2,
   Zap,
   Compass,
+  RotateCcw,
 } from "lucide-react";
 
 interface Signal {
   index: number;
   time: number | string;
-  type: "CROSSOVER" | "PULLBACK" | "BREAKOUT" | "RETEST" | "FAKEOUT";
+  type: "CROSSOVER" | "PULLBACK" | "BREAKOUT" | "RETEST" | "FAKEOUT" | "REVERSAL";
   side: "LONG" | "SHORT";
   entry: number;
   stop: number;
@@ -51,6 +53,9 @@ interface TradePlanCard {
   tradable: boolean;
   otmSteps: number;
   reason: string;
+  livePremium?: number;
+  setup?: string;
+  targetReach?: TargetReach[];
 }
 
 interface DirectionVote {
@@ -90,12 +95,14 @@ interface DailyDerivativesReport {
   sentiment: "Extreme Greed" | "Bullish" | "Neutral" | "Bearish" | "Extreme Fear";
   sentimentScore: number;
   tradePlans: TradePlanCard[];
+  planAsOf?: string;
   preferredSide: "CALL" | "PUT" | null;
   directionBias: DirectionBias;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
   candleCount: number;
+  warmupBars: number;
 }
 
 interface ApiResponse {
@@ -126,11 +133,14 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/daily-derivatives?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/daily-derivatives?symbol=${encodeURIComponent(symbol)}${force ? "&refresh=1" : ""}`,
+        { cache: "no-store" }
+      );
       const json: ApiResponse = await res.json();
       if (!json.success) throw new Error(json.error || "failed");
       setReport(json.data!);
@@ -160,16 +170,18 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
     return n.toLocaleString("en-IN");
   };
 
-  const SignalBadge = ({ type, side, strength }: { type: string; side: string; strength: number }) => {
+  const SignalBadge = ({ type, side, strength, time, reason }: { type: string; side: string; strength: number; time?: string; reason?: string }) => {
     const isLong = side === "LONG";
     const bg = isLong ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400";
     const icon = type === "BREAKOUT" ? <Zap className="h-2.5 w-2.5" /> :
                  type === "CROSSOVER" ? <Activity className="h-2.5 w-2.5" /> :
-                 type === "PULLBACK" ? <Target className="h-2.5 w-2.5" /> :
+                 type === "PULLBACK" ? <RotateCcw className="h-2.5 w-2.5" /> :
+                 type === "RETEST" ? <Target className="h-2.5 w-2.5" /> :
+                 type === "REVERSAL" ? <Compass className="h-2.5 w-2.5" /> :
                  <AlertTriangle className="h-2.5 w-2.5" />;
     return (
-      <span className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold ${bg}`}>
-        {icon} {type} {isLong ? "↑" : "↓"} ({strength})
+      <span title={reason} className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold ${bg}`}>
+        {icon} {type} {isLong ? "↑" : "↓"} ({strength}){time ? <span className="font-mono font-normal opacity-70">{time}</span> : null}
       </span>
     );
   };
@@ -218,7 +230,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               </button>
             ))}
           </div>
-          <button onClick={load} disabled={loading} className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
+          <button onClick={() => load(true)} disabled={loading} className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
             <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Refresh
           </button>
         </div>
@@ -235,7 +247,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               value={report.spot.toFixed(2)}
               icon={Gauge}
               color="text-cyan-400"
-              subValue={`${report.underlying} • ${new Date(report.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`}
+              subValue={`${report.underlying} • ${new Date(report.timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}`}
             />
             <MetricCard
               label="India VIX"
@@ -366,7 +378,12 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                 <Target className="h-4 w-4 text-emerald-400" />
                 <span className="text-[11px] font-bold text-foreground">Trade Plan — Strike • Entry • SL • TP</span>
               </div>
-              <span className="text-[9px] text-muted-foreground">₹45k budget · SL 20% · TP 2R/3R/4R</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-muted-foreground">₹45k budget · risk 20% of deployed · TP 2R/3R/4R</span>
+                {report.planAsOf && (
+                  <span className="text-[9px] text-violet-300/90">levels as of {report.planAsOf}</span>
+                )}
+              </div>
             </div>
             {(report.tradePlans || []).length === 0 ? (
               <div className="text-[11px] text-muted-foreground text-center py-2">No tradable contract found</div>
@@ -395,6 +412,14 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                               against bias
                             </span>
                           )}
+                          {p.setup && (
+                            <span
+                              title="Newest candle setup for this side (BREAKOUT / RETEST / REVERSAL / …)"
+                              className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-500/15 text-sky-300"
+                            >
+                              {p.setup}
+                            </span>
+                          )}
                           {p.otmSteps > 0 && (
                             <span className="text-[9px] text-muted-foreground">{p.otmSteps} OTM</span>
                           )}
@@ -411,19 +436,37 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                         <div className="bg-muted/40 rounded p-1.5 text-center">
                           <div className="text-muted-foreground">Entry</div>
                           <div className="font-mono text-foreground font-bold">{p.entry.toFixed(2)}</div>
+                          {p.livePremium != null && Math.abs(p.livePremium - p.entry) >= 0.05 && (
+                            <div className={`font-mono text-[9px] ${p.livePremium >= p.entry ? "text-emerald-400" : "text-rose-400"}`}>
+                              live {p.livePremium.toFixed(2)}
+                            </div>
+                          )}
                         </div>
                         <div className="bg-rose-500/5 rounded p-1.5 text-center">
                           <div className="text-rose-300">SL</div>
                           <div className="font-mono text-rose-400 font-bold">{p.stopLoss > 0 ? p.stopLoss.toFixed(2) : "—"}</div>
                         </div>
-                        {[0, 1, 2].map((k) => (
-                          <div key={k} className="bg-emerald-500/5 rounded p-1.5 text-center">
-                            <div className="text-emerald-300">TP{k + 1}</div>
-                            <div className="font-mono text-emerald-400 font-bold">
-                              {p.targets?.[k] != null ? p.targets[k].toFixed(2) : "—"}
+                        {[0, 1, 2].map((k) => {
+                          const reach = p.targetReach?.[k];
+                          return (
+                            <div key={k} className="bg-emerald-500/5 rounded p-1.5 text-center">
+                              <div className="text-emerald-300">TP{k + 1}</div>
+                              <div className="font-mono text-emerald-400 font-bold">
+                                {p.targets?.[k] != null ? p.targets[k].toFixed(2) : "—"}
+                              </div>
+                              {reach && (
+                                <div
+                                  title={reach.note}
+                                  className={`text-[8px] font-mono ${reach.achievable ? "text-muted-foreground" : "text-rose-400 font-bold"}`}
+                                >
+                                  {reach.achievable
+                                    ? `spot ${reach.requiredSpot.toFixed(0)}`
+                                    : `⚠ wall ${reach.wall?.strike ?? "?"}`}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                       {p.reason && <div className="text-[9px] text-muted-foreground mt-1.5 leading-snug">{p.reason}</div>}
                     </div>
@@ -478,17 +521,33 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               <span className="text-[11px] font-bold text-foreground">Latest Technical Signals (EMA 9/15 + ADX/ATR)</span>
             </div>
             {report.latestSignals.length === 0 ? (
-              <div className="text-[11px] text-muted-foreground text-center py-2">No recent signals</div>
+              report.candleCount < (report.warmupBars || 29) ? (
+                <div className="text-[11px] text-amber-400/90 text-center py-2">
+                  Engine warming up — {report.candleCount}/{report.warmupBars || 29} bars · EMA 9/15 + ADX14 need {report.warmupBars || 29}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground text-center py-2">
+                  No setups — filters not met (ADX ≥ 20, EMA gap, DI agree)
+                </div>
+              )
             ) : (
               <div className="flex flex-wrap gap-2">
                 {report.latestSignals.map((s, i) => (
-                  <SignalBadge key={i} type={s.type} side={s.side} strength={s.strength} />
+                  <SignalBadge
+                    key={i}
+                    type={s.type}
+                    side={s.side}
+                    strength={s.strength}
+                    time={new Date(s.time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false })}
+                    reason={s.reason}
+                  />
                 ))}
               </div>
             )}
             <div className="text-[9px] text-muted-foreground mt-1.5">
               Candles: {report.candleCount} @ {report.candleInterval} ({report.candleSource}
               {report.candleDegraded ? ` — ${report.candleDegraded}` : ""})
+              {report.candleCount < (report.warmupBars || 29) ? ` · warming up ${report.candleCount}/${report.warmupBars || 29}` : ""}
             </div>
           </div>
 

@@ -98,7 +98,7 @@ export default function SystemHealth() {
         />
         <StatCard
           label="Last Check"
-          value={new Date(data.timestamp).toLocaleTimeString("en-IN")}
+          value={new Date(data.timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}
         />
       </div>
 

@@ -16,7 +16,6 @@ import { Slider } from "@/components/ui/slider";
 import { Panel, StatCell } from "@/components/ui/panel";
 import { getChainOiHistory, getMultiDayOiTrend, type ChainOiSnapshot } from "@/lib/market-history-client";
 import { buildOptionPlan, PLAN_CONFIG, type OptionPlan } from "@/lib/option-plan";
-import { evaluateSignalVeto, type VetoResult } from "@/lib/signal-veto";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
@@ -37,7 +36,7 @@ function fmtLakh(v: number): string {
 function istTime(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+    return new Date(iso).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" });
   } catch {
     return "—";
   }
@@ -139,7 +138,6 @@ interface TradePlanState {
   strike: number | null;
   entry: number;
   confirm: { factors: ConfirmFactor[]; confirmed: boolean } | null;
-  veto: VetoResult | null;
   notes: string[];
 }
 
@@ -421,13 +419,11 @@ export function OIFlowView() {
   /* ─── Trade plan from live flow — STRONG CONFIRMATION REQUIRED ───
      |momentum| ≥ 25 alone was far too weak a trigger. The plan now needs
      EVERY hard factor to agree — momentum · day OI Δ · walls · PCR · quote
-     freshness — and then passes through the SAME veto the Telegram funnel
-     runs (evaluateSignalVeto: budget/lot caps, R:R, delta, expiry day,
-     session cutoff) before anything is presented as a trade. */
+     freshness — before anything is presented as a trade. */
   const tradePlan = useMemo<TradePlanState>(() => {
     if (!data || !momentum) return null as unknown as TradePlanState;
     const dir: "CE" | "PE" | null = momentum.val >= 25 ? "CE" : momentum.val <= -25 ? "PE" : null;
-    if (!dir) return { dir: null, plan: null, strike: null, entry: 0, confirm: null, veto: null, notes: ["Flow is range-bound near spot — the plan waits for a wall break or |momentum| ≥ 25."] };
+    if (!dir) return { dir: null, plan: null, strike: null, entry: 0, confirm: null, notes: ["Flow is range-bound near spot — the plan waits for a wall break or |momentum| ≥ 25."] };
 
     const bull = dir === "CE";
     const spot = data.spot;
@@ -488,37 +484,16 @@ export function OIFlowView() {
       ? data.strikes.filter((s) => s.strike >= spot - stepSize && s.ceLtp > 0)
       : data.strikes.filter((s) => s.strike <= spot + stepSize && s.peLtp > 0);
     const pick = candidates.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
-    if (!pick) return { dir, plan: null, strike: null, entry: 0, confirm, veto: null, notes: ["No live premium at any strike near spot — chain data incomplete."] };
+    if (!pick) return { dir, plan: null, strike: null, entry: 0, confirm, notes: ["No live premium at any strike near spot — chain data incomplete."] };
     const entry = dir === "CE" ? pick.ceLtp : pick.peLtp;
     const lotSize = getLotSizeStrict(symbol) ?? 0;
-    if (!lotSize || entry <= 0) return { dir, plan: null, strike: pick.strike, entry, confirm, veto: null, notes: [!lotSize ? `Lot size for ${symbol} unknown — fail closed.` : "Premium is zero — no tradable quote."] };
+    if (!lotSize || entry <= 0) return { dir, plan: null, strike: pick.strike, entry, confirm, notes: [!lotSize ? `Lot size for ${symbol} unknown — fail closed.` : "Premium is zero — no tradable quote."] };
     const plan = buildOptionPlan({ symbol, optionType: dir, entryPremium: entry, lotSize });
     const notes: string[] = [];
     const delta = dir === "CE" ? pick.ceDeltaG : pick.peDeltaG;
     if (delta != null && Math.abs(delta) < 0.35) notes.push(`|delta| ${Math.abs(delta).toFixed(2)} < 0.35 — deep OTM lottery risk, halve size.`);
 
-    // The SAME veto the Telegram funnel runs — one source of truth for the rules
-    const nearestExpiry = (data.expiries ?? [])[0]?.date ?? null;
-    const veto = evaluateSignalVeto({
-      symbol,
-      action: `BUY ${dir}`,
-      optionType: dir,
-      strike: pick.strike,
-      entry,
-      stopLoss: plan?.stopLoss,
-      tp1: plan?.targets[0],
-      confidence: conviction,
-      spot,
-      expiry: nearestExpiry ?? undefined,
-      requireExpiry: nearestExpiry != null,
-      requireSpot: true,
-      source: "OI_FLOW",
-      lotSize,
-      lots: plan?.lots ?? 0,
-      deployedAmount: plan?.deployed,
-      riskAmount: plan?.riskAmount,
-    });
-    return { dir, plan: plan ?? null, strike: pick.strike, entry, notes, confirm, veto };
+    return { dir, plan: plan ?? null, strike: pick.strike, entry, notes, confirm };
   }, [data, momentum, symbol, sorted, chainStep, floorStrike, ceilStrike, conviction]);
 
   /* ─── What's next read (own wording) ─── */
@@ -591,12 +566,12 @@ export function OIFlowView() {
         <StatCell label="Total PE OI" value={fmtLakh(data.totalPutOI)} />
       </div>
 
-      {/* ═══ Trade plan card — strong confirmation + the funnel veto ═══ */}
+      {/* ═══ Trade plan card — strong confirmation ═══ */}
       {tradePlan && (
         <Panel title="Trade plan · from live flow" subtitle={
           !tradePlan.dir ? "no trade — range-bound"
             : tradePlan.confirm?.confirmed
-              ? `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · all confirmations met · veto ${tradePlan.veto?.verdict ?? "…"}`
+              ? `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · all confirmations met`
               : `${tradePlan.dir === "CE" ? "Call buy — bullish flow" : "Put buy — bearish flow"} · WAITING for confirmation`
         }>
           {!tradePlan.dir ? (
@@ -636,26 +611,11 @@ export function OIFlowView() {
                 <p key={i} className="ty-text-xs text-ty-warn">{nt}</p>
               ))}
             </div>
-          ) : tradePlan.veto?.verdict === "BLOCK" ? (
-            /* ─── confirmations met, but the funnel veto hard-blocks ─── */
-            <div className="space-y-2">
-              <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-down">VETO BLOCK — {symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir}</Badge>
-              <ul className="space-y-1.5">
-                {tradePlan.veto.fails.map((fl, i) => (
-                  <li key={i} className="ty-text-xs text-ty-down flex gap-1.5"><span className="mt-1 size-1 shrink-0 rounded-full bg-ty-down" />{fl}</li>
-                ))}
-              </ul>
-              <p className="ty-text-xs text-ty-muted-fg">Same veto the Telegram funnel enforces — the alert path would reject this plan too.</p>
-            </div>
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className="bg-ty-brand text-white px-2 py-1 ty-text-xs font-bold">{symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir}</Badge>
-                {tradePlan.veto?.verdict === "WARN" ? (
-                  <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">⚠ HALF SIZE — halve the lots</Badge>
-                ) : (
-                  <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-up">✓ CONFIRMED</Badge>
-                )}
+                <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-up">✓ CONFIRMED</Badge>
                 <span className="ty-text-xs text-ty-subtle-fg">premium quote at plan build · {data.freshness} · {data.source}</span>
               </div>
               <ul className="space-y-1.5">
@@ -672,13 +632,6 @@ export function OIFlowView() {
               <p className="ty-text-xs text-ty-subtle-fg">
                 R:R 1:{tradePlan.plan.rr.toFixed(1)} · one lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} · stop capped at {Math.round(tradePlan.plan.stopPctOfPremium * 100)}% of premium
               </p>
-              {tradePlan.veto?.warnings.length ? (
-                <ul className="space-y-1">
-                  {tradePlan.veto.warnings.map((w, i) => (
-                    <li key={i} className="ty-text-xs text-ty-warn flex gap-1.5"><span className="mt-1 size-1 shrink-0 rounded-full bg-ty-warn" />{w}</li>
-                  ))}
-                </ul>
-              ) : null}
               {tradePlan.notes.length > 0 && (
                 <ul className="space-y-1">
                   {tradePlan.notes.map((nt, i) => (

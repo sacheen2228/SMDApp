@@ -469,12 +469,12 @@ export async function runMorningScan(): Promise<{
     }
 
     // ── Build full message ──
-    const today = new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+    const today = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", day: "numeric", month: "short" });
     let header = `☀️ <b>MORNING SCAN — ${today}</b>\n`;
     header += `━━━━━━━━━━━━━━━━━━━\n`;
     header += `📊 Equity: ${highAccuracy.length} high-accuracy | Index Options: ${indexOptions.length}\n\n`;
 
-    const footer = `\n━━━━━━━━━━━━━━━━━━━\n⏰ ${new Date().toLocaleTimeString("en-IN")} | ⚠️ Not financial advice`;
+    const footer = `\n━━━━━━━━━━━━━━━━━━━\n⏰ ${new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })} | ⚠️ Not financial advice`;
 
     const fullMessage = header + body + footer;
 

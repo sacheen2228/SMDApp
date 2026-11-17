@@ -19,8 +19,9 @@ export const GATE_CONFIG = {
   //   trade, NOT 1% of a large account. The old 1%-of-₹2L model made every NIFTY
   //   lot unaffordable (1 lot risks ₹2.8–3.4k > 1% of ₹2L) → 0 lots → NO TRADE.
   riskPctOfTrade: 20,      // risk = 20% of the amount deployed (₹10k deployed → ₹2k risk)
-  // FIXED ₹ risk per trade (user-defined, 2026-11-11): sizing must keep the
-  // stop loss within this cap; 1 lot that already risks more is skipped.
+  // REFERENCE stop for the daily-streak rule (2 stops end the day) — NO LONGER
+  // caps per-trade risk: risk = riskPctOfTrade % of the amount deployed, full
+  // stop (user rule, 2026-11-17 — the fixed ₹4k cap was wrong for all trades).
   maxRiskPerTrade: 4_000,
   tradeBudget: 45_000,     // ₹ DEPLOYED per trade (enables ~2 lots for index options)
   defaultRiskPct: 20,      // kept for compatibility: now % of the deployed amount
@@ -271,9 +272,9 @@ export function positionSize(input: {
   const entry = Number(input.entry);
   const sl = Number(input.sl);
   const lotSize = Number(input.lotSize);
-  // The risk is capped at the FIXED per-trade amount — never scaled up by a
-  // bigger deployment. 20% of deployed is the soft target; the cap is the rule.
-  const riskAmount = Math.min(GATE_CONFIG.maxRiskPerTrade, (budget * riskPct) / 100);
+  // risk = riskPct % of the amount DEPLOYED — no fixed ₹ cap (user rule,
+  // 2026-11-17): a bigger deployment scales the risk in proportion.
+  const riskAmount = (budget * riskPct) / 100;
   if (!(entry > 0) || !(lotSize > 0) || !Number.isFinite(entry - sl) || Math.abs(entry - sl) <= 0) {
     return {
       ok: false, lots: 0, qty: 0, riskAmount, riskPerLot: 0, maxLoss: 0, capitalRequired: 0,
@@ -288,8 +289,8 @@ export function positionSize(input: {
   const maxLoss = riskPerLot * lots;
   const capitalRequired = entry * lotSize * lots;
   const guidance = lots >= 1
-    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")}) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
-    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")}), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
+    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
+    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
   return { ok: lots >= 1, lots, qty: lots * lotSize, riskAmount, riskPerLot, maxLoss, capitalRequired, guidance };
 }
 

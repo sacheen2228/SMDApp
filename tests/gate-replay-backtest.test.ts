@@ -152,8 +152,8 @@ describe("deriveGateInput", () => {
   });
 
   test("a lot that costs more than the per-trade deployment budget books 0 lots", async () => {
-    // ₹350 premium × 75 qty = ₹26,250 > the ₹20,000 per-trade budget.
-    const t = mkTrade({ entryPrice: 350, stopLoss: 320, tp1: 420 });
+    // ₹700 premium × 75 qty = ₹52,500 > the ₹45,000 per-trade budget.
+    const t = mkTrade({ entryPrice: 700, stopLoss: 660, tp1: 840 });
     const r = await deriveGateInput(t, fixtureDeps());
     expect(r.input!.lots).toBe(0);
     const out = await replayGate([t], fixtureDeps());

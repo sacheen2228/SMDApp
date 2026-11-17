@@ -144,7 +144,7 @@ function AlertCard({
         </div>
       )}
       <div className="text-[9px] text-zinc-600 mt-1">
-        {new Date(timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+        {new Date(timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}
       </div>
     </div>
   );

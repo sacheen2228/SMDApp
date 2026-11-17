@@ -712,7 +712,7 @@ export function AgentChat({ symbol, spotPrice, pcr, vix, sentiment }: AgentChatP
                   </>
                 )}
                 <p className="text-[8px] text-muted-foreground mt-1 opacity-60">
-                  {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                  {msg.timestamp.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}
                 </p>
               </div>
             </div>

@@ -129,7 +129,7 @@ describe("quant isolation — forbidden imports/calls", () => {
 
   test("quant files never import from another engine's internals", () => {
     const forbidden = [
-      "sdm-engine", "sdm-recommendation", "agent-brain", "signal-veto",
+      "sdm-engine", "sdm-recommendation", "agent-brain",
       "master-bot-engine", "btst-scanner", "zero-hero", "zeroHero",
       "smart-money", "intraday-scanner", "morningSignalGenerator",
     ];

@@ -3,7 +3,6 @@
 //
 // THREE consumers must agree:
 //   • the app monitor      — src/lib/activeTradeTracker.ts  planSide()
-//   • the signal veto      — src/lib/signal-veto.ts         vetoPlanSide()
 //   • the audit sidecar    — trade-audit/src/utils/sizing.ts inferPlanSide()
 //
 // The veto and the sidecar already read the STOP first ("the stop is the risk
@@ -25,7 +24,6 @@ import {
   detectPlanHit,
   stopFillPrice,
 } from "@/lib/activeTradeTracker";
-import { vetoPlanSide } from "@/lib/signal-veto";
 
 /** The real inverted plan from the ledger (stop and target on the same side). */
 const INCOHERENT = { entry: 440.55, sl: 67.59, tp1: 178.06 };
@@ -47,17 +45,6 @@ describe("planSide — the STOP decides the side", () => {
 
   test("an INCOHERENT plan follows the STOP, not the target", () => {
     expect(planSide(INCOHERENT)).toBe("LONG");
-    // the veto reads the same geometry
-    expect(vetoPlanSide(INCOHERENT.entry, INCOHERENT.sl)).toBe("LONG");
-  });
-
-  test("the app and the veto never disagree on the side", () => {
-    const plans = [LONG_PLAN, MIRRORED_PLAN, INCOHERENT, { entry: 50, sl: 50, tp1: 60 }];
-    for (const p of plans) {
-      const vetoSide = vetoPlanSide(p.entry, p.sl);
-      if (!vetoSide) continue; // the veto needs a usable stop
-      expect(planSide(p)).toBe(vetoSide);
-    }
   });
 
   test("a stop-out on an incoherent plan is a LOSS, never a win", () => {

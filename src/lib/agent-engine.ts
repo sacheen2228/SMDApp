@@ -60,8 +60,8 @@ const intents: Intent[] = [
       if (todayTrades.length === 0) return `📋 **No trades today yet** for ${ctx.symbol}.\n\nMarket is ${ctx.analysis?.sentiment || "neutral"} — SDM is watching. I'll alert you when a quality setup appears.`;
 
       const lines = todayTrades.map((t, i) => {
-        const time = t.entryTime ? new Date(t.entryTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "—";
-        const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "open";
+        const time = t.entryTime ? new Date(t.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "—";
+        const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "open";
         const status = t.status === "OPEN" ? "⏳ OPEN" : t.status === "TP_HIT" ? "✅ TP HIT" : t.status === "SL_HIT" ? "🛑 SL HIT" : t.status;
         return `${i + 1}. **${t.strike} ${t.type}** | Entry ₹${fmt(t.entryPrice)} → ${exitTime === "open" ? "—" : "Exit ₹" + fmt(t.exitPrice)} | ${status} | PnL: ${t.pnl != null ? pnlStr(t.pnl) : "—"} | SL ₹${fmt(t.stopLoss)} | T1 ₹${fmt(t.target1)} | ${time}`;
       });
@@ -82,7 +82,7 @@ const intents: Intent[] = [
 
       const last5 = ctx.trades.slice(0, 10);
       const lines = last5.map((t, i) => {
-        const date = t.entryTime ? new Date(t.entryTime).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "—";
+        const date = t.entryTime ? new Date(t.entryTime).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" }) : "—";
         return `${i + 1}. ${date} | **${t.strike} ${t.type}** | ₹${fmt(t.entryPrice)} → ${t.exitPrice ? "₹" + fmt(t.exitPrice) : "open"} | ${t.pnl != null ? pnlStr(t.pnl) : "—"} | ${t.status}`;
       });
 
@@ -249,7 +249,7 @@ const intents: Intent[] = [
       if (openTrades.length === 0) return `📭 **No open positions** for ${ctx.symbol}.\n\nThe market is ${ctx.analysis?.sentiment || "neutral"}. Want me to analyze the best entry?`;
 
       const lines = openTrades.map((t, i) => {
-        const time = t.entryTime ? new Date(t.entryTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "—";
+        const time = t.entryTime ? new Date(t.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "—";
         return `${i + 1}. **${t.strike} ${t.type}** | Entry ₹${fmt(t.entryPrice)} | SL ₹${fmt(t.stopLoss)} | T1 ₹${fmt(t.target1)} | Since ${time}`;
       });
 
@@ -397,12 +397,9 @@ const intents: Intent[] = [
       }
       const riskPerLot = price > 0 && sl > 0 ? (price - sl) * lot : 0;
       const ps = positionSize({ capital: GATE_CONFIG.capital, entry: price, sl, lotSize: lot });
-      const riskBudget = Math.min(
-        GATE_CONFIG.maxRiskPerTrade,
-        (GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade) / 100,
-      );
+      const riskBudget = (GATE_CONFIG.tradeBudget * GATE_CONFIG.riskPctOfTrade) / 100;
 
-      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule (per trade):**\n• Deploy at most ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in ONE trade\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the amount DEPLOYED, capped at ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")} (₹${riskBudget.toLocaleString("en-IN")} at risk)\n• Max lots = min( ₹${riskBudget.toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n💡 Never risk more than ₹${GATE_CONFIG.maxRiskPerTrade.toLocaleString("en-IN")} per trade (${GATE_CONFIG.riskPctOfTrade}% of what you deploy), and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in one trade.`;
+      return `🛡️ **Risk Management — ${ctx.symbol}**\n\n**Lot Size:** ${lot} qty\n**Entry:** ₹${fmt(price)}\n**Stop Loss:** ₹${fmt(sl)}\n**Risk per Lot:** ₹${fmt(riskPerLot)}\n\n**Position Sizing Rule (per trade):**\n• Deploy at most ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in ONE trade\n• Risk = ${GATE_CONFIG.riskPctOfTrade}% of the amount DEPLOYED, no fixed ₹ cap (₹${riskBudget.toLocaleString("en-IN")} at risk on a full deployment)\n• Max lots = min( ₹${riskBudget.toLocaleString("en-IN")} ÷ ₹${fmt(riskPerLot)} , ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} ÷ ₹${fmt(price * lot)} ) = ${ps.lots} lots\n• Max loss = ₹${fmt(ps.maxLoss)}\n\n💡 Risk is always ${GATE_CONFIG.riskPctOfTrade}% of what you deploy — never more, never a fixed ₹ figure — and never deploy more than ₹${GATE_CONFIG.tradeBudget.toLocaleString("en-IN")} in one trade.`;
     },
   },
 

@@ -178,7 +178,7 @@ export function OptionPulseView() {
           <h1 className="ty-text-title font-semibold text-foreground">Option Pulse</h1>
           <p className="ty-text-xs text-ty-subtle-fg">
             {symbol} · {expiry ?? expiries[0]?.label ?? "nearest expiry"} ·
-            updated {data?.lastUpdate ? new Date(data.lastUpdate).toLocaleTimeString("en-IN") : "—"}
+            updated {data?.lastUpdate ? new Date(data.lastUpdate).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }) : "—"}
           </p>
         </div>
         <div className="flex items-center gap-2">

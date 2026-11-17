@@ -27887,14 +27887,14 @@
       "spotChange": 0,
       "spotChangePct": 0,
       "prevClose": 0,
-      "marketStatus": "CLOSED",
-      "sessionTime": "18:30 IST",
+      "marketStatus": "OPEN",
+      "sessionTime": "14:13 IST",
       "isExpiryDay": false,
       "daysToExpiry": 0,
       "dataSources": [],
-      "dataFreshness": "2026-11-16T13:00:37.267Z"
+      "dataFreshness": "2026-11-17T08:43:36.849Z"
     },
-    "createdAt": "2026-11-16T13:00:37.261Z"
+    "createdAt": "2026-11-17T08:43:36.838Z"
   },
   {
     "id": "test-trade-3",
@@ -27913,19 +27913,19 @@
       "spotChange": 0,
       "spotChangePct": 0,
       "prevClose": 0,
-      "marketStatus": "CLOSED",
-      "sessionTime": "18:30 IST",
+      "marketStatus": "OPEN",
+      "sessionTime": "14:13 IST",
       "isExpiryDay": false,
       "daysToExpiry": 0,
       "dataSources": [],
-      "dataFreshness": "2026-11-16T13:00:37.297Z"
+      "dataFreshness": "2026-11-17T08:43:36.878Z"
     },
-    "createdAt": "2026-11-16T13:00:37.293Z",
+    "createdAt": "2026-11-17T08:43:36.873Z",
     "outcome": "LOSS",
     "exitPrice": 90,
-    "exitTime": "2026-11-16T13:00:37.317Z",
+    "exitTime": "2026-11-17T08:43:36.912Z",
     "exitReason": "SL_HIT",
-    "resolvedAt": "2026-11-16T13:00:37.317Z",
+    "resolvedAt": "2026-11-17T08:43:36.912Z",
     "pnl": -10,
     "pnlPct": -10,
     "rMultiple": -1,
@@ -34753,5 +34753,472 @@
       "dataFreshness": "2026-11-16T13:00:53.154Z"
     },
     "createdAt": "2026-11-16T13:00:53.141Z"
+  },
+  {
+    "id": "guard-real-1794863069759",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "PRE_OPEN",
+      "sessionTime": "2:34 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-16T21:04:29.777Z"
+    },
+    "createdAt": "2026-11-16T21:04:29.759Z"
+  },
+  {
+    "id": "SMART_MONEY-NIFTY-25200-CE-20261117",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25200,
+    "entryPrice": 177.15,
+    "sl": 156.65,
+    "tp1": 218.2,
+    "tp2": 238.7,
+    "tp3": 259.2,
+    "source": "SMART_MONEY",
+    "confidence": 58,
+    "qualityGrade": "NO_TRADE",
+    "strategy": "SMART_MONEY",
+    "snapshot": {
+      "spot": 25364.75,
+      "spotChange": 73.65000000000146,
+      "spotChangePct": 0.29120916053473933,
+      "prevClose": 25291.1,
+      "marketStatus": "OPEN",
+      "sessionTime": "10:10 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "news"
+      ],
+      "dataFreshness": "2026-11-17T04:40:50.157Z",
+      "atmStrike": 25350,
+      "maxPain": 25350,
+      "pcr": 1.26,
+      "totalCallOI": 3895767,
+      "totalPutOI": 4924292,
+      "callOiChange": 1192286,
+      "putOiChange": 2696205,
+      "vix": 15.08,
+      "futuresPrice": 25364.6,
+      "futuresBasis": -0.1500000000014552,
+      "strikeData": {
+        "strike": 25200,
+        "ceOi": 77120,
+        "ceOiChg": -12778,
+        "ceVolume": 956960,
+        "ceLtp": 178,
+        "ceIV": 12.88,
+        "ceDelta": 0.84,
+        "ceGamma": 0.0014,
+        "ceTheta": -24.78,
+        "peOi": 428410,
+        "peOiChg": 260338,
+        "peVolume": 2827875,
+        "peLtp": 10.05,
+        "peIV": 11.4,
+        "peDelta": -0.13,
+        "peGamma": 0.0014,
+        "peTheta": -15.36
+      },
+      "supportLevels": [
+        {
+          "strike": 25300,
+          "peOi": 621524
+        },
+        {
+          "strike": 25200,
+          "peOi": 428410
+        },
+        {
+          "strike": 25350,
+          "peOi": 404980
+        },
+        {
+          "strike": 25000,
+          "peOi": 302441
+        },
+        {
+          "strike": 25250,
+          "peOi": 296510
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 25400,
+          "ceOi": 406936
+        },
+        {
+          "strike": 25500,
+          "ceOi": 367776
+        },
+        {
+          "strike": 25350,
+          "ceOi": 310361
+        },
+        {
+          "strike": 26000,
+          "ceOi": 272638
+        },
+        {
+          "strike": 25600,
+          "ceOi": 244378
+        }
+      ],
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0
+    },
+    "createdAt": "2026-11-17T04:40:42.033Z"
+  },
+  {
+    "id": "guard-real-1794891850949",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "10:34 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T05:04:10.961Z"
+    },
+    "createdAt": "2026-11-17T05:04:10.949Z"
+  },
+  {
+    "id": "guard-real-1794900264045",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "12:54 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T07:24:24.058Z"
+    },
+    "createdAt": "2026-11-17T07:24:24.045Z"
+  },
+  {
+    "id": "guard-real-1794900317212",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "12:55 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T07:25:17.226Z"
+    },
+    "createdAt": "2026-11-17T07:25:17.212Z"
+  },
+  {
+    "id": "SCAN-INTRA-COALINDIA-390-CE-23-Nov-2026-20261117",
+    "symbol": "COALINDIA",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 390,
+    "entryPrice": 3.95,
+    "sl": 3.55,
+    "tp1": 4.75,
+    "tp2": 5.15,
+    "tp3": 5.55,
+    "source": "stock-scanner",
+    "confidence": 62,
+    "strategy": "stock-scanner",
+    "snapshot": {
+      "spot": 389.95,
+      "spotChange": -24901.149999999998,
+      "spotChangePct": -98.45815326340096,
+      "prevClose": 25291.1,
+      "marketStatus": "OPEN",
+      "sessionTime": "13:16 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [
+        "option-chain",
+        "news",
+        "most-active"
+      ],
+      "dataFreshness": "2026-11-17T07:46:52.437Z",
+      "atmStrike": 390,
+      "maxPain": 395,
+      "pcr": 0.47,
+      "totalCallOI": 33023,
+      "totalPutOI": 15471,
+      "callOiChange": 4817,
+      "putOiChange": 38,
+      "vix": 0,
+      "futuresPrice": 0,
+      "futuresBasis": 0,
+      "strikeData": {
+        "strike": 390,
+        "ceOi": 1144,
+        "ceOiChg": 933,
+        "ceVolume": 4233,
+        "ceLtp": 4.15,
+        "ceIV": 19.54,
+        "ceDelta": 0.52,
+        "ceGamma": 0.0377,
+        "ceTheta": -0.34,
+        "peOi": 603,
+        "peOiChg": 221,
+        "peVolume": 4402,
+        "peLtp": 3.65,
+        "peIV": 19.57,
+        "peDelta": -0.48,
+        "peGamma": 0.0377,
+        "peTheta": -0.26
+      },
+      "supportLevels": [
+        {
+          "strike": 389.75,
+          "peOi": 1491
+        },
+        {
+          "strike": 369.75,
+          "peOi": 1373
+        },
+        {
+          "strike": 399.75,
+          "peOi": 1319
+        },
+        {
+          "strike": 379.75,
+          "peOi": 1041
+        },
+        {
+          "strike": 400,
+          "peOi": 1024
+        }
+      ],
+      "resistanceLevels": [
+        {
+          "strike": 410,
+          "ceOi": 5159
+        },
+        {
+          "strike": 399.75,
+          "ceOi": 3783
+        },
+        {
+          "strike": 400,
+          "ceOi": 2987
+        },
+        {
+          "strike": 389.75,
+          "ceOi": 2373
+        },
+        {
+          "strike": 404.75,
+          "ceOi": 2137
+        }
+      ],
+      "newsSentiment": "NEUTRAL",
+      "newsScore": 0,
+      "mostActiveSentiment": "Neutral"
+    },
+    "createdAt": "2026-11-17T07:46:44.393Z"
+  },
+  {
+    "id": "guard-real-1794903789801",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "13:53 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T08:23:09.815Z"
+    },
+    "createdAt": "2026-11-17T08:23:09.801Z"
+  },
+  {
+    "id": "guard-real-1794903852941",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "13:54 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T08:24:12.951Z"
+    },
+    "createdAt": "2026-11-17T08:24:12.941Z"
+  },
+  {
+    "id": "guard-real-1794904458510",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "14:04 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T08:34:18.516Z"
+    },
+    "createdAt": "2026-11-17T08:34:18.510Z"
+  },
+  {
+    "id": "guard-real-1794904509494",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "14:05 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T08:35:09.502Z"
+    },
+    "createdAt": "2026-11-17T08:35:09.494Z"
+  },
+  {
+    "id": "guard-real-1794905040870",
+    "symbol": "NIFTY",
+    "side": "BUY",
+    "instrumentType": "CE",
+    "strike": 25000,
+    "entryPrice": 100,
+    "sl": 90,
+    "tp1": 110,
+    "tp2": 120,
+    "tp3": 130,
+    "source": "sdm",
+    "confidence": 0,
+    "strategy": "sdm",
+    "snapshot": {
+      "spot": 0,
+      "spotChange": 0,
+      "spotChangePct": 0,
+      "prevClose": 0,
+      "marketStatus": "OPEN",
+      "sessionTime": "14:14 IST",
+      "isExpiryDay": false,
+      "daysToExpiry": 0,
+      "dataSources": [],
+      "dataFreshness": "2026-11-17T08:44:00.880Z"
+    },
+    "createdAt": "2026-11-17T08:44:00.870Z"
   }
 ]

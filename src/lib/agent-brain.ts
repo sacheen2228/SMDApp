@@ -375,7 +375,7 @@ export const AGENT_TOOLS = [
         type: "object",
         properties: {
           capital: { type: "number", description: "Trading capital in Rs (default 25000 — the real account capital, not Rs 2L)" },
-          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20, hard-capped at Rs 2,000 per trade)" },
+          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20 — no fixed Rs cap: Rs 10k deployed → Rs 2k risk)" },
           entry: { type: "number", description: "Entry price" },
           sl: { type: "number", description: "Stop loss price" },
           lotSize: { type: "number", description: "Lot size for the symbol" },
@@ -399,7 +399,7 @@ export const AGENT_TOOLS = [
           spot: { type: "number", description: "Spot price (default: live context spot)" },
           vix: { type: "number", description: "India VIX or ATM IV in percent (default: live context VIX)" },
           capital: { type: "number", description: "Trading capital in Rs (default 25000 — the real account capital, not Rs 2L; the per-trade deployment is capped at Rs 20,000)" },
-          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20, hard-capped at Rs 2,000 per trade)" },
+          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20 — no fixed Rs cap: Rs 10k deployed → Rs 2k risk)" },
           lotSize: { type: "number", description: "Lot size (default: known index lots; REQUIRED for stocks)" },
           holdDays: { type: "number", description: "Expected holding time in days (default 0.25 ~ intraday)" },
           ivShift: { type: "number", description: "Assumed IV change at exit in vol points (e.g. -2 for crush)" },
@@ -443,7 +443,7 @@ export const AGENT_TOOLS = [
           stop: { type: "number", description: "spread mode: stop on the underlying" },
           holdDays: { type: "number", description: "Expected hold in days (default 1)" },
           capital: { type: "number", description: "Trading capital in Rs (default 25000 — the real account capital, not Rs 2L; the per-trade deployment is capped at Rs 20,000)" },
-          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20, hard-capped at Rs 2,000 per trade)" },
+          riskPct: { type: "number", description: "Risk as a % of the amount DEPLOYED in the trade (default 20 — no fixed Rs cap: Rs 10k deployed → Rs 2k risk)" },
           lotSize: { type: "number", description: "Lot size — inferred from symbol if omitted" },
           value: { type: "number", description: "portfolio mode: portfolio value in ₹" },
           beta: { type: "number", description: "portfolio mode: portfolio beta (default 1)" },
@@ -1206,7 +1206,7 @@ export async function executeTool(
         const data = await res.json();
         const trades = (data.trades || []).slice(0, limit);
         const stats = data.stats || {};
-        return `Trade History (${trades.length} recent):\nWin Rate: ${stats.winRate || 0}% | Total P&L: ${stats.totalPnL >= 0 ? "+" : ""}₹${(stats.totalPnL || 0).toLocaleString("en-IN")}\n${trades.map((t: any) => `- ${new Date(t.entryTime).toLocaleDateString("en-IN")} | ${t.strike} ${t.type} | Entry: ₹${t.entryPrice} → ${t.status} | P&L: ${t.pnl >= 0 ? "+" : ""}₹${t.pnl || 0} | Grade: ${t.qualityGrade || "N/A"}`).join("\n")}`;
+        return `Trade History (${trades.length} recent):\nWin Rate: ${stats.winRate || 0}% | Total P&L: ${stats.totalPnL >= 0 ? "+" : ""}₹${(stats.totalPnL || 0).toLocaleString("en-IN")}\n${trades.map((t: any) => `- ${new Date(t.entryTime).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })} | ${t.strike} ${t.type} | Entry: ₹${t.entryPrice} → ${t.status} | P&L: ${t.pnl >= 0 ? "+" : ""}₹${t.pnl || 0} | Grade: ${t.qualityGrade || "N/A"}`).join("\n")}`;
       } catch { return "Error fetching trade history"; }
     }
 
@@ -1464,7 +1464,7 @@ ${changes.join("\n")}`;
         const watch = r.watchSetups || [];
         const noTrade = r.noTrade;
         if (noTrade) return `NO HIGH-CONVICTION TRADES FOUND\n\nScanned ${r.summary.totalScanned} setups across Index F&O (${r.summary.indexFOCount}), Stock F&O (${r.summary.stockFOCount}), and Equity Swing (${r.summary.equitySwingCount}).\n\nReason: ${r.noTradeReason}\n\nAvg Score: ${r.summary.avgScore}/100 | Best Mode: ${r.summary.bestMode} | Data: ${r.dataQuality}`;
-        let output = `UNIFIED TRADE RANKING — ${new Date().toLocaleTimeString("en-IN")}\nSession: ${r.sessionPhase} | Data: ${r.dataQuality}\n\n`;
+        let output = `UNIFIED TRADE RANKING — ${new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}\nSession: ${r.sessionPhase} | Data: ${r.dataQuality}\n\n`;
         if (hc.length > 0) {
           output += `HIGH-CONVICTION SETUPS:\n`;
           hc.forEach((s: any, i: number) => {
@@ -1524,7 +1524,7 @@ ${changes.join("\n")}`;
         const trades = data.data.trades || [];
         const stats = data.data.stats || {};
         if (trades.length === 0) return `No active tracked trades.\nStats: Total tracked: ${stats.total} | Avg Score: ${stats.avgScore}`;
-        return `ACTIVE TRACKED TRADES (${trades.length}):\n\n${trades.map((t: any) => `${t.symbol} (${t.mode}) — ${t.stage} | Score: ${t.score}\n  Direction: ${t.direction} | Entry: ₹${t.entry} | Current: ₹${t.currentPrice}\n  P&L: ${t.unrealizedPnL >= 0 ? "+" : ""}₹${t.unrealizedPnL.toFixed(0)} (${t.unrealizedPnLPercent >= 0 ? "+" : ""}${t.unrealizedPnLPercent.toFixed(1)}%)\n  MFE: ₹${t.mfe.toFixed(0)} | MAE: ₹${t.mae.toFixed(0)} | R:R: 1:${t.riskReward?.toFixed(1)}\n  Created: ${new Date(t.createdAt).toLocaleTimeString("en-IN")}`).join("\n\n")}\n\nStats: Active: ${stats.active} | Total: ${stats.total} | Avg Score: ${stats.avgScore}`;
+        return `ACTIVE TRACKED TRADES (${trades.length}):\n\n${trades.map((t: any) => `${t.symbol} (${t.mode}) — ${t.stage} | Score: ${t.score}\n  Direction: ${t.direction} | Entry: ₹${t.entry} | Current: ₹${t.currentPrice}\n  P&L: ${t.unrealizedPnL >= 0 ? "+" : ""}₹${t.unrealizedPnL.toFixed(0)} (${t.unrealizedPnLPercent >= 0 ? "+" : ""}${t.unrealizedPnLPercent.toFixed(1)}%)\n  MFE: ₹${t.mfe.toFixed(0)} | MAE: ₹${t.mae.toFixed(0)} | R:R: 1:${t.riskReward?.toFixed(1)}\n  Created: ${new Date(t.createdAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}`).join("\n\n")}\n\nStats: Active: ${stats.active} | Total: ${stats.total} | Avg Score: ${stats.avgScore}`;
       } catch { return "Error fetching trade tracking"; }
     }
 
@@ -2061,7 +2061,7 @@ Time: ${Date.now() - start}ms`;
 
         const parts: string[] = [];
         parts.push(`Most Active F&O Contracts (${d.marketStatus || "unknown"} market)`);
-        parts.push(`Fetched: ${new Date(d.fetchedAt).toLocaleString("en-IN")}`);
+        parts.push(`Fetched: ${new Date(d.fetchedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
 
         if (type === "contracts" || type === "all") {
           parts.push(`\nTOP CONTRACTS BY VOLUME:\n${fmt(d.contracts?.data || []) || "No data"}`);
@@ -2416,8 +2416,7 @@ Time: ${Date.now() - start}ms`;
       // Log the chat-path candidate (paper) so the veto can be measured out-of-sample
       // even when the agent never sends an alert.
       void (async () => {
-        const { logCandidate } = await import("./candidate-log");
-        const { tierFromWarnings } = await import("./signal-veto");
+        const { logCandidate, tierFromWarnings } = await import("./candidate-log");
         const warns = res.warnings || [];
         await logCandidate({
           source: "agent:chat",

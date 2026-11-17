@@ -202,10 +202,9 @@ export function sizeOptionTrade(input: {
     costPerLot,
     budget,
     deployed,
-    riskAmount: Math.min(
-      PLAN_CONFIG.maxRiskPerTrade,
-      deployed * PLAN_CONFIG.riskPctOfDeployed,
-    ),
+    // risk = riskPct % of the amount DEPLOYED — no fixed ₹ cap (user rule,
+    // 2026-11-17: ₹10k deployed → ₹2k risk; the lots decide the deployment).
+    riskAmount: deployed * PLAN_CONFIG.riskPctOfDeployed,
     tradable: true,
     sizedFromBudget,
   };
@@ -236,13 +235,11 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   const maxStopPct = input.maxStopPctOfPremium ?? PLAN_CONFIG.maxStopPctOfPremium;
   const minStopTicks = input.minStopTicks ?? PLAN_CONFIG.minStopTicks;
 
-  // Rupee risk → premium points per unit
-  const wantedRisk = Math.min(
-    PLAN_CONFIG.maxRiskPerTrade,
-    Number(input.riskAmount) > 0
-      ? Number(input.riskAmount)
-      : (tradable ? actualDeployed : entry * lotSize) * PLAN_CONFIG.riskPctOfDeployed,
-  );
+  // Rupee risk → premium points per unit. 20% of deployed, no fixed cap:
+  // a wider deployment widens the stop in proportion (user rule 2026-11-17).
+  const wantedRisk = Number(input.riskAmount) > 0
+    ? Number(input.riskAmount)
+    : (tradable ? actualDeployed : entry * lotSize) * PLAN_CONFIG.riskPctOfDeployed;
   let riskPoints = wantedRisk / sizingUnits;
 
   // Guardrail 1: never let the stop exceed maxStopPct of the premium.
@@ -351,6 +348,7 @@ export interface ChainLegLike {
   ltp: number | null;
   delta?: number | null;
   oi?: number | null;
+  oiChange?: number | null;
   iv?: number | null;
   volume?: number | null;
 }
@@ -446,4 +444,115 @@ export function selectStrike(input: {
     return null;
   }
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// TP ACHIEVABILITY vs OI — "can these targets actually be reached per data?"
+//
+// The R-ladder says WHERE premium must go; this maps each target to the spot
+// the underlying must reach (via the option's delta) and checks whether a
+// concentrated opposing OI wall sits in that path:
+//   • CE (spot must RISE) → resistance = CALL OI above spot
+//   • PE (spot must FALL) → support    = PUT  OI below spot
+// A wall = the nearest in-path strike whose OI ≥ wallOiMult × the median OI
+// of the whole opposing ladder (median keeps one fat strike from defining
+// "normal"). A wall must be BROKEN for the target to print — fresh writing
+// (oiChange > 0) means it is actively defended; unwinding means it is rotting.
+// Honest outputs only: no wall in the path → achievable; delta missing → a
+// labelled 0.50 estimate, never a silent one.
+// ─────────────────────────────────────────────────────────────
+
+export interface TargetReach {
+  /** The premium target this check is about. */
+  target: number;
+  /** Spot the underlying must reach for this TP (entry→target ÷ |delta|). */
+  requiredSpot: number;
+  /** The opposing OI wall the spot must break to get there, if any. */
+  wall?: { strike: number; oi: number; oiChange: number; side: "call" | "put" };
+  /** false = a top-OI wall sits between spot and this target. */
+  achievable: boolean;
+  /** Plain-language verdict for the UI (always set for blocked targets). */
+  note?: string;
+}
+
+export function assessTargets(input: {
+  optionType: "CE" | "PE";
+  spot: number;
+  entry: number;
+  targets: number[];
+  delta: number | null;
+  /** true when delta came from ATM greeks rather than the chosen leg. */
+  deltaEstimated?: boolean;
+  chain: ChainRowLike[];
+  /** wall if OI ≥ mult × median opposing-ladder OI (default 2.5). */
+  wallOiMult?: number;
+}): TargetReach[] {
+  const { optionType, spot, entry, targets, chain } = input;
+  if (!(spot > 0) || !(entry > 0) || !targets?.length) return [];
+
+  let delta = Number(input.delta);
+  let estimated = !!input.deltaEstimated;
+  if (!Number.isFinite(delta) || delta === 0) {
+    delta = 0.5; // labelled estimate — never silent
+    estimated = true;
+  }
+  const absDelta = Math.abs(delta);
+  const mult = Number(input.wallOiMult) > 0 ? Number(input.wallOiMult) : 2.5;
+  const isCE = optionType === "CE";
+
+  // Opposing ladder: CE → call strikes above spot, PE → put strikes below.
+  const ladder = chain
+    .filter((r) => {
+      const leg = isCE ? r.ce : r.pe;
+      if (!leg || !(Number(leg.oi) > 0)) return false;
+      return isCE ? r.strike > spot : r.strike < spot;
+    })
+    .sort((a, b) => (isCE ? a.strike - b.strike : b.strike - a.strike)); // nearest-to-spot first
+
+  const ois = ladder.map((r) => Number((isCE ? r.ce : r.pe)!.oi));
+  const sortedOi = [...ois].sort((a, b) => a - b);
+  const median = sortedOi.length
+    ? sortedOi.length % 2
+      ? sortedOi[(sortedOi.length - 1) / 2]
+      : (sortedOi[sortedOi.length / 2 - 1] + sortedOi[sortedOi.length / 2]) / 2
+    : 0;
+  const wallFloor = median * mult;
+
+  const fmtL = (n: number) => `${(n / 100000).toFixed(1)}L`;
+
+  return targets.map((target) => {
+    const premiumPts = target - entry;
+    const spotPts = premiumPts / absDelta;
+    const requiredSpot = isCE ? spot + spotPts : spot - spotPts;
+
+    // In-path: opposing strikes the spot must trade through to get there.
+    const inPath = ladder.filter((r) =>
+      isCE ? r.strike <= requiredSpot : r.strike >= requiredSpot
+    );
+    const wallRow = inPath.find((r) => Number((isCE ? r.ce : r.pe)!.oi) >= wallFloor);
+    const estSuffix = estimated ? " (delta est.)" : "";
+
+    if (!wallRow) {
+      return {
+        target,
+        requiredSpot: Number(requiredSpot.toFixed(2)),
+        achievable: true,
+        note: `TP needs spot ${requiredSpot.toFixed(0)} — no opposing OI wall in the path${estSuffix}`,
+      };
+    }
+
+    const leg = (isCE ? wallRow.ce : wallRow.pe)!;
+    const oi = Number(leg.oi);
+    const oiChange = Number(leg.oiChange) || 0;
+    const flow =
+      oiChange > 0 ? `+${fmtL(oiChange)} writing` :
+      oiChange < 0 ? `${fmtL(Math.abs(oiChange))} unwinding` : "flat";
+    return {
+      target,
+      requiredSpot: Number(requiredSpot.toFixed(2)),
+      wall: { strike: wallRow.strike, oi, oiChange, side: isCE ? "call" : "put" },
+      achievable: false,
+      note: `TP needs spot ${requiredSpot.toFixed(0)} — ${isCE ? "call" : "put"} wall ${wallRow.strike} (${fmtL(oi)} OI, ${flow}) in the way${estSuffix}`,
+    };
+  });
 }

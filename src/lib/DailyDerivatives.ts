@@ -6,7 +6,7 @@ import { getOptionChain as canonicalGetOptionChain } from "@/lib/data-layer/chai
 import { calculateGreeks, parseExpiryDateLoose, impliedVolFromPremium } from "@/lib/greeks";
 import { getNSEIndiaVIX } from "@/lib/nse-api";
 import { fetchCandlesWithFallback } from "@/lib/market/candle-chain";
-import { buildOptionPlan, selectStrike } from "@/lib/option-plan";
+import { buildOptionPlan, selectStrike, assessTargets, type TargetReach } from "@/lib/option-plan";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 
 // ====================== TYPES ======================
@@ -20,7 +20,7 @@ export interface Candle {
 }
 
 export type Side = "LONG" | "SHORT";
-export type SetupType = "CROSSOVER" | "PULLBACK" | "BREAKOUT" | "RETEST" | "FAKEOUT";
+export type SetupType = "CROSSOVER" | "PULLBACK" | "BREAKOUT" | "RETEST" | "FAKEOUT" | "REVERSAL";
 
 export interface Signal {
   index: number;
@@ -60,6 +60,12 @@ export interface TradePlanCard {
   tradable: boolean;
   otmSteps: number;
   reason: string;
+  /** Current market premium — `entry` is the FROZEN plan anchor, this ticks. */
+  livePremium?: number;
+  /** Newest candle setup for this side (BREAKOUT/RETEST/… @ spot) — WHY this direction. */
+  setup?: string;
+  /** Per-target achievability vs OI walls (spot must break the wall to print). */
+  targetReach?: TargetReach[];
 }
 
 /** One factor's directional vote — visible reasoning, never a hidden weight. */
@@ -139,12 +145,15 @@ export interface DailyDerivativesReport {
   sentiment: "Extreme Greed" | "Bullish" | "Neutral" | "Bearish" | "Extreme Fear";
   sentimentScore: number;
   tradePlans: TradePlanCard[];
+  /** When the frozen SL/TP ladder was generated — levels don't tick. */
+  planAsOf?: string;
   preferredSide: "CALL" | "PUT" | null;
   directionBias: DirectionBias;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
   candleCount: number;
+  warmupBars: number;
   dataSource: string;
   freshness: string;
 }
@@ -155,6 +164,7 @@ export interface Config {
   slow: number;
   adxPeriod: number;
   adxMin: number;
+  adxMinCross: number;
   atrPeriod: number;
   breakoutLookback: number;
   breakoutBufferAtr: number;
@@ -163,6 +173,18 @@ export interface Config {
   retestWindow: number;
   retestToleranceAtr: number;
   fakeoutWindow: number;
+  /** DI may lag the EMA cross by 1-2 bars — bars allowed to confirm it. */
+  crossConfirmBars: number;
+  /** Structure break often lags the flip — bars allowed to claim a REVERSAL. */
+  reversalConfirmBars: number;
+  /** Established-trend run length (bars) required before a reversal qualifies. */
+  reversalMinRun: number;
+  /** Bars defining a consolidation range ahead of a breakout. */
+  consolLookback: number;
+  /** Range ≤ this × ATR over consolLookback ⇒ consolidation breakout. */
+  consolMaxAtr: number;
+  /** Sweep must penetrate this × ATR past the level to count as a trap. */
+  fakeoutMinSweepAtr: number;
   stopAtrMult: number;
   rrTargets: number[];
   cooldownBars: number;
@@ -173,6 +195,10 @@ export const DEFAULTS: Config = {
   slow: 15,
   adxPeriod: 14,
   adxMin: 20,
+  // Crosses fire at trend inception while ADX is still ramping — measured on
+  // real 5m NIFTY: 0/3 raw crosses cleared ADX≥20 (18.2/12.4/19.9 at the cross
+  // bar). 15 admits the near-misses, still blocks deep chop.
+  adxMinCross: 15,
   atrPeriod: 14,
   breakoutLookback: 20,
   breakoutBufferAtr: 0.1,
@@ -181,10 +207,38 @@ export const DEFAULTS: Config = {
   retestWindow: 10,
   retestToleranceAtr: 0.3,
   fakeoutWindow: 3,
+  crossConfirmBars: 2,
+  reversalConfirmBars: 4,
+  reversalMinRun: 5,
+  consolLookback: 10,
+  consolMaxAtr: 2.0,
+  fakeoutMinSweepAtr: 0.1,
   stopAtrMult: 1.5,
   rrTargets: [1, 2, 3],
   cooldownBars: 3,
 };
+
+// Bars the engine needs before ANY setup can fire — the loop starts at
+// max(slow, adx*2, atr, lookback)+1 (29 with DEFAULTS). A fresh session has
+// only ~12 bars at 10:00, so the report walks back over prior trading days
+// until this is met and the UI shows an honest "warming up" state.
+export function warmupBars(cfg: Partial<Config> = {}): number {
+  const o = { ...DEFAULTS, ...cfg };
+  return Math.max(o.slow, o.adxPeriod * 2, o.atrPeriod, o.breakoutLookback) + 1;
+}
+
+// YYYY-MM-DD in IST — never toISOString() (UTC: a day off before 05:30 IST).
+function istDate(daysBack = 0): string {
+  return new Date(Date.now() - daysBack * 86400000).toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  });
+}
+
+// Skip Sat/Sun so empty weekend fetches never pollute session-health.
+function isWeekendIst(dateStr: string): boolean {
+  const wd = new Date(dateStr + "T12:00:00Z").getUTCDay();
+  return wd === 0 || wd === 6;
+}
 
 export function ema(values: number[], period: number): number[] {
   const out = new Array(values.length).fill(NaN);
@@ -292,7 +346,23 @@ export function emaCrossAdxAtr(candles: Candle[], cfg: Partial<Config> = {}) {
     signals.push(s);
   };
 
-  const start = Math.max(o.slow, o.adxPeriod * 2, o.atrPeriod, o.breakoutLookback) + 1;
+  const start = warmupBars(o);
+
+  // ── Structure seeds: fractal swings + trend-run bookkeeping (REVERSAL) ──
+  // A pivot at bar j is confirmed by bar j+1 — seed only pivots whose
+  // confirming bar is still before the signal loop, then continue in-loop.
+  let swingHigh = -Infinity;
+  let swingLow = Infinity;
+  for (let j = 2; j < start - 1 && j + 1 < candles.length; j++) {
+    if (candles[j].high >= candles[j - 1].high && candles[j].high >= candles[j + 1].high)
+      swingHigh = candles[j].high;
+    if (candles[j].low <= candles[j - 1].low && candles[j].low <= candles[j + 1].low)
+      swingLow = candles[j].low;
+  }
+  let runDir: "UP" | "DOWN" | "NONE" = "NONE";
+  let runLen = 0;
+  // One claim per EMA flip: REVERSAL (structure) outranks CROSSOVER (DI).
+  let pendingFlip: { dir: "UP" | "DN"; index: number; priorRun: number } | null = null;
 
   for (let i = start; i < candles.length; i++) {
     const k = candles[i];
@@ -301,55 +371,180 @@ export function emaCrossAdxAtr(candles: Candle[], cfg: Partial<Config> = {}) {
     const pf = emaFast[i - 1], ps = emaSlow[i - 1];
     if ([a, f, s, pf, ps, adxArr[i], adxArr[i - 1]].some(Number.isNaN)) continue;
 
+    // Confirm the fractal pivot at i-2 (bars i-3..i-1 are historical).
+    if (i >= 3) {
+      if (candles[i - 2].high >= candles[i - 3].high && candles[i - 2].high >= candles[i - 1].high)
+        swingHigh = candles[i - 2].high;
+      if (candles[i - 2].low <= candles[i - 3].low && candles[i - 2].low <= candles[i - 1].low)
+        swingLow = candles[i - 2].low;
+    }
+
     const adxOk = adxArr[i] >= o.adxMin;
     const gapOk = Math.abs(f - s) >= o.minEmaGapAtr * a;
     const up = f > s;
     const dn = f < s;
     trend[i] = up ? "UP" : dn ? "DOWN" : "NONE";
+    // Capture BEFORE this bar's run update — a flip's priorRun is the length
+    // of the established trend being reversed.
+    const priorRun = runLen;
+    if (trend[i] === runDir) runLen++;
+    else {
+      runDir = trend[i];
+      runLen = trend[i] === "NONE" ? 0 : 1;
+    }
     const diBull = plusDI[i] > minusDI[i];
     const diBear = minusDI[i] > plusDI[i];
+    // DI turning = one-bar directional confirmation (Wilder-smoothed DI often
+    // needs several bars to fully cross after a violent turn).
+    const diTurningBull = plusDI[i] > plusDI[i - 1] && minusDI[i] < minusDI[i - 1];
+    const diTurningBear = minusDI[i] > minusDI[i - 1] && plusDI[i] < plusDI[i - 1];
     const bullBar = k.close > k.open;
     const bearBar = k.close < k.open;
     const stopDist = o.stopAtrMult * a;
+    // Crossovers use the lower adxMinCross floor (see DEFAULTS) — a cross is a
+    // one-shot event at trend start; ADX≥20 there systematically misses it.
+    const adxOkCross = adxArr[i] >= o.adxMinCross;
 
     pending = pending.filter(p => i - p.index <= o.retestWindow);
 
     let hh = -Infinity, ll = Infinity;
+    let ch = -Infinity, cl = Infinity;
     for (let j = i - o.breakoutLookback; j < i; j++) {
       hh = Math.max(hh, candles[j].high);
       ll = Math.min(ll, candles[j].low);
+      if (j >= i - o.consolLookback) {
+        ch = Math.max(ch, candles[j].high);
+        cl = Math.min(cl, candles[j].low);
+      }
     }
     const buf = o.breakoutBufferAtr * a;
     const expansion = k.high - k.low >= 0.8 * a;
+    const inConsol = ch - cl <= o.consolMaxAtr * a;
 
+    // ── 1. Breakout / breakdown — the rolling range edge IS the S/R level ──
     if (up && gapOk && adxOk && diBull && k.close > hh + buf && bullBar && expansion) {
-      push(build(i, "BREAKOUT", "LONG", k.close, k.close - stopDist, `Breakout above ${hh.toFixed(0)}`));
+      push(build(i, "BREAKOUT", "LONG", k.close, k.close - stopDist,
+        inConsol ? `Consolidation breakout above ${hh.toFixed(0)}` : `Breakout above ${hh.toFixed(0)}`));
       pending.push({ side: "LONG", level: hh, index: i });
     } else if (dn && gapOk && adxOk && diBear && k.close < ll - buf && bearBar && expansion) {
-      push(build(i, "BREAKOUT", "SHORT", k.close, k.close + stopDist, `Breakdown below ${ll.toFixed(0)}`));
+      push(build(i, "BREAKOUT", "SHORT", k.close, k.close + stopDist,
+        inConsol ? `Consolidation breakdown below ${ll.toFixed(0)}` : `Breakdown below ${ll.toFixed(0)}`));
       pending.push({ side: "SHORT", level: ll, index: i });
     }
 
-    const crossUp = pf <= ps && f > s;
-    const crossDn = pf >= ps && f < s;
-    if (crossUp && adxOk && diBull) {
-      push(build(i, "CROSSOVER", "LONG", k.close, k.close - stopDist, `EMA9 crossed above EMA15`));
-    } else if (crossDn && adxOk && diBear) {
-      push(build(i, "CROSSOVER", "SHORT", k.close, k.close + stopDist, `EMA9 crossed below EMA15`));
+    // ── 2. Breakout retest & confirmation — consumes the pending level ──
+    const retestTol = o.retestToleranceAtr * a;
+    for (const p of [...pending]) {
+      if (i <= p.index) continue;
+      if (p.side === "LONG" && up && adxOkCross && diBull &&
+          k.low <= p.level + retestTol && k.close > p.level) {
+        push(build(i, "RETEST", "LONG", k.close, Math.min(k.low, p.level) - 0.25 * a,
+          `Retest of ${p.level.toFixed(0)} held as support`));
+        pending = pending.filter(x => x !== p);
+        break;
+      }
+      if (p.side === "SHORT" && dn && adxOkCross && diBear &&
+          k.high >= p.level - retestTol && k.close < p.level) {
+        push(build(i, "RETEST", "SHORT", k.close, Math.max(k.high, p.level) + 0.25 * a,
+          `Retest of ${p.level.toFixed(0)} rejected as resistance`));
+        pending = pending.filter(x => x !== p);
+        break;
+      }
     }
 
+    // ── 3. Flip tracking — one claim per flip, REVERSAL outranks CROSSOVER ──
+    const crossUp = pf <= ps && f > s;
+    const crossDn = pf >= ps && f < s;
+    if (crossUp) pendingFlip = { dir: "UP", index: i, priorRun };
+    else if (crossDn) pendingFlip = { dir: "DN", index: i, priorRun };
+    else if (pendingFlip) {
+      const backAgainst =
+        (pendingFlip.dir === "UP" && trend[i] === "DOWN") ||
+        (pendingFlip.dir === "DN" && trend[i] === "UP");
+      if (backAgainst || i - pendingFlip.index > o.reversalConfirmBars) pendingFlip = null;
+    }
+
+    // ── 4. REVERSAL: established run + EMA flip + structure break + DI ──
+    if (pendingFlip && trend[i] !== "NONE" &&
+        i - pendingFlip.index <= o.reversalConfirmBars &&
+        pendingFlip.priorRun >= o.reversalMinRun) {
+      if (pendingFlip.dir === "DN" && trend[i] === "DOWN" &&
+          Number.isFinite(swingLow) && k.close < swingLow &&
+          (diBear || diTurningBear)) {
+        push(build(i, "REVERSAL", "SHORT", k.close, k.high + 0.5 * a,
+          `Reversal: close < swing low ${swingLow.toFixed(0)} after ${pendingFlip.priorRun}-bar run`));
+        pendingFlip = null;
+      } else if (pendingFlip.dir === "UP" && trend[i] === "UP" &&
+          Number.isFinite(swingHigh) && k.close > swingHigh &&
+          (diBull || diTurningBull)) {
+        push(build(i, "REVERSAL", "LONG", k.close, k.low - 0.5 * a,
+          `Reversal: close > swing high ${swingHigh.toFixed(0)} after ${pendingFlip.priorRun}-bar run`));
+        pendingFlip = null;
+      }
+    }
+
+    // ── 5. CROSSOVER: the flip's DI confirmation (skipped if REVERSAL claimed) ──
+    if (pendingFlip && i - pendingFlip.index <= o.crossConfirmBars) {
+      if (pendingFlip.dir === "UP" && trend[i] === "UP" && diBull && adxOkCross) {
+        push(build(i, "CROSSOVER", "LONG", k.close, k.close - stopDist, `EMA9 crossed above EMA15`));
+        pendingFlip = null;
+      } else if (pendingFlip.dir === "DN" && trend[i] === "DOWN" && diBear && adxOkCross) {
+        push(build(i, "CROSSOVER", "SHORT", k.close, k.close + stopDist, `EMA9 crossed below EMA15`));
+        pendingFlip = null;
+      }
+    }
+
+    // ── 6. PULLBACK / EMA rejection — trend-continuation dip into the zone ──
     const slowTol = o.pullbackSlowToleranceAtr * a;
+    const body = Math.abs(k.close - k.open);
+    const lowerWick = Math.min(k.open, k.close) - k.low;
+    const upperWick = k.high - Math.max(k.open, k.close);
     if (up && gapOk && adxOk && diBull && !crossUp &&
         k.low <= f && k.close > f && k.close > s && k.low >= s - slowTol && bullBar) {
-      push(build(i, "PULLBACK", "LONG", k.close, Math.min(k.low, s) - 0.25 * a, `Pullback to EMA zone`));
+      const rejection = body > 0 && lowerWick >= 2 * body;
+      push(build(i, "PULLBACK", "LONG", k.close, Math.min(k.low, s) - 0.25 * a,
+        rejection ? `EMA rejection — wick reclaimed ${f.toFixed(0)}` : `Pullback to EMA zone`));
     } else if (dn && gapOk && adxOk && diBear && !crossDn &&
         k.high >= f && k.close < f && k.close < s && k.high <= s + slowTol && bearBar) {
-      push(build(i, "PULLBACK", "SHORT", k.close, Math.max(k.high, s) + 0.25 * a, `Pullback to EMA zone`));
+      const rejection = body > 0 && upperWick >= 2 * body;
+      push(build(i, "PULLBACK", "SHORT", k.close, Math.max(k.high, s) + 0.25 * a,
+        rejection ? `EMA rejection — wick reclaimed ${f.toFixed(0)}` : `Pullback to EMA zone`));
+    }
+
+    // ── 7. FAKEOUT: bull/bear trap — sweep of the range edge closing back inside ──
+    if (k.high >= hh + o.fakeoutMinSweepAtr * a && k.close < hh && bearBar) {
+      const lastBo = lastSignalBar.get("BREAKOUT:LONG");
+      if (lastBo === undefined || i - lastBo > o.fakeoutWindow) {
+        push(build(i, "FAKEOUT", "SHORT", k.close, k.high + 0.25 * a,
+          `Bull trap: swept ${hh.toFixed(0)} and closed back inside`));
+      }
+    } else if (k.low <= ll - o.fakeoutMinSweepAtr * a && k.close > ll && bullBar) {
+      const lastBo = lastSignalBar.get("BREAKOUT:SHORT");
+      if (lastBo === undefined || i - lastBo > o.fakeoutWindow) {
+        push(build(i, "FAKEOUT", "LONG", k.close, k.low - 0.25 * a,
+          `Bear trap: swept ${ll.toFixed(0)} and closed back inside`));
+      }
     }
   }
 
   return { signals, trend };
 }
+
+// ====================== TRADE-PLAN SNAPSHOT ======================
+// Levels are ANCHORED to the entry at generation time and served for
+// PLAN_TTL_MS (or until spot drifts / the selected strike changes) so SL/TP
+// don't jump on every 5-min poll — only `refreshPlan: true` (manual Refresh)
+// or a material market move rebuilds the ladder. `livePremium` on each card
+// keeps the ticking market price visible next to the frozen plan.
+const PLAN_TTL_MS = 10 * 60_000;
+const PLAN_SPOT_DRIFT = 0.0015; // 0.15% — a material move rebuilds early
+
+interface PlanSnapshot {
+  at: number;
+  spot: number;
+  bySide: Partial<Record<"CALL" | "PUT", TradePlanCard>>;
+}
+const planSnapshots = new Map<string, PlanSnapshot>();
 
 // ====================== MAIN SERVICE ======================
 export class DailyDerivativesService {
@@ -424,8 +619,14 @@ export class DailyDerivativesService {
           : { factor: "OI Shift", vote: "NEUTRAL", detail: "top-strike OI flat" }
     );
 
-    // 4. Candle signals (EMA9/15 + ADX/ATR) — the most recent setup's side
-    const last = args.latestSignals[0];
+    // 4. Candle signals (EMA9/15 + ADX/ATR) — newest setup from TODAY's
+    //    session only; a setup from a prior day must not vote on today's bias.
+    const today = istDate(0);
+    const last = args.latestSignals.find(
+      (s) =>
+        new Date(s.time).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) ===
+        today
+    );
     votes.push(
       !last
         ? { factor: "Candles", vote: "NEUTRAL", detail: "no fresh setups" }
@@ -458,6 +659,8 @@ export class DailyDerivativesService {
     expiryISO?: string;
     daysToExpiry?: number;
     interval?: "5minute" | "15minute" | "30minute";
+    /** Rebuild the frozen trade-plan ladder immediately (manual Refresh). */
+    refreshPlan?: boolean;
   }): Promise<DailyDerivativesReport> {
     const { underlying, expiryISO, interval = "5minute" } = params;
 
@@ -482,19 +685,40 @@ export class DailyDerivativesService {
     // 2. Candles via the live capture chain (Breeze → MO → NSE index-only).
     //    SENSEX is a BSE index — the chain reports that capability skip honestly;
     //    never substitutes a different instrument or timeframe.
-    const candleResult = await fetchCandlesWithFallback(
-      underlying,
-      new Date().toISOString().slice(0, 10),
-      interval
+    //    Walk back over prior trading days until the engine has its warmup
+    //    bars — a fresh session has only ~12 bars at 10:00 while EMA15+ADX×2
+    //    needs 29, which is why signals used to stay empty until noon.
+    //    Weekends are skipped so empty results never pollute session-health.
+    const need = warmupBars();
+    const byTs = new Map<string, Candle>();
+    let candleSource = "";
+    let candleInterval = "";
+    let candleDegraded: string | null = null;
+    for (let back = 0; back <= 4; back++) {
+      const day = istDate(back);
+      if (isWeekendIst(day)) continue;
+      const dayResult = await fetchCandlesWithFallback(underlying, day, interval);
+      if (dayResult.candles?.length && !candleSource) {
+        candleSource = dayResult.source;
+        candleInterval = dayResult.intervalLabel;
+        candleDegraded = dayResult.degraded ?? null;
+      }
+      for (const c of dayResult.candles || []) {
+        byTs.set(c.timestamp, {
+          time: c.timestamp,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        });
+      }
+      if (byTs.size >= need) break;
+    }
+    const candles: Candle[] = [...byTs.values()].sort((a, b) =>
+      String(a.time).localeCompare(String(b.time))
     );
-    const candles: Candle[] = (candleResult.candles || []).map((c) => ({
-      time: c.timestamp,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume,
-    }));
+    if (!candleSource) candleSource = "none";
 
     // 3. Indicator Signals (if we have candles)
     let latestSignals: Signal[] = [];
@@ -604,15 +828,19 @@ export class DailyDerivativesService {
 
     const tradePlans: TradePlanCard[] = [];
     const lotSize = getLotSizeStrict(underlying);
+    let planAsOf: string | undefined;
     if (lotSize && spot > 0) {
       const chainRows = (chain.strikes || []).map((s: any) => ({
         strike: Number(s.strike),
         ce: s.ce,
         pe: s.pe,
       }));
-      for (const direction of ["CALL", "PUT"] as const) {
-        const sel = selectStrike({ chain: chainRows, direction, spot, lotSize });
-        if (!sel) continue;
+      const selBySide = {
+        CALL: selectStrike({ chain: chainRows, direction: "CALL", spot, lotSize }),
+        PUT: selectStrike({ chain: chainRows, direction: "PUT", spot, lotSize }),
+      };
+
+      const buildCard = (sel: NonNullable<typeof selBySide.CALL>): TradePlanCard => {
         const plan = buildOptionPlan({
           symbol: underlying,
           optionType: sel.optionType,
@@ -625,7 +853,31 @@ export class DailyDerivativesService {
         const cleanNotes = (plan?.notes ?? []).filter(
           n => !(n.includes("below the gate's") && Math.round((plan?.rr ?? 0) * 100) / 100 >= 2)
         );
-        tradePlans.push({
+        // Newest candle setup for THIS side — why the direction has a tailwind
+        // (same today-only rule the Candles bias vote uses).
+        const wantSide = sel.optionType === "PE" ? "SHORT" : "LONG";
+        const setupSig = latestSignals.find(
+          s => s.side === wantSide &&
+            new Date(s.time).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === istDate(0)
+        );
+        const setup = setupSig
+          ? `${setupSig.type} ${setupSig.side} @ ${setupSig.entry.toFixed(0)} (${setupSig.strength})`
+          : undefined;
+        // TP achievability: map each R-target to the spot it needs (delta) and
+        // check the opposing OI ladder for a wall in that path.
+        const reachDelta = sel.delta ??
+          (atmGreeks ? (sel.optionType === "CE" ? atmGreeks.delta : atmGreeks.delta - 1) : null);
+        const targetReach = assessTargets({
+          optionType: sel.optionType,
+          spot,
+          entry: plan ? plan.entry : sel.entry,
+          targets: plan?.targets ?? [],
+          delta: reachDelta,
+          deltaEstimated: sel.delta == null,
+          chain: chainRows,
+        });
+        const blocked = targetReach.filter(t => !t.achievable).map(t => t.note).filter(Boolean);
+        return {
           optionType: sel.optionType,
           strike: sel.strike,
           entry: plan ? plan.entry : sel.entry,
@@ -637,10 +889,58 @@ export class DailyDerivativesService {
           riskAmount: plan?.riskAmount ?? 0,
           tradable: !!plan?.tradable,
           otmSteps: sel.otmSteps,
+          livePremium: sel.entry,
+          setup,
+          targetReach,
           reason: plan
-            ? `${sel.reason}${cleanNotes.length ? ` — ${cleanNotes.join(" · ")}` : ""}`
+            ? `${sel.reason}${cleanNotes.length ? ` — ${cleanNotes.join(" · ")}` : ""}${blocked.length ? ` — ${blocked.join(" · ")}` : ""}`
             : `${sel.reason} — no valid SL/TP ladder`,
+        };
+      };
+
+      const cached = planSnapshots.get(underlying);
+      const ttlOk = !!cached && Date.now() - cached.at < PLAN_TTL_MS;
+      const drift = cached && cached.spot > 0 ? Math.abs(spot - cached.spot) / cached.spot : Infinity;
+      const driftOk = drift <= PLAN_SPOT_DRIFT;
+      // Reuse only while every present side keeps its selected strike; a
+      // side that appears fresh (was absent) forces a coherent rebuild.
+      const strikesMatch =
+        !!cached &&
+        (["CALL", "PUT"] as const).every((d) => {
+          const frozen = cached.bySide[d];
+          const sel = selBySide[d];
+          if (!frozen) return !sel;
+          if (!sel) return true; // frozen survives a momentarily thin chain
+          return sel.strike === frozen.strike;
         });
+      const fmtPlanTime = (ms: number) =>
+        new Date(ms).toLocaleTimeString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+      if (!params.refreshPlan && cached && ttlOk && driftOk && strikesMatch) {
+        // Frozen ladder — entry/SL/TP stay put; only the live premium ticks.
+        planAsOf = fmtPlanTime(cached.at);
+        for (const direction of ["CALL", "PUT"] as const) {
+          const frozen = cached.bySide[direction];
+          if (!frozen) continue;
+          const sel = selBySide[direction];
+          tradePlans.push(sel ? { ...frozen, livePremium: sel.entry } : frozen);
+        }
+      } else {
+        const bySide: PlanSnapshot["bySide"] = {};
+        for (const direction of ["CALL", "PUT"] as const) {
+          const sel = selBySide[direction];
+          if (!sel) continue;
+          const card = buildCard(sel);
+          bySide[direction] = card;
+          tradePlans.push(card);
+        }
+        planSnapshots.set(underlying, { at: Date.now(), spot, bySide });
+        planAsOf = fmtPlanTime(Date.now());
       }
       // Preferred side first
       tradePlans.sort((a, b) =>
@@ -676,12 +976,14 @@ export class DailyDerivativesService {
       sentiment,
       sentimentScore: score,
       tradePlans,
+      planAsOf,
       preferredSide,
       directionBias,
-      candleSource: candleResult.source,
-      candleInterval: candleResult.intervalLabel,
-      candleDegraded: candleResult.degraded,
+      candleSource,
+      candleInterval,
+      candleDegraded,
       candleCount: candles.length,
+      warmupBars: need,
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
     };
@@ -694,7 +996,7 @@ export class DailyDerivativesService {
 ═══════════════════════════════════════════════════
 Underlying     : ${r.underlying}
 Spot           : ${r.spot.toFixed(2)}
-Time           : ${new Date(r.timestamp).toLocaleString("en-IN")}
+Time           : ${new Date(r.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 
 India VIX      : ${r.indiaVix.toFixed(2)} (${r.indiaVixChange >= 0 ? "+" : ""}${r.indiaVixChange.toFixed(2)})
 PCR            : ${r.pcr}
@@ -726,7 +1028,7 @@ Direction       : ${r.directionBias.side === "NEUTRAL" ? "NO EDGE" : `GO ${r.dir
 ${r.directionBias.votes.map(v => `  ${v.vote === "NEUTRAL" ? "·" : "✓"} [${v.factor}] ${v.vote} — ${v.detail}`).join("\n")}
 ${r.tradePlans.length === 0 ? "  No tradable contract found" :
   r.tradePlans.map(p => `  ${p.optionType} ${p.strike}${p.optionType === (r.preferredSide === "PUT" ? "PE" : "CE") ? " ★" : ""} | Entry: ${p.entry} | SL: ${p.stopLoss} | TP: ${p.targets.join(" / ") || "-"} | ${p.lots} lot${p.lots === 1 ? "" : "s"} ₹${Math.round(p.deployed).toLocaleString("en-IN")}${p.tradable ? "" : " — NOT TRADABLE"}`).join("\n")}
-Candles         : ${r.candleCount} @ ${r.candleInterval} (${r.candleSource}${r.candleDegraded ? ` — ${r.candleDegraded}` : ""})
+Candles         : ${r.candleCount} @ ${r.candleInterval} (${r.candleSource}${r.candleDegraded ? ` — ${r.candleDegraded}` : ""})${r.candleCount < r.warmupBars ? ` — warming up ${r.candleCount}/${r.warmupBars} bars` : ""}
 ═══════════════════════════════════════════════════
 `;
   }

@@ -590,11 +590,11 @@ export const SimpleMode = memo(function SimpleMode({
               <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Market Context</span>
               {barStamp?.asOf5m ? (
                 <span className="text-[9px] text-muted-foreground">
-                  {new Date(barStamp.asOf5m).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })} {barStamp.fresh5m ? "5m" : "15m"} candle
+                  {new Date(barStamp.asOf5m).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false })} {barStamp.fresh5m ? "5m" : "15m"} candle
                 </span>
               ) : barStamp?.asOf15m ? (
                 <span className="text-[9px] text-muted-foreground">
-                  {new Date(barStamp.asOf15m).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })} 15m candle
+                  {new Date(barStamp.asOf15m).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false })} 15m candle
                 </span>
               ) : null}
               <span className={`ml-2 text-[10px] ${

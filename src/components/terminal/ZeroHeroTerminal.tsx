@@ -302,7 +302,7 @@ function InstitutionalDerivativesView() {
               className={`px-2 py-0.5 rounded font-bold ${sym === s ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" : "bg-[#10151d] border border-[#1f2733] text-[#7d8ba0]"}`}>{s}</button>
           ))}
           {loading && <Activity className="h-3 w-3 animate-spin" />}
-          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}</span>}
           <button onClick={fetchSig} className="px-2 py-0.5 rounded bg-[#1f2733] hover:bg-[#2a3441] font-bold">↻</button>
         </div>
       </div>
@@ -537,7 +537,7 @@ function TodaysTradeView() {
             </span>
           )}
           {loading && <Activity className="h-3 w-3 animate-spin" />}
-          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN")}</span>}
+          {updatedAt > 0 && <span>{new Date(updatedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}</span>}
           <button onClick={() => setFrozen(!frozen)}
             className={`px-2 py-0.5 rounded font-bold text-[9px] ${frozen ? "bg-red-500/20 text-red-400 border border-red-500/40" : "bg-[#1f2733] hover:bg-[#2a3441] text-[#dfe6ee]"}`}>
             {frozen ? "🔒 FROZEN" : "❄️ Freeze"}
@@ -754,7 +754,7 @@ export function ZeroHeroTerminal() {
       setPcr(totalCallOI > 0 ? totalPutOI / totalCallOI : 1);
       setVix(json.data?.summary?.indiaVIX || 0);
       setCandles(json.data?.candles || []);
-      setLastUpdate(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
+      setLastUpdate(new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
       setOpen(isMarketOpen());
       setError(false);
       setErrorMsg("");
@@ -852,7 +852,7 @@ export function ZeroHeroTerminal() {
   useEffect(() => {
     const timer = setInterval(() => {
       const ist = getISTTime();
-      setNow(ist.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
+      setNow(ist.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
       setOpen(isMarketOpen());
     }, 1000);
     return () => clearInterval(timer);

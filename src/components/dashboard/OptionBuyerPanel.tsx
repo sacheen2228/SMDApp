@@ -191,7 +191,7 @@ function TradeCard({ trade }: { trade: Trade }) {
         {/* Expiry + Timestamp */}
         <div className="flex items-center justify-between text-[9px] text-muted-foreground pt-1 border-t">
           <span>Exp: {trade.expiry} ({trade.daysToExpiry}d)</span>
-          <span>{new Date(trade.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+          <span>{new Date(trade.timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })}</span>
         </div>
       </CardContent>
     </Card>
@@ -269,7 +269,7 @@ export function OptionBuyerPanel() {
 
             {/* Summary */}
             <div className="text-[9px] text-muted-foreground text-center pt-1 border-t">
-              {data?.total} setups • Source: {data?.source} • {new Date(data?.timestamp).toLocaleTimeString("en-IN")}
+              {data?.total} setups • Source: {data?.source} • {new Date(data?.timestamp).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}
             </div>
           </div>
         )}

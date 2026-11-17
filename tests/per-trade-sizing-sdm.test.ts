@@ -3,8 +3,8 @@
 //
 // The P0: /api/sdm-signal returned positionSizing {lots: 0} because the
 // recommendation engine sized on "₹1,00,000 × 1% risk" (and a "5% of capital"
-// notional cap) while the account is ₹25,000 and the rule is
-// "risk = 20% of the amount DEPLOYED, ≤ ₹20,000 deployed per trade".
+// notional cap). The rule (2026-11-17): "risk = 20% of the amount DEPLOYED —
+// no fixed cap — ≤ ₹45,000 deployed per trade".
 //
 // This test drives the REAL engine (sdm-recommendation.ts) with a synthetic
 // NIFTY chain — no network, no DB.
@@ -78,9 +78,12 @@ describe("per-trade model — the house plan", () => {
     expect(levels.plan).not.toBeNull();
 
     const plan = levels.plan!;
-    // FIXED ₹2,000 risk cap (20% of ₹11,043 deployed would be ₹2,209) → /65 units
-    expect(plan.riskPoints).toBeCloseTo(2_000 / NIFTY_LOT, 1);
-    expect(plan.riskAmount).toBeCloseTo(2_000, 0);
+    // risk = 20% of the DEPLOYED amount (no fixed cap): 4 lots × ₹44,174
+    // → ₹8,834.8 → riskPoints = 20% of the premium (₹33.98)
+    expect(plan.lots).toBe(4);
+    expect(plan.deployed).toBeCloseTo(4 * 169.9 * NIFTY_LOT, 0);
+    expect(plan.riskAmount).toBeCloseTo(plan.deployed * 0.2, 0);
+    expect(plan.riskPoints).toBeCloseTo(169.9 * 0.2, 1);
     expect(plan.stopLoss).toBeCloseTo(169.9 - plan.riskPoints, 1);
     // the ladder: TP1 2R, TP2 3R, TP3 4R
     expect(plan.targets[0]).toBeCloseTo(169.9 + 2 * plan.riskPoints, 1);
@@ -90,7 +93,7 @@ describe("per-trade model — the house plan", () => {
     expect(houseRR(169.9, true)).toBeCloseTo(2, 5);
   });
 
-  test("the deployed amount never exceeds the ₹20,000 per-trade cap", () => {
+  test("the deployed amount never exceeds the ₹45,000 per-trade cap", () => {
     const plan = buildOptionPlan({
       symbol: "NIFTY",
       optionType: "CE",
@@ -98,8 +101,8 @@ describe("per-trade model — the house plan", () => {
       lotSize: NIFTY_LOT,
     })!;
     expect(plan.deployed).toBeLessThanOrEqual(GATE_CONFIG.tradeBudget);
-    expect(plan.lots).toBe(1);            // ₹11,043 per lot → 1 lot fits, 2 do not
-    expect(plan.deployed).toBeCloseTo(169.9 * NIFTY_LOT, 0);
+    expect(plan.lots).toBe(4);            // ₹11,043 per lot → 4 fit inside ₹45,000
+    expect(plan.deployed).toBeCloseTo(4 * 169.9 * NIFTY_LOT, 0);
   });
 });
 
@@ -118,17 +121,16 @@ describe("per-trade model — the /api/sdm-signal sizing", () => {
       new Date().toISOString(),
     );
 
-    expect(rec.positionSizing.lots).toBe(1);
-    expect(rec.positionSizing.quantity).toBe(NIFTY_LOT);
-    // the rupee risk = the FIXED ₹2,000 cap (20% of one lot would be ₹2,209);
-    // the stop is rounded to the ₹0.05 tick grid, so the risk moves by ≤ 1 tick
-    expect(rec.positionSizing.riskAmount).toBeGreaterThan(2_000 - 70);
-    expect(rec.positionSizing.riskAmount).toBeLessThan(2_000 + 70);
+    expect(rec.positionSizing.lots).toBe(3);
+    expect(rec.positionSizing.quantity).toBe(3 * NIFTY_LOT);
+    // risk = 20% of the DEPLOYED amount (3 × ₹11,043.5 = ₹33,130.5 → ₹6,630
+    // after the ₹0.05 stop tick) — no fixed cap
+    expect(rec.positionSizing.riskAmount).toBeCloseTo(rec.positionSizing.positionValue * 0.2, -1);
     expect(rec.positionSizing.maxLoss).toBeCloseTo(rec.positionSizing.riskAmount, 0);
     // the deployment stays inside the per-trade cap
     expect(rec.positionSizing.positionValue).toBeLessThanOrEqual(GATE_CONFIG.tradeBudget);
     // and the levels are the house ladder (2R / 3R / 4R of the rupee-risk stop)
-    const r = rec.positionSizing.riskAmount / NIFTY_LOT;
+    const r = rec.positionSizing.riskAmount / rec.positionSizing.quantity;
     expect(rec.sl).toBeCloseTo(ATM_PREMIUM - r, 0);
     expect(rec.tp1).toBeCloseTo(ATM_PREMIUM + 2 * r, 0);
     expect(rec.tp2).toBeCloseTo(ATM_PREMIUM + 3 * r, 0);
@@ -156,28 +158,29 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
       sl: 80,
       lotSize: NIFTY_LOT,
     });
-    // risk budget = FIXED ₹2,000 → 1 lot by risk; affordable = 3 lots
-    expect(ps.lots).toBe(1);
-    expect(ps.qty).toBe(NIFTY_LOT);
-    expect(ps.maxLoss).toBeCloseTo(1300, 0);
-    expect(ps.capitalRequired).toBeCloseTo(100 * NIFTY_LOT, 0);
+    // risk budget = 20% of ₹45,000 = ₹9,000 → floor(9,000/1,300) = 6 by risk;
+    // affordable = floor(45,000/6,500) = 6 → 6 lots
+    expect(ps.lots).toBe(6);
+    expect(ps.qty).toBe(6 * NIFTY_LOT);
+    expect(ps.maxLoss).toBeCloseTo(7_800, 0);
+    expect(ps.capitalRequired).toBeCloseTo(6 * 100 * NIFTY_LOT, 0);
   });
 
   test("an unaffordable contract is 0 lots — never a 1-lot trade", () => {
     const ps = positionSize({
       capital: GATE_CONFIG.capital,
       entry: 300,
-      sl: 280,                            // ₹1,300 risk/lot → inside the ₹2,000 cap
+      sl: 280,                            // ₹1,300 risk/lot → inside the ₹9,000 risk budget
       lotSize: NIFTY_LOT,
     });
-    expect(ps.lots).toBe(1);              // ₹19,500 per lot → exactly 1 lot fits
+    expect(ps.lots).toBe(2);              // ₹19,500 per lot → 2 fit inside ₹45,000
     const ps2 = positionSize({
       capital: GATE_CONFIG.capital,
-      entry: 400,
-      sl: 320,
+      entry: 800,
+      sl: 780,                            // risk allows it, the budget does not
       lotSize: NIFTY_LOT,
     });
-    expect(ps2.lots).toBe(0);             // ₹26,000 per lot → over the cap
+    expect(ps2.lots).toBe(0);             // ₹52,000 per lot → over the ₹45,000 cap
     expect(ps2.ok).toBe(false);
   });
 });
