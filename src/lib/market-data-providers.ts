@@ -624,6 +624,239 @@ export const fiiDiiProvider: MarketDataProvider = {
 };
 
 // ────────────────────────────────────────────────────────────────────────────
+// NSE MCP provider — research layer, gated by two independent permission gates.
+// Both gates default to false; data never reaches production ledger.
+// ────────────────────────────────────────────────────────────────────────────
+
+export const nseMcpProvider: MarketDataProvider = {
+  name: "nse-mcp",
+  categories: ["option-chain", "quotes", "spot", "index-quote", "default"],
+  async fetch(opts) {
+    const { canFetchMcp, fetchToolsCall } = await import("@/lib/nse-mcp-adapter");
+
+    // Fail-closed: gates must both be true before any MCP network activity.
+    if (!canFetchMcp()) return null;
+    if (opts.category !== "option-chain" && opts.category !== "quotes" && opts.category !== "spot" && opts.category !== "index-quote" && opts.category !== "default") return null;
+
+    const symbol = opts.symbol.toUpperCase();
+    const expiryIso = opts.expiry; // YYYY-MM-DD or null
+
+    // NSE MCP tool names to try (common conventions for option chain data).
+    const candidateTools = [
+      "get_option_chain",
+      "option_chain",
+      "fetch_option_chain",
+      "nse_option_chain",
+      "get_chain",
+      "option-chain",
+    ];
+
+    for (const toolName of candidateTools) {
+      try {
+        const result = await fetchToolsCall(toolName, {
+          symbol,
+          expiry: expiryIso,
+          category: opts.category,
+        });
+
+        if (!result.success || !result.result) continue;
+
+        const mcpData: any = result.result;
+
+        // Normalize MCP result into canonical chain shape.
+        const canonical = normalizeMcpChain(mcpData, symbol, expiryIso, opts.nowMs);
+        if (canonical) return canonical;
+      } catch {
+        // Try next tool name — MCP may not expose this tool.
+        continue;
+      }
+    }
+
+    return null;
+  },
+};
+
+/**
+ * Normalize an MCP tool result into the canonical chain shape.
+ * MCP responses vary by tool — handle multiple shapes gracefully.
+ */
+function normalizeMcpChain(mcpData: any, symbol: string, expiryIso: string | undefined, nowMs?: number): {
+  data: any;
+  providerTimestamp?: string;
+  validation?: any;
+} | null {
+  if (!mcpData) return null;
+
+  const mcpFetchedAt = new Date(nowMs ?? Date.now()).toISOString();
+
+  // Shape 1: { strikes: [...], spotPrice, expiry, providerTimestamp }
+  if (Array.isArray(mcpData.strikes) && mcpData.strikes.length > 0) {
+    return {
+      data: {
+        strikes: mcpData.strikes.map((s: any) => ({
+          strike: Number(s.strike),
+          ce: s.ce ? {
+            ltp: numOrNull(s.ce.ltp),
+            oi: numOrNull(s.ce.oi),
+            oiChg: numOrNull(s.ce.oiChg),
+            volume: numOrNull(s.ce.volume),
+            iv: numOrNull(s.ce.iv),
+            delta: numOrNull(s.ce.delta),
+            gamma: numOrNull(s.ce.gamma),
+            theta: numOrNull(s.ce.theta),
+            vega: numOrNull(s.ce.vega),
+            bid: numOrNull(s.ce.bid),
+            ask: numOrNull(s.ce.ask),
+          } : null,
+          pe: s.pe ? {
+            ltp: numOrNull(s.pe.ltp),
+            oi: numOrNull(s.pe.oi),
+            oiChg: numOrNull(s.pe.oiChg),
+            volume: numOrNull(s.pe.volume),
+            iv: numOrNull(s.pe.iv),
+            delta: numOrNull(s.pe.delta),
+            gamma: numOrNull(s.pe.gamma),
+            theta: numOrNull(s.pe.theta),
+            vega: numOrNull(s.pe.vega),
+            bid: numOrNull(s.pe.bid),
+            ask: numOrNull(s.pe.ask),
+          } : null,
+        })),
+        spotPrice: Number(mcpData.spotPrice) || 0,
+        expiries: mcpData.expiry ? [{ date: mcpData.expiry, label: mcpData.expiry, daysToExpiry: 0 }] : [],
+      },
+      providerTimestamp: mcpData.providerTimestamp || mcpData.timestamp || mcpFetchedAt,
+      validation: validateEnvelope({
+        symbol,
+        provider: "nse-mcp",
+        source: "FALLBACK",
+        fallbackUsed: false,
+        data: { strikes: mcpData.strikes.length },
+        providerTimestamp: mcpData.providerTimestamp,
+        fetchedAt: mcpFetchedAt,
+        ageMs: 0,
+        freshness: "FRESH",
+        delayed: false,
+        providerErrors: [],
+        available: true,
+      }),
+    };
+  }
+
+  // Shape 2: { data: { strikes: [...] } } — nested data wrapper
+  if (mcpData.data && Array.isArray(mcpData.data.strikes) && mcpData.data.strikes.length > 0) {
+    const inner = mcpData.data;
+    return {
+      data: {
+        strikes: inner.strikes.map((s: any) => ({
+          strike: Number(s.strike),
+          ce: s.ce ? {
+            ltp: numOrNull(s.ce.ltp),
+            oi: numOrNull(s.ce.oi),
+            oiChg: numOrNull(s.ce.oiChg),
+            volume: numOrNull(s.ce.volume),
+            iv: numOrNull(s.ce.iv),
+            delta: numOrNull(s.ce.delta),
+            gamma: numOrNull(s.ce.gamma),
+            theta: numOrNull(s.ce.theta),
+            vega: numOrNull(s.ce.vega),
+            bid: numOrNull(s.ce.bid),
+            ask: numOrNull(s.ce.ask),
+          } : null,
+          pe: s.pe ? {
+            ltp: numOrNull(s.pe.ltp),
+            oi: numOrNull(s.pe.oi),
+            oiChg: numOrNull(s.pe.oiChg),
+            volume: numOrNull(s.pe.volume),
+            iv: numOrNull(s.pe.iv),
+            delta: numOrNull(s.pe.delta),
+            gamma: numOrNull(s.pe.gamma),
+            theta: numOrNull(s.pe.theta),
+            vega: numOrNull(s.pe.vega),
+            bid: numOrNull(s.pe.bid),
+            ask: numOrNull(s.pe.ask),
+          } : null,
+        })),
+        spotPrice: Number(inner.spotPrice) || 0,
+        expiries: inner.expiry ? [{ date: inner.expiry, label: inner.expiry, daysToExpiry: 0 }] : [],
+      },
+      providerTimestamp: inner.providerTimestamp || inner.timestamp || mcpFetchedAt,
+      validation: validateEnvelope({
+        symbol,
+        provider: "nse-mcp",
+        source: "FALLBACK",
+        fallbackUsed: false,
+        data: { strikes: inner.strikes.length },
+        providerTimestamp: inner.providerTimestamp,
+        fetchedAt: mcpFetchedAt,
+        ageMs: 0,
+        freshness: "FRESH",
+        delayed: false,
+        providerErrors: [],
+        available: true,
+      }),
+    };
+  }
+
+  // Shape 3: Flat strike array at top level
+  if (Array.isArray(mcpData) && mcpData.length > 0 && Number.isFinite(Number(mcpData[0].strike))) {
+    const strikes = mcpData as any[];
+    return {
+      data: {
+        strikes: strikes.map((s: any) => ({
+          strike: Number(s.strike),
+          ce: s.ce ? {
+            ltp: numOrNull(s.ce.ltp),
+            oi: numOrNull(s.ce.oi),
+            oiChg: numOrNull(s.ce.oiChg),
+            volume: numOrNull(s.ce.volume),
+            iv: numOrNull(s.ce.iv),
+            delta: numOrNull(s.ce.delta),
+            gamma: numOrNull(s.ce.gamma),
+            theta: numOrNull(s.ce.theta),
+            vega: numOrNull(s.ce.vega),
+            bid: numOrNull(s.ce.bid),
+            ask: numOrNull(s.ce.ask),
+          } : null,
+          pe: s.pe ? {
+            ltp: numOrNull(s.pe.ltp),
+            oi: numOrNull(s.pe.oi),
+            oiChg: numOrNull(s.pe.oiChg),
+            volume: numOrNull(s.pe.volume),
+            iv: numOrNull(s.pe.iv),
+            delta: numOrNull(s.pe.delta),
+            gamma: numOrNull(s.pe.gamma),
+            theta: numOrNull(s.pe.theta),
+            vega: numOrNull(s.pe.vega),
+            bid: numOrNull(s.pe.bid),
+            ask: numOrNull(s.pe.ask),
+          } : null,
+        })),
+        spotPrice: Number(strikes[0]?.spotPrice) || 0,
+        expiries: [],
+      },
+      providerTimestamp: mcpFetchedAt,
+      validation: validateEnvelope({
+        symbol,
+        provider: "nse-mcp",
+        source: "FALLBACK",
+        fallbackUsed: false,
+        data: { strikes: strikes.length },
+        providerTimestamp: mcpFetchedAt,
+        fetchedAt: mcpFetchedAt,
+        ageMs: 0,
+        freshness: "FRESH",
+        delayed: false,
+        providerErrors: [],
+        available: true,
+      }),
+    };
+  }
+
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Register all adapters
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -635,3 +868,4 @@ registerProvider(moApiProvider);
 registerProvider(breezeApiProvider);
 registerProvider(moneycontrolProvider);
 registerProvider(fiiDiiProvider);
+registerProvider(nseMcpProvider);

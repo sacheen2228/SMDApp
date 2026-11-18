@@ -28,6 +28,8 @@ interface WallStrike { strike: number; ceOi: number; ceOiChg: number; peOi: numb
 interface LiquidityData {
   symbol: string;
   spot: number;
+  spotChange: number;
+  spotChangePct: number;
   maxPain: number;
   pcr: number;
   callOiChange: number;
@@ -38,6 +40,8 @@ interface LiquidityData {
   candles: Candle[];
   source: string;
   freshness: string;
+  sellerCeSL?: number | null;
+  sellerPeSL?: number | null;
 }
 
 function fetchLiquidity(symbol: string, tf: string) {
@@ -45,12 +49,17 @@ function fetchLiquidity(symbol: string, tf: string) {
     if (!r.ok) throw new Error("chain failed");
     const json = await r.json();
     const d = json.data || json;
-    const fr = d.freshness;
-    const s = d.summary || {};
+    const fr = json.freshness || d.freshness;
+    const s = json.summary || d.summary || {};
     const rows = (d.data || d.strikes || []) as any[];
+    const analysis = json.analysis || {};
+    const rec = analysis.recommendation || {};
+    const sellerZone = rec.sellerSLZone || {};
     return {
       symbol,
       spot: n(s.spotPrice),
+      spotChange: n(s.spotChange, 0),
+      spotChangePct: n(s.spotChangePct, 0),
       maxPain: n(s.maxPain),
       pcr: n(s.pcr),
       callOiChange: n(s.callOiChange),
@@ -60,6 +69,8 @@ function fetchLiquidity(symbol: string, tf: string) {
       walls: rows.map((r) => ({ strike: r.strike, ceOi: n(r.ce?.oi), ceOiChg: n(r.ce?.oiChg), peOi: n(r.pe?.oi), peOiChg: n(r.pe?.oiChg) })).filter((w) => w.ceOi > 0 || w.peOi > 0),
       source: d.source || json.source || fr?.source || "UNKNOWN",
       freshness: typeof fr === "string" ? fr : fr?.freshness || "UNKNOWN",
+      sellerCeSL: n(sellerZone.ceSellerSL, null),
+      sellerPeSL: n(sellerZone.peSellerSL, null),
     };
   });
   const candlePromise = fetch(`/api/breeze/candles?symbol=${symbol}&interval=${tf}&limit=200`).then(async (r) => {
@@ -193,21 +204,20 @@ export function LiquidityMapView() {
       ? new Date(candles[candles.length - 1].time).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" })
       : "";
 
-    // VWAP (last session only)
-    const hasVol = candles.some((c) => c.volume > 0);
+    // VWAP (last session only) — equal weight when volume is 0 (index candles)
     let vwapPts: Array<{ x: number; y: number }> = [];
-    if (hasVol) {
-      let pv = 0, vv = 0;
-      candles.forEach((c, i) => {
-        if (istDay(c.time) !== lastDay) return;
-        const tp = (c.high + c.low + c.close) / 3;
-        pv += tp * c.volume; vv += c.volume;
-        const v = vv > 0 ? pv / vv : tp;
-        vwapPts.push({ x: cX(i), y: y(v) });
-      });
-    }
+    let pv = 0, vv = 0;
+    candles.forEach((c, i) => {
+      if (istDay(c.time) !== lastDay) return;
+      const tp = (c.high + c.low + c.close) / 3;
+      const vol = c.volume > 0 ? c.volume : 1;
+      pv += tp * vol; vv += vol;
+      const v = vv > 0 ? pv / vv : tp;
+      vwapPts.push({ x: cX(i), y: y(v) });
+    });
 
     // volume profile (time-at-price when index volume is zero) — last session only
+    const hasVol = candles.some((c) => c.volume > 0);
     const BINS = 34;
     const bins = Array.from({ length: BINS }, () => 0);
     const binH = (plot.y1 - plot.y0) / BINS;
@@ -256,6 +266,13 @@ export function LiquidityMapView() {
           </Button>
         ))}
         <Badge variant="outline" className="ml-auto px-2 py-1 ty-text-xs">{data.source.toUpperCase()} · {data.freshness}</Badge>
+        <Badge className={`ml-1 px-2 py-1 ty-text-xs ${data.spotChange >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+          Spot {fmtNum(data.spot)} {(data.spotChange || 0) >= 0 ? "+" : ""}{fmtNum(data.spotChange)} ({(data.spotChangePct || 0) >= 0 ? "+" : ""}{fmtNum(data.spotChangePct)}%)
+        </Badge>
+        <Badge className="ml-1 px-2 py-1 ty-text-xs text-red-500">CE {fmtLakh(data.totalCallOI)}</Badge>
+        <Badge className="ml-1 px-2 py-1 ty-text-xs text-emerald-500">PE {fmtLakh(data.totalPutOI)}</Badge>
+        <Badge className="ml-1 px-2 py-1 ty-text-xs text-amber-500">Max Pain {fmtNum(data.maxPain)}</Badge>
+        <Badge className="ml-1 px-2 py-1 ty-text-xs ${data.pcr > 1.05 ? 'text-emerald-500' : data.pcr < 0.95 ? 'text-red-500' : 'text-yellow-500'}">PCR {data.pcr.toFixed(2)}</Badge>
       </div>
 
       {/* score cards */}
@@ -273,6 +290,33 @@ export function LiquidityMapView() {
           level={derived.buildup}
           caption={`PCR ${data.pcr.toFixed(2)} · CE ${fmtLakh(data.callOiChange)} / PE ${fmtLakh(data.putOiChange)}`} />
       </div>
+
+      {/* Big Money Zone — live price band between support & resistance walls */}
+      {derived.putWall && derived.callWall && (
+        <div className="rounded-xl border bg-card p-3 mt-2">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Big Money Zone</span>
+              <Badge className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">LIVE</Badge>
+            </div>
+            <div className="text-right text-xs text-muted-foreground">
+              <span className="block">{fmtNum(derived.putWall.strike)} → {fmtNum(derived.callWall.strike)}</span>
+              <span className="block text-[9px]">{((derived.callWall.strike - derived.putWall.strike) / derived.putWall.strike * 100).toFixed(2)}% band</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex flex-col">
+              <span className="text-red-500 font-bold">{fmtNum(derived.callWall.strike)}</span>
+              <span className="text-[9px] text-red-500">Resistance (CE wall)</span>
+            </div>
+            <div className="text-[9px] text-muted-foreground">Spot {fmtNum(data.spot)}</div>
+            <div className="flex flex-col items-end">
+              <span className="text-emerald-500 font-bold">{fmtNum(derived.putWall.strike)}</span>
+              <span className="text-[9px] text-emerald-500">Support (PE wall)</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* chart panel */}
       <Panel title="Price · where the big money sits" subtitle={`${symbol} · ${tfLabel(tf)} candles`}>
@@ -360,6 +404,24 @@ export function LiquidityMapView() {
               </>
             )}
 
+            {/* Seller Stop Loss lines */}
+            {active.has("range") && (
+              <>
+                {data.sellerCeSL && data.sellerCeSL > 0 && (
+                  <>
+                    <line x1={plot.x0} x2={plot.x1} y1={chart.y(data.sellerCeSL)} y2={chart.y(data.sellerCeSL)} stroke="var(--ty-down)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />
+                    <text x={plot.x1 + 8} y={chart.y(data.sellerCeSL) + 3.5} fill="var(--ty-down)" style={{ fontSize: 9, fontWeight: 600 }}>CE SL {fmtNum(data.sellerCeSL)}</text>
+                  </>
+                )}
+                {data.sellerPeSL && data.sellerPeSL > 0 && (
+                  <>
+                    <line x1={plot.x0} x2={plot.x1} y1={chart.y(data.sellerPeSL)} y2={chart.y(data.sellerPeSL)} stroke="var(--ty-up)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />
+                    <text x={plot.x1 + 8} y={chart.y(data.sellerPeSL) + 3.5} fill="var(--ty-up)" style={{ fontSize: 9, fontWeight: 600 }}>PE SL {fmtNum(data.sellerPeSL)}</text>
+                  </>
+                )}
+              </>
+            )}
+
             {/* OI walls (right) */}
             {active.has("walls") && chart.clipped.map((w) => {
               const callW = (w.ceOi / Math.max(...chart.clipped.map((x) => x.ceOi), 1)) * wallMaxW;
@@ -404,7 +466,7 @@ export function LiquidityMapView() {
           </svg>
         </div>
         <p className="ty-text-xs text-ty-subtle-fg mt-1">
-          {chart.hasVol ? "profile + VWAP use candle volume" : "index candles carry no volume — profile uses time-at-price"} · both scoped to the latest session ({chart.lastSessionLabel}) · walls &amp; max pain from {data.source} chain · {data.freshness}
+          {chart.hasVol ? "volume bars + VWAP use candle volume" : "index candles — volume profile time-at-price"} · Spot {fmtNum(data.spot)} {(data.spotChange || 0) >= 0 ? "+" : ""}{fmtNum(data.spotChange || 0)} ({(data.spotChangePct || 0) >= 0 ? "+" : ""}{fmtNum(data.spotChangePct || 0)}%) · PCR {data.pcr.toFixed(2)} · CE {fmtLakh(data.totalCallOI)} / PE {fmtLakh(data.totalPutOI)} · both scoped to latest session ({chart.lastSessionLabel}) · walls & max pain from {data.source} chain · {data.freshness}
         </p>
       </Panel>
     </div>

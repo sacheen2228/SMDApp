@@ -90,6 +90,7 @@ const OPTION_CHAIN_PROVIDERS: ProviderName[] = [
   "icici-breeze",
   "motilal-api",
   "nse-api",
+  "nse-mcp",
   "bse-api",
 ];
 
@@ -97,7 +98,12 @@ const RACE_TIMEOUT_MS: Record<ProviderName, number> = {
   "icici-breeze": 6000,
   "motilal-api": 8000,
   "nse-api": 8000,
+  "nse-mcp": 10000,
   "bse-api": 8000,
+  moneycontrol: 8000,
+  "fii-dii": 15000,
+  cache: 0,
+  unavailable: 0,
 };
 
 const MIN_STRIKES = 3;
@@ -193,14 +199,25 @@ export async function runOptionChainRace(
   let firstValidMs: number | null = null;
   let resolved = false;
   let settledCount = 0;
-  const effectiveProviders = (opts.providers ?? OPTION_CHAIN_PROVIDERS).filter((name) => {
-    const p = getProvider(name);
-    return Boolean(p && p.categories?.includes("option-chain"));
-  });
-  const total = effectiveProviders.length;
 
   const symbol = opts.symbol.toUpperCase();
   const exchange = opts.exchange || (isBSEIndexSymbol(symbol) ? "BSE" : "NSE");
+
+  // Exchange-aware provider filter: each archive only carries its OWN
+  // contracts. Racing NSE for SENSEX (or BSE for NIFTY) is a guaranteed
+  // failure that records a bogus circuit-breaking miss against the healthy
+  // provider. Brokers (Breeze/MO) carry both, so they always stay in.
+  const eligible = (name: ProviderName): boolean => {
+    if (name === "nse-api") return exchange !== "BSE";
+    if (name === "bse-api") return exchange !== "NSE";
+    return true;
+  };
+
+  const effectiveProviders = (opts.providers ?? OPTION_CHAIN_PROVIDERS).filter((name) => {
+    const p = getProvider(name);
+    return Boolean(p && p.categories?.includes("option-chain")) && eligible(name);
+  });
+  const total = effectiveProviders.length;
 
   const expiryIso = opts.expiry ? toIsoDate(opts.expiry) : null;
 
@@ -222,6 +239,25 @@ export async function runOptionChainRace(
   const onSettle = (name: ProviderName, attempt: ProviderAttempt) => {
     attempts.set(name, attempt);
     settledCount += 1;
+    // Feed the shared circuit breaker: success always closes it. Failures only
+    // count while the race is still unanswered — a late loser settling after
+    // another provider already won (abort/timeout) must not re-open a healthy
+    // circuit. circuit_open / not_registered are skip outcomes, not signals.
+    if (attempt.status !== "circuit_open" && attempt.status !== "not_registered") {
+      const phType = toProviderHealthType(name);
+      if (attempt.status === "valid") {
+        providerHealth.recordSuccess(phType, attempt.latencyMs);
+      } else if (!winner) {
+        const msg =
+          attempt.error ||
+          (attempt.status === "error" ? "provider error" : "invalid or empty chain");
+        providerHealth.recordFailure(
+          phType,
+          attempt.status === "error" ? "NETWORK" : "UNKNOWN",
+          msg,
+        );
+      }
+    }
     if (!winner && attempt.status === "valid" && attempt.canonical) {
       const c = attempt.canonical;
       c.symbol = symbol;

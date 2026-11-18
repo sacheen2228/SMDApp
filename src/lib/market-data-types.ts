@@ -14,6 +14,7 @@ export type ProviderName =
   | "nse-api"
   | "bse-api"
   | "moneycontrol"
+  | "nse-mcp"
   // FII/DII adapter (NSE + MrChartist chain). It MUST have its own name:
   // `providers` is a Map keyed by ProviderName, so sharing "nse-api" with the
   // main NSE adapter silently overwrote it and NSE disappeared from every
@@ -198,7 +199,7 @@ export const DEFAULT_CONFIG: MarketDataServiceConfig = {
   // no broker feed carries a pre-open book or the end-of-day bhavcopy.
   priorities: {
     "quotes": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
-    "option-chain": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
+    "option-chain": ["icici-breeze", "motilal-api", "nse-api", "nse-mcp", "bse-api", "moneycontrol"],
     "candles": ["icici-breeze", "motilal-api", "nse-api"],
     "greeks": ["icici-breeze", "motilal-api", "nse-api"],
     "oi-pcr": ["icici-breeze", "motilal-api", "nse-api", "bse-api"],
@@ -213,10 +214,11 @@ export const DEFAULT_CONFIG: MarketDataServiceConfig = {
     "pre-open": ["nse-api", "bse-api", "moneycontrol"],
     "default": ["icici-breeze", "motilal-api", "nse-api", "bse-api", "moneycontrol"],
   },
-  timeouts: {
+    timeouts: {
     "motilal-api": 15_000,
     "icici-breeze": 10_000,
     "nse-api": 8_000,
+    "nse-mcp": 12_000,
     "bse-api": 8_000,
     moneycontrol: 8_000,
     "fii-dii": 15_000,

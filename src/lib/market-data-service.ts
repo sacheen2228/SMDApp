@@ -53,6 +53,7 @@ export function toProviderHealthType(p: ProviderName): import("./provider-health
     "motilal-api": "moapi",
     "icici-breeze": "breeze",
     "nse-api": "nse",
+    "nse-mcp": "nse",
     "bse-api": "bse",
     // The FII/DII adapter is NSE + MrChartist. It is deliberately NOT "nse":
     // a MrChartist bot-challenge must not trip the NSE session circuit.
@@ -70,6 +71,7 @@ function toSessionSource(p: ProviderName): SessionSource | null {
     "motilal-api": "mo",
     "icici-breeze": "breeze",
     "nse-api": "nse",
+    "nse-mcp": "nse",
     "bse-api": "nse", // BSE has no session-health source; map to nse (never SESSION_EXPIRED)
     moneycontrol: "nse",
     cache: "nse",
@@ -78,6 +80,7 @@ function toSessionSource(p: ProviderName): SessionSource | null {
     // downtime, never a broker or exchange token expiring. Emitting a
     // [SYSTEM][SESSION_EXPIRED] alert here would be a false page.
     "fii-dii": null,
+    "nse-mcp": null,
   };
   return map[p] ?? null;
 }
@@ -539,22 +542,19 @@ async function doFetchMarketData<T = any>(
       providers: raceProviders,
     });
 
-    // Record every attempt with provider-health so the circuit breaker sees it.
+    // Circuit-breaker recording happens inside runOptionChainRace's onSettle.
+    // Here we only track per-key freshness + session-health side effects.
     const validAttempts: Array<{ name: ProviderName; latencyMs: number }> = [];
     for (const a of race.attempts) {
-      const phType = toProviderHealthType(a.name);
       if (a.status === "circuit_open" || a.status === "not_registered") continue;
       if (a.status === "valid") {
-        providerHealth.recordSuccess(phType, a.latencyMs);
         validAttempts.push({ name: a.name, latencyMs: a.latencyMs });
         lastSuccessAt.set(cacheKey(opts), nowMs);
-      } else {
-        const kind = classifyFailure(new Error(a.error ?? "invalid or empty chain"), a.name);
-        providerHealth.recordFailure(phType, kind, a.error ?? "invalid or empty chain");
-        // Report session expiry to session-health (single owner of session alerts)
+      } else if (a.status === "error") {
+        const kind = classifyFailure(new Error(a.error ?? "provider error"), a.name);
         if (kind === "SESSION_EXPIRED") {
           const ss = toSessionSource(a.name);
-          if (ss) reportSessionFailure(ss, kind, a.error ?? "session expired");
+          if (ss) reportSessionFailure(ss, kind, a.error || "session expired");
         }
       }
     }
