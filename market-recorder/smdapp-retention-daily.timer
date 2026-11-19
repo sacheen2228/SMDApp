@@ -1,0 +1,12 @@
+[Unit]
+Description=SMDApp market-history daily retention (rolling 30-day cap)
+
+[Timer]
+# 03:20 IST — off-session (the recorder runs 09:15-15:30), so the delete and
+# the VACUUM never compete with live capture.
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+Unit=smdapp-retention@daily.service
+
+[Install]
+WantedBy=timers.target

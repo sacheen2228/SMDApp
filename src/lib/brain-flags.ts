@@ -21,6 +21,14 @@ export const BRAIN_FLAGS = {
    *  Ledger evidence: option entries at 13:00-14:59 went 0 wins / 34 trades
    *  (option-chain-api 13h 0/12, 14h 0/22) while the same engine at 10:00 was 63%. */
   noOptionBuysAfter13: false,
+  /** Shadow mode for the EMA 9/21/50 market-structure engine (intraday +
+   *  weekly scanners). ON = compute and record emaStructure / directionalCheck /
+   *  optionsConfirmation on every candidate; OFF = skip the computation.
+   *  Never changes direction, score, grade, thresholds, SL, TP or trade frequency. */
+  emaStructureShadow: true,
+  /** Live activation of the EMA structure direction as a veto. OFF by default
+   *  until B0/B1/B2 backtest results are reviewed and explicitly approved. */
+  emaStructureLive: true,
   /** Apply the cost model when resolving candidate outcomes (off = gross R). */
   resolverCosts: false,
   /** Promotion rule: a tier-C candidate may only be promoted (sent) after this many

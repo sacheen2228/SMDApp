@@ -54,6 +54,22 @@ export interface CandidateInput {
   fails?: string[] | null;
   sent?: boolean;
   wouldBlock?: boolean;
+  // ── Phase 8B — EMA 9/21/50 shadow observation (additive, no live change) ──
+  emaAlignment?: string | null;
+  emaSetupType?: string | null;
+  emaDirection?: string | null;
+  emaDirectionalVerdict?: string | null;
+  emaOptionsConfirmation?: string | null;
+  emaDataQuality?: string | null;
+  emaIsStale?: boolean | null;
+  emaBars?: number | null;
+  existingSignalDirection?: string | null;
+  outcome?: string | null;
+  observationSource?: string | null;
+  instrumentType?: string | null;
+  expiryType?: string | null;
+  optionType?: string | null;
+  isMarketOpen?: boolean | null;
 }
 
 /** Hash of the effective configuration — lets the replay prove which rules produced a row. */
@@ -102,6 +118,22 @@ export async function logCandidate(c: CandidateInput): Promise<void> {
         sent: !!c.sent,
         wouldBlock: !!c.wouldBlock,
         configHash: configHash(),
+        // Phase 8B — EMA shadow observation (additive; NULL when not computed)
+        emaAlignment: c.emaAlignment ?? null,
+        emaSetupType: c.emaSetupType ?? null,
+        emaDirection: c.emaDirection ?? null,
+        emaDirectionalVerdict: c.emaDirectionalVerdict ?? null,
+        emaOptionsConfirmation: c.emaOptionsConfirmation ?? null,
+        emaDataQuality: c.emaDataQuality ?? null,
+        emaIsStale: !!c.emaIsStale,
+        emaBars: c.emaBars ?? null,
+        existingSignalDirection: c.existingSignalDirection ?? null,
+        outcome: c.outcome ?? null,
+        observationSource: c.observationSource ?? null,
+        instrumentType: c.instrumentType ?? null,
+        expiryType: c.expiryType ?? null,
+        optionType: c.optionType ?? null,
+        isMarketOpen: !!c.isMarketOpen,
       },
     });
   } catch (err) {

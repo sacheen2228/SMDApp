@@ -57,6 +57,7 @@ import {
   type ScanResult,
   type StockCandidate,
 } from "@/lib/intraday-scanner";
+import { EmaStructureSection } from "./EmaStructureSection";
 
 interface ScannerPanelProps {
   symbol: string;
@@ -392,6 +393,15 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
                 </div>
               </div>
             </div>
+
+            {/* EMA 9/21/50 shadow analysis */}
+            <EmaStructureSection
+              emaStructure={stock.emaStructure ?? null}
+              directionalCheck={stock.directionalCheck ?? null}
+              optionsConfirmation={stock.optionsConfirmation ?? null}
+              currentPrice={stock.currentPrice}
+            />
+
           </div>
         )}
       </CardContent>

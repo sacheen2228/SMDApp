@@ -12,6 +12,11 @@ import { recordSignal } from "./trade-audit-client";
 import { analyzeEquityCash } from "./equity-cash-engine";
 import type { OptionChainSnapshot, TradePlan } from "./auction-types";
 import { analyzeMarketDirection as analyzeMarketDirectionReal } from "./market-direction-analyzer";
+import { analyzeEmaStructure, type EmaStructure } from "./ema-structure";
+import { checkDirectionalConsistency, type DirectionalEvidence, type ConsistencyVerdict } from "./directional-consistency";
+import { confirmOptions, type OptionsConfirmationVerdict } from "./options-confirmation";
+import { BRAIN_FLAGS } from "./brain-flags";
+import { recordEmaShadowObservations } from "./ema-shadow-observer";
 
 // ─── Types ────────────────────────────────────────────────────────
 export interface ScannerConfig {
@@ -74,6 +79,12 @@ export interface StockCandidate {
   engineSetup: string;
   engineAuctionState: string;
   engineRegime: string;
+  /** Shadow-mode EMA 9/21/50 market-structure read (no live behaviour change). */
+  emaStructure?: EmaStructure;
+  /** Shadow directional-consistency verdict for the candidate's direction. */
+  directionalCheck?: ConsistencyVerdict;
+  /** Shadow options-confirmation verdict for the candidate's direction. */
+  optionsConfirmation?: OptionsConfirmationVerdict;
   // Scores
   marketScore: number;
   sectorScore: number;
@@ -827,6 +838,59 @@ export async function generateCandidates(
       (newsScore * 0.05)
     );
 
+    // ── Shadow mode: EMA 9/21/50 market-structure read + directional
+    //     consistency + options confirmation. Purely additive — direction,
+    //     score, grade, thresholds, SL and TP are unchanged. ──
+    let emaStructure: EmaStructure | undefined;
+    let directionalCheck: ConsistencyVerdict | undefined;
+    let optionsConfirmation: OptionsConfirmationVerdict | undefined;
+    if (BRAIN_FLAGS.emaStructureShadow && stockCandles && stockCandles.length >= 35) {
+      const nowMs = stockCandles[stockCandles.length - 1].time ?? Date.now();
+      emaStructure = analyzeEmaStructure(stockCandles, { nowMs });
+      const ev: DirectionalEvidence = {
+        ema: { alignment: emaStructure.alignment, direction: emaStructure.direction },
+        macd: { direction: macd > macdSignal ? "BULLISH" : macd < macdSignal ? "BEARISH" : "NEUTRAL" },
+        structure: {
+          direction: engineDirection === "LONG" ? "BULLISH" : engineDirection === "SHORT" ? "BEARISH" : "NEUTRAL",
+          trend: engineRegime,
+        },
+        momentum: { direction: rsi > 50 ? "BULLISH" : rsi < 50 ? "BEARISH" : "NEUTRAL" },
+        vwap: { side: "NA" },
+        reversal: null,
+      };
+      directionalCheck = checkDirectionalConsistency(direction === "BULLISH" ? "CE" : "PE", ev).verdict;
+      if (chain && chain.strikes.length > 0) {
+        let callOiTotal = 0, putOiTotal = 0, callOiChgTotal = 0, putOiChgTotal = 0;
+        for (const v of chain.callOiMap.values()) callOiTotal += v;
+        for (const v of chain.putOiMap.values()) putOiTotal += v;
+        for (const v of chain.callOiChangeMap.values()) callOiChgTotal += v;
+        for (const v of chain.putOiChangeMap.values()) putOiChgTotal += v;
+        const atmStrike = chain.strikes.reduce((best, s) =>
+          Math.abs(s.strike - basePrice) < Math.abs(best.strike - basePrice) ? s : best, chain.strikes[0]);
+        optionsConfirmation = confirmOptions({
+          underlyingPrice: basePrice,
+          underlyingChangePct: changePct,
+          pcr: stockPCR,
+          pcrPrevious: null,
+          callOi: callOiTotal, putOi: putOiTotal,
+          callOiChange: callOiChgTotal, putOiChange: putOiChgTotal,
+          atmCall: atmStrike?.ce ? {
+            ltp: atmStrike.ce.ltp, previousLtp: null, volume: atmStrike.ce.volume,
+            oiChange: atmStrike.ce.oiChange, delta: atmStrike.ce.delta, gamma: atmStrike.ce.gamma,
+            theta: atmStrike.ce.theta, vega: atmStrike.ce.vega, iv: atmStrike.ce.iv,
+          } : null,
+          atmPut: atmStrike?.pe ? {
+            ltp: atmStrike.pe.ltp, previousLtp: null, volume: atmStrike.pe.volume,
+            oiChange: atmStrike.pe.oiChange, delta: atmStrike.pe.delta, gamma: atmStrike.pe.gamma,
+            theta: atmStrike.pe.theta, vega: atmStrike.pe.vega, iv: atmStrike.pe.iv,
+          } : null,
+          dataQuality: "LIVE",
+          isIntraday: true,
+          oiSnapshotType: "INTRADAY",
+        }).verdict;
+      }
+    }
+
     // Trade setup — use the real engine's structural levels (VAH/VAL/POC,
     // swing-based SL, profile targets) when it produced a confident plan;
     // otherwise fall back to ATR-based levels.
@@ -998,6 +1062,9 @@ export async function generateCandidates(
       engineSetup,
       engineAuctionState,
       engineRegime,
+      emaStructure,
+      directionalCheck,
+      optionsConfirmation,
       marketScore,
       sectorScore,
       technicalScore,
@@ -1116,6 +1183,9 @@ export async function runIntradayScan(
   const distToMP = Math.abs(config.spotPrice - config.maxPain) / config.spotPrice * 100;
   if (distToMP > 2) keyRisks.push("Spot far from Max Pain — mean reversion risk");
   if (keyRisks.length === 0) keyRisks.push("Normal market conditions");
+
+  // Phase 8B — shadow observation (fire-and-forget; never affects the response).
+  void recordEmaShadowObservations(highProbCandidates.slice(0, 30), "intraday-scanner:shadow");
 
   return {
     timestamp: new Date().toISOString(),

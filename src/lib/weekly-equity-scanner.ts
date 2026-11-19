@@ -25,6 +25,11 @@ import { detectRocket, RocketDetection } from "@/lib/rocket-detect";
 import { buildOptionPlan } from "@/lib/option-plan";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 import type { OptionPlan } from "@/lib/option-plan";
+import { analyzeEmaStructure, type EmaStructure } from "@/lib/ema-structure";
+import { checkDirectionalConsistency, type DirectionalEvidence, type ConsistencyVerdict } from "@/lib/directional-consistency";
+import { confirmOptions, type OptionsConfirmationVerdict } from "@/lib/options-confirmation";
+import { BRAIN_FLAGS } from "@/lib/brain-flags";
+import { recordEmaShadowObservations } from "@/lib/ema-shadow-observer";
 
 // ─── Scan universe ────────────────────────────────────────────────
 // NSE F&O universe (208 liquid, options-tradable stocks) — far broader than
@@ -45,6 +50,12 @@ export interface WeeklyCandidate {
   ema20: number;
   ema50: number;
   ema200: number;
+  /** Shadow-mode EMA 9/21/50 market-structure read (no live behaviour change). */
+  emaStructure?: EmaStructure;
+  /** Shadow directional-consistency verdict for the candidate's direction. */
+  directionalCheck?: ConsistencyVerdict;
+  /** Shadow options-confirmation verdict for the candidate's direction. */
+  optionsConfirmation?: OptionsConfirmationVerdict;
   weeklyTrend: "UP" | "DOWN" | "FLAT";
   weeklyRsi: number;
   weeklyCloseAboveEma20: boolean;
@@ -460,6 +471,30 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
       ? `${flags[0].split("—")[0].trim()} → discounted`
       : weeklyTrend === "UP" ? "Daily + weekly aligned uptrend" : "Daily trend only — monitor weekly";
 
+    // ── Shadow mode: EMA 9/21/50 market-structure read + directional
+    //     consistency + options confirmation. Purely additive. ──
+    let weeklyEmaStructure: EmaStructure | undefined;
+    let weeklyDirectionalCheck: ConsistencyVerdict | undefined;
+    let weeklyOptionsConfirmation: OptionsConfirmationVerdict | undefined;
+    if (BRAIN_FLAGS.emaStructureShadow && sd.daily && sd.daily.length >= 35) {
+      weeklyEmaStructure = analyzeEmaStructure(sd.daily, { nowMs: Date.now() });
+      const ev: DirectionalEvidence = {
+        ema: { alignment: weeklyEmaStructure.alignment, direction: weeklyEmaStructure.direction },
+        macd: { direction: "NEUTRAL" },
+        structure: {
+          direction: weeklyTrend === "UP" ? "BULLISH" : weeklyTrend === "DOWN" ? "BEARISH" : "NEUTRAL",
+          trend: weeklyTrend,
+        },
+        momentum: { direction: rsi > 50 ? "BULLISH" : rsi < 50 ? "BEARISH" : "NEUTRAL" },
+        vwap: { side: "NA" },
+        reversal: null,
+      };
+      weeklyDirectionalCheck = checkDirectionalConsistency(
+        weeklyTrend === "DOWN" ? "PE" : "CE",
+        ev,
+      ).verdict;
+    }
+
     candidates.push({
       symbol: sd.symbol,
       name: sd.name,
@@ -472,6 +507,9 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
       ema20,
       ema50,
       ema200,
+      emaStructure: weeklyEmaStructure,
+      directionalCheck: weeklyDirectionalCheck,
+      optionsConfirmation: weeklyOptionsConfirmation,
       weeklyTrend,
       weeklyRsi,
       weeklyCloseAboveEma20,
@@ -600,6 +638,9 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
   const vixNote = vixLevel !== "N/A" ? `VIX ${vixLevel}` : "VIX N/A";
   const trendLabel = niftyTrend === "UP" ? "Nifty in uptrend" : niftyTrend === "DOWN" ? "Nifty in downtrend" : "Nifty sideways";
   const marketContext = `${trendLabel} (${niftyWeekChg >= 0 ? "+" : ""}${niftyWeekChg.toFixed(1)}% / 5d), ${vixNote}.`;
+
+  // Phase 8B — shadow observation (fire-and-forget; never affects the response).
+  void recordEmaShadowObservations(finalList, "weekly-scanner:shadow");
 
   return {
     timestamp,

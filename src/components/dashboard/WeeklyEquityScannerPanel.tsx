@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import type { WeeklyScanResult, WeeklyCandidate } from "@/lib/weekly-equity-scanner";
 import { ProResearchModal } from "@/components/dashboard/ProResearchModal";
+import { EmaStructureSection } from "./EmaStructureSection";
 
 function fmtINR(n: number): string {
   if (n == null || isNaN(n)) return "—";
@@ -311,6 +312,14 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
                 <p className="text-muted-foreground">No option plan — contract does not fit the per-trade budget or lot size unknown.</p>
               )}
             </div>
+
+            {/* EMA 9/21/50 shadow analysis */}
+            <EmaStructureSection
+              emaStructure={c.emaStructure ?? null}
+              directionalCheck={c.directionalCheck ?? null}
+              optionsConfirmation={c.optionsConfirmation ?? null}
+              currentPrice={c.price}
+            />
           </TableCell>
         </TableRow>
       )}

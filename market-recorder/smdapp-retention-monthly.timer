@@ -1,0 +1,17 @@
+[Unit]
+Description=SMDApp market-history monthly reset (new month starts clean)
+
+# DISABLED by user decision (2026-11-19): the monthly clean-start deletion was
+# replaced by the rolling 30-day retention window (smdapp-retention-daily.timer),
+# which is the only scheduled deletion job. This unit stays in the repo so the
+# behaviour can be restored, but it is NOT enabled:
+#   systemctl --user enable --now smdapp-retention-monthly.timer
+
+[Timer]
+# 00:20 IST on the 1st — would have emptied the DB at every month boundary.
+OnCalendar=*-*-01 00:20:00
+Persistent=true
+Unit=smdapp-retention@monthly.service
+
+[Install]
+WantedBy=timers.target

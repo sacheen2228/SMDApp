@@ -1,0 +1,13 @@
+[Unit]
+Description=SMDApp market-history retention job (%i: daily | monthly | dry-run)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/sachin/Desktop/SDMApp
+Environment=MARKET_HISTORY_BASE=http://localhost:4002
+ExecStart=/home/sachin/Desktop/SDMApp/market-recorder/retention.sh %i
+# The monthly job archives (VACUUM INTO + gzip), deletes and VACUUMs a ~1.5GB
+# DB — it needs minutes, but it must never hang forever.
+TimeoutStartSec=1800s
+TimeoutStopSec=30s

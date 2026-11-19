@@ -796,6 +796,23 @@ model CandidateLog {
   simResolvedTs  DateTime?
   configHash     String    // hash of GATE_CONFIG + BRAIN_FLAGS at creation
 
+  // ── Phase 8B — EMA 9/21/50 shadow observation (additive, no live change) ──
+  emaAlignment             String?   // BULLISH | BEARISH | TRANSITIONAL | MIXED
+  emaSetupType             String?   // EmaSetupType or null
+  emaDirection             String?   // BULLISH | BEARISH | NEUTRAL
+  emaDirectionalVerdict    String?   // CONSISTENT | REVERSAL_CONFIRMED | CONFLICT | INSUFFICIENT
+  emaOptionsConfirmation   String?   // SUPPORTIVE | ADVERSE | INCONCLUSIVE
+  emaDataQuality           String?   // LIVE | FRESH | STALE | INSUFFICIENT
+  emaIsStale               Boolean   @default(false)
+  emaBars                  Int?
+  existingSignalDirection  String?   // scanner's own direction for this candidate
+  outcome                  String?   // BUY_RESEARCH | NO_TRADE
+  observationSource        String?   // intraday-scanner:shadow | weekly-scanner:shadow
+  instrumentType           String?   // INDEX | STOCK
+  expiryType               String?   // WEEKLY | MONTHLY
+  optionType               String?   // CE | PE
+  isMarketOpen             Boolean   @default(false)
+
   @@index([ts])
   @@index([source])
   @@index([simResolvedTs])
@@ -902,4 +919,130 @@ model QuantDecisionLog {
 
   @@index([ts])
   @@index([symbol])
+}
+
+// ─── P0 OBSERVATION TABLES (2026-11-19) ───
+// These four tables already exist in db/custom.db (created by an earlier
+// `db push` whose schema was later removed from this file) but were NEVER
+// registered here — so the Prisma client had no accessors and the next
+// `db push` would have DROPPED them. The DDL below is a byte-for-byte match
+// of the live SQLite definitions (see prisma/manual-migrations/
+// 20261119_p0_observation_tables.sql). Do not drift from the SQL.
+//
+// Purpose (P0 — Historical Data Integrity Foundation):
+//   MarketObservation      — completed bar observations (OHLC + 9/21 EMA, VWAP,
+//                            ATR, PDH/PDL) with provider + collected timestamps
+//   OptionChainSnapshot    — one chain snapshot envelope (provider, freshness,
+//                            completeness, quality issues)
+//   OptionChainContract    — per-strike facts (ltp, oi, oiChange, volume, bid,
+//                            ask, iv, greeks) — OBSERVED FACTS ONLY
+//   DataQualityLog         — every data-quality check and its outcome
+// Facts live here; agent interpretation lives elsewhere and never rewrites them.
+
+model MarketObservation {
+  id                String   @id @default(cuid())
+  instrument        String
+  exchange          String   @default("NSE")
+  tradingDate       String
+  timestamp         DateTime
+  interval          String
+  open              Float?
+  high              Float?
+  low               Float?
+  close             Float?
+  volume            Float?
+  ema9              Float?
+  ema21             Float?
+  vwap              Float?
+  atr               Float?
+  pdh               Float?
+  pdl               Float?
+  dataProvider      String
+  providerTimestamp DateTime?
+  collectedAt       DateTime @default(now())
+  freshness         String
+  qualityStatus     String
+  qualityIssues     String   @default("[]")
+
+  @@index([instrument])
+  @@index([exchange])
+  @@index([tradingDate])
+  @@index([timestamp])
+  @@index([interval])
+  @@unique([instrument, exchange, interval, timestamp])
+}
+
+model OptionChainSnapshot {
+  id                String   @id @default(cuid())
+  instrument        String
+  exchange          String   @default("NSE")
+  expiry            String
+  collectedAt       DateTime @default(now())
+  spotPrice         Float?
+  spotPriceSource   String?
+  dataProvider      String
+  providerTimestamp DateTime?
+  fallbackUsed      Boolean  @default(false)
+  fallbackReason    String?
+  freshness         String
+  completeness      String
+  qualityStatus     String
+  qualityIssues     String   @default("[]")
+
+  contracts OptionChainContract[]
+
+  @@index([instrument])
+  @@index([exchange])
+  @@index([expiry])
+  @@index([collectedAt])
+  @@unique([instrument, exchange, expiry, collectedAt])
+}
+
+model OptionChainContract {
+  id            String  @id @default(cuid())
+  snapshotId    String
+  strike        Float
+  optionType    String
+  ltp           Float?
+  oi            Float?
+  oiChange      Float?
+  volume        Float?
+  bid           Float?
+  ask           Float?
+  iv            Float?
+  delta         Float?
+  gamma         Float?
+  theta         Float?
+  vega          Float?
+  dataSource    String
+  isEstimated   Boolean @default(false)
+  qualityIssues String  @default("[]")
+
+  snapshot OptionChainSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([snapshotId])
+  @@index([strike])
+  @@index([optionType])
+  @@unique([snapshotId, strike, optionType])
+}
+
+model DataQualityLog {
+  id             String   @id @default(cuid())
+  instrument     String
+  exchange       String   @default("NSE")
+  expiry         String?
+  strike         Float?
+  optionType     String?
+  checkType      String
+  severity       String
+  checkTimestamp DateTime @default(now())
+  details        String   @default("{}")
+  resolved       Boolean  @default(false)
+
+  @@index([instrument])
+  @@index([exchange])
+  @@index([checkType])
+  @@index([severity])
+  @@index([checkTimestamp])
+  @@index([resolved])
 }
