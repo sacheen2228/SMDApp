@@ -57,6 +57,7 @@ import {
   type ScanResult,
   type StockCandidate,
 } from "@/lib/intraday-scanner";
+import { evaluateTradeVerdict, verdictBadgeClass } from "@/lib/trade-verdict";
 import { EmaStructureSection } from "./EmaStructureSection";
 
 interface ScannerPanelProps {
@@ -135,6 +136,31 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {(() => {
+              const s = stock as StockCandidate & {
+                unifiedDecision?: string | null;
+                hardGatesPassed?: boolean | null;
+              };
+              const v = evaluateTradeVerdict({
+                kind: "cash",
+                confidence: s.totalScore ?? 0,
+                riskReward: s.riskReward ?? 0,
+                direction: s.direction,
+                unifiedDecision: s.unifiedDecision ?? null,
+                hardGatesPassed: s.hardGatesPassed ?? null,
+                emaStructure: s.emaStructure ?? null,
+                directionalCheck: s.directionalCheck ?? null,
+                optionsConfirmation: s.optionsConfirmation ?? null,
+              });
+              return (
+                <Badge
+                  className={verdictBadgeClass(v.verdict)}
+                  title={[...v.reasons, ...v.waits].join(" · ") || v.verdict}
+                >
+                  {v.verdict}
+                </Badge>
+              );
+            })()}
             <Badge className={getGradeColor(stock.grade)}>{stock.grade}</Badge>
             <Badge className={getConvictionColor(stock.conviction)}>{stock.conviction}</Badge>
           </div>
@@ -394,7 +420,7 @@ function StockCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
               </div>
             </div>
 
-            {/* EMA 9/21/50 shadow analysis */}
+            {/* EMA 9/21/50 — live gate / shadow */}
             <EmaStructureSection
               emaStructure={stock.emaStructure ?? null}
               directionalCheck={stock.directionalCheck ?? null}

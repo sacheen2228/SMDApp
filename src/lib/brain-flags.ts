@@ -23,11 +23,14 @@ export const BRAIN_FLAGS = {
   noOptionBuysAfter13: false,
   /** Shadow mode for the EMA 9/21/50 market-structure engine (intraday +
    *  weekly scanners). ON = compute and record emaStructure / directionalCheck /
-   *  optionsConfirmation on every candidate; OFF = skip the computation.
-   *  Never changes direction, score, grade, thresholds, SL, TP or trade frequency. */
+   *  optionsConfirmation on every candidate; OFF = skip the computation unless
+   *  emaStructureLive is on. Never changes direction, score, grade, thresholds,
+   *  SL, TP or trade frequency. */
   emaStructureShadow: true,
-  /** Live activation of the EMA structure direction as a veto. OFF by default
-   *  until B0/B1/B2 backtest results are reviewed and explicitly approved. */
+  /** LIVE activation of the EMA structure as an alert-time veto (ema-live-gate):
+   *  BLOCK when options ADVERSE, directional CONFLICT, or a full EMA stack
+   *  opposes the trade. Missing/stale EMA evidence fails open. Scoring and
+   *  direction are still unchanged — only Telegram delivery is gated. */
   emaStructureLive: true,
   /** Apply the cost model when resolving candidate outcomes (off = gross R). */
   resolverCosts: false,

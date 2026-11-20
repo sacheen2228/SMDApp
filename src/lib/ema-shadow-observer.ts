@@ -2,10 +2,12 @@
 // market-structure read (Intraday + Weekly Scanners).
 //
 // Fire-and-forget: never blocks a scan response, never alters returned data,
-// never emits alerts. emaStructureShadow stays true; emaStructureLive stays
-// false. Stale / closed-market / incomplete observations are still recorded
-// (flagged) so the report can measure data coverage honestly — they are only
-// excluded from "valid confirmation" counts at report time.
+// never emits alerts. Logging stays on while emaStructureShadow is true;
+// emaStructureLive only gates Telegram delivery (ema-live-gate) and does not
+// change what this recorder writes. Stale / closed-market / incomplete
+// observations are still recorded (flagged) so the report can measure data
+// coverage honestly — they are only excluded from "valid confirmation" counts
+// at report time.
 
 import { logCandidate } from "./candidate-log";
 import { BRAIN_FLAGS } from "./brain-flags";

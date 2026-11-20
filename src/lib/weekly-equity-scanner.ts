@@ -2,15 +2,12 @@
 // Swing-trading equity research assistant for NSE stocks with realistic
 // upside over the next 5-7 trading days.
 //
-// Hard filters (never violated):
-//   1. Price within ₹100–₹5,000
-//   2. Price above 20-EMA AND 50-EMA (daily)
-//   3. RSI(14) between 45–65
-//   4. RVOL > 1.2x (real participation)
-//   5. ADX > 20 (real trend strength)
-//   6. Exclude RSI > 70 (overbought) or RSI < 30 (falling knife)
-//   7. Exclude avg daily volume < 5,00,000 shares
-//   8. Exclude earnings / major corporate action in next 7 days
+// Gates — SAME logic as the intraday scanner (soft scoring, not hard RSI bands):
+//   HARD (reject only): price ₹100–₹5,000 · avg volume ≥ 5,00,000 ·
+//     no earnings / major corporate action inside the 7-day window
+//   SOFT (score only, never reject): price vs 20/50 EMA · RSI zone ·
+//     RVOL tiers · ADX chop dampen — folded into confidence via
+//     evaluateWeeklyGate().softScore
 //
 // AI reasoning layer (before finalizing):
 //   1. Multi-timeframe check — daily uptrend not contradicted by weekly
@@ -30,6 +27,7 @@ import { checkDirectionalConsistency, type DirectionalEvidence, type Consistency
 import { confirmOptions, type OptionsConfirmationVerdict } from "@/lib/options-confirmation";
 import { BRAIN_FLAGS } from "@/lib/brain-flags";
 import { recordEmaShadowObservations } from "@/lib/ema-shadow-observer";
+import { analyzeEquityCash } from "@/lib/equity-cash-engine";
 
 // ─── Scan universe ────────────────────────────────────────────────
 // NSE F&O universe (208 liquid, options-tradable stocks) — far broader than
@@ -80,6 +78,19 @@ export interface WeeklyCandidate {
   volumeStructure: VolumeStructure;
   // Stage 4 — rocket move detection (null unless detected)
   rocket: RocketDetection | null;
+  // ── Signal Engine (same as intraday): Auction/VP/Liq/Struct/VWAP/Vol/Regime ──
+  /** 0–100 from analyzeEquityCash best-plan signalScore.total (0 = engine skipped). */
+  engineScore: number;
+  engineSetup: string;
+  engineAuctionState: string;
+  engineRegime: string;
+  engineDirection: "LONG" | "SHORT" | "NO_TRADE";
+  /** Score-breakdown rows for the expanded card (intraday parity). */
+  technicalScore: number;
+  volumeScore: number;
+  optionsScore: number;
+  /** Soft-gate score (EMA/RSI/RVOL/ADX) — feeds confidence. */
+  softScore: number;
   // Option plan — computed from equity levels using buildOptionPlan (rupee risk
   // 20% of deployed, 2R/3R/4R targets). null when the contract does not fit
   // the per-trade budget or lot size is unknown.
@@ -118,13 +129,90 @@ export interface WeeklyScanResult {
 // ─── Config ───────────────────────────────────────────────────────
 const PRICE_MIN = 100;
 const PRICE_MAX = 5000;
-const MIN_RSI = 45;
-const MAX_RSI = 65;
-const MIN_RVOL = 1.2;
-const MIN_ADX = 20;
 const MIN_AVG_VOLUME = 500_000;
 const MAX_CANDIDATES = 20;
 const MAX_PER_SECTOR = 3;
+
+// ─── Soft gates — SAME logic as the intraday scanner ──────────────
+// Intraday never hard-rejects on RSI / RVOL / ADX / EMA — it SCORES them
+// (technicalScore + volumeScore + ADX chop dampen). The old weekly hard
+// filters (RSI 45–65, RVOL ≥1.2, ADX ≥20, price>EMA) rejected every stock
+// after the trend check in a bull market (post-trend median RSI ≈ 76 →
+// passedFilters 0/208). Safety rails stay hard; edge factors score.
+
+export interface WeeklyGateInput {
+  price: number;
+  ema20: number;
+  ema50: number;
+  rsi: number;
+  rvol: number;
+  adx: number;
+  avgVol: number;
+  hasEventRisk: boolean;
+}
+
+export interface WeeklyGateResult {
+  /** false → skip (safety filter only). Soft factors never fail this. */
+  pass: boolean;
+  /** Set only when pass=false — the safety filter that fired. */
+  hardReason?: string;
+  /** 0–100 soft score from EMA/RSI/RVOL/ADX (intraday-style). */
+  softScore: number;
+  /** Breakdown components for the Score Breakdown card (0–100 each). */
+  technicalScore: number;
+  volumeScore: number;
+}
+
+/**
+ * Intraday-parity gate for one weekly candidate.
+ * HARD (reject): price band, liquidity floor, corporate-action risk.
+ * SOFT (score only): price vs 20/50 EMA, RSI zone, RVOL, ADX chop dampen.
+ */
+export function evaluateWeeklyGate(input: WeeklyGateInput): WeeklyGateResult {
+  if (input.price < PRICE_MIN || input.price > PRICE_MAX) {
+    return { pass: false, hardReason: `price ${input.price} outside ₹${PRICE_MIN}–₹${PRICE_MAX}`, softScore: 0, technicalScore: 0, volumeScore: 0 };
+  }
+  if (input.avgVol < MIN_AVG_VOLUME) {
+    return { pass: false, hardReason: `avg volume ${Math.round(input.avgVol)} below ${MIN_AVG_VOLUME}`, softScore: 0, technicalScore: 0, volumeScore: 0 };
+  }
+  if (input.hasEventRisk) {
+    return { pass: false, hardReason: "corporate action / earnings inside 7-day window", softScore: 0, technicalScore: 0, volumeScore: 0 };
+  }
+
+  // Soft technicals — mirrors intraday technicalScore + volumeScore bands.
+  // technical = EMA stack + RSI + ADX (max 75); volume = RVOL tiers (max 25).
+  let technical = 0;
+  let volume = 0;
+
+  // EMA trend stack (intraday: +15 EMA9>21, +10 EMA21>50).
+  if (input.price > input.ema20 && input.price > input.ema50) technical += 30;
+  else if (input.price > input.ema20 || input.price > input.ema50) technical += 15;
+
+  // RSI — intraday rewards 50–70 bullish momentum; extremes dampen.
+  if (input.rsi >= 50 && input.rsi <= 70) technical += 25;
+  else if (input.rsi >= 45 && input.rsi < 50) technical += 15;
+  else if (input.rsi > 70 && input.rsi <= 80) technical += 10; // hot but not blow-off
+  else if (input.rsi > 80 || input.rsi < 30) technical += 0;   // blow-off / falling knife
+  else technical += 5;
+
+  // ADX — soft dampen when choppy (never reject).
+  if (input.adx >= 25) technical += 20;
+  else if (input.adx >= 20) technical += 14;
+  else if (input.adx >= 15) technical += 8;
+  else technical += 2;
+
+  // RVOL tiers — same thresholds as intraday volumeScore.
+  if (input.rvol >= 2.0) volume = 95;
+  else if (input.rvol >= 1.5) volume = 80;
+  else if (input.rvol >= 1.2) volume = 60;
+  else if (input.rvol >= 0.8) volume = 35;
+  else volume = 15;
+
+  const technicalScore = Math.min(100, technical);
+  // softScore weights technical (0–75) + volume scaled to 0–25 so both feed confidence.
+  const softScore = Math.min(100, technicalScore + Math.round(volume * 0.25));
+  return { pass: true, softScore, technicalScore, volumeScore: volume };
+}
 
 // ─── Corporate actions / earnings risk (hard filter #8) ──────────
 // NSE publishes a machine-readable announcements feed for the next N days.
@@ -388,9 +476,6 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     const price = last.close;
     const closes = daily.map(c => c.close);
 
-    // ── Hard filter: price range ──
-    if (price < PRICE_MIN || price > PRICE_MAX) continue;
-
     // ── Technicals ──
     const ema20 = lastEMA(closes, 20);
     const ema50 = lastEMA(closes, 50);
@@ -403,17 +488,19 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
       ? ((price - daily[daily.length - 6].close) / daily[daily.length - 6].close) * 100
       : 0;
 
-    // ── Hard filters ──
-    if (price <= ema20 || price <= ema50) continue;           // trend
-    if (rsi < MIN_RSI || rsi > MAX_RSI) continue;             // RSI band
-    if (rsi > 70 || rsi < 30) continue;                       // overbought / falling knife
-    if (rvol < MIN_RVOL) continue;                            // participation
-    if (adx < MIN_ADX) continue;                              // trend strength
-    if (avgVol < MIN_AVG_VOLUME) continue;                    // liquidity floor
-
-    // ── Hard filter #8: earnings / corporate action in next 7 days ──
+    // ── Gates — hard safety + soft intraday-style score ──
     const events = upcomingEvents.get(sd.symbol) || [];
-    if (events.length > 0) continue;
+    const gate = evaluateWeeklyGate({
+      price,
+      ema20,
+      ema50,
+      rsi,
+      rvol,
+      adx,
+      avgVol,
+      hasEventRisk: events.length > 0,
+    });
+    if (!gate.pass) continue;
 
     // ── Multi-timeframe: weekly trend not contradicting ──
     const wCloses = weekly.map(c => c.close);
@@ -455,28 +542,58 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
     else bearCase = "Broad-market or sector weakness could stall momentum.";
     if (!bearCase) bearCase = "Sector rotation away from this group would stall momentum.";
 
-    // Confidence score — AI reasoning layer
-    let confidence = 55;
-    if (weeklyTrend === "UP") confidence += 10;
-    if (weeklyCloseAboveEma20) confidence += 5;
-    if (rsi >= 48 && rsi <= 58) confidence += 8;
-    if (rvol >= 2) confidence += 7;
-    if (adx >= 28) confidence += 5;
+    const confidenceNote = flags.length
+      ? `${flags[0].split("—")[0].trim()} → discounted`
+      : weeklyTrend === "UP" ? "Daily + weekly aligned uptrend" : "Daily trend only — monitor weekly";
+
+    // ── Signal Engine — SAME as intraday: Auction/VP/Liq/Struct/VWAP/Vol/Regime.
+    //     Real analyzeEquityCash on the exchange daily bars (no 5m path here). ──
+    let engineScore = 0;
+    let engineSetup = "";
+    let engineAuctionState = "";
+    let engineRegime = "";
+    let engineDirection: "LONG" | "SHORT" | "NO_TRADE" = "NO_TRADE";
+    if (daily.length >= 35) {
+      const prev = daily[daily.length - 2];
+      const weekBars = daily.slice(-6, -1); // last 5 completed sessions
+      const prevDayHigh = prev?.high || price;
+      const prevDayLow = prev?.low || price;
+      const prevWeekHigh = weekBars.length ? Math.max(...weekBars.map(c => c.high)) : prevDayHigh;
+      const prevWeekLow = weekBars.length ? Math.min(...weekBars.map(c => c.low)) : prevDayLow;
+      try {
+        const analysis = analyzeEquityCash(sd.symbol, daily, prevDayHigh, prevDayLow, prevWeekHigh, prevWeekLow);
+        engineAuctionState = analysis.data.auctionState;
+        engineRegime = analysis.data.regime;
+        engineDirection = analysis.finalDecision;
+        const engineBest =
+          analysis.finalDecision === "LONG" ? analysis.bestLong :
+          analysis.finalDecision === "SHORT" ? analysis.bestShort : null;
+        engineScore = engineBest?.signalScore.total ?? 0;
+        engineSetup = engineBest?.setup || "";
+      } catch {
+        // engine unavailable for this symbol — leave 0, never fabricate
+      }
+    }
+
+    // Options score — neutral when no chain (weekly has no per-stock chain here).
+    const optionsScore = 50;
+
+    // Confidence — soft gate + engine (mirrors intraday totalScore weighting).
+    let confidence = 30 + Math.round(gate.softScore * 0.25); // soft 0–100 → 30–55
+    if (engineScore > 0) confidence += Math.round(engineScore * 0.25); // engine 0–100 → +0–25
+    if (weeklyTrend === "UP") confidence += 8;
+    if (weeklyCloseAboveEma20) confidence += 4;
     if (rr >= 2) confidence += 5;
     confidence -= flags.length * 5;
     if (weeklyTrend === "DOWN") confidence -= 10;
     confidence = Math.max(5, Math.min(98, Math.round(confidence)));
 
-    const confidenceNote = flags.length
-      ? `${flags[0].split("—")[0].trim()} → discounted`
-      : weeklyTrend === "UP" ? "Daily + weekly aligned uptrend" : "Daily trend only — monitor weekly";
-
-    // ── Shadow mode: EMA 9/21/50 market-structure read + directional
-    //     consistency + options confirmation. Purely additive. ──
+    // ── EMA 9/21/50 market-structure read + directional consistency.
+    //     Computed when shadow logging OR the live veto is on. ──
     let weeklyEmaStructure: EmaStructure | undefined;
     let weeklyDirectionalCheck: ConsistencyVerdict | undefined;
     let weeklyOptionsConfirmation: OptionsConfirmationVerdict | undefined;
-    if (BRAIN_FLAGS.emaStructureShadow && sd.daily && sd.daily.length >= 35) {
+    if ((BRAIN_FLAGS.emaStructureShadow || BRAIN_FLAGS.emaStructureLive) && sd.daily && sd.daily.length >= 35) {
       weeklyEmaStructure = analyzeEmaStructure(sd.daily, { nowMs: Date.now() });
       const ev: DirectionalEvidence = {
         ema: { alignment: weeklyEmaStructure.alignment, direction: weeklyEmaStructure.direction },
@@ -531,6 +648,15 @@ export async function runWeeklyScan(): Promise<WeeklyScanResult> {
       hasEventRisk: events.length > 0,
       volumeStructure: analyzeVolumeStructure(daily),
       rocket: detectRocket(daily, sd.symbol, sd.name, sd.sector),
+      engineScore,
+      engineSetup,
+      engineAuctionState,
+      engineRegime,
+      engineDirection,
+      technicalScore: gate.technicalScore,
+      volumeScore: gate.volumeScore,
+      optionsScore,
+      softScore: gate.softScore,
       // ── Option plan — computed from equity levels using buildOptionPlan ──
       // Rupee risk 20% of deployed, 2R/3R/4R targets (1:2 / 1:3 / 1:4).
       ...(() => {

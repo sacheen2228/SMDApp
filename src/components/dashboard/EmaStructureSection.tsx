@@ -1,8 +1,10 @@
-// EmaStructureSection — read-only EMA 9/21/50 market-structure display.
+// EmaStructureSection — EMA 9/21/50 market-structure display.
 //
-// Shadow-only research panel. Never presents a shadow result as an approved
-// executable trade, never overrides the existing engine's live decision, and
-// never fabricates missing values.
+// Shows LIVE status when BRAIN_FLAGS.emaStructureLive is on (the panel feeds
+// the alert-time veto in ema-live-gate); otherwise shadow-research only.
+// Never presents a shadow result as an approved executable trade by itself,
+// never overrides the existing engine's live decision, and never fabricates
+// missing values.
 
 "use client";
 
@@ -22,6 +24,7 @@ import {
 import type { EmaStructure } from "@/lib/ema-structure";
 import type { ConsistencyVerdict } from "@/lib/directional-consistency";
 import type { OptionsConfirmationVerdict } from "@/lib/options-confirmation";
+import { BRAIN_FLAGS } from "@/lib/brain-flags";
 
 interface EmaStructureSectionProps {
   emaStructure: EmaStructure | null | undefined;
@@ -121,6 +124,7 @@ export function EmaStructureSection({
   const e9 = s.ema9 ?? null;
   const e21 = s.ema21 ?? null;
   const e50 = s.ema50 ?? null;
+  const live = BRAIN_FLAGS.emaStructureLive;
 
   // Research suggestion: CE when bullish, PE when bearish — only when the
   // directional evidence supports it and options are not adverse.
@@ -135,12 +139,34 @@ export function EmaStructureSection({
     }
   }
 
+  // Live gate signals visible on this candidate (trade-direction oppose is
+  // applied at alert time in ema-live-gate — the panel has no leg).
+  const liveBlockReason = !live
+    ? null
+    : optionsConfirmation === "ADVERSE"
+    ? "options ADVERSE"
+    : consistencyVerdict === "CONFLICT"
+    ? "directional CONFLICT"
+    : null;
+
   return (
     <div className="p-2 rounded bg-muted/30 border border-zinc-500/30 text-[9px]">
       <div className="flex items-center gap-1 mb-1 border-b border-zinc-500/30 pb-1">
         <Info className="h-3 w-3 text-muted-foreground shrink-0" />
-        <span className="font-semibold text-muted-foreground shrink-0">EMA 9/21/50 — shadow analysis</span>
-        {suggestion && (
+        <span className="font-semibold text-muted-foreground shrink-0">
+          EMA 9/21/50 — {live ? "live gate" : "shadow analysis"}
+        </span>
+        {live && (
+          <Badge className="text-[9px] bg-emerald-600 text-white border border-emerald-500/40">
+            LIVE
+          </Badge>
+        )}
+        {liveBlockReason && (
+          <Badge className="text-[9px] bg-red-600 text-white border border-red-500/40">
+            BLOCKS
+          </Badge>
+        )}
+        {suggestion && !liveBlockReason && (
           <Badge className="text-[9px] bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
             Research: {suggestion === "BUY_CE" ? "BUY_CE" : "BUY_PE"}
           </Badge>
@@ -289,7 +315,12 @@ export function EmaStructureSection({
       {/* Footer */}
       <div className="mt-1 pt-1 border-t border-zinc-500/30">
         <span className="text-[8px] text-zinc-400">
-          Shadow research only — not an executable trade. Bars: {s.bars} · last closed{" "}
+          {live
+            ? liveBlockReason
+              ? `Live gate: BLOCK on ${liveBlockReason}. Missing/stale EMA fails open.`
+              : "Live gate on — ADVERSE / CONFLICT / opposite stack blocks the alert."
+            : "Shadow research only — not an executable trade."}{" "}
+          Bars: {s.bars} · last closed{" "}
           {new Date(s.lastCandleTime ?? 0).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}
         </span>
       </div>

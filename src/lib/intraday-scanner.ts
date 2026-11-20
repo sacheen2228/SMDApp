@@ -838,13 +838,14 @@ export async function generateCandidates(
       (newsScore * 0.05)
     );
 
-    // ── Shadow mode: EMA 9/21/50 market-structure read + directional
-    //     consistency + options confirmation. Purely additive — direction,
-    //     score, grade, thresholds, SL and TP are unchanged. ──
+    // ── EMA 9/21/50 market-structure read + directional consistency +
+    //     options confirmation. Computed when shadow logging OR the live
+    //     veto is on. Purely additive to scoring — the live gate applies
+    //     only at alert time (ema-live-gate). ──
     let emaStructure: EmaStructure | undefined;
     let directionalCheck: ConsistencyVerdict | undefined;
     let optionsConfirmation: OptionsConfirmationVerdict | undefined;
-    if (BRAIN_FLAGS.emaStructureShadow && stockCandles && stockCandles.length >= 35) {
+    if ((BRAIN_FLAGS.emaStructureShadow || BRAIN_FLAGS.emaStructureLive) && stockCandles && stockCandles.length >= 35) {
       const nowMs = stockCandles[stockCandles.length - 1].time ?? Date.now();
       emaStructure = analyzeEmaStructure(stockCandles, { nowMs });
       const ev: DirectionalEvidence = {

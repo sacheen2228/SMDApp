@@ -33,6 +33,7 @@ import {
   Gauge,
 } from "lucide-react";
 import type { WeeklyScanResult, WeeklyCandidate } from "@/lib/weekly-equity-scanner";
+import { evaluateTradeVerdict, verdictBadgeClass } from "@/lib/trade-verdict";
 import { ProResearchModal } from "@/components/dashboard/ProResearchModal";
 import { EmaStructureSection } from "./EmaStructureSection";
 
@@ -91,6 +92,15 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
   const [expanded, setExpanded] = useState(false);
   const [depth, setDepth] = useState<any>(null);
   const [depthLoading, setDepthLoading] = useState(false);
+  const verdict = evaluateTradeVerdict({
+    kind: "cash",
+    confidence: c.confidence ?? 0,
+    riskReward: c.riskReward ?? 0,
+    direction: c.weeklyTrend === "UP" ? "BULLISH" : c.weeklyTrend === "DOWN" ? "BEARISH" : "NEUTRAL",
+    emaStructure: c.emaStructure ?? null,
+    directionalCheck: c.directionalCheck ?? null,
+    optionsConfirmation: c.optionsConfirmation ?? null,
+  });
 
   const checkDepth = async (symbol: string) => {
     setDepthLoading(true);
@@ -116,6 +126,12 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
           <div className="flex items-center gap-1">
             {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
             {c.symbol}
+            <Badge
+              className={`text-[8px] px-1 py-0 ${verdictBadgeClass(verdict.verdict)}`}
+              title={[...verdict.reasons, ...verdict.waits].join(" · ") || verdict.verdict}
+            >
+              {verdict.verdict}
+            </Badge>
           </div>
         </TableCell>
         <TableCell className="text-xs tabular-nums">{fmtINR(c.price)}</TableCell>
@@ -214,7 +230,56 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
               </div>
               <div className="space-y-1">
                 <div className="font-bold">Reasoning</div>
+                <div className="flex items-center gap-1.5">
+                  <Badge className={`text-[8px] px-1 py-0 ${verdictBadgeClass(verdict.verdict)}`}>
+                    {verdict.verdict}
+                  </Badge>
+                  {(verdict.reasons.length > 0 || verdict.waits.length > 0) && (
+                    <span className="text-[9px] text-muted-foreground">
+                      {[...verdict.reasons, ...verdict.waits].join(" · ")}
+                    </span>
+                  )}
+                </div>
                 <p className="text-muted-foreground">{c.confidenceNote}</p>
+                {/* Score Breakdown — same as intraday ScannerPanel */}
+                <div className="pt-2">
+                  <span className="font-semibold text-muted-foreground">Score Breakdown:</span>
+                  <div className="mt-1 space-y-1">
+                    {c.engineScore > 0 && (
+                      <div className="flex justify-between font-semibold text-primary">
+                        <span>Signal Engine (Auction/VP/Liq/Struct/VWAP/Vol/Regime)</span>
+                        <span>{c.engineScore}/100</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span>Technical (EMA/RSI/ADX)</span>
+                      <span>{c.technicalScore}/100</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Volume (RVOL)</span>
+                      <span>{c.volumeScore}/100</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Options</span>
+                      <span>{c.optionsScore}/100</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Sector</span>
+                      <span>{c.sectorStrength}/100</span>
+                    </div>
+                    <div className="flex justify-between font-semibold">
+                      <span>Soft Gate (EMA/RSI/RVOL/ADX)</span>
+                      <span>{c.softScore}/100</span>
+                    </div>
+                    {c.engineSetup || c.engineAuctionState ? (
+                      <div className="text-[10px] text-muted-foreground pt-0.5">
+                        Engine: {c.engineSetup || c.engineAuctionState}
+                        {c.engineRegime ? ` @ ${c.engineRegime}` : ""}
+                        {c.engineDirection !== "NO_TRADE" ? ` · ${c.engineDirection}` : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="pt-1">
                   <span className="font-semibold text-muted-foreground">Sector:</span>{" "}
                   {c.sector} · <span className={c.sectorStrength >= 60 ? "text-emerald-500" : c.sectorStrength <= 40 ? "text-red-500" : ""}>
@@ -313,7 +378,7 @@ function CandidateRow({ c, onProResearch }: { c: WeeklyCandidate; onProResearch:
               )}
             </div>
 
-            {/* EMA 9/21/50 shadow analysis */}
+            {/* EMA 9/21/50 — live gate / shadow */}
             <EmaStructureSection
               emaStructure={c.emaStructure ?? null}
               directionalCheck={c.directionalCheck ?? null}

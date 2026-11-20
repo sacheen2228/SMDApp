@@ -17,6 +17,11 @@
 
 import { sendTradeAlert } from "./telegram";
 import { addTrade } from "./activeTradeTracker";
+import { evaluateEmaLiveVeto } from "./ema-live-gate";
+import { BRAIN_FLAGS } from "./brain-flags";
+import type { EmaStructure } from "./ema-structure";
+import type { ConsistencyVerdict } from "./directional-consistency";
+import type { OptionsConfirmationVerdict } from "./options-confirmation";
 
 export type ScannerStockSource = "intraday-scanner" | "weekly-equity-scanner";
 
@@ -42,6 +47,10 @@ export interface ScannerStockSetup {
   /** Rupee deployment → whole shares (cash equity). Defaults to the app's per-trade budget. */
   budget?: number;
   reason?: string;
+  /** EMA live-gate inputs (optional — absent = fail-open). */
+  emaStructure?: EmaStructure | null;
+  directionalCheck?: ConsistencyVerdict | null;
+  optionsConfirmation?: OptionsConfirmationVerdict | null;
 }
 
 /** The app's per-trade deployment cap (option-plan.PLAN_CONFIG.maxDeployedAmount). */
@@ -118,6 +127,20 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
   const validation = validateScannerStock(s);
   if (!validation.ok) {
     console.log(`[ScannerAlert] BLOCKED ${s.symbol}: ${validation.reason}`);
+    return false;
+  }
+
+  // EMA 9/21/50 live veto (BRAIN_FLAGS.emaStructureLive). Fail-open when the
+  // candidate carries no usable EMA evidence.
+  const emaVeto = evaluateEmaLiveVeto({
+    live: BRAIN_FLAGS.emaStructureLive,
+    tradeDirection: "BULLISH", // cash path is always BUY
+    emaStructure: s.emaStructure ?? null,
+    directionalCheck: s.directionalCheck ?? null,
+    optionsConfirmation: s.optionsConfirmation ?? null,
+  });
+  if (emaVeto.block) {
+    console.log(`[ScannerAlert] EMA LIVE BLOCK ${s.symbol}: ${emaVeto.reason}`);
     return false;
   }
 

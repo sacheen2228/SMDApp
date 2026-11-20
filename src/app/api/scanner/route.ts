@@ -37,6 +37,8 @@ import { classifyScannerDataQuality, type DataQuality, type SourceStatus } from 
 import { getMOCandles } from "@/lib/motilal/candles";
 import { getIntradayCandles } from "@/lib/breeze-historical";
 import { alertScannerStock, scannerTradeId } from "@/lib/scanner-stock-alerts";
+import { evaluateEmaLiveVeto } from "@/lib/ema-live-gate";
+import { BRAIN_FLAGS } from "@/lib/brain-flags";
 
 // Unified Intraday Intelligence Engine — additive layer on the Scanner tab.
 // Computes a coordinator decision (BUY CE / BUY PE / WAIT) for the index
@@ -820,6 +822,9 @@ export async function GET(request: NextRequest) {
             source: "intraday-scanner",
             tradeId: scannerTradeId("intraday-scanner", stock.symbol, stock.monthlyOptionTrade?.strike ?? 0, stock.monthlyOptionTrade?.optionType ?? 'CE', ymd),
             reason: stock.technicalSummary,
+            emaStructure: stock.emaStructure ?? null,
+            directionalCheck: stock.directionalCheck ?? null,
+            optionsConfirmation: stock.optionsConfirmation ?? null,
           }).catch(() => false);
           if (sent) equityAlerts++;
         }
@@ -840,6 +845,20 @@ export async function GET(request: NextRequest) {
         if (rr < 1.5) continue;
         if (!isChainFresh((opt as any)?.chainAsOf)) continue;
         if (!isPlausibleOptionPlan(stock, opt)) continue;
+
+        // EMA 9/21/50 live veto — option expression of the same candidate.
+        const emaVeto = evaluateEmaLiveVeto({
+          live: BRAIN_FLAGS.emaStructureLive,
+          tradeDirection: stock.direction === "BEARISH" ? "BEARISH" : "BULLISH",
+          emaStructure: stock.emaStructure ?? null,
+          directionalCheck: stock.directionalCheck ?? null,
+          optionsConfirmation: stock.optionsConfirmation ?? null,
+          nowMs,
+        });
+        if (emaVeto.block) {
+          console.log(`[Scanner] EMA LIVE BLOCK ${stock.symbol}: ${emaVeto.reason}`);
+          continue;
+        }
 
         await sendTradeAlert({
           symbol: stock.symbol,

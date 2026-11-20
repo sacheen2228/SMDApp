@@ -32,6 +32,8 @@ import {
   scannerTradeId,
   type ScannerStockSetup,
 } from "../src/lib/scanner-stock-alerts";
+import { evaluateEmaLiveVeto } from "../src/lib/ema-live-gate";
+import { BRAIN_FLAGS } from "../src/lib/brain-flags";
 
 const base: ScannerStockSetup = {
   symbol: "ADANIENT",
@@ -102,6 +104,7 @@ describe("scanner stock alerts — honest cash sizing", () => {
 });
 
 describe("scanner stock alerts — stable trade id", () => {
+  test("the id encodes source, symbol, strike, type and day", () => {
     expect(scannerTradeId("intraday-scanner", "ADANIENT", 0, "CE", "2026-11-04")).toBe(
       "SCAN-INTRA-ADANIENT-0-CE-2026-11-04",
     );
@@ -115,3 +118,32 @@ describe("scanner stock alerts — stable trade id", () => {
       scannerTradeId("intraday-scanner", "ADANIENT", 0, "CE", "2026-11-04"),
     );
   });
+});
+
+describe("scanner stock alerts — EMA live gate wiring", () => {
+  test("production flag is ON (emaStructureLive drives alertScannerStock)", () => {
+    expect(BRAIN_FLAGS.emaStructureLive).toBe(true);
+  });
+
+  test("ADVERSE options on a live BUY setup would block before send", () => {
+    const r = evaluateEmaLiveVeto({
+      live: BRAIN_FLAGS.emaStructureLive,
+      tradeDirection: "BULLISH",
+      emaStructure: { alignment: "BULLISH", direction: "BULLISH", dataQuality: "LIVE", lastCandleTime: Date.now() },
+      directionalCheck: "CONSISTENT",
+      optionsConfirmation: "ADVERSE",
+    });
+    expect(r.block).toBe(true);
+  });
+
+  test("no EMA fields on the setup → fail-open (does not invent a block)", () => {
+    const r = evaluateEmaLiveVeto({
+      live: BRAIN_FLAGS.emaStructureLive,
+      tradeDirection: "BULLISH",
+      emaStructure: null,
+      directionalCheck: null,
+      optionsConfirmation: null,
+    });
+    expect(r.block).toBe(false);
+  });
+});
