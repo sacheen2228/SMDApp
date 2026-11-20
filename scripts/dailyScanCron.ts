@@ -40,6 +40,10 @@ import cron from "node-cron";
 async function catchUpMissedEodFetch(): Promise<void> {
   try {
     const eodDir = path.resolve(process.cwd(), "data", "eod");
+    if (!fs.existsSync(eodDir)) {
+      console.log("[catchUp] no data/eod archive yet — skip eod-fetch catch-up");
+      return;
+    }
     // fast scan: any eod dir without _status.json → missed
     const missed: string[] = [];
     for (const d of fs.readdirSync(eodDir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))) {
@@ -77,9 +81,115 @@ async function catchUpMissedEodFetch(): Promise<void> {
   }
 }
 
-catchUpMissedEodFetch().then(() => {
-  console.log("[catchUp] catch‑up complete, starting cron schedule…");
-});
+// ─── Catch‑up missed morning jobs (late boot) ──────────────────────────
+// The box often powers on AFTER the 08:50/09:02/09:10 windows (overnight
+// shutdown ~01:42, manual boot ~09:30–11:00).  On service start, re-run any
+// morning job whose window has passed but which has not produced output yet.
+// Idempotent: each job checks its own artifact before doing work.
+async function catchUpMissedMorningJobs(): Promise<void> {
+  try {
+    const { istDateISO, istMinutes, isTradingDay } = await import("../src/lib/premarket-lab/calendar");
+    const tradeDate = istDateISO();
+    if (!isTradingDay(tradeDate)) {
+      console.log(`[catchUp] ${tradeDate} not a trading day — skip morning jobs`);
+      return;
+    }
+    const minutes = istMinutes();
+    const markerDir = path.resolve(process.cwd(), "data", "cache");
+    fs.mkdirSync(markerDir, { recursive: true });
+
+    // 1) premarket-lab collect — scheduled 08:50 (+09:08 retry). Missed if no
+    //    CM snapshot for today and we are still before 15:00 (NSE pre-open
+    //    endpoint stays readable after the open; after close it is useless).
+    if (minutes >= 8 * 60 + 50 && minutes < 15 * 60) {
+      let hasSnapshot = false;
+      try {
+        const { getLabDb } = await import("../src/lib/premarket-lab/storage");
+        const row = getLabDb()
+          .prepare("SELECT 1 AS x FROM preopen_cm_snapshots WHERE trade_date=? LIMIT 1")
+          .get(tradeDate);
+        hasSnapshot = !!row;
+      } catch (e) {
+        console.error("[catchUp] premarket-lab snapshot check failed:", e);
+      }
+      if (!hasSnapshot) {
+        console.log(`[catchUp] no CM snapshot for ${tradeDate} — re-running premarket-lab collect`);
+        await runPreopenLabCollect("catch-up");
+      } else {
+        console.log(`[catchUp] premarket-lab already has snapshot for ${tradeDate}`);
+      }
+    }
+
+    // 2) readiness — scheduled 09:10. Run once per day (marker) until 15:00.
+    if (minutes >= 9 * 60 + 10 && minutes < 15 * 60) {
+      const marker = path.join(markerDir, `readiness-${tradeDate}`);
+      if (!fs.existsSync(marker)) {
+        console.log(`[catchUp] readiness marker missing for ${tradeDate} — running pre-flight`);
+        await runReadinessOnce(marker);
+      } else {
+        console.log(`[catchUp] readiness already ran for ${tradeDate}`);
+      }
+    }
+
+    // 3) FII/DII — warm the provider cache if we are past 09:00 (data is
+    //    published T-1 after market close; a cold cache means STALE cards).
+    if (minutes >= 9 * 60 && minutes < 16 * 60) {
+      try {
+        const { fetchFiiDiiData } = await import("../src/lib/fii-dii");
+        const r = await fetchFiiDiiData();
+        console.log(`[catchUp] FII/DII warm available=${r.available} date=${r.latest?.date || "?"}`);
+      } catch (e) {
+        console.error("[catchUp] FII/DII warm failed:", e);
+      }
+    }
+
+    // 4) phase-12 lab collect — scheduled 09:02 (research pipeline). Same
+    //    trading-day gate lives inside the pipeline; skip if marker exists.
+    if (minutes >= 9 * 60 + 2 && minutes < 15 * 60) {
+      const marker = path.join(markerDir, `lab-collect-${tradeDate}`);
+      if (!fs.existsSync(marker)) {
+        console.log(`[catchUp] lab collect marker missing for ${tradeDate}`);
+        const ok = await runLabStage("collect", "catch-up");
+        if (ok) {
+          try {
+            fs.writeFileSync(marker, new Date().toISOString());
+          } catch { /* best-effort */ }
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[catchUp] morning jobs error:", e);
+  }
+}
+
+async function runReadinessOnce(markerPath: string): Promise<void> {
+  console.log("[dailyScanCron] running premarket readiness pre-flight (catch-up)...");
+  try {
+    const { evaluatePremarketReadiness, formatReadinessMessage } = await import(
+      "../src/lib/premarket-readiness"
+    );
+    const report = await evaluatePremarketReadiness();
+    console.log(`[dailyScanCron] readiness ${report.gate} — ${report.summary}`);
+    for (const b of report.blockers) console.log(`[dailyScanCron]   blocker: ${b}`);
+    for (const w of report.warnings) console.log(`[dailyScanCron]   warning: ${w}`);
+    fs.writeFileSync(markerPath, new Date().toISOString());
+    if (report.gate !== "READY") {
+      if (isTelegramSendWindow()) {
+        await sendSystemAlert(`Pre-market readiness: ${report.gate}\n\n${formatReadinessMessage(report)}`);
+      } else {
+        console.log("[dailyScanCron] readiness alert suppressed — outside telegram send window");
+      }
+    }
+  } catch (err) {
+    console.error("[dailyScanCron] premarket readiness failed", err);
+  }
+}
+
+catchUpMissedEodFetch()
+  .then(() => catchUpMissedMorningJobs())
+  .then(() => {
+    console.log("[catchUp] catch‑up complete, starting cron schedule…");
+  });
 import { closeYesterdayBTST } from "../src/lib/btst-scanner";
 import { isTelegramSendWindow } from "../src/lib/marketHours";
 import { todayDDMMYYYYIST, positioningFreshness, latestParticipantDate, hasParticipantDataForDate } from "@/lib/institutional-positioning-engine";
@@ -161,11 +271,12 @@ async function runPreopenLabCollect(label: string): Promise<void> {
   }
 }
 
-/** Phase 12 — run one lab pipeline stage (trading-day gated + file-locked inside). */
+/** Phase 12 — run one lab pipeline stage (trading-day gated + file-locked inside).
+ *  Returns true on success (or intentional skip), false on failure. */
 async function runLabStage(
   stage: "collect" | "record" | "attach_partial" | "attach_eod" | "option_sim" | "report",
   label: string,
-): Promise<void> {
+): Promise<boolean> {
   console.log(`[dailyScanCron] lab ${stage} (${label}) starting...`);
   try {
     const pipe = await import("../src/lib/premarket-lab/daily-pipeline");
@@ -178,13 +289,17 @@ async function runLabStage(
     else r = await pipe.runReportStage();
     if (r.ok) {
       console.log(`[dailyScanCron] lab ${stage} ok: ${r.message}`);
+      return true;
     } else if (r.skipped) {
       console.log(`[dailyScanCron] lab ${stage} skipped (${r.skipped}): ${r.message}`);
+      return true;
     } else {
       console.error(`[dailyScanCron] lab ${stage} FAILED: ${r.message}`);
+      return false;
     }
   } catch (err) {
     console.error(`[dailyScanCron] lab ${stage} error`, err);
+    return false;
   }
 }
 
@@ -192,7 +307,17 @@ cron.schedule(PREOPEN_LAB_SCHEDULE, () => runPreopenLabCollect("collect-08:50"),
 cron.schedule(PREOPEN_LAB_RETRY, () => runPreopenLabCollect("retry-09:08"), { timezone: TIMEZONE });
 
 // Phase 12 automated quant research ops (research-only — no Telegram/trades)
-cron.schedule(LAB_COLLECT, () => runLabStage("collect", "09:02"), { timezone: TIMEZONE });
+cron.schedule(LAB_COLLECT, async () => {
+  const ok = await runLabStage("collect", "09:02");
+  if (ok) {
+    try {
+      const { istDateISO } = await import("../src/lib/premarket-lab/calendar");
+      const marker = path.resolve(process.cwd(), "data", "cache", `lab-collect-${istDateISO()}`);
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, new Date().toISOString());
+    } catch { /* best-effort */ }
+  }
+}, { timezone: TIMEZONE });
 cron.schedule(LAB_RECORD, () => runLabStage("record", "09:20"), { timezone: TIMEZONE });
 cron.schedule(LAB_ATTACH_1, () => runLabStage("attach_partial", "10:05"), { timezone: TIMEZONE });
 cron.schedule(LAB_ATTACH_2, () => runLabStage("attach_partial", "11:35"), { timezone: TIMEZONE });
@@ -206,28 +331,10 @@ cron.schedule(LAB_REPORT, () => runLabStage("report", "19:45"), { timezone: TIME
 cron.schedule(
   READINESS_SCHEDULE,
   async () => {
-    console.log("[dailyScanCron] running premarket readiness pre-flight...");
-    try {
-      const { evaluatePremarketReadiness, formatReadinessMessage } = await import(
-        "../src/lib/premarket-readiness"
-      );
-      const report = await evaluatePremarketReadiness();
-      console.log(`[dailyScanCron] readiness ${report.gate} — ${report.summary}`);
-      for (const b of report.blockers) console.log(`[dailyScanCron]   blocker: ${b}`);
-      for (const w of report.warnings) console.log(`[dailyScanCron]   warning: ${w}`);
-
-      // A healthy stack needs no Telegram noise; anything else must be seen
-      // before the 09:15 open.
-      if (report.gate !== "READY") {
-        if (isTelegramSendWindow()) {
-          await sendSystemAlert(`Pre-market readiness: ${report.gate}\n\n${formatReadinessMessage(report)}`);
-        } else {
-          console.log("[dailyScanCron] readiness alert suppressed — outside telegram send window");
-        }
-      }
-    } catch (err) {
-      console.error("[dailyScanCron] premarket readiness failed", err);
-    }
+    const { istDateISO } = await import("../src/lib/premarket-lab/calendar");
+    const marker = path.resolve(process.cwd(), "data", "cache", `readiness-${istDateISO()}`);
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    await runReadinessOnce(marker);
   },
   { timezone: TIMEZONE }
 );

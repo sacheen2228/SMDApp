@@ -208,3 +208,56 @@ describe("formatReadinessMessage", () => {
     expect(msg).toContain("ECONNREFUSED");
   });
 });
+
+describe("evaluatePremarketReadiness — probe timeouts (no infinite hang)", () => {
+  it("a hanging sessionReport becomes FAIL within the check budget, not an infinite await", async () => {
+    const t0 = Date.now();
+    const r = await evaluatePremarketReadiness({
+      ...okDeps(),
+      // Never settles — simulates a Breeze SDK call with no timeout
+      sessionReport: () => new Promise(() => {}),
+      // Keep other probes instant so the hang is isolated
+      checkTimeoutMs: 200,
+    });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(2000);
+    expect(statuses(r).session_health).toBe("FAIL");
+    expect(r.checks.find((c) => c.id === "session_health")?.detail).toMatch(/timed out/i);
+    expect(r.gate).toBe("NOT_READY");
+  });
+
+  it("a hanging chainProbe becomes FAIL within the check budget", async () => {
+    const t0 = Date.now();
+    const r = await evaluatePremarketReadiness({
+      ...okDeps(),
+      chainProbe: () => new Promise(() => {}),
+      checkTimeoutMs: 200,
+    });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(2000);
+    expect(statuses(r).data_health).toBe("FAIL");
+    expect(r.checks.find((c) => c.id === "data_health")?.detail).toMatch(/timed out/i);
+  });
+
+  it("a hanging feedProbe becomes FAIL within the check budget", async () => {
+    const t0 = Date.now();
+    const r = await evaluatePremarketReadiness({
+      ...okDeps(),
+      feedProbe: () => new Promise(() => {}),
+      checkTimeoutMs: 200,
+    });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(2000);
+    expect(statuses(r).feed_gate).toBe("FAIL");
+    expect(r.checks.find((c) => c.id === "feed_gate")?.detail).toMatch(/timed out/i);
+  });
+
+  it("fast probes are unaffected by the timeout wrapper", async () => {
+    const r = await evaluatePremarketReadiness({ ...okDeps(), checkTimeoutMs: 2000 });
+    expect(r.gate).toBe("READY");
+    expect(statuses(r).session_health).toBe("PASS");
+    expect(statuses(r).data_health).toBe("PASS");
+    expect(statuses(r).feed_gate).toBe("PASS");
+  });
+});
+

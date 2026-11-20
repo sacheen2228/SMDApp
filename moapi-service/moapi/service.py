@@ -44,6 +44,13 @@ def _now():
     return time.time()
 
 
+# After a PARTIAL load (one exchange timed out), the in-memory master must
+# expire this soon so the missing exchange is retried — not after the full
+# instrument_ttl. Live 2026-11-20: NSEFO timed out, BSEFO-only was marked
+# fresh for 6h and every NIFTY lookup returned 0 rows.
+PARTIAL_RETRY_SECONDS = 60
+
+
 class InstrumentMaster(object):
     """The MO instrument master, cached in memory and on disk."""
 
@@ -163,10 +170,19 @@ class InstrumentMaster(object):
             # cache when every configured exchange is present so a later start
             # retries the gap instead of trusting a poisoned partial file.
             self.exchanges = exchanges
-            self._apply(contracts, _now())
-            self.fetch_error = errors or None
-            if not errors:
+            if errors:
+                # Partial master: backdate fetched_at so it goes stale after
+                # PARTIAL_RETRY_SECONDS (not the full instrument_ttl). The
+                # next load past that window re-enters the fetch loop and
+                # retries ONLY the missing exchange(s).
+                self._apply(
+                    contracts,
+                    _now() - self.config.instrument_ttl + PARTIAL_RETRY_SECONDS,
+                )
+            else:
+                self._apply(contracts, _now())
                 self._write_cache()
+            self.fetch_error = errors or None
             return self.contracts
 
     def _apply(self, contracts, fetched_at):

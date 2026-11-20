@@ -336,6 +336,12 @@ export function cleanupNSE() {
 const NSE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 let nseCookieCache: { cookie: string; expiresAt: number } | null = null;
 
+// nseindia.com 301s to nseindia.in (Akamai). Node/bun fetch follows the
+// redirect but can drop set-cookie from the intermediate hop, so the warm-up
+// and the API calls hit the .in host directly (live-verified 200, no cookie
+// required for allIndices).
+const NSE_HOST = "https://www.nseindia.in";
+
 async function getNSECookie(): Promise<string> {
   if (nseCookieCache && Date.now() < nseCookieCache.expiresAt) return nseCookieCache.cookie;
   try {
@@ -344,9 +350,10 @@ async function getNSECookie(): Promise<string> {
     const res = await nseGate.call<any>(
       "nse-cookie-warm",
       async () =>
-        await fetch("https://www.nseindia.com", {
+        await fetch(`${NSE_HOST}/`, {
           headers: { "User-Agent": NSE_UA, Accept: "text/html" },
           signal: AbortSignal.timeout(8000),
+          redirect: "follow",
         }),
       { snapshot: false },
     );
@@ -356,14 +363,49 @@ async function getNSECookie(): Promise<string> {
   } catch { return ""; }
 }
 
-export async function getNSEIndiaVIX(): Promise<{ value: number; change: number } | null> {
+/**
+ * allIndices — one shared JSON list (NIFTY, INDIA VIX, …).
+ *
+ * Cookie warm-up is NOT required for this endpoint (live-verified 200 with
+ * and without Cookie on 2026-11-20). Skipping it also keeps the 403 home-page
+ * probe off the shared gate.
+ *
+ * A poisoned gate key must not hide NSE from the session probe: one timeout
+ * on `nse-all-indices` suppresses that key for keyCooldownMs (300s), and the
+ * old silent catch turned every blip into "allIndices probe empty" for five
+ * minutes. On ANY gate failure we fall back to ONE direct GET outside the
+ * gate — a single lightweight request cannot create the burst the gate exists
+ * to stop, and the alternative is a false "NSE down" through the cooldown.
+ */
+async function fetchAllIndices(): Promise<any> {
+  const url = `${NSE_HOST}/api/allIndices`;
+  const headers = {
+    "User-Agent": NSE_UA,
+    Referer: `${NSE_HOST}/market-data/live-equity-market`,
+  };
   try {
-    const cookie = await getNSECookie();
-    const json = await nseGate.fetchJson<any>("https://www.nseindia.com/api/allIndices", {
+    return await nseGate.fetchJson<any>(url, {
       key: "nse-all-indices",
       timeoutMs: 8000,
-      headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
+      headers,
     });
+  } catch (gateErr) {
+    try {
+      const res = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw gateErr;
+      return await res.json();
+    } catch {
+      throw gateErr;
+    }
+  }
+}
+
+export async function getNSEIndiaVIX(): Promise<{ value: number; change: number } | null> {
+  try {
+    const json = await fetchAllIndices();
     const vix = (json?.data || []).find((i: any) => i.index === "INDIA VIX");
     if (!vix) return null;
     // No fabricated fallback: without a real last price there is no VIX.
@@ -381,12 +423,7 @@ export async function getNSEIndiaVIX(): Promise<{ value: number; change: number 
 
 export async function getNSEIndices(): Promise<Array<{ key: string; name: string; ltp: number; change: number; changePct: number; prevClose: number }>> {
   try {
-    const cookie = await getNSECookie();
-    const json = await nseGate.fetchJson<any>("https://www.nseindia.com/api/allIndices", {
-      key: "nse-all-indices",
-      timeoutMs: 8000,
-      headers: { "User-Agent": NSE_UA, Cookie: cookie, Referer: "https://www.nseindia.com/market-data/live-equity-market" },
-    });
+    const json = await fetchAllIndices();
     return mapNSEIndices(json?.data || []);
   } catch { return []; }
 }

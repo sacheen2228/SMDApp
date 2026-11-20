@@ -83,7 +83,9 @@ async function fetchNSEFiiDii(): Promise<FiiDiiSnapshot | null> {
     try {
       const now = Date.now();
       if (!nseCookieCache || now - nseCookieTime > COOKIE_TTL) {
-        const initRes = await fetch('https://www.nseindia.com', {
+        // nseindia.com 301s to nseindia.in — hit .in directly so set-cookie
+        // is not lost on the redirect hop (live-verified: 200, date fresh).
+        const initRes = await fetch('https://www.nseindia.in/', {
           headers: NSE_HEADERS,
           redirect: 'follow',
           signal: AbortSignal.timeout(10000),
@@ -95,7 +97,7 @@ async function fetchNSEFiiDii(): Promise<FiiDiiSnapshot | null> {
         }
       }
 
-      const res = await fetch('https://www.nseindia.com/api/fiidiiTradeReact', {
+      const res = await fetch('https://www.nseindia.in/api/fiidiiTradeReact', {
         headers: {
           ...NSE_HEADERS,
           ...(nseCookieCache ? { 'Cookie': nseCookieCache } : {}),
@@ -215,6 +217,41 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 min
 /** How long a FAILED fetch may be served before the next call retries. */
 const FAILURE_TTL = 30 * 1000;
 
+/** Test-only: drop the in-memory result + cookie caches between cases. */
+export function _resetFiiDiiCacheForTests(): void {
+  cache = null;
+  nseCookieCache = null;
+  nseCookieTime = 0;
+}
+
+/**
+ * Resolve `p` within `ms`, else `fallback`. The underlying promise keeps
+ * running (its own AbortSignals still apply) — we only stop WAITING on it,
+ * so a slow NSE retry ladder cannot pin the endpoint past the budget.
+ */
+function withBudget<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
+/**
+ * NSE's retry ladder is 3×10s + backoff ≈ 33s worst case. The market-data
+ * provider cap for this category is 15s — without a race budget one hung
+ * NSE minute returns UNAVAILABLE even though MrChartist answered in 100ms.
+ */
+const NSE_RACE_BUDGET_MS = 3_000;
+
 async function fetchNSEParticipantOI(): Promise<ParticipantOI | null> {
   try {
     const now = Date.now();
@@ -295,12 +332,16 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
     return cache.data;
   }
 
-  // NSE cookie must be set first — fetch latest FII/DII (sets cookie), then fetch CSV
-  const nseLatest = await fetchNSEFiiDii();
-  const [mcLatest, history, participantOI] = await Promise.all([
+  // Every provider starts together. NSE (latest + participant CSV) is
+  // raced against a short budget so its retry ladder cannot block the
+  // MrChartist answer; NSE still wins whenever it responds in time.
+  // (Previously NSE was awaited FIRST — one slow NSE minute hung the
+  // whole endpoint past the 15s provider cap.)
+  const [nseLatest, mcLatest, history, participantOI] = await Promise.all([
+    withBudget(fetchNSEFiiDii(), NSE_RACE_BUDGET_MS, null),
     fetchMrChartistLatest(),
     fetchMrChartistHistory(),
-    fetchNSEParticipantOI(),
+    withBudget(fetchNSEParticipantOI(), NSE_RACE_BUDGET_MS, null),
   ]);
 
   const latest = nseLatest || mcLatest || {

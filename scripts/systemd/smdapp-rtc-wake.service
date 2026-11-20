@@ -1,0 +1,7 @@
+[Unit]
+Description=Arm RTC wake for next weekday 08:00 IST (SMDApp pre-market)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/sachin/Desktop/SDMApp/scripts/arm-rtc-wake.sh

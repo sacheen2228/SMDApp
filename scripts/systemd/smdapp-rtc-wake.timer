@@ -1,0 +1,11 @@
+[Unit]
+Description=Arm RTC wake on boot + daily 18:00 IST (before overnight power-off)
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*-*-* 18:00:00 Asia/Kolkata
+Persistent=true
+Unit=smdapp-rtc-wake.service
+
+[Install]
+WantedBy=timers.target

@@ -11,7 +11,6 @@ import {
   type CanonicalChain,
 } from "@/lib/market-data-race";
 import { mapBreezeOptionChain } from "@/lib/market-data-providers";
-import { mapBreezeOptionChain } from "@/lib/market-data-providers";
 
 const ALL_CATEGORIES: DataCategory[] = [
   "quotes", "option-chain", "candles", "greeks", "oi-pcr", "max-pain", "spot",

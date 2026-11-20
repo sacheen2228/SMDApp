@@ -93,7 +93,15 @@ export async function validateSession(): Promise<boolean> {
       }
     }
     const breeze = getBreezeClient() as any;
-    const res: any = await breeze.getCustomerDetails(code);
+    // getCustomerDetails has no SDK-side timeout — without this race a wedged
+    // connection hangs validateSession (and every readiness/session probe
+    // awaiting it) forever.
+    const res: any = await Promise.race([
+      breeze.getCustomerDetails(code),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('getCustomerDetails timeout')), 10_000),
+      ),
+    ]);
     if (res == null) {
       store.sessionState.status = "ERROR";
       store.sessionState.authenticated = false;
@@ -299,7 +307,13 @@ export { BreezeConnect };
 // ─── Auto-Retry Wrapper (with concurrent refresh protection) ──────
 // Wraps any Breeze SDK call and retries once on auth errors (401/403/token expired).
 // Uses shared refresh promise to prevent duplicate refresh attempts.
-const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID', 'SESSION', 'EXPIRED', 'UNAUTHORIZED', 'ERROR'];
+// Real auth signals only. Bare 'ERROR'/'INVALID' matched transient ICICI
+// service errors ("Error while calling service, Please contact admin") and
+// "SDK internal error (...)" — every BFO/NFO blip then triggered a full
+// 25s+ session re-init, stacking refreshPromise waiters and wedging
+// readiness for minutes. Keep this list tight: only messages that mean the
+// session itself is bad.
+const AUTH_ERROR_PATTERNS = [401, 403, '401', '403', 'INVALID SESSION', 'SESSION EXPIRED', 'SESSION_TOKEN', 'UNAUTHORIZED', 'UNAUTHORISED'];
 
 export async function withAuthRetry<T>(fn: (client: BreezeConnect) => Promise<T>): Promise<T> {
   if (!store.currentApiSession) {

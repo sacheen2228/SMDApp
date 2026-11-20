@@ -93,7 +93,16 @@ export interface PremarketReadinessDeps {
   brief?: () => { timestamp?: string } | null | Promise<{ timestamp?: string } | null>;
   providerCircuits?: () => { open: string[] } | Promise<{ open: string[] }>;
   telegramConfigured?: () => boolean;
+  /**
+   * Per-check wall-clock budget. A probe that never settles (hung Breeze SDK
+   * call, dead feed) becomes an honest FAIL instead of hanging the whole
+   * readiness report forever. Default 15s — the live route used to take
+   * 45s–3min when the session probe wedged.
+   */
+  checkTimeoutMs?: number;
 }
+
+const DEFAULT_CHECK_TIMEOUT_MS = 15_000;
 
 const OPEN_MINUTES = 9 * 60 + 15; // 09:15 IST
 
@@ -193,6 +202,7 @@ export async function evaluatePremarketReadiness(
   const phase = getTradingSession(now);
   const minutes = istMinutes(now);
   const minutesToOpen = minutes < OPEN_MINUTES ? OPEN_MINUTES - minutes : 0;
+  const checkTimeoutMs = deps.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
 
   const checks: ReadinessCheck[] = [];
 
@@ -251,7 +261,7 @@ export async function evaluatePremarketReadiness(
         : `Live service unreachable — ${probe.failNote ?? 'no response'} (service not running?)`,
       remediation: 'Start live-data-service (port 8765) before the open',
     };
-  }));
+  }, checkTimeoutMs));
 
   // 4. data health — real option chain, scored by data-health
   checks.push(await runCheck('data_health', 'Option chain data health', async () => {
@@ -278,7 +288,7 @@ export async function evaluatePremarketReadiness(
       return { status: 'WARN', detail: `${health.status} (score ${health.score}) — ${health.issues.join('; ')}` };
     }
     return { status: 'PASS', detail: `HEALTHY (score ${health.score}) — ${probe.strikes} strikes from ${probe.source}, ${probe.latencyMs}ms` };
-  }));
+  }, checkTimeoutMs));
 
   // 5. session health — breeze / mo / nse
   checks.push(await runCheck('session_health', 'Broker session health', async () => {
@@ -300,7 +310,7 @@ export async function evaluatePremarketReadiness(
     }
     const names = Object.keys(probes);
     return { status: 'PASS', detail: names.length ? `${names.length} source(s) live: ${names.join(', ')}` : 'No session failures recorded' };
-  }));
+  }, checkTimeoutMs));
 
   // 6. provider circuits
   checks.push(await runCheck('provider_circuits', 'Provider circuits', async () => {
@@ -309,7 +319,7 @@ export async function evaluatePremarketReadiness(
       return { status: 'WARN', detail: `Circuit OPEN: ${open.join(', ')} — those providers are cooling down` };
     }
     return { status: 'PASS', detail: 'All provider circuits CLOSED' };
-  }));
+  }, checkTimeoutMs));
 
   // 7. morning brief — today's, not yesterday's
   checks.push(await runCheck('morning_brief', 'Morning brief', async () => {
@@ -325,7 +335,7 @@ export async function evaluatePremarketReadiness(
       return { status: 'WARN', detail: `Morning brief is from ${getISTDate(ts).toISOString().slice(0, 10)} — stale` };
     }
     return { status: 'PASS', detail: `Brief from ${ts.toISOString()}` };
-  }));
+  }, checkTimeoutMs));
 
   // 8. telegram delivery
   checks.push(await runCheck('telegram', 'Telegram delivery', async () => {
@@ -334,7 +344,7 @@ export async function evaluatePremarketReadiness(
       return { status: 'WARN', detail: 'TELEGRAM_DIGEST_CHAT_IDS not configured — signals cannot be delivered' };
     }
     return { status: 'PASS', detail: 'Digest chat IDs configured' };
-  }));
+  }, checkTimeoutMs));
 
   const hasFail = checks.some((c) => c.status === 'FAIL');
   const hasWarn = checks.some((c) => c.status === 'WARN');
@@ -342,17 +352,42 @@ export async function evaluatePremarketReadiness(
   return finish(checks, gate, !hasFail, now, phase, minutesToOpen);
 }
 
-/** Wrap a probe so a throw becomes an honest FAIL, never a crash or a PASS. */
+/** Wrap a probe so a throw becomes an honest FAIL, never a crash or a PASS.
+ *  Also enforces a wall-clock budget: a probe that never settles (hung SDK
+ *  call with no internal timeout) FAILs with "timed out" rather than wedging
+ *  the entire readiness report. */
 async function runCheck(
   id: string,
   label: string,
   fn: () => Promise<{ status: CheckStatus; detail: string; remediation?: string }>,
+  timeoutMs: number = DEFAULT_CHECK_TIMEOUT_MS,
 ): Promise<ReadinessCheck> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const r = await fn();
+    const r = await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Check timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
     return { id, label, status: r.status, detail: r.detail, remediation: r.remediation };
   } catch (e) {
-    return { id, label, status: 'FAIL', detail: `Check threw: ${errText(e)}` };
+    const msg = errText(e);
+    const timedOut = msg.includes('timed out');
+    return {
+      id,
+      label,
+      status: 'FAIL',
+      detail: timedOut ? msg : `Check threw: ${msg}`,
+      remediation: timedOut
+        ? 'Probe did not answer within the budget — check the underlying source (Breeze/NSE/feed service)'
+        : undefined,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

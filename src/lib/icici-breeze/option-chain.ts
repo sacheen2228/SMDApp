@@ -204,12 +204,19 @@ export async function getOptionChainExpiries(stockCode: string): Promise<string[
     const breezeStockCode = bfoStockCode(stockCode);
     console.log('[Breeze SDK] Fetching expiries for:', breezeStockCode, exchangeCode);
 
-    // Fetch monthly expiries from futures
-    const futuresResult = await breeze.getOptionChainQuotes({
-      stockCode: breezeStockCode,
-      exchangeCode: exchangeCode as any,
-      productType: 'futures',
-    }).catch(() => null);
+    // Fetch monthly expiries from futures.
+    // Raw SDK call (not via withAuthRetry) — needs its own race or a hung
+    // connection never settles and the readiness chainProbe wedges.
+    const futuresResult = await Promise.race([
+      breeze.getOptionChainQuotes({
+        stockCode: breezeStockCode,
+        exchangeCode: exchangeCode as any,
+        productType: 'futures',
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('expiries timeout')), 10_000),
+      ),
+    ]).catch(() => null);
 
     const expiries = new Set<string>();
 
