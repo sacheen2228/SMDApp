@@ -261,13 +261,15 @@ export function positionSize(input: {
   ok: boolean; lots: number; qty: number; riskAmount: number; riskPerLot: number;
   maxLoss: number; capitalRequired: number; guidance: string;
 } {
-  // Deployed budget = what we are willing to put into THIS trade (₹20–30k),
-  // capped by the trading capital. The risk budget is a % of THAT amount.
-  // NOTE: capital=0 is MEANINGFUL (no remaining headroom) — never `0 || default`.
+  // The deployment budget = the DEFAULT ₹ deployed per trade, scaled down when
+  // the account is smaller. It is a SIZE, not a gate (user directive
+  // 2026-11-21): no fixed capital / lot-count restriction may refuse a trade.
+  // NOTE: capital=0 means "unknown account" — it falls back to the default
+  // budget instead of refusing the trade.
   const capital = input.capital != null && Number.isFinite(Number(input.capital))
     ? Number(input.capital)
     : GATE_CONFIG.capital;
-  const budget = Math.min(GATE_CONFIG.tradeBudget, capital);
+  const budget = capital > 0 ? Math.min(GATE_CONFIG.tradeBudget, capital) : GATE_CONFIG.tradeBudget;
   const riskPct = Math.min(GATE_CONFIG.maxRiskPct, Math.max(0.1, Number(input.riskPct) || GATE_CONFIG.defaultRiskPct));
   const entry = Number(input.entry);
   const sl = Number(input.sl);
@@ -282,16 +284,16 @@ export function positionSize(input: {
     };
   }
   const riskPerLot = Math.abs(entry - sl) * lotSize;
-  const riskLimitedLots = Math.floor(riskAmount / riskPerLot);
   // affordability: the PREMIUM actually committed per lot must fit the budget
   const affordableLots = Math.floor(budget / (entry * lotSize));
-  const lots = Math.max(0, Math.min(riskLimitedLots, affordableLots));
+  // THE 1-LOT FLOOR: the deployment budget decides the SIZE, the market stop
+  // decides the RISK. A valid contract is never refused because of capital.
+  const lots = Math.max(1, affordableLots);
   const maxLoss = riskPerLot * lots;
   const capitalRequired = entry * lotSize * lots;
-  const guidance = lots >= 1
-    ? `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | max loss ₹${Math.round(maxLoss).toLocaleString("en-IN")} within ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of the ₹${budget.toLocaleString("en-IN")} deployed) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`
-    : `0 lots: ₹${Math.round(riskPerLot).toLocaleString("en-IN")} risk/lot exceeds the ₹${Math.round(riskAmount).toLocaleString("en-IN")} risk budget (${riskPct}% of ₹${budget.toLocaleString("en-IN")} deployed), or the ₹${Math.round(entry * lotSize).toLocaleString("en-IN")} premium per lot does not fit the budget. Tighten the stop, pick a cheaper strike, or use a spread — NEVER risk more.`;
-  return { ok: lots >= 1, lots, qty: lots * lotSize, riskAmount, riskPerLot, maxLoss, capitalRequired, guidance };
+  const deployedRiskPct = capitalRequired > 0 ? (maxLoss / capitalRequired) * 100 : 0;
+  const guidance = `${lots} lot(s) × ${lotSize} = ${lots * lotSize} qty | market stop risks ₹${Math.round(riskPerLot).toLocaleString("en-IN")}/lot (${deployedRiskPct.toFixed(0)}% of the ₹${Math.round(capitalRequired).toLocaleString("en-IN")} deployed) | ₹${Math.round(capitalRequired).toLocaleString("en-IN")} committed`;
+  return { ok: true, lots, qty: lots * lotSize, riskAmount, riskPerLot, maxLoss, capitalRequired, guidance };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -505,13 +507,20 @@ export function evaluateTradeGate(input: GateInput): GateResult {
   if (input.hybrid) {
     for (const c of checks) {
       if (c.status !== "fail") continue;
-      const soft = c.id === "confidence" || c.id === "layers" || (c.id === "underlying_rr" && /unknown/i.test(c.detail));
-      if (!soft) continue;
-// Skip layer/delta checks for TP2/TP3 lifecycle alerts (they have no real-time data)
-      // These alerts still go through all hard safety checks (R:R, expiry, risk budget, loss streak)
-      if (c.id === "layers" || c.id === "delta") {
+      // The confidence floor is the old brain's business — it GENERATED this
+      // candidate, so a soft confidence is not a veto.
+      if (c.id === "confidence") {
+        c.status = "pass";
+        c.detail = `soft: ${c.detail} — the old brain generated this candidate`;
         continue;
       }
+      // Soft: layer agreement short of 3-of-5, and an unknown underlying R:R.
+      // A layer that says AGAINST stays HARD, and so do R:R, expiry, delta,
+      // strike distance, the streak and the daily-loss cap.
+      const soft =
+        (c.id === "layers" && /only \d+ agreeing/i.test(c.detail)) ||
+        (c.id === "underlying_rr" && /unknown/i.test(c.detail));
+      if (!soft) continue;
       c.status = "warn";
       c.detail = `soft: ${c.detail}`;
       warnings.push(`${c.label}: ${c.detail}`);
@@ -663,6 +672,7 @@ const TOOL_PATTERNS: Array<[string, RegExp]> = [
   ["get_fii_dii", /\bfii\b|\bdii\b|foreign institutional|institutional flow/i],
   ["get_option_chain", /\boption chain\b|\boi\b|open interest|max pain|pcr\b|strike/i],
   ["read_option_chain", /\bread the chain\b|chain read|support.*resistance|resistance.*support|walls?\b|writing|buying zones/i],
+  ["get_daily_derivatives", /daily derivatives|derivatives dashboard|\bcvd\b|cumulative delta|open interest|oi build|build.?up|fakeout|fake break|short covering|long unwinding|max pain/i],
   ["get_market_structure", /\bstructure\b|market structure|hh\s*\/\s*hl|higher (high|low)|vwap\b|supertrend|support|resistance/i],
   ["get_atm_straddle", /\batm straddle\b|straddle\b/i],
   ["get_cas_analysis", /\bcas\b|dislocation/i],

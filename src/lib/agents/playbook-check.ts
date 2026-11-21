@@ -141,8 +141,10 @@ export function evaluatePlaybookCheck(
   // 5. Candle confirmation present?
   items.push(checkOpposition(5, agentOutputs, ['BREAKOUT', 'MOMENTUM'], short));
 
-  // 6. Strike selector passes: option R:R >= 1:2 and lots >= 1 at the
-  //    per-trade budget (risk = 20% of the ₹ DEPLOYED in the trade).
+  // 6. Strike selector passes: option R:R >= 1:2 and a tradable size.
+  //    The SIZE is never a veto (user directive 2026-11-21): the deployment
+  //    budget decides the lots (1 lot floor) and the market stop decides the
+  //    risk — the risk budget is REPORTED, not enforced.
   const entry = candidate.entry;
   const sl = candidate.stopLoss;
   const tp1 = candidate.target1;
@@ -163,14 +165,15 @@ export function evaluatePlaybookCheck(
   }
   if (lots < 1) {
     i6pass = false;
-    i6notes.push(`${lotSize}-unit lot risk ₹${Math.round(riskPerLot).toLocaleString("en-IN")} > ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade) — lots ${lots} < 1`);
+    i6notes.push(`no tradable size for ${lotSize}-unit lots — the premium or the lot size is unknown`);
   } else {
-    i6notes.push(`${lots} lot(s) within the ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade; lot ${lotSize})`);
+    i6notes.push(`${lots} lot(s) at the ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade; lot ${lotSize}) — the market stop risks ₹${Math.round(riskPerLot).toLocaleString("en-IN")}/lot`);
   }
   i6notes.push('theta cost not verified (no theta input)');
   items.push({ item: 6, label: PLAYBOOK_ITEM_LABELS[6], pass: i6pass, note: i6notes.join('; ') });
 
-  // 7. Stop / reward:risk / risk% limits.
+  // 7. Stop / reward:risk — the R:R is the only reject criterion; the rupee
+  //    risk is shown (a market stop may be wider than the 20% reference).
   const i7notes: string[] = [];
   let i7pass = true;
   if (rr < PLAYBOOK_MIN_RR) {
@@ -182,8 +185,7 @@ export function evaluatePlaybookCheck(
   if (candidate.maxLoss != null) {
     const cap = budget;
     if (candidate.maxLoss > cap) {
-      i7pass = false;
-      i7notes.push(`maxLoss ₹${candidate.maxLoss} > ₹${Math.round(cap).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade)`);
+      i7notes.push(`maxLoss ₹${candidate.maxLoss} > the ₹${Math.round(cap).toLocaleString("en-IN")} reference (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade) — the market stop is wider than the reference, shown not capped`);
     } else {
       i7notes.push(`maxLoss ₹${candidate.maxLoss} ≤ ₹${Math.round(cap).toLocaleString("en-IN")} (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade)`);
     }

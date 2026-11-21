@@ -349,6 +349,36 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<b
 
   activeTrades.set(trade.id, trade);
 
+  // Register with the UNIVERSAL monitor (the 5s TP/SL loop). Without this the
+  // trade exists only in the tracker's map: the monitor never polled it, so
+  // NO TP/SL alert could ever fire for it (the 20/11 blackout). The monitor is
+  // imported dynamically to keep the module graph acyclic.
+  try {
+    const { registerTradeForMonitoring } = await import("./agents/trade-monitor");
+    registerTradeForMonitoring({
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      exchange: trade.exchange || "NSE",
+      instrument:
+        trade.optionType === "CE" ? "CALL"
+          : trade.optionType === "PE" ? "PUT"
+            : trade.optionType === "FUT" ? "FUTURES"
+              : "EQUITY",
+      side: trade.side === "SELL" ? "SELL" : "BUY",
+      strike: trade.strike,
+      entry: trade.entry,
+      stopLoss: trade.sl,
+      tp1: trade.tp1,
+      tp2: trade.tp2,
+      tp3: trade.tp3,
+      quantity: trade.positionSize,
+      expiry: trade.expiry,
+      confidence: trade.confidence,
+    });
+  } catch (err: any) {
+    console.warn(`[ActiveTrade] monitor registration failed for ${trade.symbol} (${trade.id}): ${err?.message || err}`);
+  }
+
   // Training: record trade snapshot in background (non-blocking).
   // Skip test/synthetic trades — fake symbols (e2e IDs) would fire REAL
   // NSE/Breeze requests from collectMarketSnapshot (60+ provider calls
@@ -690,15 +720,32 @@ export async function updateTradeStatus(
   } else {
     // ── INTERMEDIATE HIT (e.g. TP1 with TP2 pending): status only ──
     // Do NOT write exitPrice/pnl — trade is still open and monitored.
+    //
+    // After TP1 the stop moves to BREAKEVEN (the entry) — the conservative
+    // trail the user asked for. It is never widened: the entry is always
+    // tighter than the original stop, and an already-tighter stop is kept.
+    let trailedStop: number | undefined;
+    if (status === "TP1_HIT") {
+      const entry = trade.entry;
+      const currentStop = trade.sl;
+      const tightened = planSide(trade) === "SHORT"
+        ? Math.min(currentStop, entry)
+        : Math.max(currentStop, entry);
+      if (Number.isFinite(tightened) && tightened !== currentStop) {
+        trade.sl = tightened;
+        trailedStop = tightened;
+      }
+    }
     try {
       await updateTrade(trade.id, {
         status,
         tpHitLevel: status === 'TP1_HIT' ? 'TP1' : status === 'TP2_HIT' ? 'TP2' : undefined,
+        ...(trailedStop != null ? { stopLoss: trailedStop } : {}),
       });
     } catch (err: any) {
       console.error(`[ActiveTrade] updateTrade (intermediate) failed for ${trade.id}: ${err?.message || String(err)}`);
     }
-    console.log(`[ActiveTrade] ${trade.symbol} → ${status} (still monitored, lock held)`);
+    console.log(`[ActiveTrade] ${trade.symbol} → ${status} (still monitored, lock held${trailedStop != null ? `, stop trailed to ₹${trailedStop}` : ""})`);
   }
 }
 
@@ -821,6 +868,8 @@ export async function checkSLTP(
         console.warn(`[ActiveTrade] checkSLTP: price fetch returned <=0 for ${trade.symbol} (${trade.id}), skipping`);
         continue;
       }
+
+      updatePrice(trade.id, currentPrice).catch(() => { /* sidecar down — non-blocking */ });
 
       // ONE ladder for every monitor — side-aware (a mirrored bearish plan
       // stops when the price RISES to the stop and targets when it FALLS).

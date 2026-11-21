@@ -54,6 +54,8 @@ export interface TradeEventInput {
   source?: string;        // scanner | sdm-engine | zero-hero | btst | manual
   spot?: number;          // underlying price (never option premium)
   expiry?: string;        // YYYY-MM-DD
+  /** Producer-rendered message (the monitor's TP/SL card) — wins over the default. */
+  message?: string;
 }
 
 export interface TradeEventResult {
@@ -163,7 +165,7 @@ export async function sendTradeEvent(params: TradeEventInput): Promise<TradeEven
   });
 
   // ── Step 3: Build and send via the central Telegram funnel ──
-  const msg = buildEventMessage(params);
+  const msg = params.message?.trim() || buildEventMessage(params);
 
   let sent = false;
   let lastError: string | null = null;

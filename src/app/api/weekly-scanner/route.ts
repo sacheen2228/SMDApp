@@ -11,6 +11,7 @@
 // the real source and the age of the newest bar.
 
 import { NextRequest, NextResponse } from "next/server";
+import { GATE_CONFIG } from "@/lib/agent-brain-gate";
 import { runWeeklyScan } from "@/lib/weekly-equity-scanner";
 import { runProResearch } from "@/lib/weekly-pro-mode";
 import { buildCardMeta, getMarketClock } from "@/lib/data-freshness";
@@ -40,7 +41,7 @@ async function alertWeeklySetups(candidates: any[]): Promise<number> {
     if (c.weeklyTrend !== "UP") continue;
     if (c.hasEventRisk) continue;
     if ((c.confidence ?? 0) < MIN_WEEKLY_CONFIDENCE) continue;
-    if (!(c.riskReward >= 1.5)) continue;
+    if (!(c.riskReward >= GATE_CONFIG.minUnderlyingRR)) continue;
     const entry = (c.entryZone?.low + c.entryZone?.high) / 2;
     if (!(entry > 0)) continue;
     const ok = await alertScannerStock({
@@ -55,7 +56,7 @@ async function alertWeeklySetups(candidates: any[]): Promise<number> {
       spot: c.price,
       confidence: c.confidence,
       source: "weekly-equity-scanner",
-      tradeId: scannerTradeId("weekly-equity-scanner", c.symbol, c.strike, c.optionType, ymd),
+      tradeId: scannerTradeId("weekly-equity-scanner", c.symbol, 0, "EQ", ymd),
       reason: c.confidenceNote,
       emaStructure: c.emaStructure ?? null,
       directionalCheck: c.directionalCheck ?? null,

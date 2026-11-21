@@ -84,20 +84,21 @@ describe("selectStrike — PUT direction", () => {
   });
 });
 
-describe("selectStrike — budget gate (0 lots is a real outcome)", () => {
-  test("a contract whose 1 lot exceeds the budget is skipped, never sized up", () => {
+describe("selectStrike — no capital gate (the expensive ATM is still a contract)", () => {
+  test("a contract whose 1 lot exceeds the default deployment is still selected", () => {
     const chain = [
-      row(25200, { ltp: 650, delta: 0.45 }),              // 650×75 = ₹48.75k — OVER the ₹45k cap
-      row(25300, { ltp: 210, delta: 0.38 }),              // 210×75 = ₹15.75k — fits
+      row(25200, { ltp: 650, delta: 0.45 }),              // 650×75 = ₹48.75k — above the ₹45k default
+      row(25300, { ltp: 210, delta: 0.38 }),              // 210×75 = ₹15.75k
     ];
     const s = selectStrike({ chain, direction: "CALL", spot: SPOT, lotSize: LOT });
-    expect(s!.strike).toBe(25300);        // expensive ATM skipped, affordable OTM taken
+    expect(s!.strike).toBe(25200);        // the ATM is not skipped for capital
   });
 
-  test("every tradable-looking leg over budget → null with the reason", () => {
+  test("every tradable-looking leg is still selected (never null on capital)", () => {
     const chain = [row(25200, { ltp: 900, delta: 0.50 })];  // 900×75 = ₹67.5k
     const s = selectStrike({ chain, direction: "CALL", spot: SPOT, lotSize: LOT });
-    expect(s).toBeNull();
+    expect(s).not.toBeNull();
+    expect(s!.strike).toBe(25200);
   });
 });
 

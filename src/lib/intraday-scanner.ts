@@ -3,7 +3,7 @@
 // Based on 8-step methodology: Market, Sector, Fundamentals, Technicals, Options, News, Flow, Score
 
 import type { SDMOptionStrike } from "@/types/sdm";
-import { buildOptionPlan } from "./option-plan";
+import { buildOptionPlan, buildStructureOptionPlan, countConfirmations, type StructureConfirmation } from "./option-plan";
 import { getLotSizeStrict } from "./symbol-config";
 import { Candle, calculateRSI, calculateEMA, calculateADX } from "@/lib/ml-engine";
 import { getNextMonthlyExpiry } from "./expiry-calculator";
@@ -43,6 +43,14 @@ export interface MonthlyOptionTrade {
   targets: number[];
   direction: "BUY" | "SELL";
   summary: string;
+  lots?: number;
+  units?: number;
+  deployed?: number;
+  riskAmount?: number;
+  /** Where the stop came from ("structure" | "rupee-risk") — shown in the alert. */
+  stopSource?: string;
+  /** How many independent live-data signals confirmed the move. */
+  confirmedCount?: number;
 }
 
 export interface StockCandidate {
@@ -240,7 +248,14 @@ export function generateMonthlyOptionTrade(
   direction: "BULLISH" | "BEARISH" | "NEUTRAL",
   chain?: OptionChainSnapshot | null,
   engineScore = 0,
-  engineDirection?: "LONG" | "SHORT" | "NO_TRADE"
+  engineDirection?: "LONG" | "SHORT" | "NO_TRADE",
+  structure?: {
+    entry: number;
+    stop: number;
+    target1: number;
+    target2?: number;
+    confirmation?: StructureConfirmation;
+  }
 ): MonthlyOptionTrade | undefined {
   if (direction === "NEUTRAL") return undefined;
   // Unify decision: when engine is confident, direction must agree with engine
@@ -274,9 +289,47 @@ export function generateMonthlyOptionTrade(
     // The REAL contract lot — 1 (per unit) when it is NOT known (never a
     // guessed NIFTY-sized lot). The summary says so.
     const knownLot = getLotSizeStrict(symbol);
-    const plan = buildOptionPlan({
-      symbol, optionType, entryPremium: premium, lotSize: knownLot ?? 1,
-    });
+    const confirmedCount = countConfirmations(structure?.confirmation);
+    const structurePlan = structure && knownLot
+      ? buildStructureOptionPlan({
+          symbol,
+          optionType,
+          entryPremium: premium,
+          strike: chain.atmStrike,
+          expiry: chain.expiry || monthly.date,
+          lotSize: knownLot,
+          underlying: {
+            entry: structure.entry,
+            stop: structure.stop,
+            target1: structure.target1,
+            target2: structure.target2,
+          },
+          confirmation: structure.confirmation,
+        })
+      : null;
+
+    if (structurePlan && !structurePlan.ok && structurePlan.reason === "rr_below_floor") {
+      console.warn(`[IntradayScanner] skip ${symbol} ${optionType} — ${structurePlan.message}`);
+      return undefined;
+    }
+
+    const plan = structurePlan?.ok
+      ? {
+          entry: structurePlan.entry,
+          stopLoss: structurePlan.stopLoss,
+          targets: structurePlan.targets,
+          lots: structurePlan.lots,
+          units: structurePlan.units,
+          deployed: structurePlan.deployed,
+          riskAmount: structurePlan.riskAmount,
+          rr: structurePlan.rr,
+          notes: structurePlan.notes,
+          tradable: structurePlan.tradable,
+        }
+      : buildOptionPlan({
+          symbol, optionType, entryPremium: premium, lotSize: knownLot ?? 1,
+          targetMultipliers: confirmedCount >= 1 ? [2, 3, 4] : [2],
+        });
     if (!plan) return undefined;
     // 0 lots = the contract does not fit the per-trade deployment budget →
     // NO TRADE (no monthly option trade → no alert, no tracker row).
@@ -292,9 +345,14 @@ export function generateMonthlyOptionTrade(
     const target1 = plan.targets[0] ?? plan.entry;
     const target2 = plan.targets[1] ?? target1;
     const target3 = plan.targets[2] ?? target2;
+    const stopSource = structurePlan?.ok ? "structure" : "rupee-risk";
+    const lots = "lots" in plan ? plan.lots : 0;
+    const units = "units" in plan ? plan.units : 0;
+    const deployed = "deployed" in plan ? plan.deployed : 0;
+    const riskAmount = "riskAmount" in plan ? plan.riskAmount : 0;
 
     const label = chain.expiry || monthly.label || monthly.date;
-    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}${knownLot === null ? " | LOT SIZE UNKNOWN — per-unit plan" : ""}`;
+    const summary = `Buy ${symbol} ${chain.atmStrike} ${optionType} (${label}) @ ₹${premium} | IV ${(chain.atmIV || 0).toFixed(1)}% | SL ₹${sl} (${stopSource}) | T1 ₹${target1} | T2 ₹${target2} | T3 ₹${target3}${knownLot === null ? " | LOT SIZE UNKNOWN — per-unit plan" : ""}`;
 
     return {
       strike: chain.atmStrike,
@@ -308,6 +366,12 @@ export function generateMonthlyOptionTrade(
       summary,
       chainSource: chain.source || "unknown",
       chainAsOf: chain.asOf,
+      lots,
+      units,
+      deployed,
+      riskAmount,
+      stopSource,
+      confirmedCount,
     };
   }
 
@@ -997,7 +1061,29 @@ export async function generateCandidates(
     // Monthly option trade recommendation — uses the REAL Breeze chain (real
     // ATM premium/strike/IV) when available, else a clearly-labelled estimate.
     // Unified decision: only emit a plan when engine and technical agree (when engine is confident).
-    const monthlyOptionTrade = generateMonthlyOptionTrade(stock.symbol, basePrice, direction, chain, engineScore, engineDirection);
+    const monthlyOptionTrade = generateMonthlyOptionTrade(
+      stock.symbol,
+      basePrice,
+      direction,
+      chain,
+      engineScore,
+      engineDirection,
+      {
+        entry,
+        stop: stopLoss,
+        target1,
+        target2,
+        confirmation: {
+          priceAction: !!engineBest && engineDirection !== "NO_TRADE",
+          ema: direction === "BULLISH" ? ema9 > ema21 : direction === "BEARISH" ? ema9 < ema21 : false,
+          vwapVolume: rvol >= 1.2,
+          oiChain: !!chain && chain.strikes.length > 0,
+          srLiquidity: supportLevels.length > 0 || resistanceLevels.length > 0,
+          atr: atr > 0,
+          underlyingPremium: basePrice > 0 && !!chain && chain.strikes.length > 0 && chain.atmStrike > 0,
+        },
+      }
+    );
 
     // Volume summary — one block: raw numbers + honest classification
     // (exchange volume only; there is no institutional-flow source here).
@@ -1351,6 +1437,7 @@ export async function recordIntradayTrade(input: {
   stopLoss: number;
   tp1: number;
   tp2: number;
+  tp3?: number;
   confidence: number;
   reason: string;
   source: string;
@@ -1370,6 +1457,7 @@ export async function recordIntradayTrade(input: {
       stopLoss: input.stopLoss,
       tp1: input.tp1,
       tp2: input.tp2,
+      tp3: input.tp3,
       signalConfidence: input.confidence,
       trendDirection: input.optionType === "CE" ? "BULLISH" : "BEARISH",
       signalReason: input.reason,
@@ -1381,10 +1469,12 @@ export async function recordIntradayTrade(input: {
   }
 }
 
-// Record the scanner's top intraday candidates into the Trade Audit sidecar
-// (:4001) as trackable EQUITY signals (entry/SL/TP get MFE/MAE + TP/SL
-// detection against live prices), so the scanner's win rate / avg R /
-// expectancy is measurable alongside Zero Hero / SMC / BTST.
+/**
+ * @deprecated The alert path owns the sidecar row now (alertScannerStock ->
+ * recordSignal with the tracker trade id). Recording candidates here created
+ * phantom open positions with no price ticks. Kept until the production
+ * change is verified.
+ */
 export async function recordIntradayScannerSignals(
   candidates: StockCandidate[],
   topN = 8

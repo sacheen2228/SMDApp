@@ -8,66 +8,62 @@ import { GATE_CONFIG, positionSize } from "./agent-brain-gate";
 import { getLotSizeStrict } from "./symbol-config";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PER-TRADE SIZING MODEL — the user's rule (2026-10-20):
+// PER-TRADE SIZING MODEL — the user's rule (2026-10-20, re-read 2026-11-21):
 //   "if I spend ₹10,000 I take ₹2,000 of risk and make ₹3,000"
-//     deployed = the ₹ committed to THIS trade  (≤ ₹20,000 — the per-trade cap)
+//     deployed = the ₹ committed to THIS trade  (the DEFAULT ₹45,000 — a SIZE)
 //     risk     = 20% of the amount DEPLOYED     (₹10,000 ⇒ ₹2,000 at risk)
 //
-// `capital` in PositionSizeInput is the ACCOUNT capital. It can only SHRINK
-// the per-trade deployment budget — it is NEVER the risk base. The old model
-// ("risk = 1% of a ₹10L account") priced every lot as unaffordable and is
-// gone. GATE_CONFIG (src/lib/agent-brain-gate.ts) is the single source of
-// truth for the numbers; option-plan.ts owns the stop/target ladder.
+// The deployment budget is NOT a cap: no fixed capital / trade-budget /
+// lot-count rule may refuse a trade or shrink it to zero (user directive
+// 2026-11-21). `capital` in PositionSizeInput is the ACCOUNT capital — it
+// scales the default deployment down, it never blocks. The old model ("risk =
+// 1% of a ₹10L account") priced every lot as unaffordable and is gone.
+// GATE_CONFIG (src/lib/agent-brain-gate.ts) is the single source of truth for
+// the numbers; option-plan.ts owns the stop/target ladder.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DEFAULT_CAPITAL = GATE_CONFIG.capital; // ₹25,000 — the real trading capital
 const DEFAULT_RISK_PER_TRADE_PCT = GATE_CONFIG.riskPctOfTrade; // 20% of the DEPLOYED amount
 
-// ─── Loss caps (2026-10-20) ─────────────────────────────────────────
-// THE CAPS ARE DERIVED FROM THE PER-TRADE MODEL, not from a % of a big account:
+// ─── Loss caps (2026-10-20, re-derived 2026-11-21) ─────────────────────
+// THE CAPS ARE DERIVED FROM THE ACCOUNT:
 //
-//   maxRiskPerTrade = REFERENCE ₹4,000 stop (daily-streak rule only — the
-//                     per-trade risk itself = 20% of deployed, NO cap, 2026-11-17)
-//   maxDailyLoss    = min(capital × 40%, 2 stops)      = ₹8,000
-//   maxWeeklyLoss   = min(capital, daily × 2)         = ₹8,000  (32% of ₹25,000)
-//   maxMonthlyLoss  = min(capital, weekly × 2)        = ₹16,000 (64% of ₹25,000 — never more)
+//   maxDailyLoss    = capital × 40%                  = ₹20,000
+//   maxWeeklyLoss   = min(capital, daily × 2)       = ₹40,000
+//   maxMonthlyLoss  = min(capital, weekly × 2)      = ₹50,000
 //
-// The old numbers (daily ₹10,000 / weekly ₹20,000 / monthly ₹50,000) let the MONTHLY
-// cap exceed the whole ₹25,000 account, and the 40% daily cap was unreachable because
-// the 2-loss streak always bound first. The daily cap is now exactly the 2-stop limit:
-// it is REACHABLE, and it is the same rule the streak counter enforces.
+// THE OLD FRAME (the 20/11 Telegram blackout): maxDailyLoss was pinned to
+// `maxRiskPerTrade × 2` = ₹4,000 × 2 = ₹8,000 — a stale ₹4,000 reference
+// stop that was smaller than ONE real trade (risk = 20% of ₹45,000 = ₹9,000).
+// Every full-size candidate was refused with "risk ₹9,000 exceeds the ₹8,000
+// risk budget". The streak reference now lives ONLY in the streak rule.
 //
 // ── WHICH NUMBERS ARE AUTHORITATIVE ───────────────────────────────────
 //   1. GATE_CONFIG (src/lib/agent-brain-gate.ts) is THE ONE place the raw
-//      numbers live: capital 25_000 · tradeBudget 20_000 · riskPctOfTrade 20
+//      numbers live: capital 50_000 · tradeBudget 45_000 · riskPctOfTrade 20
 //      · maxConsecutiveLosses 2 · maxDailyLossPct 40. Nothing else in the
 //      app may hardcode a cap.
 //   2. RISK_LIMITS (below) is the DERIVED view: every cap is a pure function
 //      of GATE_CONFIG, so moving GATE_CONFIG moves every cap at once.
-//   3. The CONSECUTIVE-LOSS RULE IS THE BINDING ONE: one stop is ₹2,000 =
-//      8% of the ₹25,000 account, two stops = ₹4,000 = 16%. The 40% daily
-//      cap (₹10,000) can never be reached first — the streak ends the
-//      session at two losses, which is exactly where the daily cap sits.
-//   4. EVERY cap is ≤ the account. The old monthly cap (₹50,000) was 2× the
-//      whole account and could therefore never bind.
-const RISK_PER_TRADE_AMOUNT = GATE_CONFIG.maxRiskPerTrade;
+//   3. THE CONSECUTIVE-LOSS RULE IS THE BINDING ONE.
+//   4. EVERY cap is ≤ the account.
+//
+// THE PER-TRADE DEPLOYMENT IS NOT A CAP (user directive 2026-11-21):
+// `perTradeBudget` is the DEFAULT ₹ deployed per trade — the size a strategy
+// takes when nothing else says otherwise. It never refuses a trade.
 const DAILY_LOSS_FROM_PCT = Math.round((DEFAULT_CAPITAL * GATE_CONFIG.maxDailyLossPct) / 100);
-const DAILY_LOSS_FROM_STREAK = RISK_PER_TRADE_AMOUNT * GATE_CONFIG.maxConsecutiveLosses;
-const DAILY_LOSS_CAP = Math.min(DAILY_LOSS_FROM_PCT, DAILY_LOSS_FROM_STREAK);
+const DAILY_LOSS_CAP = DAILY_LOSS_FROM_PCT;
 const WEEKLY_LOSS_CAP = Math.min(DEFAULT_CAPITAL, DAILY_LOSS_CAP * 2);
 const MONTHLY_LOSS_CAP = Math.min(DEFAULT_CAPITAL, WEEKLY_LOSS_CAP * 2);
 
 export const RISK_LIMITS = {
-  /** the real trading capital (₹25,000) */
+  /** the real trading capital (₹50,000) */
   capital: DEFAULT_CAPITAL,
-  /** ₹ DEPLOYED in one trade (₹20,000) */
+  /** ₹ DEPLOYED in one trade by default (₹45,000) — a SIZE, never a cap */
   perTradeBudget: GATE_CONFIG.tradeBudget,
   /** risk = 20% of the amount deployed */
   riskPctOfTrade: GATE_CONFIG.riskPctOfTrade,
-  /** ₹ reference stop — daily-streak rule (2 stops end the day). NOT a per-trade cap:
-   *  per-trade risk = 20% of deployed, uncapped (user rule, 2026-11-17). */
-  maxRiskPerTrade: RISK_PER_TRADE_AMOUNT,
-  /** ₹ loss that ends the day (two stops) */
+  /** ₹ loss that ends the day (40% of the account) */
   maxDailyLoss: DAILY_LOSS_CAP,
   /** ₹ loss that ends the week (never more than the account) */
   maxWeeklyLoss: WEEKLY_LOSS_CAP,
@@ -77,14 +73,6 @@ export const RISK_LIMITS = {
   maxConsecutiveLosses: GATE_CONFIG.maxConsecutiveLosses,
   /** open positions at once */
   maxConcurrentTrades: 3,
-  /**
-   * Σ COMMITTED DEPLOYMENT of the OPEN trades (₹20,000 — the per-trade
-   * budget). A ₹25,000 account can never fund two full-size ₹20,000
-   * deployments, so this is the real concurrent-exposure cap.
-   */
-  maxOpenDeployed: GATE_CONFIG.tradeBudget,
-  /** Σ ₹ AT RISK of the OPEN trades (₹4,000 — the day's risk budget = 2 stops) */
-  maxOpenRisk: DAILY_LOSS_CAP,
 } as const;
 
 const DEFAULT_MAX_DAILY_LOSS = RISK_LIMITS.maxDailyLoss;
@@ -130,13 +118,15 @@ export function getDefaultRiskConfig(): RiskState {
 /**
  * Size a trade under the PER-TRADE model.
  *
- *   deployed budget = min(₹20,000 per-trade cap, account capital)
- *   risk budget     = deployed budget × riskPctOfTrade (20%)
- *   lots            = min( risk-limited lots , affordable lots , maxPositionSize )
+ *   deployed budget = the DEFAULT ₹ deployed per trade (scaled by the account)
+ *   lots            = the deployment budget decides the SIZE, the market stop
+ *                     decides the RISK — with a 1-lot floor, so no capital or
+ *                     lot-count rule can produce a 0-lot NO TRADE
+ *                     (user directive 2026-11-21).
  *
- * `riskPerTradePercent` is now read as a % OF THE AMOUNT DEPLOYED (never a %
- * of the account) and is clamped to the model's ceiling so no caller can
- * quietly widen the risk.
+ * `riskPerTradePercent` is read as a % OF THE AMOUNT DEPLOYED (never a % of
+ * the account) and is clamped to the model's ceiling so no caller can quietly
+ * widen the reference risk.
  */
 export function calculatePositionSize(input: PositionSizeInput): PositionSizeResult {
   const {
@@ -155,12 +145,11 @@ export function calculatePositionSize(input: PositionSizeInput): PositionSizeRes
 
   let lots = 0;
   if (premiumDiff > 0 && lotSize > 0) {
-    const riskLimitedLots = Math.floor(riskBudget / (premiumDiff * lotSize));
     const affordableLots = Math.floor(deployedBudget / (entryPremium * lotSize));
-    lots = Math.min(riskLimitedLots, affordableLots, maxPositionSize);
+    const lotCap = Number(maxPositionSize) > 0 ? Number(maxPositionSize) : Number.POSITIVE_INFINITY;
+    // THE 1-LOT FLOOR: a valid contract is never refused because of capital.
+    lots = Math.max(1, Math.min(affordableLots, lotCap));
   }
-
-  lots = Math.max(lots, 0);
 
   const quantity = lots * lotSize;
   const riskAmount = lots * lotSize * premiumDiff;
@@ -301,6 +290,8 @@ export interface RiskStateSnapshot {
   openPositions: number;
   /** open positions with no recorded risk (their exposure is unknown) */
   unpricedOpenPositions: number;
+  /** the symbols of those unpriced open positions (so the warning can name them) */
+  unpricedOpenSymbols?: string[];
   /** when the snapshot was taken (epoch ms) */
   asOfMs?: number;
 }
@@ -308,6 +299,8 @@ export interface RiskStateSnapshot {
 export interface RiskLimitVerdict {
   blocked: boolean;
   reasons: string[];
+  /** Visibility, never a gate: the capital frame is shown, it does not refuse. */
+  warnings: string[];
   limits: typeof RISK_LIMITS;
 }
 
@@ -336,23 +329,24 @@ export function evaluateLossCaps(
   if (streak >= limits.maxConsecutiveLosses) {
     reasons.push(`${streak} consecutive losses (limit ${limits.maxConsecutiveLosses}) — stop trading for the session`);
   }
-  return { blocked: reasons.length > 0, reasons, limits };
+  return { blocked: reasons.length > 0, reasons, warnings: [], limits };
 }
 
 /**
  * Concurrent exposure: the money committed and the money at risk.
  *
- *   Σ deployed ≤ the open-deployment budget (₹20,000 — the per-trade budget)
- *   Σ risk     ≤ the open-risk budget (₹4,000 — the day's risk budget = 2 stops)
+ * VISIBILITY, NOT A GATE (user directive 2026-11-21): no fixed capital /
+ * trade-budget / lot-count restriction may decide whether a trade is
+ * eligible. The old frame blocked a second concurrent trade (the ₹45,000
+ * open-deployment cap), blocked every candidate whose risk exceeded the
+ * stale ₹8,000 budget, and blocked the whole book when one open position
+ * had no verifiable ₹ exposure (286 candidates on 20/11).
  *
- * The account is ₹25,000, so two full-size ₹20,000 deployments (₹40,000
- * committed, ₹4,000 = 16% at risk) can never be funded: the deployment cap
- * binds first and the second trade is refused.
- *
- * FAIL CLOSED:
- *   • an open position whose ₹ exposure could NOT be established blocks the
- *     candidate (an unknown exposure is not a zero exposure),
- *   • a candidate that would push either sum over the line is blocked.
+ * The account is still the physical bound and the loss caps still stop the
+ * day — those live in evaluateLossCaps. Here the numbers are REPORTED:
+ *   • an open position whose ₹ exposure could NOT be established,
+ *   • a book that is funded beyond the account,
+ *   • a market stop whose risk is wider than the 20% reference.
  */
 export function evaluateConcurrentExposure(
   input: {
@@ -362,6 +356,8 @@ export function evaluateConcurrentExposure(
     newRisk?: number;
     /** open positions whose ₹ exposure could NOT be established */
     unknownOpenPositions?: number;
+    /** their symbols — the warning names them */
+    unknownOpenSymbols?: string[];
     capital?: number;
   },
   limits: typeof RISK_LIMITS = RISK_LIMITS,
@@ -372,39 +368,39 @@ export function evaluateConcurrentExposure(
   const newDeployed = Math.max(0, Number(input.newDeployed) || 0);
   const newRisk = Math.max(0, Number(input.newRisk) || 0);
   const unknown = Math.max(0, Number(input.unknownOpenPositions) || 0);
-  // The account is the outer bound; the per-trade budget is the real cap.
-  const deployedCap = Math.min(limits.maxOpenDeployed, capital);
-  const riskCap = Math.min(limits.maxOpenRisk, capital);
   const totalDeployed = openDeployed + newDeployed;
   const totalRisk = openRisk + newRisk;
-  const reasons: string[] = [];
+  const warnings: string[] = [];
 
   if (unknown > 0) {
-    reasons.push(
-      `${unknown} open position(s) have no verifiable ₹ exposure — the concurrent exposure cannot be verified (fail closed)`,
+    const names = (input.unknownOpenSymbols ?? []).filter(Boolean);
+    warnings.push(
+      `${unknown} open position(s) have no verifiable ₹ exposure${names.length ? ` (${names.join(", ")})` : ""} — the concurrent exposure cannot be verified`,
     );
   }
-  if (totalDeployed > deployedCap) {
-    reasons.push(
-      `deployed ${inr(totalDeployed)} exceeds the ${inr(deployedCap)} open-deployment budget (open ${inr(openDeployed)} + new ${inr(newDeployed)})`,
+  if (totalDeployed > capital) {
+    warnings.push(
+      `deployed ${inr(totalDeployed)} is above the ${inr(capital)} account (open ${inr(openDeployed)} + new ${inr(newDeployed)})`,
     );
   }
-  if (totalRisk > riskCap) {
-    reasons.push(
-      `risk ${inr(totalRisk)} exceeds the ${inr(riskCap)} risk budget (open ${inr(openRisk)} + new ${inr(newRisk)})`,
+  if (totalRisk > limits.maxDailyLoss) {
+    warnings.push(
+      `risk ${inr(totalRisk)} is above the ${inr(limits.maxDailyLoss)} daily loss cap (open ${inr(openRisk)} + new ${inr(newRisk)})`,
     );
   }
-  // ONE trade may never risk more than the house RULE allows: riskPct% of what
-  // it deploys (a stop wider than that is a fat-finger, not a plan).
+  // The market stop may be wider than the 20% reference — that is REPORTED,
+  // never a refusal: the stop comes from the structure, not from the budget.
   if (newDeployed > 0 && newRisk > (newDeployed * GATE_CONFIG.riskPctOfTrade) / 100 + 1) {
-    reasons.push(
-      `risk ${inr(newRisk)} exceeds ${GATE_CONFIG.riskPctOfTrade}% of the ${inr(newDeployed)} deployed — tighten the stop`,
+    const pct = ((newRisk / newDeployed) * 100).toFixed(0);
+    warnings.push(
+      `risk ${inr(newRisk)} is ${pct}% of the ${inr(newDeployed)} deployed — the market stop is wider than the ${GATE_CONFIG.riskPctOfTrade}% reference`,
     );
   }
-  return { blocked: reasons.length > 0, reasons, limits };
+  return { blocked: false, reasons: [], warnings, limits };
 }
 
-/** The full signal-path verdict: loss caps AND concurrent exposure. */
+/** The full signal-path verdict: the loss caps (the one real gate) + the
+ *  concurrent exposure as VISIBILITY. */
 export function evaluateSignalRiskLimits(input: {
   state: Partial<RiskStateSnapshot>;
   newDeployed?: number;
@@ -418,11 +414,13 @@ export function evaluateSignalRiskLimits(input: {
     newDeployed: input.newDeployed,
     newRisk: input.newRisk,
     unknownOpenPositions: Number(input.state?.unpricedOpenPositions) || 0,
+    unknownOpenSymbols: input.state?.unpricedOpenSymbols ?? [],
     capital: input.capital,
   });
   return {
-    blocked: loss.blocked || exposure.blocked,
-    reasons: [...loss.reasons, ...exposure.reasons],
+    blocked: loss.blocked,
+    reasons: [...loss.reasons],
+    warnings: [...exposure.warnings],
     limits: RISK_LIMITS,
   };
 }
@@ -440,29 +438,19 @@ export function modelTradeExposure(input: {
   lotSize?: number | null;
   lots?: number | null;
   capital?: number;
-  /** ₹ still free under maxOpenDeployed — sizes against the REMAINING headroom */
-  remainingHeadroom?: number;
 }): { deployed: number; risk: number; lots: number; unknown: boolean } {
   const entry = Number(input.entry);
   const sl = Number(input.stopLoss);
   const lotSize = Number(input.lotSize);
   const stopDist = Math.abs(entry - sl);
   const statedLots = Number(input.lots);
-  // Remaining headroom shrinks the sizing budget (open book already holds ₹X).
-  // Explicit 0 = no room → 0 lots (never falls back to the full capital).
-  const headroom = input.remainingHeadroom != null && Number.isFinite(Number(input.remainingHeadroom))
-    ? Math.max(0, Number(input.remainingHeadroom))
-    : undefined;
-  const sizingCapital = headroom != null
-    ? headroom
-    : (input.capital != null && Number.isFinite(Number(input.capital)) ? Number(input.capital) : undefined);
+  const capital = input.capital != null && Number.isFinite(Number(input.capital)) && Number(input.capital) > 0
+    ? Number(input.capital)
+    : RISK_LIMITS.capital;
   if (!(entry > 0) || !(sl > 0) || !(lotSize > 0) || !(stopDist > 0)) {
-    // Unknown size → assume the WORST case (the whole per-trade budget) so the
-    // exposure check fails closed instead of pretending the trade is free.
-    // When headroom is known and smaller, the worst case is the headroom.
-    const worst = headroom != null
-      ? Math.min(RISK_LIMITS.perTradeBudget, headroom)
-      : RISK_LIMITS.perTradeBudget;
+    // Unknown size → assume the WORST case (the whole ACCOUNT) so the
+    // exposure is never presented as free.
+    const worst = RISK_LIMITS.capital;
     return {
       deployed: worst,
       risk: worst * (GATE_CONFIG.riskPctOfTrade / 100),
@@ -480,7 +468,7 @@ export function modelTradeExposure(input: {
     };
   }
   const ps = positionSize({
-    capital: sizingCapital ?? RISK_LIMITS.capital,
+    capital,
     entry,
     sl,
     lotSize,
@@ -488,8 +476,8 @@ export function modelTradeExposure(input: {
   if (!ps.ok || ps.lots < 1) {
     // Not sizeable under the house model → the exposure is unknown → worst case.
     return {
-      deployed: RISK_LIMITS.perTradeBudget,
-      risk: RISK_LIMITS.perTradeBudget * (GATE_CONFIG.riskPctOfTrade / 100),
+      deployed: RISK_LIMITS.capital,
+      risk: RISK_LIMITS.capital * (GATE_CONFIG.riskPctOfTrade / 100),
       lots: Math.max(0, ps.lots),
       unknown: true,
     };
@@ -521,8 +509,8 @@ export interface OpenExposureRow {
   at?: number;
 }
 
-/** A sanity ceiling for a plausible per-trade risk (2 stops). */
-const OPEN_RISK_PLAUSIBLE_CEILING = RISK_LIMITS.maxRiskPerTrade * 2;
+/** A sanity ceiling for a plausible per-trade risk (the whole account). */
+const OPEN_RISK_PLAUSIBLE_CEILING = RISK_LIMITS.capital;
 
 /** The instrument kind of an open row. */
 export function kindOf(type: string | null | undefined): "option" | "equity" | "unknown" {
@@ -567,11 +555,10 @@ export function estimateOpenExposure(row: OpenExposureRow): { deployed: number; 
   if (!(lot > 0)) return null; // the lot size is unknown → the exposure is unknown
   const perLotRisk = stopDist * lot;
   const perLotDeployed = entry * lot;
-  if (perLotDeployed > RISK_LIMITS.perTradeBudget) {
-    // The entry cannot be an option PREMIUM (one lot would blow the whole
-    // per-trade budget) — the row carries the UNDERLYING price, so the
-    // position is read as a cash one (one unit) instead of a fantasy
-    // ₹8-lakh option.
+  if (perLotDeployed > RISK_LIMITS.capital) {
+    // One lot of this contract would cost more than the WHOLE ACCOUNT — the
+    // entry cannot be an option PREMIUM, so the row carries the UNDERLYING
+    // price: read it as a cash one (one unit) instead of a fantasy exposure.
     return { deployed: entry, risk: stopDist };
   }
   const stated = Math.floor(Number(row.positionSize) || 0);

@@ -12,7 +12,7 @@
 import type {
   TradeMonitorState, TradeMonitorStatus, TPSLAlert, TPSLAlertType,
 } from './agent-contract';
-import { updateTradeStatus, isTradeActive, getMonitoredTrades, detectPlanHit } from '../activeTradeTracker';
+import { updateTradeStatus, isTradeActive, getMonitoredTrades, detectPlanHit, markTradeAlertSent, planPnlPoints, planSide, stopFillPrice, targetLevel } from '../activeTradeTracker';
 import { isTerminalTradeStatus } from '../activeTradeTracker';
 import { releaseTradeLock } from '../active-trade-lock';
 import { sendTradeEvent } from '../trade-event-coordinator';
@@ -65,21 +65,14 @@ export function updateAndDetect(
   state.currentLTP = currentLTP;
   state.lastCheckedAt = new Date().toISOString();
 
-  if (state.side === 'BUY') {
-    state.pnl = (currentLTP - state.entry) * (state.quantity || 1);
-    state.pnlPct = state.entry > 0 ? ((currentLTP - state.entry) / state.entry) * 100 : 0;
-  } else {
-    state.pnl = (state.entry - currentLTP) * (state.quantity || 1);
-    state.pnlPct = state.entry > 0 ? ((state.entry - currentLTP) / state.entry) * 100 : 0;
-  }
-
-  if (state.side === 'BUY') {
-    state.mfe = Math.max(state.mfe, currentLTP - state.entry);
-    state.mae = Math.max(state.mae, state.entry - currentLTP);
-  } else {
-    state.mfe = Math.max(state.mfe, state.entry - currentLTP);
-    state.mae = Math.max(state.mae, currentLTP - state.entry);
-  }
+  // The SIGN comes from the plan GEOMETRY (the stop vs the entry), not from
+  // the BUY/SELL label: a bought PE with a mirrored legacy plan (stop above,
+  // target below) must read as a SHORT. planPnlPoints is the shared rule.
+  const points = planPnlPoints(monitorLevels(state), currentLTP);
+  state.pnl = points * (state.quantity || 1);
+  state.pnlPct = state.entry > 0 ? (points / state.entry) * 100 : 0;
+  state.mfe = Math.max(state.mfe, points);
+  state.mae = Math.max(state.mae, -points);
 
   const alerts = detectTPSL(state);
 
@@ -87,6 +80,20 @@ export function updateAndDetect(
 }
 
 // ─── TP/SL Detection (pure math, deterministic) ───────────────────
+
+/** The monitor's state as plan levels — the tracker's ladder reads these. */
+function monitorLevels(state: TradeMonitorState) {
+  return {
+    entry: state.entry,
+    sl: state.stopLoss,
+    tp1: state.tp1,
+    tp2: state.tp2,
+    tp3: state.tp3,
+    side: state.side,
+    optionType: state.instrument === 'PUT' ? 'PE' : state.instrument === 'CALL' ? 'CE' : '',
+    status: state.status === 'OPEN' ? 'ACTIVE' : state.status,
+  };
+}
 
 function detectTPSL(state: TradeMonitorState): TPSLAlert[] {
   const alerts: TPSLAlert[] = [];
@@ -101,32 +108,27 @@ function detectTPSL(state: TradeMonitorState): TPSLAlert[] {
     return alerts;
   }
 
-  const ltp = state.currentLTP;
-
-  if (state.side === 'BUY') {
-    if (state.stopLoss > 0 && ltp <= state.stopLoss) {
-      alerts.push(createAlert(state, 'SL_HIT', state.stopLoss));
-      state.status = 'SL_HIT';
-    } else if (state.status === 'OPEN' && state.tp1 > 0 && ltp >= state.tp1) {
-      alerts.push(createAlert(state, 'TP1_HIT', state.tp1));
+  // ONE hit ladder for every monitor (the tracker owns it): side-aware, so a
+  // mirrored plan stops when the price RISES to its stop and targets when it
+  // FALLS to them. The monitor's own long-only copy read a PE stop-out as a
+  // green profit.
+  const hit = detectPlanHit(monitorLevels(state), state.currentLTP);
+  if (hit) {
+    const levels = monitorLevels(state);
+    const trigger = hit === 'SL_HIT'
+      ? stopFillPrice(levels, state.currentLTP)
+      : targetLevel(levels, hit);
+    if (hit === 'TP1_HIT') {
       state.status = 'TP1_HIT';
       state.stopLoss = state.entry;
-    } else if (state.status === 'TP1_HIT' && state.tp2 > 0 && ltp >= state.tp2) {
-      alerts.push(createAlert(state, 'TP2_HIT', state.tp2));
+    } else if (hit === 'TP2_HIT') {
       state.status = 'TP2_HIT';
-    } else if (state.status === 'TP2_HIT' && state.tp3 && state.tp3 > 0 && ltp >= state.tp3) {
-      alerts.push(createAlert(state, 'TP3_HIT', state.tp3));
+    } else if (hit === 'TP3_HIT') {
       state.status = 'TP3_HIT';
-    }
-  } else {
-    if (state.stopLoss > 0 && ltp >= state.stopLoss) {
-      alerts.push(createAlert(state, 'SL_HIT', state.stopLoss));
+    } else {
       state.status = 'SL_HIT';
-    } else if (state.status === 'OPEN' && state.tp1 > 0 && ltp <= state.tp1) {
-      alerts.push(createAlert(state, 'TP1_HIT', state.tp1));
-      state.status = 'TP1_HIT';
-      state.stopLoss = state.entry;
     }
+    alerts.push(createAlert(state, hit, trigger));
   }
 
   return alerts;
@@ -139,18 +141,25 @@ function createAlert(
 ): TPSLAlert {
   const isTP = alertType.startsWith('TP');
   const emoji = isTP ? '🎯' : '🛑';
-  const label = isTP ? 'TP HIT' : 'SL HIT';
+  const header = alertType === 'TP1_HIT' ? 'TARGET 1 HIT'
+    : alertType === 'TP2_HIT' ? 'TARGET 2 HIT'
+      : alertType === 'TP3_HIT' ? 'TARGET 3 HIT'
+        : 'SL HIT';
+  const px = (v: number) => `₹${Number(v || 0).toFixed(2)}`;
+  const signed = (v: number) => `₹${v < 0 ? '-' : '+'}${Math.abs(v).toFixed(2)}`;
 
   const message = [
     `${'━'.repeat(20)}`,
-    `${emoji} ${label}`,
+    `${emoji} ${header}`,
     `${'━'.repeat(20)}`,
     `Symbol: ${state.symbol}${state.strike ? ` ${state.strike}` : ''} ${state.instrument}`,
     `Side: ${state.side}`,
-    `Entry: ₹${state.entry}`,
-    `Current: ₹${state.currentLTP}`,
-    `${isTP ? 'TP' : 'SL'}: ₹${triggerPrice}`,
-    `P&L: ₹${state.pnl.toFixed(2)} (${state.pnlPct.toFixed(2)}%)`,
+    `Entry: ${px(state.entry)}`,
+    `Current LTP: ${px(state.currentLTP)}`,
+    `SL: ${px(state.stopLoss)}`,
+    ...(isTP ? [`TP Level: ${px(triggerPrice)}`] : []),
+    `Exit: ${px(triggerPrice)}`,
+    `P&L: ${signed(state.pnl)} (${Math.abs(state.pnlPct).toFixed(1)}%)`,
     `Hit time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
     `Trade ID: ${state.tradeId}`,
     `Final status: ${alertType}`,
@@ -508,6 +517,7 @@ export async function pollTradesOnce(
           tradeId: alert.tradeId,
           eventType: alert.alertType,
           targetLevel: alert.triggerPrice,
+          message: alert.message,
           symbol: alert.symbol,
           action: alert.side,
           strike: alert.strike,
@@ -521,7 +531,20 @@ export async function pollTradesOnce(
           confidence: state.confidence,
         }).catch(() => {});
 
-        if (ok) sent++;
+        if (ok) {
+          sent++;
+          markTradeAlertSent(alert.tradeId, alert.alertType);
+        }
+      }
+
+      // The TRACKER is the source of truth for the trade state (journal, lock,
+      // sidecar close, the breakeven trail after TP1). The monitor only
+      // detected the hit — without this hand-off the trade stayed ACTIVE
+      // forever: no journal update, no lock release, no audit close.
+      try {
+        await updateTradeStatus(trade.tradeId, state.status, alert.triggerPrice);
+      } catch (err: any) {
+        console.warn(`[TradeMonitor] tracker status update failed for ${trade.tradeId}: ${err.message}`);
       }
 
       if (

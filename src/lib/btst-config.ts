@@ -36,10 +36,13 @@ export const BTST_CONFIG = {
     atrMultiplier: 1.2,
     slMinPct: 0.008,
     slMaxPct: 0.025,
-    tp1Mult: 0.9,
-    tp2Mult: 1.5,
+    // The targets are R MULTIPLES of the stop distance (the plan's own risk),
+    // so the R:R is exactly 1:2 / 1:3 by construction (user directive
+    // 2026-11-21: minimum 1:2, 1:3/1:4 only on confirmation).
+    tp1Mult: 2,
+    tp2Mult: 3,
     expectedMoveFromATR: 1.4,
-    minRR: 1.8,
+    minRR: 2,
     capitalPerTrade: 20000,
     riskPctOfDeployed: 0.20,
   },

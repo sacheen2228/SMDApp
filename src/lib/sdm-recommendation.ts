@@ -1127,8 +1127,8 @@ export async function generateTradeRecommendation(
   // both made every NIFTY contract 0 lots (₹1,000 risk vs a ₹1,656 risk/lot),
   // so the dashboard said "0 lots" on every single recommendation.
   const session = getCurrentSession();
-  const capital = GATE_CONFIG.capital;                  // ₹25,000 — the real account
-  const baseBudget = Math.min(GATE_CONFIG.tradeBudget, capital); // ₹20,000 deployed
+  const capital = GATE_CONFIG.capital;                  // the account anchor
+  const baseBudget = Math.min(GATE_CONFIG.tradeBudget, capital); // the default deployment
 
   // A 0 multiplier means "this session does not allow new positions" — that is a
   // TIMING gate (isTradeAllowed below), not a size. The model size stays visible.
@@ -1145,14 +1145,16 @@ export async function generateTradeRecommendation(
   // The ₹ sizing needs the REAL lot. With an unknown lot size there is NO
   // ₹ risk and NO position size (a per-unit number would be a fiction).
   const ps = lot !== null
-    ? positionSize({ capital, entry: finalEntry, sl: finalLevels.sl, lotSize: lot })
+    ? positionSize({
+      capital: deployedBudget > 0 ? deployedBudget : GATE_CONFIG.tradeBudget,
+      entry: finalEntry, sl: finalLevels.sl, lotSize: lot,
+    })
     : null;
   const riskPerLot = ps && ps.riskPerLot > 0 ? ps.riskPerLot : 0;
-  // The deployment cap is the budget (₹20,000), NOT a % of the account.
-  const affordableLots = lot !== null && finalEntry > 0
-    ? Math.floor(deployedBudget / (finalEntry * lot))
-    : 0;
-  const clampedLots = ps ? Math.max(0, Math.min(ps.lots, affordableLots)) : 0;
+  // ONE sizing model, no capital refusal: the deployment budget decides the
+  // SIZE (1 lot floor) and the market stop decides the RISK. A 0 session
+  // multiplier is the TIMING gate — it still shows 0 lots.
+  const clampedLots = ps ? (deployedBudget > 0 ? ps.lots : 0) : 0;
 
   const positionSizing: PositionSizing = {
     lots: clampedLots,

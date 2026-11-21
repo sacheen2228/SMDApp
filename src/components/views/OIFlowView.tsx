@@ -606,7 +606,7 @@ export function OIFlowView() {
           ) : !tradePlan.plan.tradable ? (
             <div className="space-y-2">
               <Badge variant="outline" className="px-2 py-1 ty-text-xs text-ty-warn">{symbol} {tradePlan.strike?.toLocaleString("en-IN")} {tradePlan.dir} — NOT tradable</Badge>
-              <p className="ty-text-xs text-ty-muted-fg">One lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} — over the ₹{PLAN_CONFIG.maxDeployedAmount.toLocaleString("en-IN")} per-trade budget, so 0 lots. Nothing deployed.</p>
+              <p className="ty-text-xs text-ty-muted-fg">One lot costs ₹{tradePlan.plan.lotCost.toFixed(0)} — the contract is not tradable (no usable premium or lot size), so 0 lots. Nothing deployed.</p>
               {tradePlan.notes.map((nt, i) => (
                 <p key={i} className="ty-text-xs text-ty-warn">{nt}</p>
               ))}

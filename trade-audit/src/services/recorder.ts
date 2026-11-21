@@ -155,7 +155,19 @@ function applyPriceUpdate(tradeId: string, price: number, timestampIst: string):
   const tp1Hit = trade.tp1Hit || (isLong ? price >= trade.tp1 : price <= trade.tp1);
   const tp2Hit = trade.tp2Hit || (trade.tp2 != null && (isLong ? price >= trade.tp2 : price <= trade.tp2));
   const tp3Hit = trade.tp3Hit || (trade.tp3 != null && (isLong ? price >= trade.tp3 : price <= trade.tp3));
-  const slHit = trade.slHit || (isLong ? price <= trade.stopLoss : price >= trade.stopLoss);
+
+  // The trail starts ONLY after TP1 and moves the stop to breakeven (the
+  // entry). It is never widened: a tighter stop is kept as is.
+  const trailCandidate = tp1Hit ? trade.entryPrice : null;
+  const trailingStop = trailCandidate == null
+    ? trade.trailingStop
+    : trade.trailingStop == null
+      ? trailCandidate
+      : isLong
+        ? Math.max(trade.trailingStop, trailCandidate)
+        : Math.min(trade.trailingStop, trailCandidate);
+  const effectiveStop = trailingStop ?? trade.stopLoss;
+  const slHit = trade.slHit || (isLong ? price <= effectiveStop : price >= effectiveStop);
 
   updateTracking(tradeId, {
     highestPrice,
@@ -169,13 +181,14 @@ function applyPriceUpdate(tradeId: string, price: number, timestampIst: string):
     tp3Hit,
     tp3HitAt: tp3Hit && !trade.tp3Hit ? timestampIst : trade.tp3HitAt,
     slHit,
+    trailingStop,
     lastPrice: price,
     lastUpdateAt: timestampIst,
   });
 
   // Auto-close on final target or stop-loss touch.
   if (slHit && !trade.slHit) {
-    applyClose(tradeId, trade.stopLoss, "stop_loss", timestampIst, null);
+    applyClose(tradeId, effectiveStop, "stop_loss", timestampIst, null);
   } else if (tp3Hit && !trade.tp3Hit && trade.tp3 != null) {
     applyClose(tradeId, trade.tp3, "tp3", timestampIst, null);
   }
@@ -200,7 +213,7 @@ function applyClose(
     exitPrice,
     quantity,
     fees: feesApplied,
-    stopLoss: trade.stopLoss,
+    stopLoss: trade.trailingStop ?? trade.stopLoss,
   });
 
   const entryMs = Date.parse(trade.createdAtIst);

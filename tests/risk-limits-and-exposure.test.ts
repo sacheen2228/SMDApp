@@ -26,25 +26,26 @@ import { GATE_CONFIG } from "@/lib/agent-brain-gate";
 import { isSyntheticTradeRow } from "@/lib/risk-state.server";
 
 describe("the loss caps fit a ₹50,000 account and a 20% per-trade risk", () => {
-  test("the caps are derived from the per-trade model", () => {
+  test("the caps are derived from the ACCOUNT (no stale fixed-stop frame)", () => {
     expect(RISK_LIMITS.capital).toBe(50_000);
     expect(RISK_LIMITS.perTradeBudget).toBe(45_000);
     expect(RISK_LIMITS.riskPctOfTrade).toBe(20);
-    // reference stop for the 2-stop daily rule — NOT a per-trade cap
-    // (per-trade risk = 20% of deployed, uncapped — user rule 2026-11-17)
-    expect(RISK_LIMITS.maxRiskPerTrade).toBe(4_000);
-    // the daily cap is the 2-stop limit — reachable, and never above the account
-    expect(RISK_LIMITS.maxDailyLoss).toBe(8_000);
-    expect(RISK_LIMITS.maxWeeklyLoss).toBe(16_000);
-    // the MONTHLY cap must never exceed the account (it used to be ₹50,000)
+    // daily = capital × 40%, weekly = min(capital, daily × 2),
+    // monthly = min(capital, weekly × 2) — never above the account.
+    expect(RISK_LIMITS.maxDailyLoss).toBe(20_000);
+    expect(RISK_LIMITS.maxWeeklyLoss).toBe(40_000);
     expect(RISK_LIMITS.maxMonthlyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
-    expect(RISK_LIMITS.maxMonthlyLoss).toBe(32_000);
+    expect(RISK_LIMITS.maxMonthlyLoss).toBe(50_000);
     // monotone: a bigger bucket allows a bigger loss
     expect(RISK_LIMITS.maxDailyLoss).toBeLessThan(RISK_LIMITS.maxWeeklyLoss);
     expect(RISK_LIMITS.maxWeeklyLoss).toBeLessThanOrEqual(RISK_LIMITS.maxMonthlyLoss);
     // and every cap is inside the account
     expect(RISK_LIMITS.maxDailyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
     expect(RISK_LIMITS.maxWeeklyLoss).toBeLessThanOrEqual(RISK_LIMITS.capital);
+    // no fixed per-trade / open-book capital caps (user directive 2026-11-21)
+    expect("maxRiskPerTrade" in RISK_LIMITS).toBe(false);
+    expect("maxOpenDeployed" in RISK_LIMITS).toBe(false);
+    expect("maxOpenRisk" in RISK_LIMITS).toBe(false);
   });
 
   test("the default risk state uses the new caps", () => {
@@ -58,7 +59,7 @@ describe("the loss caps fit a ₹50,000 account and a 20% per-trade risk", () =>
     let s = getDefaultRiskConfig();
     s = updateRiskState(s, -2_000);
     expect(s.canTrade).toBe(true);
-    s = updateRiskState(s, -6_500);       // −₹8,500 → past the ₹8,000 daily cap
+    s = updateRiskState(s, -18_500);      // −₹20,500 → past the ₹20,000 daily cap
     expect(s.canTrade).toBe(false);
     expect(s.blockReason).toMatch(/daily loss limit/i);
   });
@@ -73,22 +74,22 @@ describe("evaluateLossCaps — a loss beyond the cap blocks the next trade", () 
 
   test("a loss beyond the daily cap blocks", () => {
     const v = evaluateLossCaps({
-      dailyPnl: -8_001, weeklyPnl: -8_001, monthlyPnl: -8_001, consecutiveLosses: 0,
+      dailyPnl: -20_001, weeklyPnl: -20_001, monthlyPnl: -20_001, consecutiveLosses: 0,
     });
     expect(v.blocked).toBe(true);
     expect(v.reasons.join(" ")).toMatch(/daily loss/);
   });
 
   test("hitting the cap exactly blocks (one rupee less does not)", () => {
-    expect(evaluateLossCaps({ dailyPnl: -7_999 }).blocked).toBe(false);
-    expect(evaluateLossCaps({ dailyPnl: -8_000 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: -19_999 }).blocked).toBe(false);
+    expect(evaluateLossCaps({ dailyPnl: -20_000 }).blocked).toBe(true);
   });
 
   test("the weekly and monthly caps block on their own", () => {
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: -16_001 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -32_001 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -32_000 }).blocked).toBe(true);
-    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -31_999 }).blocked).toBe(false);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: -40_001 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -50_001 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -50_000 }).blocked).toBe(true);
+    expect(evaluateLossCaps({ dailyPnl: 0, weeklyPnl: 0, monthlyPnl: -49_999 }).blocked).toBe(false);
   });
 
   test("two consecutive losses end the session (the streak rule)", () => {
@@ -99,54 +100,46 @@ describe("evaluateLossCaps — a loss beyond the cap blocks the next trade", () 
   });
 });
 
-describe("evaluateConcurrentExposure — Σ deployed and Σ risk", () => {
+describe("evaluateConcurrentExposure — visibility, never a capital refusal", () => {
   test("a single full-size trade fits the account", () => {
     const v = evaluateConcurrentExposure({
-      openDeployed: 0, openRisk: 0, newDeployed: 20_000, newRisk: 2_000,
+      openDeployed: 0, openRisk: 0, newDeployed: 45_000, newRisk: 9_000,
     });
     expect(v.blocked).toBe(false);
   });
 
-  test("3 × ₹20,000 = ₹60,000 deployed is refused (the account is ₹25,000)", () => {
+  test("a book above the account is WARNED about, never refused", () => {
     const v = evaluateConcurrentExposure({
       openDeployed: 40_000, openRisk: 8_000, newDeployed: 20_000, newRisk: 4_000,
     });
-    expect(v.blocked).toBe(true);
-    expect(v.reasons.join(" ")).toMatch(/exceeds the ₹25,000 account|deployed/i);
+    expect(v.blocked).toBe(false);
+    expect(v.warnings.join(" ")).toMatch(/deployed/i);
   });
 
-  test("the risk sum may not exceed the risk budget (the daily cap)", () => {
+  test("the risk sum above the daily cap is warned about, never refused", () => {
     const v = evaluateConcurrentExposure({
       openDeployed: 20_000, openRisk: 7_000, newDeployed: 4_000, newRisk: 2_000,
     });
-    expect(v.blocked).toBe(true);
-    expect(v.reasons.join(" ")).toMatch(/risk budget/i);
+    expect(v.blocked).toBe(false);
+    expect(v.warnings.join(" ")).toMatch(/risk/i);
   });
 
-  test("the deployment sum is checked even when the risk sum is fine", () => {
-    const v = evaluateConcurrentExposure({
-      openDeployed: 40_000, openRisk: 1_000, newDeployed: 12_000, newRisk: 500,
-    });
-    expect(v.blocked).toBe(true);
-    expect(v.reasons.join(" ")).toMatch(/deployed/i);
-  });
-
-  test("an UNKNOWN open exposure fails closed (it is not a zero exposure)", () => {
+  test("an UNKNOWN open exposure warns and names the positions", () => {
     const v = evaluateConcurrentExposure({
       openDeployed: 0, openRisk: 0, newDeployed: 1_000, newRisk: 200,
-      unknownOpenPositions: 1,
+      unknownOpenPositions: 1, unknownOpenSymbols: ["NIFTY"],
     });
-    expect(v.blocked).toBe(true);
-    expect(v.reasons.join(" ")).toMatch(/cannot be verified|fail closed/i);
+    expect(v.blocked).toBe(false);
+    expect(v.warnings.join(" ")).toMatch(/cannot be verified/i);
+    expect(v.warnings.join(" ")).toMatch(/NIFTY/);
   });
 
-  test("the open-deployment budget is the per-trade budget (₹45,000)", () => {
-    expect(RISK_LIMITS.maxOpenDeployed).toBe(45_000);
-    expect(RISK_LIMITS.maxOpenDeployed).toBeLessThanOrEqual(RISK_LIMITS.capital);
-    expect(RISK_LIMITS.maxOpenRisk).toBeLessThanOrEqual(RISK_LIMITS.capital);
-    // ₹45,000 + ₹1 more is over the line
-    expect(evaluateConcurrentExposure({ openDeployed: 45_000, openRisk: 0, newDeployed: 1, newRisk: 0 }).blocked).toBe(true);
-    expect(evaluateConcurrentExposure({ openDeployed: 45_000, openRisk: 0, newDeployed: 0, newRisk: 0 }).blocked).toBe(false);
+  test("a market stop wider than 20% of the deployment warns, never refuses", () => {
+    const v = evaluateConcurrentExposure({
+      openDeployed: 0, openRisk: 0, newDeployed: 10_000, newRisk: 3_000,
+    });
+    expect(v.blocked).toBe(false);
+    expect(v.warnings.join(" ")).toMatch(/30%/);
   });
 });
 
@@ -161,19 +154,19 @@ describe("evaluateSignalRiskLimits — the whole signal-path verdict", () => {
 
   test("a blown day blocks even when the exposure is tiny", () => {
     const v = evaluateSignalRiskLimits({
-      state: { dailyPnl: -9_000, weeklyPnl: -9_000, monthlyPnl: -9_000, consecutiveLosses: 0, openDeployed: 0, openRisk: 0 },
+      state: { dailyPnl: -20_000, weeklyPnl: -20_000, monthlyPnl: -20_000, consecutiveLosses: 0, openDeployed: 0, openRisk: 0 },
       newDeployed: 1_000, newRisk: 200,
     });
     expect(v.blocked).toBe(true);
     expect(v.reasons.join(" ")).toMatch(/daily loss/);
   });
 
-  test("a full exposure blocks even when the day is clean", () => {
+  test("a full book never blocks on capital alone (the day is clean)", () => {
     const v = evaluateSignalRiskLimits({
       state: { dailyPnl: 0, weeklyPnl: 0, monthlyPnl: 0, consecutiveLosses: 0, openDeployed: 30_000, openRisk: 6_000 },
       newDeployed: 20_000, newRisk: 4_000,
     });
-    expect(v.blocked).toBe(true);
+    expect(v.blocked).toBe(false);
   });
 });
 
@@ -187,17 +180,17 @@ describe("modelTradeExposure — the candidate's own ₹ exposure", () => {
     expect(e.unknown).toBe(false);
   });
 
-  test("an unknown lot size is the WORST case (fail closed), never zero", () => {
+  test("an unknown lot size is the WORST case (the whole account), never zero", () => {
     const e = modelTradeExposure({ entry: 100, stopLoss: 80, lotSize: null });
     expect(e.unknown).toBe(true);
-    expect(e.deployed).toBe(RISK_LIMITS.perTradeBudget);
-    expect(e.risk).toBe(RISK_LIMITS.perTradeBudget * 0.2);   // worst case = 20% of the budget
+    expect(e.deployed).toBe(RISK_LIMITS.capital);
+    expect(e.risk).toBe(RISK_LIMITS.capital * 0.2);   // worst case = 20% of the account
   });
 
-  test("the exposure never exceeds the per-trade budget", () => {
-    const e = modelTradeExposure({ entry: 400, stopLoss: 320, lotSize: 65 });
-    expect(e.deployed).toBeLessThanOrEqual(RISK_LIMITS.perTradeBudget);
-    expect(e.risk).toBeLessThanOrEqual(RISK_LIMITS.perTradeBudget * 0.2);
+  test("a stated lot count is the real deployment (no cap is applied to it)", () => {
+    const e = modelTradeExposure({ entry: 400, stopLoss: 320, lotSize: 65, lots: 3 });
+    expect(e.deployed).toBeCloseTo(3 * 65 * 400, 0);
+    expect(e.risk).toBeCloseTo(3 * 65 * 80, 0);
   });
 });
 

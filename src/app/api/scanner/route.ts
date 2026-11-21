@@ -16,15 +16,14 @@
 //     gone; prices come from the exchange feeds only.
 
 import { NextRequest, NextResponse } from "next/server";
+import { GATE_CONFIG } from "@/lib/agent-brain-gate";
 import {
   runIntradayScan,
   recordIntradayScannerResults,
-  recordIntradayScannerSignals,
   type ScannerConfig,
   type ScannerMarketData,
 } from "@/lib/intraday-scanner";
-import { sendTradeAlert } from "@/lib/telegram";
-import { isChainFresh, isPlausibleOptionPlan } from "@/lib/sendIntradayAlerts";
+import { alertStockOptionSetup, isChainFresh, isPlausibleOptionPlan } from "@/lib/sendIntradayAlerts";
 import { fetchAllOptionChains } from "@/lib/breeze-fno-data";
 import { getCachedMarketNews } from "@/lib/news-engine";
 import { scoreTrade, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
@@ -688,8 +687,8 @@ export async function GET(request: NextRequest) {
             unifiedSignal: (() => {
               const rr = candidate.riskReward ?? 0;
               const score = candidate.totalScore ?? 0;
-              if (direction === "BULLISH" && rr >= 1.5 && score >= 60) return "BUY_CE";
-              if (direction === "BEARISH" && rr >= 1.5 && score >= 60) return "BUY_PE";
+              if (direction === "BULLISH" && rr >= GATE_CONFIG.minUnderlyingRR && score >= 60) return "BUY_CE";
+              if (direction === "BEARISH" && rr >= GATE_CONFIG.minUnderlyingRR && score >= 60) return "BUY_PE";
               return "WAIT";
             })(),
           };
@@ -774,13 +773,11 @@ export async function GET(request: NextRequest) {
       console.warn("[Scanner] Scanner Results recording skipped:", recErr);
     }
 
-    // Record top candidates into the Trade Audit sidecar (:4001) as trackable
-    // EQUITY signals so the scanner's live win rate / avg R is measurable.
-    try {
-      await recordIntradayScannerSignals(result.candidates, 8);
-    } catch (recErr) {
-      console.warn("[Scanner] Trade Audit signal recording skipped:", recErr);
-    }
+    // The Trade Audit sidecar row is created by the ALERT path
+    // (alertScannerStock → recordSignal with the tracker trade id), so the
+    // sidecar holds real trades only and the live price ticks land on the
+    // same row. Recording every candidate here created phantom open
+    // positions that could never be closed.
 
     // ── Scanner option-trade Telegram alerts (live=true) ────────────────
     // The Scanner tab fetches /api/scanner directly (client side) and never
@@ -820,7 +817,7 @@ export async function GET(request: NextRequest) {
             spot: stock.currentPrice,
             confidence: stock.totalScore ?? 0,
             source: "intraday-scanner",
-            tradeId: scannerTradeId("intraday-scanner", stock.symbol, stock.monthlyOptionTrade?.strike ?? 0, stock.monthlyOptionTrade?.optionType ?? 'CE', ymd),
+            tradeId: scannerTradeId("intraday-scanner", stock.symbol, 0, "EQ", ymd),
             reason: stock.technicalSummary,
             emaStructure: stock.emaStructure ?? null,
             directionalCheck: stock.directionalCheck ?? null,
@@ -842,7 +839,7 @@ export async function GET(request: NextRequest) {
         const risk = opt.premium - Number(opt.stopLoss || 0);
         const reward = (opt.targets?.[0] ?? 0) - opt.premium;
         const rr = risk > 0 && reward > 0 ? reward / risk : 0;
-        if (rr < 1.5) continue;
+        if (rr < GATE_CONFIG.minOptionRR) continue;
         if (!isChainFresh((opt as any)?.chainAsOf)) continue;
         if (!isPlausibleOptionPlan(stock, opt)) continue;
 
@@ -860,23 +857,13 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        await sendTradeAlert({
-          symbol: stock.symbol,
-          action: "BUY",
-          strike: opt.strike,
-          type: opt.optionType,
-          confidence: stock.totalScore ?? 0,
-          entry: opt.premium,
-          stopLoss: opt.stopLoss,
-          target1: opt.targets?.[0] ?? 0,
-          target2: opt.targets?.[1] ?? 0,
-          source: "stock-scanner",
-          spot: stock.currentPrice,
-          expiry: opt.expiry,
-          requireExpiry: true,
-          requireSpot: true,
+        await alertStockOptionSetup(stock, opt, {
+          sources: {
+            daily: dataSource,
+            chain: chainOk ? chainSource : "none",
+          },
           nowMs,
-        }).catch(() => {});
+        }).catch(() => false);
       }
     }
 

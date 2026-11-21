@@ -121,11 +121,11 @@ describe("per-trade model — the /api/sdm-signal sizing", () => {
       new Date().toISOString(),
     );
 
-    expect(rec.positionSizing.lots).toBe(3);
-    expect(rec.positionSizing.quantity).toBe(3 * NIFTY_LOT);
-    // risk = 20% of the DEPLOYED amount (3 × ₹11,043.5 = ₹33,130.5 → ₹6,630
-    // after the ₹0.05 stop tick) — no fixed cap
-    expect(rec.positionSizing.riskAmount).toBeCloseTo(rec.positionSizing.positionValue * 0.2, -1);
+    // the deployment budget decides the SIZE (4 lots × ₹11,043.5 = ₹44,174)
+    expect(rec.positionSizing.lots).toBe(4);
+    expect(rec.positionSizing.quantity).toBe(4 * NIFTY_LOT);
+    // risk = 20% of the DEPLOYED amount (4 × ₹11,043.5 = ₹44,174) — no fixed cap
+    expect(rec.positionSizing.riskAmount / rec.positionSizing.positionValue).toBeCloseTo(0.2, 2);
     expect(rec.positionSizing.maxLoss).toBeCloseTo(rec.positionSizing.riskAmount, 0);
     // the deployment stays inside the per-trade cap
     expect(rec.positionSizing.positionValue).toBeLessThanOrEqual(GATE_CONFIG.tradeBudget);
@@ -166,7 +166,7 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
     expect(ps.capitalRequired).toBeCloseTo(6 * 100 * NIFTY_LOT, 0);
   });
 
-  test("an unaffordable contract is 0 lots — never a 1-lot trade", () => {
+  test("a contract above the default deployment is still 1 lot (no capital refusal)", () => {
     const ps = positionSize({
       capital: GATE_CONFIG.capital,
       entry: 300,
@@ -177,10 +177,10 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
     const ps2 = positionSize({
       capital: GATE_CONFIG.capital,
       entry: 800,
-      sl: 780,                            // risk allows it, the budget does not
+      sl: 780,
       lotSize: NIFTY_LOT,
     });
-    expect(ps2.lots).toBe(0);             // ₹52,000 per lot → over the ₹45,000 cap
-    expect(ps2.ok).toBe(false);
+    expect(ps2.lots).toBe(1);             // ₹52,000 per lot → the 1-lot floor, never 0
+    expect(ps2.ok).toBe(true);
   });
 });

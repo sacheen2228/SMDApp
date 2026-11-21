@@ -105,7 +105,17 @@ export function shouldSuppressSend(opts?: { allowOffHours?: boolean }, date?: Da
   return !isTelegramSendWindow(date);
 }
 
+type TelegramSender = (text: string, chatId?: string) => Promise<boolean>;
+
+let testSender: TelegramSender | null = null;
+
+/** Test hook — the E2E flows install a mock sender here. */
+export function __setTelegramSenderForTests(fn: TelegramSender | null): void {
+  testSender = fn;
+}
+
 export async function sendTelegramMessage(text: string, chatId?: string, opts?: { allowOffHours?: boolean }): Promise<boolean> {
+  if (testSender) return testSender(text, chatId);
   // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
   // The opts.allowOffHours flag is intended for informational (non-trade) modes
   // such as evening watchlist, preopen re‑rank and end‑of-day evaluation — these
@@ -384,17 +394,25 @@ export async function sendTradeAlertInner(params: {
     direction: params.action,
   });
 
-  // FULL-DAY dedup: skip if same signal sent today with >= confidence
-  if (isSignalDuplicateOrLowerQuality(sig, params.confidence)) {
-    console.log(`[Telegram] Dedup (full-day): skipped ${sig} — already sent with equal/higher confidence`);
-    return false;
-  }
+  // The ENTRY dedup must never swallow a TP/SL EVENT: both carry the same
+  // signature (symbol|strike|type|side), so an entry alert sent earlier in the
+  // day blocked every later TP1/SL alert for that trade (the 20/11 blackout).
+  // The at-most-once owner of a TP/SL event is the NotificationEvent claim
+  // (entryClaim:false below), so the entry dedup is skipped for those.
+  const isEventAlert = params.entryClaim === false;
+  if (!isEventAlert) {
+    // FULL-DAY dedup: skip if same signal sent today with >= confidence
+    if (isSignalDuplicateOrLowerQuality(sig, params.confidence)) {
+      console.log(`[Telegram] Dedup (full-day): skipped ${sig} — already sent with equal/higher confidence`);
+      return false;
+    }
 
-  // Short-term throttle: also skip if sent within 5 minutes (read-only check;
-  // the timestamp is recorded only after a successful send below).
-  if (isThrottled(sig)) {
-    console.log(`[Telegram] Dedup (short-term): skipped ${sig} (sent <5min ago)`);
-    return false;
+    // Short-term throttle: also skip if sent within 5 minutes (read-only check;
+    // the timestamp is recorded only after a successful send below).
+    if (isThrottled(sig)) {
+      console.log(`[Telegram] Dedup (short-term): skipped ${sig} (sent <5min ago)`);
+      return false;
+    }
   }
 
   const emoji = params.action.includes("BUY") ? "🟢" : "🔴";
@@ -408,6 +426,22 @@ export async function sendTradeAlertInner(params: {
   const mtfLine = (params.mtf
     ? `\n📐 MTF: ${escapeHtml(params.mtf.direction)} (${escapeHtml(params.mtf.trendDirection)} trend, score ${params.mtf.compositeScore})`
     : '');
+  const planStats = (() => {
+    const entry = params.entry;
+    const stop = params.stopLoss;
+    const target = params.target1;
+    if (!(entry > 0) || !(stop > 0) || !(target > 0)) return null;
+    const risk = Math.abs(entry - stop);
+    const reward = Math.abs(target - entry);
+    if (!(risk > 0) || !(reward > 0)) return null;
+    return { risk, reward, rr: reward / risk };
+  })();
+  const rrLine = planStats
+    ? `\n📐 R:R <b>1:${planStats.rr.toFixed(2)}</b> · risk <b>${px(planStats.risk)}</b>/${isCashEquity ? "share" : "unit"}`
+    : "";
+  const sizeLine = !isCashEquity && params.lots && params.deployedAmount
+    ? `\n📦 Size: <b>${params.lots} lot${params.lots === 1 ? "" : "s"}</b>${params.lotSize ? ` (${params.lotSize} units each)` : ""} — ${cashPx(params.deployedAmount)} deployed, ${cashPx(params.riskAmount)} at risk`
+    : "";
   const msg = params.message?.trim() || `
 ${emoji} <b>${sourceLabel}</b>
 
@@ -421,6 +455,8 @@ ${params.entryZone
 ${params.stopLoss ? `🛑 Stop Loss: ${px(params.stopLoss)}` : ""}
 ${params.target1 ? `🎯 Target 1: ${px(params.target1)}` : ""}
 ${params.target2 && params.target2 !== params.target1 ? `🎯 Target 2: ${px(params.target2)}` : ""}
+${params.tp3 && params.tp3 !== params.target1 && params.tp3 !== params.target2 ? `🎯 Target 3: ${px(params.tp3)}` : ""}
+${rrLine}${sizeLine}
 ${isCashEquity && params.lots && params.deployedAmount
   ? `\n📦 Size: <b>${params.lots} shares</b> — ${cashPx(params.deployedAmount)} deployed, ${cashPx(params.riskAmount)} at risk`
   : ""}

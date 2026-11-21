@@ -43,13 +43,12 @@
 //   `riskAmount: 0` (nothing is committed), and every caller bails on 0 lots.
 //   A plan NEVER reports a deployment larger than the cap.
 import { GATE_CONFIG } from "./agent-brain-gate";
+import { impliedVolFromPremium, parseExpiryToYears, calculateGreeks } from "./greeks";
 
 export const PLAN_CONFIG = {
   /** Rupee risk as a fraction of the amount DEPLOYED in the trade (0.20 → ₹10k ⇒ ₹2k).
    *  Sourced from GATE_CONFIG.riskPctOfTrade so there is exactly ONE definition. */
   riskPctOfDeployed: GATE_CONFIG.riskPctOfTrade / 100,
-  /** FIXED ₹ risk per trade — the hard cap (user-defined). */
-  maxRiskPerTrade: GATE_CONFIG.maxRiskPerTrade,
   /** Target ladder in R multiples: TP1 2R, TP2 3R, TP3 4R (R:R 1:2 / 1:3 / 1:4). */
   targetMultipliers: [2, 3, 4] as number[],
   /** Hard cap: the stop may never exceed this % of the premium. */
@@ -57,12 +56,12 @@ export const PLAN_CONFIG = {
   /** Floor: the stop must be at least this many ticks (tick = ₹0.05 for NSE options). */
   minStopTicks: 8,
   tickSize: 0.05,
-  /** Per-trade deployment used when the caller does not say otherwise (the live rule). */
+  /** ₹ DEPLOYED per trade when the caller does not say otherwise — a SIZE, not a
+   *  cap (user directive 2026-11-21: no fixed capital / lot-count restriction
+   *  may decide whether a trade is eligible). */
   defaultDeployedAmount: GATE_CONFIG.tradeBudget,
   /** Plan the gates accept: option R:R after the plan must clear this. */
   minOptionRR: GATE_CONFIG.minOptionRR,
-  /** HARD CAP: the ₹ DEPLOYED in one trade may never exceed this (the per-trade budget). */
-  maxDeployedAmount: GATE_CONFIG.tradeBudget,
   /**
    * RECORDING CONVENTION — NOT A SIZING RULE.
    *
@@ -111,8 +110,8 @@ export interface OptionPlan {
 
 /**
  * The sizing verdict for one option contract.
- * `lots: 0` is a REAL, REPRESENTABLE outcome: the contract does not fit the
- * per-trade budget, so nothing is deployed and nothing is at risk.
+ * `lots: 0` is a REAL, REPRESENTABLE outcome: the caller explicitly asked
+ * for no trade, or the premium / lot size is unknown.
  */
 export interface OptionSizing {
   lots: number;                // 0 = NOT tradable
@@ -124,28 +123,32 @@ export interface OptionSizing {
   tradable: boolean;
   /** true when the lots were derived from the budget (not stated by the caller). */
   sizedFromBudget: boolean;
-  reason?: string;             // why 0 lots (human readable)
+  /** true when the deployment is above the sizing budget (1 lot already costs more) */
+  overBudget: boolean;
+  reason?: string;             // why 0 lots / why over budget (human readable)
 }
 
 /**
  * Size the position from the deployment budget (the live rule).
  *
- * The HONEST FLOOR: 0 when the premium of ONE lot does not fit the budget.
- * The old `Math.max(1, …)` made an unaffordable contract tradable as one lot —
- * that is the P0 this file fixes. A caller that wants "at least one lot" must
- * say so explicitly (see PLAN_CONFIG.recordingMinimumLots — a RECORDING rule).
+ * THE 1-LOT FLOOR: the deployment budget decides the SIZE; the market stop
+ * decides the RISK. A contract whose one lot costs more than the budget is
+ * still tradable as ONE lot — the deployment is reported honestly and the
+ * over-budget flag is raised. Capital never refuses a valid contract
+ * (user directive 2026-11-21).
  */
 export function lotsForBudget(entryPremium: number, lotSize: number, deployedAmount = PLAN_CONFIG.defaultDeployedAmount): number {
   const entry = Number(entryPremium);
   const lot = Number(lotSize);
   const budget = Number(deployedAmount);
   if (!(entry > 0) || !(lot > 0) || !(budget > 0)) return 0;
-  return Math.floor(budget / (entry * lot));
+  return Math.max(1, Math.floor(budget / (entry * lot)));
 }
 
 /**
  * The sizing verdict (lots / units / ₹ committed / ₹ at risk) for one contract.
- * The ₹ DEPLOYED never exceeds the per-trade cap (PLAN_CONFIG.maxDeployedAmount).
+ * The ₹ DEPLOYED is reported as it is — it is never silently forced down to a
+ * budget, and it never refuses the trade.
  */
 export function sizeOptionTrade(input: {
   entryPremium: number;
@@ -155,15 +158,12 @@ export function sizeOptionTrade(input: {
 }): OptionSizing {
   const entry = Number(input.entryPremium);
   const lotSize = Number(input.lotSize);
-  const cap = PLAN_CONFIG.maxDeployedAmount;
-  const budget = Math.min(
-    Number(input.deployedAmount) > 0 ? Number(input.deployedAmount) : PLAN_CONFIG.defaultDeployedAmount,
-    cap,
-  );
+  const budget = Number(input.deployedAmount) > 0 ? Number(input.deployedAmount) : PLAN_CONFIG.defaultDeployedAmount;
   if (!(entry > 0) || !(lotSize > 0)) {
     return {
       lots: 0, units: 0, costPerLot: 0, budget,
       deployed: 0, riskAmount: 0, tradable: false, sizedFromBudget: false,
+      overBudget: false,
       reason: "unknown premium or lot size",
     };
   }
@@ -173,28 +173,23 @@ export function sizeOptionTrade(input: {
     ? Math.floor(Number(input.lots))
     : undefined;
   const sizedFromBudget = requested == null;
-  const lots = requested != null ? requested : Math.floor(budget / costPerLot);
+  const affordable = Math.floor(budget / costPerLot);
+  const lots = requested != null ? requested : Math.max(1, affordable);
 
   if (lots < 1) {
     return {
       lots: 0, units: 0, costPerLot, budget,
       deployed: 0, riskAmount: 0, tradable: false, sizedFromBudget,
+      overBudget: false,
       reason: requested != null
         ? "0 lots requested"
-        : `1 lot costs ₹${Math.round(costPerLot).toLocaleString("en-IN")} — over the ₹${Math.round(budget).toLocaleString("en-IN")} per-trade budget`,
+        : "no tradable size",
     };
   }
 
   const units = lots * lotSize;
   const deployed = entry * units;
-  if (deployed > cap) {
-    // The CAP is the hard limit — a plan never reports a deployment above it.
-    return {
-      lots: 0, units: 0, costPerLot, budget,
-      deployed: 0, riskAmount: 0, tradable: false, sizedFromBudget,
-      reason: `${lots} lot × ${lotSize} = ₹${Math.round(deployed).toLocaleString("en-IN")} — over the ₹${Math.round(cap).toLocaleString("en-IN")} per-trade cap`,
-    };
-  }
+  const overBudget = deployed > budget;
 
   return {
     lots,
@@ -207,6 +202,10 @@ export function sizeOptionTrade(input: {
     riskAmount: deployed * PLAN_CONFIG.riskPctOfDeployed,
     tradable: true,
     sizedFromBudget,
+    overBudget,
+    reason: overBudget
+      ? `1 lot costs ₹${Math.round(costPerLot).toLocaleString("en-IN")} — over the ₹${Math.round(budget).toLocaleString("en-IN")} default deployment`
+      : undefined,
   };
 }
 
@@ -224,7 +223,7 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
   });
 
   const tradable = sizing.tradable;
-  // Nothing is committed when the contract does not fit the cap.
+  // Nothing is committed when the caller asked for no trade.
   const lots = tradable ? sizing.lots : 0;
   const units = tradable ? sizing.units : 0;
   const actualDeployed = tradable ? sizing.deployed : 0;
@@ -298,6 +297,10 @@ export function buildOptionPlan(input: OptionPlanInput): OptionPlan | null {
     notes.push(
       `0 lots — ${sizing.reason} → NO TRADE (₹0 deployed, ₹0 at risk)`
     );
+  } else if (sizing.overBudget) {
+    notes.push(
+      `${lots} lot × ${lotSize} = ₹${Math.round(actualDeployed).toLocaleString("en-IN")} deployed — one lot is above the ₹${Math.round(sizing.budget).toLocaleString("en-IN")} default deployment`,
+    );
   } else if (!sizing.sizedFromBudget && Math.abs(actualDeployed - sizing.budget) > 1) {
     notes.push(`deployed ₹${Math.round(actualDeployed).toLocaleString("en-IN")} (${lots} lot × ${lotSize})`);
   }
@@ -325,6 +328,208 @@ function roundTick(x: number): number {
   // 46.900000000000006), which then leaks into every displayed SL/TP.
   // The final toFixed(2) snaps it back to the tick grid.
   return Number((Math.round(x / PLAN_CONFIG.tickSize) * PLAN_CONFIG.tickSize).toFixed(2));
+}
+
+// ─────────────────────────────────────────────────────────────
+// STRUCTURE-DERIVED OPTION PLAN (user directive 2026-11-21)
+//
+// The stop must come from the MARKET STRUCTURE (the underlying's
+// invalidation level), not from a fixed % of the premium, and the 3R/4R
+// targets may only be quoted when live data confirms the move.
+//
+// The underlying's structural stop/targets are repriced onto the option
+// with the live premium (implied vol inverted from the chain), so the
+// option's own R:R is measured, not assumed.
+// ─────────────────────────────────────────────────────────────
+
+export interface StructureConfirmation {
+  priceAction?: boolean;
+  ema?: boolean;
+  vwapVolume?: boolean;
+  oiChain?: boolean;
+  srLiquidity?: boolean;
+  atr?: boolean;
+  underlyingPremium?: boolean;
+}
+
+export interface StructureOptionPlanInput {
+  symbol: string;
+  optionType: "CE" | "PE";
+  entryPremium: number;
+  strike: number;
+  expiry: string;                 // YYYY-MM-DD
+  lotSize: number;
+  underlying: {
+    entry: number;
+    stop: number;
+    target1: number;
+    target2?: number;
+    target3?: number;
+  };
+  deployedAmount?: number;
+  confirmation?: StructureConfirmation;
+  now?: Date;
+}
+
+export interface StructureOptionPlan {
+  ok: boolean;
+  /** Why the structure plan could not be used (the caller falls back only on
+   *  "no_structure_data" — an R:R below the floor is a REJECT, not a fallback). */
+  reason?: "no_structure_data" | "rr_below_floor" | "invalid_geometry" | "unknown_lot";
+  message?: string;
+  entry: number;
+  stopLoss: number;
+  targets: number[];
+  rr: number;
+  lots: number;
+  units: number;
+  deployed: number;
+  riskAmount: number;
+  confirmedCount: number;
+  notes: string[];
+  tradable: boolean;
+}
+
+export function countConfirmations(confirmation?: StructureConfirmation): number {
+  if (!confirmation) return 0;
+  return Object.values(confirmation).filter(Boolean).length;
+}
+
+export function buildStructureOptionPlan(input: StructureOptionPlanInput): StructureOptionPlan {
+  const premium = Number(input.entryPremium);
+  const lotSize = Number(input.lotSize);
+  const notes: string[] = [];
+  const confirmedCount = countConfirmations(input.confirmation);
+
+  const base: StructureOptionPlan = {
+    ok: false,
+    entry: premium,
+    stopLoss: 0,
+    targets: [],
+    rr: 0,
+    lots: 0,
+    units: 0,
+    deployed: 0,
+    riskAmount: 0,
+    confirmedCount,
+    notes,
+    tradable: false,
+  };
+
+  if (!(premium > 0) || !(input.strike > 0) || !(lotSize > 0) || !input.expiry) {
+    return { ...base, reason: "no_structure_data", message: "no live premium / strike / lot size" };
+  }
+
+  const u = input.underlying;
+  if (!(u.entry > 0) || !(u.stop > 0) || !(u.target1 > 0)) {
+    return { ...base, reason: "no_structure_data", message: "no underlying structure (entry/stop/target)" };
+  }
+
+  const isCall = input.optionType === "CE";
+  const entry = roundTick(premium);
+
+  // The UNDERLYING's own R:R decides whether the setup has room at all.
+  const underlyingRisk = Math.abs(u.entry - u.stop);
+  const underlyingReward = Math.abs(u.target1 - u.entry);
+  const structureRR = underlyingRisk > 0 ? underlyingReward / underlyingRisk : 0;
+  if (!(underlyingRisk > 0) || !(underlyingReward > 0)) {
+    return { ...base, reason: "invalid_geometry", message: "underlying structure has no risk/reward" };
+  }
+  if (structureRR < PLAN_CONFIG.minOptionRR) {
+    return {
+      ...base,
+      reason: "rr_below_floor",
+      message: `structure R:R 1:${structureRR.toFixed(2)} is below the 1:${PLAN_CONFIG.minOptionRR} floor`,
+    };
+  }
+
+  // The premium's stop distance is the UNDERLYING's structural distance mapped
+  // through the option's delta (first order). A full Black-Scholes reprice of
+  // the stop was tried and rejected: near expiry the gamma turns a 4%
+  // underlying stop into a 35% premium stop and a +130% target — a plan the
+  // option cannot reach in a session.
+  const tte = parseExpiryToYears(input.expiry, input.now);
+  if (tte == null) {
+    return { ...base, reason: "no_structure_data", message: `unparseable expiry ${input.expiry}` };
+  }
+  const iv = impliedVolFromPremium(premium, u.entry, input.strike, tte, isCall);
+  const delta = iv == null ? 0 : Math.abs(calculateGreeks(u.entry, input.strike, tte, iv, isCall).delta);
+  if (!(delta > 0.05)) {
+    return { ...base, reason: "no_structure_data", message: "no usable delta for the structural stop" };
+  }
+
+  let riskPoints = underlyingRisk * delta;
+  const minPoints = PLAN_CONFIG.minStopTicks * PLAN_CONFIG.tickSize;
+  const maxPoints = entry * PLAN_CONFIG.maxStopPctOfPremium;
+
+  if (riskPoints < minPoints) {
+    riskPoints = minPoints;
+    notes.push(`stop widened to the ${PLAN_CONFIG.minStopTicks}-tick noise floor (${minPoints.toFixed(2)} pts)`);
+  }
+  if (riskPoints > maxPoints) {
+    riskPoints = maxPoints;
+    notes.push(`stop capped at ${(PLAN_CONFIG.maxStopPctOfPremium * 100).toFixed(0)}% of premium — rupee risk reduced`);
+  }
+  if (riskPoints >= entry) {
+    return { ...base, reason: "invalid_geometry", message: "structural stop is not inside the option's value" };
+  }
+
+  const stopLoss = roundTick(entry - riskPoints);
+  const sizing = sizeOptionTrade({
+    entryPremium: entry,
+    lotSize,
+    deployedAmount: input.deployedAmount,
+  });
+  const units = sizing.units;
+  const riskAmount = riskPoints * units;
+
+  const targets: number[] = [];
+  const multipliers = confirmedCount >= 2
+    ? [2, 3, 4]
+    : confirmedCount >= 1
+      ? [2, 3]
+      : [2];
+  for (const k of multipliers) {
+    const pts = riskPoints * k;
+    if (pts >= entry) {
+      notes.push(`${k}R target unreachable (${pts.toFixed(2)} pts ≥ premium ${entry}) — dropped`);
+      continue;
+    }
+    targets.push(roundTick(entry + pts));
+  }
+  if (confirmedCount < 2) notes.push("TP3 (4R) withheld — no live-data confirmation");
+  if (confirmedCount < 1) notes.push("TP2 (3R) withheld — no live-data confirmation");
+
+  const reward = targets.length ? targets[0] - entry : 0;
+  const rr = riskPoints > 0 ? reward / riskPoints : 0;
+  if (rr < PLAN_CONFIG.minOptionRR) {
+    return {
+      ...base,
+      reason: "rr_below_floor",
+      message: `option R:R 1:${rr.toFixed(2)} is below the 1:${PLAN_CONFIG.minOptionRR} floor`,
+      stopLoss,
+      rr,
+    };
+  }
+
+  notes.unshift(
+    `stop from the underlying structure (${u.stop.toFixed(2)} ${isCall ? "call" : "put"}, delta ${delta.toFixed(2)}) — ${confirmedCount} confirmation${confirmedCount === 1 ? "" : "s"}`,
+  );
+
+  return {
+    ok: true,
+    entry,
+    stopLoss,
+    targets,
+    rr,
+    lots: sizing.lots,
+    units,
+    deployed: sizing.deployed,
+    riskAmount,
+    confirmedCount,
+    notes,
+    tradable: sizing.tradable,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -388,7 +593,6 @@ export function selectStrike(input: {
   const chain = Array.isArray(input.chain) ? input.chain : [];
   const spot = Number(input.spot);
   const lotSize = Number(input.lotSize);
-  const budget = Number(input.budget) > 0 ? Number(input.budget) : PLAN_CONFIG.maxDeployedAmount;
   if (!chain.length || !(spot > 0) || !(lotSize > 0)) return null;
 
   const wantCall = input.direction === "CALL";
@@ -403,9 +607,6 @@ export function selectStrike(input: {
 
   // Walk ATM → OTM within the gate's step window (calls walk UP, puts walk DOWN).
   const maxSteps = GATE_CONFIG.maxOtmSteps;
-  const sawDelta: boolean[] = [];
-  let deltaBandFail: number | null = null;
-  let budgetFail = false;
 
   for (let step = 0; step <= maxSteps; step++) {
     const idx = wantCall ? atmIdx + step : atmIdx - step;
@@ -417,13 +618,10 @@ export function selectStrike(input: {
     if (!(ltp > 0)) continue;                                  // no real premium → not a contract
 
     const cost = ltp * lotSize;
-    if (cost > budget) { budgetFail = true; continue; }        // 1 lot does not fit the cap → skip
 
     const delta = leg.delta != null && Number.isFinite(Number(leg.delta)) ? Number(leg.delta) : null;
     const deltaSource = leg.deltaSource === "provider" || leg.deltaSource === "bs" ? leg.deltaSource : null;
-    if (delta != null) sawDelta.push(true);
     if (delta != null && Math.abs(delta) < GATE_CONFIG.minAbsDelta) {
-      deltaBandFail = Math.abs(delta);
       continue;                                                // lottery ticket
     }
 
@@ -449,9 +647,6 @@ export function selectStrike(input: {
   }
 
   // Nothing passed — report the real reason, never a fabricated contract.
-  if (budgetFail && sawDelta.length === 0) {
-    return null;
-  }
   return null;
 }
 

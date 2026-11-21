@@ -24,6 +24,7 @@ import {
   sendTPSLAlert, retryFailedAlerts, getDeliveryStatus,
   getGlobalDeliveryStats, __setAlertSenderForTests,
 } from '../src/lib/agents/telegram-alerts';
+import { __setTelegramSenderForTests } from '../src/lib/telegram';
 import {
   registerTradeForMonitoring, updateAndDetect, getMonitoredTrade,
   isAlertAlreadySent, markAlertSent, getAlertHistory,
@@ -41,15 +42,18 @@ let senderShouldFail = false;
 function installMockSender() {
   sentMessages = [];
   senderShouldFail = false;
-  __setAlertSenderForTests(async (text: string) => {
+  const sender = async (text: string) => {
     if (senderShouldFail) return false;
     sentMessages.push(text);
     return true;
-  });
+  };
+  __setAlertSenderForTests(sender);
+  __setTelegramSenderForTests(sender);
 }
 
 function restoreSender() {
   __setAlertSenderForTests(null);
+  __setTelegramSenderForTests(null);
 }
 
 let seq = 0;
@@ -115,7 +119,7 @@ describe('E2E: BUY trade reaches TP1', () => {
     expect(isTradeActive(symbol, 'NFO')).not.toBeNull();
 
     // LTP crosses TP1 (only this trade — others get 0 = skip)
-    const result = await pollTradesOnce(async (t) => (t.id === trade.id ? 115 : 0));
+    const result = await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 115 : 0));
 
     expect(result.detected).toBeGreaterThanOrEqual(1);
     expect(sentMessages.length).toBe(1);
@@ -157,7 +161,7 @@ describe('E2E: BUY trade reaches SL', () => {
     expect(isTradeActive(symbol, 'NFO')).not.toBeNull();
 
     // LTP drops through SL
-    const result = await pollTradesOnce(async (t) => (t.id === trade.id ? 85 : 0));
+    const result = await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 85 : 0));
 
     expect(result.detected).toBeGreaterThanOrEqual(1);
     expect(sentMessages.length).toBe(1);
@@ -191,7 +195,7 @@ describe('E2E: Repeated polling never duplicates TP/SL alerts', () => {
 
     // 5 consecutive polls all above TP1
     for (let i = 0; i < 5; i++) {
-      await pollTradesOnce(async (t) => (t.id === trade.id ? 115 : 0));
+      await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 115 : 0));
     }
 
     const tp1Sends = sentMessages.filter(m => m.includes('TARGET 1 HIT') && m.includes(symbol));
@@ -221,13 +225,13 @@ describe('E2E: Repeated polling never duplicates TP/SL alerts', () => {
     await addTrade(trade, true);
 
     // Hit TP1
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 115 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 115 : 0));
     expect(sentMessages.filter(m => m.includes('TARGET 1 HIT')).length).toBe(1);
 
     // Price falls back to breakeven SL (trailed to entry=100)
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 99 : 0));
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 98 : 0));
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 97 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 99 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 98 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 97 : 0));
 
     const slSends = sentMessages.filter(m => m.includes('SL HIT') && m.includes(symbol));
     expect(slSends.length).toBe(1);
@@ -270,7 +274,7 @@ describe('E2E: Telegram failure and retry', () => {
     const retried = await retryFailedAlerts();
     expect(retried.sent).toBeGreaterThanOrEqual(1);
     expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0]).toContain('TP HIT');
+    expect(sentMessages[0]).toContain('TARGET 1 HIT');
 
     // Flag now set
     expect(isAlertAlreadySent(monitorId, 'TP1_HIT')).toBe(true);
@@ -298,11 +302,11 @@ describe('E2E: Active lock lifecycle', () => {
     expect(isTradeActive(symbol, 'NFO')).not.toBeNull();
 
     // TP1 — lock must remain (trade still riding)
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 115 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 115 : 0));
     expect(isTradeActive(symbol, 'NFO')).not.toBeNull();
 
     // SL after trail — lock released
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 95 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 95 : 0));
     expect(isTradeActive(symbol, 'NFO')).toBeNull();
 
     restoreSender();
@@ -320,7 +324,7 @@ describe('E2E: Active lock lifecycle', () => {
     await addTrade(trade, true);
     expect(isTradeActive(symbol, 'NSE')).not.toBeNull();
 
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 2400 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 2400 : 0));
 
     expect(sentMessages.some(m => m.includes('TARGET 1 HIT') && m.includes(symbol))).toBe(true);
     expect(getTrade(trade.id)).toBeUndefined();
@@ -456,7 +460,7 @@ describe('E2E: Restart persistence of event flags', () => {
     await addTrade(trade, true);
 
     // Hit TP1 → flag persisted to disk
-    await pollTradesOnce(async (t) => (t.id === trade.id ? 115 : 0));
+    await pollTradesOnce(async (t) => ((t.tradeId ?? (t as any).id) === trade.id ? 115 : 0));
     expect(getTradeAlertFlag(trade.id, 'TP1_HIT')).toBe(true);
 
     // Simulate restart: wipe in-memory trade, re-add fresh (as reload would)
@@ -520,7 +524,7 @@ describe('E2E: agents monitor → sendTPSLAlert full chain', () => {
     expect(alerts[0].message).toContain('23400');
     expect(alerts[0].message).toContain('BUY');
     expect(alerts[0].message).toContain('Entry: ₹150');
-    expect(alerts[0].message).toContain('Current: ₹175');
+    expect(alerts[0].message).toContain('Current LTP: ₹175');
     expect(alerts[0].message).toContain('Hit time');
 
     const ok = await sendTPSLAlert(alerts[0]);

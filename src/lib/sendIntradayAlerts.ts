@@ -6,6 +6,7 @@
 // Telegram alerts match the SMD bot's recommendations exactly.
 
 import { recordIntradayTrade } from "./intraday-scanner";
+import { GATE_CONFIG } from "./agent-brain-gate";
 import { isTelegramSendWindow, isTradingDay } from "./marketHours";
 import { alreadySentToday, markSentToday, buildSignature } from "./intradayState";
 import { ALL_SYMBOLS } from "./stockUniverse";
@@ -75,7 +76,7 @@ async function fetchAndPushSignal(
     const conf = (alert.confidence || 0) / 100;
     const rr = alert.rrGate || 1;
     const floor = (alert.optionType === "CE") ? CONF_FLOOR_CALL : CONF_FLOOR_PUT;
-    if (conf < floor / 100 || rr < 1.5) {
+    if (conf < floor / 100 || rr < GATE_CONFIG.minOptionRR) {
       console.log("[sdm-signal] " + sym + " " + direction + " floor gate: conf=" + conf + " rr=" + rr + " floor=" + floor / 100);
       return;
     }
@@ -662,7 +663,7 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
           const risk = isCall ? opt.premium - opt.stopLoss : opt.stopLoss - opt.premium;
           const reward = isCall ? (opt.targets?.[0] ?? 0) - opt.premium : opt.premium - (opt.targets?.[0] ?? 0);
           const rr = risk > 0 && reward > 0 ? reward / risk : 0;
-          return rr >= 1.5;
+          return rr >= GATE_CONFIG.minOptionRR;
         });
 
         for (const stock of highConfStocks) {
@@ -688,68 +689,15 @@ async function sendIntradayAlertsInner(): Promise<{ ran: boolean; newAlerts: num
           const chainAge = (opt as any)?.chainAsOf
             ? ` (${Math.max(0, Math.round((Date.now() - Date.parse((opt as any).chainAsOf)) / 60000))}m ago)`
             : "";
-          const text = formatStockOptionAlert(stock, opt, {
-            ...(scanData?.dataSources || {}),
-            chain: chainSrc ? `${chainSrc}${chainAge}` : undefined,
-          });
-          const ymd = new Date().toLocaleDateString('en-CA', { timeZone: "Asia/Kolkata" }).replace(/-/g, '');
-          const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? 'NOEXP'}-${ymd}`;
-          const sent = await sendTradeAlert({
-            symbol: stock.symbol,
-            action: "BUY",
-            strike: opt.strike,
-            type: opt.optionType,
-            confidence: stock.totalScore ?? 0,
-            entry: opt.premium,
-            stopLoss: opt.stopLoss,
-            target1: opt.targets[0] || opt.premium,
-            target2: opt.targets[1] || opt.targets[0] || opt.premium,
-            source: "stock-scanner",
-            instrument: opt.optionType === "PE" ? "PUT" : "CALL",
-            expiry: expiryKey(opt.expiry) || undefined,
-            spot: Number(stock.spot || stock.ltp || 0) || undefined,
-            requireExpiry: true,
-            strategy: "stock-scanner",
-            expectsTrade: true,
-            message: text,
-            register: async () => addTrade({
-              id: tradeId,
-              symbol: stock.symbol,
-              side: "BUY",
-              instrument: `${stock.symbol} ${opt.strike} ${opt.optionType}`,
-              strike: opt.strike,
-              optionType: opt.optionType,
-              entry: opt.premium,
-              sl: opt.stopLoss,
-              tp1: opt.targets[0] || opt.premium,
-              tp2: opt.targets[1] || opt.targets[0] || opt.premium,
-              tp3: opt.tp3 ?? opt.targets[2],
-              status: "ACTIVE",
-              sentAt: new Date().toISOString(),
-              source: "stock-scanner",
-              expiry: expiryKey(opt.expiry) || undefined,
-              confidence: stock.totalScore,
-              spotPrice: Number(stock.spot || stock.ltp || 0) || undefined,
-            }, true),
+          const sent = await alertStockOptionSetup(stock, opt, {
+            sources: {
+              ...(scanData?.dataSources || {}),
+              chain: chainSrc ? `${chainSrc}${chainAge}` : undefined,
+            },
           });
 
           if (sent) {
             markSentToday(sig);
-            // Migration: also record executed intraday trades to Trade Audit sidecar.
-            await recordIntradayTrade({
-              id: tradeId,
-              symbol: stock.symbol,
-              optionType: (opt.optionType as "CE" | "PE") || "CE",
-              strike: opt.strike,
-              entry: opt.premium,
-              stopLoss: opt.stopLoss,
-              tp1: opt.targets[0] || opt.premium,
-              tp2: opt.targets[1] || opt.targets[0] || opt.premium,
-              tp3: opt.tp3 ?? opt.targets[2],
-              confidence: stock.totalScore,
-              reason: (stock.reasons || []).slice(0, 3).join(" · "),
-              source: "stock-scanner",
-            });
             newAlerts++;
           }
         }
@@ -817,6 +765,86 @@ export function isPlausibleOptionPlan(stock: any, opt: any): boolean {
   return true;
 }
 
+/**
+ * THE ONE option alert path: alert → register with the tracker → record the
+ * audit row. The scanner route and the 15-minute cron used to be two
+ * parallel paths; the route sent the alert WITHOUT registering the trade,
+ * so those entries were never watched for TP/SL.
+ */
+export async function alertStockOptionSetup(
+  stock: any,
+  opt: any,
+  opts: {
+    sources?: { daily?: string; intraday?: string; quotes?: string; chain?: string };
+    nowMs?: number;
+    source?: string;
+    strategy?: string;
+  } = {},
+): Promise<boolean> {
+  const source = opts.source || "stock-scanner";
+  const ymd = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).replace(/-/g, "");
+  const tradeId = `SCAN-INTRA-${stock.symbol}-${opt.strike}-${opt.optionType}-${opt.expiry ?? "NOEXP"}-${ymd}`;
+  const text = formatStockOptionAlert(stock, opt, opts.sources);
+  const sent = await sendTradeAlert({
+    symbol: stock.symbol,
+    action: "BUY",
+    strike: opt.strike,
+    type: opt.optionType,
+    confidence: stock.totalScore ?? 0,
+    entry: opt.premium,
+    stopLoss: opt.stopLoss,
+    target1: opt.targets?.[0] ?? opt.premium,
+    target2: opt.targets?.[1] ?? opt.targets?.[0] ?? opt.premium,
+    tp3: opt.tp3 ?? opt.targets?.[2],
+    source,
+    instrument: opt.optionType === "PE" ? "PUT" : "CALL",
+    expiry: expiryKey(opt.expiry) || undefined,
+    spot: Number(stock.spot || stock.ltp || 0) || undefined,
+    requireExpiry: true,
+    strategy: opts.strategy || source,
+    expectsTrade: true,
+    message: text,
+    nowMs: opts.nowMs,
+    register: async () => addTrade({
+      id: tradeId,
+      symbol: stock.symbol,
+      side: "BUY",
+      instrument: `${stock.symbol} ${opt.strike} ${opt.optionType}`,
+      strike: opt.strike,
+      optionType: opt.optionType,
+      entry: opt.premium,
+      sl: opt.stopLoss,
+      tp1: opt.targets?.[0] ?? opt.premium,
+      tp2: opt.targets?.[1] ?? opt.targets?.[0] ?? opt.premium,
+      tp3: opt.tp3 ?? opt.targets?.[2],
+      status: "ACTIVE",
+      sentAt: new Date().toISOString(),
+      source,
+      expiry: expiryKey(opt.expiry) || undefined,
+      confidence: stock.totalScore,
+      spotPrice: Number(stock.spot || stock.ltp || 0) || undefined,
+    }, true),
+  });
+
+  if (!sent) return false;
+
+  await recordIntradayTrade({
+    id: tradeId,
+    symbol: stock.symbol,
+    optionType: (opt.optionType as "CE" | "PE") || "CE",
+    strike: opt.strike,
+    entry: opt.premium,
+    stopLoss: opt.stopLoss,
+    tp1: opt.targets?.[0] ?? opt.premium,
+    tp2: opt.targets?.[1] ?? opt.targets?.[0] ?? opt.premium,
+    tp3: opt.tp3 ?? opt.targets?.[2],
+    confidence: stock.totalScore,
+    reason: (stock.reasons || []).slice(0, 3).join(" · "),
+    source,
+  });
+  return true;
+}
+
 export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?: string; intraday?: string; quotes?: string; chain?: string }): string {
   const isCall = opt.optionType === "CE";
   const emoji = isCall ? "🟢" : "🔴";
@@ -837,6 +865,14 @@ export function formatStockOptionAlert(stock: any, opt: any, sources?: { daily?:
   const reasons = (stock.reasons || []).slice(0, 3).join(" · ") || "Scanner pick";
   const direction = isCall ? "Bullish" : "Bearish";
   const targets = (opt.targets || []).map((t: number, i: number) => `T${i + 1} ₹${tickPx(t)}`).join(" | ");
+  const lots = Number(opt.lots || 0);
+  const units = Number(opt.units || 0);
+  const deployed = Number(opt.deployed || 0);
+  const riskAmount = Number(opt.riskAmount || 0);
+  const sizeLine = lots > 0 && deployed > 0
+    ? `\n📦 Size: <b>${lots} lot${lots === 1 ? "" : "s"}</b> (${units} units) — ₹${Math.round(deployed).toLocaleString("en-IN")} deployed · ₹${Math.round(riskAmount).toLocaleString("en-IN")} at risk`
+    : "";
+  const stopSource = opt.stopSource ? ` <i>(${opt.stopSource} stop)</i>` : "";
 
   return `📊 STOCK OPTION — ${stock.symbol}
 
@@ -844,9 +880,9 @@ ${emoji} BUY ${opt.optionType} | ${stock.symbol} ${fmtStrike(opt.strike)}
 
 📅 Monthly Expiry: ${opt.expiryLabel}
 💰 Premium: ₹${tickPx(premium)}
-🛑 Stop Loss: ₹${tickPx(stopLoss)}
+🛑 Stop Loss: ₹${tickPx(stopLoss)}${stopSource}
 🎯 ${targets}
-📐 R:R ${rr}
+📐 R:R ${rr}${sizeLine}
 ⭐ Confidence: ${stock.totalScore}%
 📈 ${direction} | ${reasons}
 📡 Data: ${describeSources(sources)}

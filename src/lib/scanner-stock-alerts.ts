@@ -53,7 +53,7 @@ export interface ScannerStockSetup {
   optionsConfirmation?: OptionsConfirmationVerdict | null;
 }
 
-/** The app's per-trade deployment cap (option-plan.PLAN_CONFIG.maxDeployedAmount). */
+/** The default ₹ deployed per cash-equity trade (a SIZE, not a gate). */
 const DEFAULT_BUDGET = 20_000;
 
 /** Minimum reward:risk for a stock setup (matches the option-path gate). */
@@ -88,22 +88,27 @@ export function validateScannerStock(s: ScannerStockSetup): ScannerStockValidati
   return { ok: true };
 }
 
-/** Whole shares for the rupee budget — never fractional, and HONEST: a budget
- *  that cannot buy one share returns 0 (never a forced 1 over the cap). */
+/**
+ * Whole shares for the rupee budget — never fractional.
+ *
+ * THE 1-SHARE FLOOR: a share the budget cannot afford is still ONE share —
+ * the deployment is reported honestly and capital never refuses a valid
+ * setup (user directive 2026-11-21). A missing price is still 0: there is
+ * nothing to buy.
+ */
 export function scannerStockQuantity(entry: number, budget: number = DEFAULT_BUDGET): number {
-  if (!(entry > 0) || !(budget > 0)) return 0;
-  return Math.floor(budget / entry);
+  if (!(entry > 0)) return 0;
+  if (!(budget > 0)) return 1;
+  return Math.max(1, Math.floor(budget / entry));
 }
 
 /**
- * ₹ still free under the open-deployment cap.
+ * ₹ still free in the ACCOUNT (advisory).
  *
- * The cap is a TOTAL (₹20k across the open book), so a candidate must be
- * sized against what is LEFT, not the full budget — otherwise an open ₹7k
- * book permanently blocks every new alert. The maths lives in
- * risk-state.server.ts (the ONE home for the caps).
+ * The account is the physical bound. This is VISIBILITY — it never refuses a
+ * candidate and it never shrinks the size (user directive 2026-11-21).
  *
- * Returns null when the risk state cannot be read → fail closed.
+ * Returns null when the risk state cannot be read.
  */
 export async function scannerStockHeadroom(nowMs?: number): Promise<number | null> {
   try {
@@ -144,17 +149,14 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
     return false;
   }
 
-  // Size against the ₹ LEFT under the open-deployment cap (the cap is a
-  // total across the open book, not a per-trade allowance).
-  const headroom = await scannerStockHeadroom();
-  if (headroom == null) {
-    console.log(`[ScannerAlert] BLOCKED ${s.symbol}: risk state unreadable — fail closed`);
-    return false;
-  }
-  const budget = Math.min(s.budget ?? DEFAULT_BUDGET, headroom);
+  // The size comes from the strategy's ₹ budget (a SIZE, not a gate) — the
+  // open book never shrinks it and never refuses the setup (user directive
+  // 2026-11-21). The loss caps are enforced by the central funnel
+  // (sendTradeAlert → checkSignalRiskLimits).
+  const budget = s.budget ?? DEFAULT_BUDGET;
   const quantity = scannerStockQuantity(s.entry, budget);
   if (quantity < 1) {
-    console.log(`[ScannerAlert] BLOCKED ${s.symbol}: ₹${Math.round(budget)} headroom buys no share of ₹${s.entry}`);
+    console.log(`[ScannerAlert] BLOCKED ${s.symbol}: no share price for ₹${Math.round(budget)}`);
     return false;
   }
   const deployedAmount = quantity * s.entry;
@@ -227,6 +229,37 @@ export async function alertScannerStock(s: ScannerStockSetup): Promise<boolean> 
 
   if (!added) {
     console.warn(`[ScannerAlert] ${s.symbol} — alert sent but trade NOT monitored (addTrade returned false)`);
+  }
+
+  if (added) {
+    try {
+      const { recordSignal } = await import("./trade-audit-client");
+      await recordSignal({
+        tradeId: s.tradeId,
+        strategyId: s.source === "weekly-equity-scanner" ? "WEEKLY" : "INTRADAY",
+        strategyVersion: "1.0",
+        symbol: s.symbol,
+        exchange: "NSE",
+        instrumentType: "EQUITY",
+        spotPrice: s.spot,
+        strikePrice: null,
+        expiry: s.expiry ?? null,
+        optionType: null,
+        entryPrice: s.entry,
+        stopLoss: s.stopLoss,
+        tp1: s.target1,
+        tp2: s.target2 ?? null,
+        tp3: s.target3 ?? null,
+        quantity,
+        signalConfidence: s.confidence,
+        trendDirection: s.side === "BUY" ? "BULLISH" : "BEARISH",
+        signalReason: s.reason ?? s.source,
+        marketSession: "MORNING",
+        marketContext: { source: s.source },
+      });
+    } catch {
+      /* sidecar down — non-blocking */
+    }
   }
 
   return true;

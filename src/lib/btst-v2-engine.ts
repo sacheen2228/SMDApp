@@ -175,16 +175,20 @@ export function analyzeBTSTv2(inp: BTSTV2Input, marketGate?: { niftyScore:number
   slPct = clamp(slPct, BTST_CONFIG.tradePlan.slMinPct, BTST_CONFIG.tradePlan.slMaxPct);
   const sl = entry * (1 - slPct);
   const expectedMovePct = clamp((atr/entry)*100*BTST_CONFIG.tradePlan.expectedMoveFromATR, 0.8, 3.5);
-  const em = expectedMovePct/100;
-  const tp1 = entry * (1 + em * BTST_CONFIG.tradePlan.tp1Mult);
-  const tp2 = entry * (1 + em * BTST_CONFIG.tradePlan.tp2Mult);
+  // The targets are R multiples of the FINAL stop distance (the risk), so the
+  // plan's R:R is 1:2 / 1:3 by construction instead of an ATR-vs-ATR guess
+  // that never reached 1:2.
+  const tp1 = entry * (1 + slPct * BTST_CONFIG.tradePlan.tp1Mult);
+  const tp2 = entry * (1 + slPct * BTST_CONFIG.tradePlan.tp2Mult);
   const rr = (tp1 - entry) / Math.max(0.0001, entry - sl);
 
   // Sizing
   const deployedCap = BTST_CONFIG.tradePlan.capitalPerTrade;
   const riskPerShare = entry - sl;
+  // The deployment budget sizes the trade; it never refuses it (user
+  // directive 2026-11-21) — one share is always tradable.
   const maxQtyByCapital = Math.floor(deployedCap / entry);
-  let qty = maxQtyByCapital;
+  let qty = Math.max(1, maxQtyByCapital);
   const riskAmount = qty * riskPerShare;
   const riskPct = riskAmount / (qty*entry) || 0;
   if (rr < BTST_CONFIG.tradePlan.minRR) {

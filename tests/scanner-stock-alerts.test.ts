@@ -90,14 +90,13 @@ describe("scanner stock alerts — honest cash sizing", () => {
     expect(scannerStockQuantity(1400, 20_000)).toBe(14);
   });
 
-  test("a budget that cannot buy one share returns 0 (never a forced 1)", () => {
-    expect(scannerStockQuantity(2709.2, 2000)).toBe(0);
-    expect(scannerStockQuantity(2709.2, 0)).toBe(0);
-    expect(scannerStockQuantity(0, 20_000)).toBe(0);
+  test("a share the budget cannot afford is still 1 share (no capital refusal)", () => {
+    expect(scannerStockQuantity(2709.2, 2000)).toBe(1);
+    expect(scannerStockQuantity(2709.2, 0)).toBe(1);
+    expect(scannerStockQuantity(0, 20_000)).toBe(0);   // no price → nothing to buy
   });
 
-  test("sizing honours the REMAINING headroom, not the full budget", () => {
-    // ₹12,983 left under the ₹20,000 total cap (₹7,017 already open).
+  test("sizing honours the budget it is given", () => {
     expect(scannerStockQuantity(2709.2, 12_983)).toBe(4);
     expect(4 * 2709.2).toBeLessThanOrEqual(12_983);
   });

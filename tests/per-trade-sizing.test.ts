@@ -113,10 +113,10 @@ describe("risk-management.calculatePositionSize (the Zero Hero production path)"
     expect(huge.lots).toBe(small.lots);
   });
 
-  test("an unaffordable lot is 0 lots, not an over-sized position", () => {
+  test("an expensive lot is still 1 lot (no capital refusal)", () => {
     const r = calculatePositionSize({ ...base, entryPremium: 2_000, stopLossPremium: 1_900 });
-    expect(r.lots).toBe(0);
-    expect(r.positionValue).toBe(0);
+    expect(r.lots).toBe(1);
+    expect(r.positionValue).toBeGreaterThan(0);
   });
 });
 
@@ -163,9 +163,9 @@ describe("playbook-check risk budget", () => {
     expect(r.failedItems).not.toContain(7);
   });
 
-  test("a maxLoss above the 20%-of-deployed risk budget fails", () => {
+  test("a maxLoss above the 20%-of-deployed reference is SHOWN, never a veto", () => {
     const r = evaluatePlaybookCheck(candidate({ maxLoss: 9_500 }), ALL, { capital: 100_000 } as any);
-    expect(r.failedItems).toContain(7);
+    expect(r.failedItems).not.toContain(7);
     expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);
   });
 });

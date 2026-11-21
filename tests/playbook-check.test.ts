@@ -125,12 +125,13 @@ describe("item 6 — strike selector (option R:R >= 1:2, lots >= 1)", () => {
     expect(r.items.find(i => i.item === 6)!.note).toMatch(/R:R/i);
   });
 
-  it("one lot exceeds the 1% risk budget → lots < 1, item 6 fails", () => {
-    // per-lot risk = (2000-1900) * lot(NIFTY >= 65) = >= 6500 > budget 1000
+  it("an expensive lot is never a veto — the size is shown, item 6 still passes", () => {
+    // per-lot risk = (2000-1900) * lot(NIFTY >= 65) = >= 6500 — the risk budget
+    // no longer refuses the contract (user directive 2026-11-21).
     const r = evaluatePlaybookCheck(
       candidate({ entry: 2000, stopLoss: 1900, target1: 2300, maxLoss: 6500 }),
       FRESH8, {} as any);
-    expect(r.failedItems).toContain(6);
+    expect(r.failedItems).not.toContain(6);
     expect(r.items.find(i => i.item === 6)!.note).toMatch(/lot/i);
   });
 
@@ -143,9 +144,9 @@ describe("item 6 — strike selector (option R:R >= 1:2, lots >= 1)", () => {
 });
 
 describe("item 7 — stop/RR/risk limits (R:R >= 1:2, risk <= 20% of the deployed amount)", () => {
-  it("maxLoss 4500 > the ₹2,000 risk budget (20% of deployed, capped) → item 7 fails", () => {
+  it("maxLoss above the reference is SHOWN, never a veto (the R:R is the only reject)", () => {
     const r = evaluatePlaybookCheck(candidate({ target1: 130, maxLoss: 4_500 }), FRESH8, { capital: 100_000 } as any);
-    expect(r.failedItems).toContain(7);
+    expect(r.failedItems).not.toContain(7);
     expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);
   });
 

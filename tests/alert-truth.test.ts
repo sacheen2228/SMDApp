@@ -28,6 +28,9 @@ import { formatStockOptionAlert, isPlausibleOptionPlan } from "@/lib/sendIntrada
 import { formatEventForTelegram } from "@/lib/hermes/telegram-queue";
 import { detectHitForTest, pollTradesOnce } from "@/lib/agents/trade-monitor";
 import { __setAlertSenderForTests } from "@/lib/agents/telegram-alerts";
+import { __setTelegramSenderForTests } from "@/lib/telegram";
+import fs from "fs";
+import path from "path";
 import { releaseTradeLock } from "@/lib/active-trade-lock";
 import { getLotSize } from "@/lib/symbol-config";
 
@@ -67,8 +70,6 @@ afterAll(async () => {
   // The TP/SL delivery flags live in a JSON file — drop this run's entries so
   // the test never dedups against its own previous run.
   try {
-    const fs = require("fs");
-    const path = require("path");
     const file = path.join(process.cwd(), "data", "tpsl-alert-flags.json");
     if (fs.existsSync(file)) {
       const flags = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -369,6 +370,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
   it("the card shows a signed loss and the stop as the exit", async () => {
     const sent: string[] = [];
     __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
+    __setTelegramSenderForTests(async (text: string) => { sent.push(text); return true; });
     const t = tradeOf(LIVE_PE, { id: `truth-tiger-${Date.now()}`, symbol: "TRUTHTIG1" });
     await addTrade(t, true);
     const res = await pollTradesOnce(async (x) => (x.tradeId === t.id ? LIVE_PE.stopLoss : 0));
@@ -382,6 +384,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
     expect(card).not.toContain("Exit: ₹41.05");
     expect(card).not.toMatch(/\d+\.\d{6,}/);
     __setAlertSenderForTests(null);
+    __setTelegramSenderForTests(null);
     removeTradeForTest(t.id);
     releaseTradeLock("TRUTHTIG1", "NFO");
   });
@@ -389,6 +392,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
   it("a PE target hit is not a red loss", async () => {
     const sent: string[] = [];
     __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
+    __setTelegramSenderForTests(async (text: string) => { sent.push(text); return true; });
     const t = tradeOf(LIVE_PE, { id: `truth-tiger-tp-${Date.now()}`, symbol: "TRUTHTIG2" });
     await addTrade(t, true);
     const res = await pollTradesOnce(async (x) => (x.tradeId === t.id ? LIVE_PE.targets[0] : 0));
@@ -398,6 +402,7 @@ describe("tiger card — a PE stop hit is not a green profit", () => {
     expect(card).toContain("P&L: ₹+");
     expect(card).toMatch(/\(40\.0%\)/);
     __setAlertSenderForTests(null);
+    __setTelegramSenderForTests(null);
     removeTradeForTest(t.id);
     releaseTradeLock("TRUTHTIG2", "NFO");
   });

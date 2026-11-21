@@ -59,7 +59,7 @@ export function isSyntheticTradeRow(t: {
 }
 
 async function readOpenExposure(nowMs: number): Promise<{
-  deployed: number; risk: number; positions: number; unpriced: number;
+  deployed: number; risk: number; positions: number; unpriced: number; unpricedSymbols: string[];
 }> {
   // symbol → the row that counts (the live one wins over a journal duplicate)
   const bySymbol = new Map<string, OpenExposureRow>();
@@ -128,17 +128,19 @@ async function readOpenExposure(nowMs: number): Promise<{
   let risk = 0;
   let positions = 0;
   let unpriced = 0;
+  const unpricedSymbols: string[] = [];
   for (const row of bySymbol.values()) {
     const exposure = estimateOpenExposure(row);
     if (!exposure) {
       unpriced++;
+      unpricedSymbols.push(String(row.symbol || row.id || "unknown"));
       continue;
     }
     positions++;
     deployed += exposure.deployed;
     risk += exposure.risk;
   }
-  return { deployed, risk, positions, unpriced };
+  return { deployed, risk, positions, unpriced, unpricedSymbols };
 }
 
 /**
@@ -199,6 +201,7 @@ async function readOpenExposure(nowMs: number): Promise<{
         openRisk: open.risk,
         openPositions: open.positions,
         unpricedOpenPositions: open.unpriced,
+        unpricedOpenSymbols: open.unpricedSymbols,
         asOfMs: nowMs,
       },
     };
@@ -222,13 +225,13 @@ export function invalidateRiskStateCache(): void {
 }
 
 /**
- * ₹ STILL FREE under the open-deployment / open-risk caps.
+ * ₹ STILL FREE in the ACCOUNT (advisory).
  *
- * The ONE home for the headroom maths — the signal check and every producer
- * that must SIZE a candidate (cash equity, lot sizing) read it from here, so
- * a new producer can never invent a second budget. A producer sizes against
- * this, NOT the full cap: an open ₹7k book plus a full-size ₹20k candidate
- * would otherwise exceed the cap and block every alert.
+ * The account is the physical bound: the deployed room is what the account
+ * has left, the risk room is what the daily loss cap has left. This is
+ * VISIBILITY — it never refuses a candidate (user directive 2026-11-21:
+ * no fixed capital / trade-budget / lot-count restriction may decide whether
+ * a trade is eligible).
  */
 export function deploymentHeadroom(state: {
   openDeployed?: number | null;
@@ -237,14 +240,8 @@ export function deploymentHeadroom(state: {
   const openDeployed = Math.max(0, Number(state.openDeployed) || 0);
   const openRisk = Math.max(0, Number(state.openRisk) || 0);
   return {
-    deployed: Math.max(
-      0,
-      Math.min(RISK_LIMITS.maxOpenDeployed, RISK_LIMITS.capital) - openDeployed,
-    ),
-    risk: Math.max(
-      0,
-      Math.min(RISK_LIMITS.maxOpenRisk, RISK_LIMITS.capital) - openRisk,
-    ),
+    deployed: Math.max(0, RISK_LIMITS.capital - openDeployed),
+    risk: Math.max(0, RISK_LIMITS.maxDailyLoss - openRisk),
   };
 }
 
@@ -295,6 +292,8 @@ export async function checkSignalRiskLimits(params: {
 }): Promise<{
   blocked: boolean;
   reasons: string[];
+  /** Visibility, never a gate: the capital frame is shown, it does not refuse. */
+  warnings?: string[];
   state?: RiskStateSnapshot;
   exposure?: { deployed: number; risk: number; lots: number; unknown: boolean };
   unavailable?: boolean;
@@ -305,13 +304,9 @@ export async function checkSignalRiskLimits(params: {
   }
   const state = loaded.state;
 
-  // Remaining headroom under the open-deployment cap — size against THIS,
-  // not the full ₹20k budget. An open ₹4k book + a full-size ₹17k candidate
-  // used to permanent-block every alert (open + new > cap).
-  const { deployed: remainingHeadroom, risk: remainingRiskHeadroom } = deploymentHeadroom(state);
-
-  // The candidate's own exposure — sized by the ONE model (positionSize),
-  // against the remaining headroom (0 headroom → 0 lots → worst-case block).
+  // The candidate's own exposure — sized by the ONE model (positionSize).
+  // There is NO deployment headroom gate any more (user directive 2026-11-21):
+  // the account is the physical bound, the loss caps are the only gate.
   let lotSize: number | null = params.lotSize ?? null;
   if (lotSize == null || lotSize <= 0) {
     try {
@@ -326,7 +321,6 @@ export async function checkSignalRiskLimits(params: {
     stopLoss: params.stopLoss,
     lotSize,
     lots: params.lots ?? null,
-    remainingHeadroom,
   });
 
   // A stated deployment/risk wins over the modelled one (the caller knows).
@@ -334,19 +328,6 @@ export async function checkSignalRiskLimits(params: {
   const statedRisk = Number(params.riskAmount);
   const newDeployed = Number.isFinite(statedDeployed) && statedDeployed > 0 ? statedDeployed : exposure.deployed;
   const newRisk = Number.isFinite(statedRisk) && statedRisk > 0 ? statedRisk : exposure.risk;
-
-  // Explicit no-headroom fail-closed (positionSize(0) → 0 lots → unknown worst
-  // case, but say WHY when the book is simply full).
-  if (remainingHeadroom <= 0 && newDeployed > 0) {
-    return {
-      blocked: true,
-      reasons: [
-        `no deployment headroom — open deployed ₹${Math.round(openDeployed)} already at the ₹${RISK_LIMITS.maxOpenDeployed} cap`,
-      ],
-      state,
-      exposure: { deployed: newDeployed, risk: newRisk, lots: exposure.lots, unknown: exposure.unknown },
-    };
-  }
 
   const verdict = evaluateSignalRiskLimits({
     state,
@@ -356,6 +337,7 @@ export async function checkSignalRiskLimits(params: {
   return {
     blocked: verdict.blocked,
     reasons: verdict.reasons,
+    warnings: verdict.warnings,
     state,
     exposure,
   };
