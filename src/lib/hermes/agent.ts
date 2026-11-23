@@ -113,7 +113,7 @@ export async function hermesPro(
   let effectiveDirection: Direction = regime.bias;
 
   // 6. If TRADE mode, run full pipeline
-  if (mode === "TRADE" || intent === "LIVE_TRADE" || intent === "ZERO_HERO") {
+  if (mode === "TRADE" || intent === "LIVE_TRADE") {
     return recordJevShadowForHermes(
       await executeTradePipeline(ctx, effectiveDirection, startTime),
       ctx

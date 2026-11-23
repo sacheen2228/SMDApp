@@ -876,60 +876,7 @@ async function analyzeExpiryTheta(ctx: AgentContext): Promise<AgentResearchOutpu
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 16 — ZERO HERO
-// Analyzes: 0DTE opportunities, gamma, acceleration, volume
-// Source: zero-hero.ts
-// ═══════════════════════════════════════════════════════════════════
-
-async function analyzeZeroHero(ctx: AgentContext): Promise<AgentResearchOutput> {
-  const def = REGISTRY.find(a => a.id === 'ZERO_HERO')!;
-  const evidence: string[] = [];
-  const riskFlags: string[] = [];
-  let bias: AgentBias = 'NEUTRAL';
-  let confidence = 40;
-
-  const dte = ctx.daysToExpiry || 99;
-  if (dte > 1) {
-    return createOutput(def, ctx, {
-      observation: `Not expiry day (DTE: ${dte}) — Zero Hero not applicable`,
-      bias: 'NEUTRAL', confidence: 30,
-      recommendationContext: 'RESEARCH_ONLY',
-      recommendationReason: 'Zero Hero only applies on expiry day',
-    });
-  }
-
-  // Expiry day analysis
-  evidence.push('EXPIRY DAY — 0DTE opportunity window');
-  const priceChange = ctx.spot - ctx.prevClose;
-  const priceChangePct = ctx.prevClose > 0 ? (priceChange / ctx.prevClose) * 100 : 0;
-
-  if (Math.abs(priceChangePct) > 1) {
-    evidence.push(`Strong move today: ${priceChangePct > 0 ? '+' : ''}${priceChangePct.toFixed(2)}%`);
-    evidence.push('Explosive potential for 0DTE options');
-    bias = priceChangePct > 0 ? 'BULLISH' : 'BEARISH';
-    confidence = 65;
-  } else {
-    evidence.push(`Muted move: ${priceChangePct.toFixed(2)}%`);
-    confidence = 40;
-  }
-
-  riskFlags.push('0DTE is extremely high risk — size accordingly');
-  riskFlags.push('Gamma risk is extreme on expiry day');
-
-  return createOutput(def, ctx, {
-    observation: `Zero Hero: DTE=${dte}, Move=${priceChangePct.toFixed(2)}%`,
-    bias,
-    confidence,
-    evidence,
-    riskFlags,
-    recommendationContext: confidence >= 60 ? 'TRADE' : 'WAIT',
-    recommendationReason: `Expiry day with ${priceChangePct.toFixed(2)}% move`,
-    data: { dte, priceChangePct },
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// AGENT 17 — CAS
+// AGENT 16 — CAS
 // Analyzes: CAS session, expected move, compression, expansion
 // Source: cas-straddle-strategy-v2.ts, cas-time-engine.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -970,7 +917,7 @@ async function analyzeCAS(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 18 — MARKET STRUCTURE
+// AGENT 17 — MARKET STRUCTURE
 // Analyzes: HH/HL/LH/LL, BOS, CHOCH, displacement, liquidity sweep
 // Source: market-structure-engine.ts, /api/sdm-signal
 // ═══════════════════════════════════════════════════════════════════
@@ -1071,7 +1018,7 @@ async function analyzeMarketStructure(ctx: AgentContext): Promise<AgentResearchO
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 19 — SUPPORT/RESISTANCE
+// AGENT 18 — SUPPORT/RESISTANCE
 // Analyzes: PDH/PDL, OI walls, gamma zones, swing levels
 // Source: market-structure, OI analysis, gamma
 // ═══════════════════════════════════════════════════════════════════
@@ -1178,7 +1125,7 @@ async function analyzeSupportResistance(ctx: AgentContext): Promise<AgentResearc
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 20 — VWAP
+// AGENT 19 — VWAP
 // Analyzes: price vs VWAP, VWAP reclaim/rejection, slope, distance
 // Source: vwap-engine.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -1243,7 +1190,7 @@ async function analyzeVWAP(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 21 — VOLUME / VOLUME PROFILE
+// AGENT 20 — VOLUME / VOLUME PROFILE
 // Analyzes: volume expansion/contraction, POC, VAH, VAL, absorption
 // Source: volume-analysis.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -1347,7 +1294,7 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 22 — BREAKOUT / FAKEOUT
+// AGENT 21 — BREAKOUT / FAKEOUT
 // Analyzes: breakout confirmation, volume, retest, false breakout
 // Source: breakout-engine, market structure
 // ═══════════════════════════════════════════════════════════════════
@@ -1462,7 +1409,7 @@ async function analyzeBreakout(ctx: AgentContext): Promise<AgentResearchOutput> 
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 23 — MTF CONFIRMATION
+// AGENT 22 — MTF CONFIRMATION
 // Analyzes: multi-timeframe indicator alignment
 // Source: mtf-signal-engine.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -1571,7 +1518,7 @@ async function analyzeMTFConfirmation(ctx: AgentContext): Promise<AgentResearchO
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 24 — MOMENTUM
+// AGENT 23 — MOMENTUM
 // Analyzes: price momentum, acceleration, divergence
 // Source: ml-engine.ts (RSI, Bollinger, EMA, ADX)
 // ═══════════════════════════════════════════════════════════════════
@@ -1666,7 +1613,7 @@ async function analyzeMomentum(ctx: AgentContext): Promise<AgentResearchOutput> 
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 25 — ATR / VOLATILITY
+// AGENT 24 — ATR / VOLATILITY
 // Analyzes: ATR, expected move, stop distance, target feasibility
 // Source: nse-api.ts (getNSEATR14)
 // ═══════════════════════════════════════════════════════════════════
@@ -1734,7 +1681,7 @@ async function analyzeATR(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 26 — NEWS
+// AGENT 25 — NEWS
 // Analyzes: market news, company news, macro events
 // Source: /api/news, sentiment-analyzer.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -1781,7 +1728,7 @@ async function analyzeNews(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 27 — EVENT RISK
+// AGENT 26 — EVENT RISK
 // Detects: RBI, Fed, earnings, elections, macro announcements
 // Source: market-session.ts, expiry calendar
 // ═══════════════════════════════════════════════════════════════════
@@ -1822,7 +1769,7 @@ async function analyzeEventRisk(ctx: AgentContext): Promise<AgentResearchOutput>
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 28 — SENTIMENT
+// AGENT 27 — SENTIMENT
 // Analyzes: market sentiment, news sentiment, positioning
 // Source: sentiment-analyzer.ts, news
 // ═══════════════════════════════════════════════════════════════════
@@ -1868,7 +1815,7 @@ async function analyzeSentiment(ctx: AgentContext): Promise<AgentResearchOutput>
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 29 — BTST
+// AGENT 28 — BTST
 // Analyzes: end-of-day structure, volume, trend, overnight risk
 // Source: btst-scanner.ts
 // ═══════════════════════════════════════════════════════════════════
@@ -1925,7 +1872,7 @@ async function analyzeBTST(ctx: AgentContext): Promise<AgentResearchOutput> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// AGENT 30 — COMMODITY / MCX
+// AGENT 29 — COMMODITY / MCX
 // Analyzes: CRUDEOIL, GOLD, SILVER, NATURALGAS — price, trend, VWAP
 // Source: mcx/mcx-intelligence.ts, mcx/ module
 // ═══════════════════════════════════════════════════════════════════
@@ -1985,7 +1932,7 @@ async function analyzeCommodityMCX(ctx: AgentContext): Promise<AgentResearchOutp
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// REGISTRY — All 30 agents
+// REGISTRY — All 29 agents
 // ═══════════════════════════════════════════════════════════════════
 
 export const REGISTRY: AgentDefinition[] = [
@@ -2004,7 +1951,6 @@ export const REGISTRY: AgentDefinition[] = [
   { id: 'BUYER_CONFLUENCE', name: 'Option Buyer Confluence', category: 'OPTIONS', description: 'Option BUY conditions alignment — underlying direction, volume, IV, Greeks', supportedInstruments: ['INDEX', 'STOCK_OPTION'], dataSources: ['buyer-confluence-engine'], requiredInputs: ['vix', 'trend', 'volume', 'atmIV'], analysisFn: analyzeBuyerConfluence },
   { id: 'STRIKE_SELECTION', name: 'Strike Selection', category: 'OPTIONS', description: 'ATM/ITM/OTM, delta, liquidity, spread, premium — select optimal strike', supportedInstruments: ['INDEX', 'STOCK_OPTION'], dataSources: ['hermes-strike-selector', 'option-chain'], requiredInputs: ['strikes', 'optionChain'], analysisFn: analyzeStrikeSelection },
   { id: 'EXPIRY_THETA', name: 'Expiry/Theta', category: 'OPTIONS', description: 'Expiry proximity, theta decay, time remaining, premium decay risk', supportedInstruments: ['INDEX', 'STOCK_OPTION'], dataSources: ['expiry-calculator', 'hermes-context'], requiredInputs: ['daysToExpiry', 'atmTheta'], analysisFn: analyzeExpiryTheta },
-  { id: 'ZERO_HERO', name: 'Zero Hero', category: 'OPTIONS', description: '0DTE expiry-day opportunities, gamma, acceleration, explosive potential', supportedInstruments: ['INDEX'], dataSources: ['zero-hero.ts'], requiredInputs: ['daysToExpiry', 'spot', 'prevClose', 'volume'], analysisFn: analyzeZeroHero },
   { id: 'CAS', name: 'CAS', category: 'OPTIONS', description: 'CAS session analysis — institutional order flow, expected move, compression', supportedInstruments: ['INDEX'], dataSources: ['cas-straddle-strategy-v2', 'cas-time-engine'], requiredInputs: ['symbol'], analysisFn: analyzeCAS },
   { id: 'MARKET_STRUCTURE', name: 'Market Structure', category: 'STRUCTURE', description: 'HH/HL/LH/LL, BOS, CHOCH, displacement, liquidity sweep', supportedInstruments: ['ALL'], dataSources: ['market-structure-engine', '/api/sdm-signal'], requiredInputs: ['trend', 'swingHigh', 'swingLow', 'lastEvent'], analysisFn: analyzeMarketStructure },
   { id: 'SUPPORT_RESISTANCE', name: 'Support/Resistance', category: 'STRUCTURE', description: 'PDH/PDL, OI walls, gamma zones, swing levels, opening range', supportedInstruments: ['ALL'], dataSources: ['market-structure', 'oi-analysis', 'gamma'], requiredInputs: ['spot', 'pdh', 'pdl', 'supportLevels', 'resistanceLevels'], analysisFn: analyzeSupportResistance },

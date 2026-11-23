@@ -258,7 +258,7 @@ describe('4 — canonical snapshot context reaches the agents', () => {
 
     const outputs = await runAllAgents(ctx);
     expect(urls.length).toBe(0);
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
 
     const strikeSel = outputs.find(o => o.agentId === 'STRIKE_SELECTION');
     expect(strikeSel?.data?.atmStrike).toBe(24500);

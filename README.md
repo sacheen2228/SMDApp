@@ -368,9 +368,9 @@ and CSV/JSON export. If the engine isn't running it shows a "start the engine" h
 - **BTST** (`src/lib/btst-scanner.ts`): every daily scan records its A+/A/B candidates as `BTST`
   signals; the cron closes them next-day (`btst_square_off`) using the realized close, so real
   backtest stats accumulate automatically.
-- **Zero Hero** + **Smart Money** (Terminal tab, `src/components/terminal/ZeroHeroTerminal.tsx`):
-  when you open the **Zero Hero** or **Smart Money** tab, the displayed option candidates are
-  recorded as `ZERO_HERO_AI` / `SMC` signals (direction-corrected CE/PE levels) on every scan,
+- **Smart Money** (Terminal tab, `src/components/terminal/TerminalTab.tsx`):
+  when you open the **Smart Money** tab, the displayed option candidates are
+  recorded as `SMC` signals (direction-corrected CE/PE levels) on every scan,
   with the live premium fed as a tracking tick so the engine computes MFE/MAE and auto-closes on
   SL/TP. Idempotent per day+strike+type, so re-scans don't duplicate.
 - Any strategy can record by calling `recordSignal()` / `recordOptionSignals()` from

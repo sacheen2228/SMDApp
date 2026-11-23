@@ -55,7 +55,7 @@ export interface TradeEventInput {
   target2?: number;
   target3?: number;
   confidence?: number;
-  source?: string;        // scanner | sdm-engine | zero-hero | btst | manual
+  source?: string;        // scanner | sdm-engine | smart-money | btst | manual
   spot?: number;          // underlying price (never option premium)
   expiry?: string;        // YYYY-MM-DD
   /** Producer-rendered message (the monitor's TP/SL card) — wins over the default. */

@@ -1,7 +1,7 @@
 // tests/trade-register-guards.test.ts
 //
 // /api/trade/register is the funnel EVERY Terminal-tab registration flows
-// through (ZeroHeroTerminal → registerTrades → POST /api/trade/register →
+// through (TerminalTab → registerTrades → POST /api/trade/register →
 // addTrade → recordSignal → audit sidecar). These tests pin its safety
 // contract:
 //   - a missing stop is REJECTED, never invented (the old code fabricated

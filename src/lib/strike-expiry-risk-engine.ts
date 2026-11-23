@@ -1,5 +1,5 @@
 // Strike Expiry-Risk Engine — Strict Protection Mode
-// Operates in two modes: "ordinary" and "zero_hero"
+// Operates in two modes: "ordinary" and "low_premium"
 // Fail-closed on every gate; live data only; no fallback simulation.
 //
 // System Prompt: SMDApp Strike Expiry-Risk Engine operating in Strict Protection Mode.
@@ -7,7 +7,7 @@
 // of expiring worthless (premium → 0) is kept below a hard risk budget.
 // Prioritize ATM and slightly ITM strikes. Reject every strike that fails any gate.
 // Fail closed on data or model problems.
-// Ordinary and Zero Hero trades share the same mathematical framework but use
+// Ordinary and low-premium trades share the same mathematical framework but use
 // different numerical thresholds.
 
 import { normalCDF } from './greeks';
@@ -58,14 +58,14 @@ export interface StrikeAnalysis {
   tauDays: number;
   gateResults: GateResult[];
   status: "TRADE" | "NO_TRADE" | "EXIT";
-  strategy: "ordinary" | "zero_hero";
+  strategy: "ordinary" | "low_premium";
 }
 
 // Engine output lives at a higher level; StrikeAnalysis has no top-level reason.
 export interface EngineOutput {
   status: "TRADE" | "NO_TRADE" | "EXIT";
   reason: string;
-  strategy: "ordinary" | "zero_hero";
+  strategy: "ordinary" | "low_premium";
   minDesignedPNotZero: number;
   selectedStrikes: StrikeAnalysis[];
   timestamp: string;
@@ -119,7 +119,7 @@ function gate0(input: StrikeInput): GateResult {
 // Gate 1 — Strike Distance
 // ──────────────────────────────────────────────────────────────
 
-function gate1(input: StrikeInput, strategy: "ordinary" | "zero_hero"): GateResult {
+function gate1(input: StrikeInput, strategy: "ordinary" | "low_premium"): GateResult {
   const S = input.underlyingSpot;
   const K = input.strike;
   let d: number;
@@ -131,15 +131,15 @@ function gate1(input: StrikeInput, strategy: "ordinary" | "zero_hero"): GateResu
   }
 
   const ordinaryAccept = d >= -0.005 && d <= 0.015;
-  const zeroHeroAccept = d >= -0.010 && d <= 0.010;
+  const lowPremiumAccept = d >= -0.010 && d <= 0.010;
 
   if (strategy === "ordinary") {
     if (!ordinaryAccept) {
       return { passed: false, reason: `Strike distance d=${d.toFixed(4)} outside ordinary band [−0.005, 0.015]`, rejectCode: "STRIKE_DISTANCE" };
     }
   } else {
-    if (!zeroHeroAccept) {
-      return { passed: false, reason: `Strike distance d=${d.toFixed(4)} outside zero_hero band [−0.010, 0.010]`, rejectCode: "STRIKE_DISTANCE" };
+    if (!lowPremiumAccept) {
+      return { passed: false, reason: `Strike distance d=${d.toFixed(4)} outside low_premium band [−0.010, 0.010]`, rejectCode: "STRIKE_DISTANCE" };
     }
   }
 
@@ -150,7 +150,7 @@ function gate1(input: StrikeInput, strategy: "ordinary" | "zero_hero"): GateResu
 // Gate 2 — Delta Band + Calibrated Probability
 // ──────────────────────────────────────────────────────────────
 
-function gate2(input: StrikeInput, strategy: "ordinary" | "zero_hero", riskBudget: number): GateResult {
+function gate2(input: StrikeInput, strategy: "ordinary" | "low_premium", riskBudget: number): GateResult {
   const absDelta = Math.abs(input.delta);
 
   const deltaOK = strategy === "ordinary"
@@ -190,7 +190,7 @@ function gate2(input: StrikeInput, strategy: "ordinary" | "zero_hero", riskBudge
 // Gate 3 — Time-to-Expiry & Expected Move
 // ──────────────────────────────────────────────────────────────
 
-function gate3(input: StrikeInput, strategy: "ordinary" | "zero_hero", gate2Result: GateResult): GateResult {
+function gate3(input: StrikeInput, strategy: "ordinary" | "low_premium", gate2Result: GateResult): GateResult {
   const S = input.underlyingSpot;
   const K = input.strike;
   const sigma = input.iv;
@@ -224,9 +224,9 @@ function gate3(input: StrikeInput, strategy: "ordinary" | "zero_hero", gate2Resu
       const deltaOK = input.delta >= 0.60 && input.delta <= 0.75;
       const distanceInside = d >= -0.010 && d <= 0.010;
       if (deltaOK && distanceInside) {
-        return { passed: true, reason: "zero_hero exception: |Δ|≥0.65 + distance inside band", rejectCode: "NONE" };
+        return { passed: true, reason: "low_premium exception: |Δ|≥0.65 + distance inside band", rejectCode: "NONE" };
       } else {
-        return { passed: false, reason: "Expected move too small, zero_hero conditions not met", rejectCode: "TIME_EXPIRY" };
+        return { passed: false, reason: "Expected move too small, low-premium conditions not met", rejectCode: "TIME_EXPIRY" };
       }
     }
   }
@@ -238,7 +238,7 @@ function gate3(input: StrikeInput, strategy: "ordinary" | "zero_hero", gate2Resu
 // Core: analyze one strike
 // ──────────────────────────────────────────────────────────────
 
-function analyzeStrike(input: StrikeInput, strategy: "ordinary" | "zero_hero"): StrikeAnalysis {
+function analyzeStrike(input: StrikeInput, strategy: "ordinary" | "low_premium"): StrikeAnalysis {
   const gate0Result = gate0(input);
   if (!gate0Result.passed) {
     return {
@@ -362,9 +362,9 @@ function analyzeStrike(input: StrikeInput, strategy: "ordinary" | "zero_hero"): 
 
 export async function runStrikeExpiryRiskEngine(
   strikes: StrikeInput[],
-  strategy: "ordinary" | "zero_hero"
+  strategy: "ordinary" | "low_premium"
 ): Promise<EngineOutput> {
-  const riskBudgets = { ordinary: 0.35, zero_hero: 0.25 };
+  const riskBudgets = { ordinary: 0.35, low_premium: 0.25 };
   const budget = riskBudgets[strategy];
 
   const analyses: StrikeAnalysis[] = [];
@@ -453,7 +453,7 @@ function buildTelegramText(output: EngineOutput): string | null {
 /** Run the engine and return the output text for Telegram (or other). */
 export async function runEngineForTelegram(
   strikes: StrikeInput[],
-  strategy: "ordinary" | "zero_hero"
+  strategy: "ordinary" | "low_premium"
 ): Promise<{
   engineOutput: EngineOutput;
   alertText: string | null;

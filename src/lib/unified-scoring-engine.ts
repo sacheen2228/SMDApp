@@ -13,14 +13,14 @@
 
 export const SCORING_VERSION = "2.0";
 
-// Candle-derived context enrichment (Smart Money / Zero Hero partial inputs).
+// Candle-derived context enrichment (Smart Money partial inputs).
 // market-structure + ml-engine have no dependency back into this module.
 import { analyzeMarketStructure } from "@/lib/market-structure-engine";
 import { calculateVWAP, calculateADX } from "@/lib/ml-engine";
 
 // ─── Strategy Profiles ─────────────────────────────────────────────
 
-export type StrategyProfile = "EQUITY_SWING" | "FO" | "OPTIONS" | "CAS" | "HERO_ZERO" | "MCX_COMMODITY" | "HERMES";
+export type StrategyProfile = "EQUITY_SWING" | "FO" | "OPTIONS" | "CAS" | "EXPIRY_LOW_PREMIUM" | "MCX_COMMODITY" | "HERMES";
 
 export interface FactorWeights {
   structure: number;
@@ -59,7 +59,7 @@ export const STRATEGY_PROFILES: Record<StrategyProfile, FactorWeights> = {
     vwap: 5, historical: 7, orderBlock: 4, fvg: 3, liquidity: 10,
     pcr: 6, vix: 8, greeksIv: 9,
   },
-  HERO_ZERO: {
+  EXPIRY_LOW_PREMIUM: {
     structure: 15, mssBos: 12, supertrend: 0, oiDelta: 15, volume: 20,
     vwap: 5, historical: 3, orderBlock: 5, fvg: 5, liquidity: 10,
     pcr: 2, vix: 3, greeksIv: 5,
@@ -731,7 +731,7 @@ function runHardGates(input: MarketDataInput): HardGateResult {
     }
   }
   // Strategy-specific liquidity requirements
-  if (input.strategy === "HERO_ZERO" || input.strategy === "OPTIONS") {
+  if (input.strategy === "EXPIRY_LOW_PREMIUM" || input.strategy === "OPTIONS") {
     if (avgVol != null && avgVol < 100000) liqIssues.push("insufficient liquidity for options strategy");
   }
   gates.push({
@@ -747,9 +747,9 @@ function runHardGates(input: MarketDataInput): HardGateResult {
   // MCX doesn't have India VIX — skip VIX checks for MCX
   if (!isMCX) {
     if (vix != null && vix > 35) regimeIssues.push(`VIX ${vix.toFixed(1)} — extreme volatility`);
-    if (input.strategy === "HERO_ZERO") {
-      if (vix != null && vix > 30) regimeIssues.push("Hero-Zero not suitable in extreme VIX");
-      if (vix != null && vix < 10) regimeIssues.push("Hero-Zero needs volatility to profit");
+    if (input.strategy === "EXPIRY_LOW_PREMIUM") {
+      if (vix != null && vix > 30) regimeIssues.push("Expiry low-premium not suitable in extreme VIX");
+      if (vix != null && vix < 10) regimeIssues.push("Expiry low-premium needs volatility to profit");
     }
   }
   gates.push({
@@ -832,7 +832,7 @@ function runHardGates(input: MarketDataInput): HardGateResult {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CANDLE CONTEXT ENRICHMENT
-// Some production callers (Smart Money tab, Zero Hero) score from the option
+// Some production callers (Smart Money tab) score from the option
 // chain only and never set marketStructure/swings/S-R/vwap/volume metrics.
 // Those factors then return available=false with weighted=0 while the score
 // denominator stays totalWeight → the score is pinned below any meaningful

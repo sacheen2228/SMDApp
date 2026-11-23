@@ -87,7 +87,7 @@ bun run dev        # starts on :3000
 | `live-data-service/` | Standalone NSE Live Option Data Service (pure Python, port 8765) — spot/VIX/chain/PCR/FII feeds with read-time LIVE/STALE/CLOSED status; `live_data.json` + `/snapshot` + `/selector`; used by the option-buying-playbook skill (chain calls NSE `option-chain-v3`, not the retired `option-chain-indices`) |
 | `src/components/backtest/BacktestDashboard.tsx` | Backtest tab — polls `:4001` for verification stats + trade ledger |
 | `src/lib/trade-audit-client.ts` | Client lib for the audit engine (record/price/close/stats/trades) |
-| `src/lib/audit-recorders.ts` | Records Terminal-tab Zero Hero + Smart Money candidates into the audit engine |
+| `src/lib/audit-recorders.ts` | Records Terminal-tab Smart Money candidates into the audit engine |
 | `src/lib/fii-dii.ts` | FII/DII data scraper — NSE India primary + MrChartist 60-day history |
 | `src/app/api/fii-dii/route.ts` | FII/DII API endpoint — latest + 30-day history |
 | `src/lib/technical-analysis.ts` | Detection engines (breakout, pullback, momentum, breakdown, reversal), OI classification, trade scoring |
@@ -170,8 +170,9 @@ cd trade-audit && ./start.sh        # starts Node + ts-node-dev engine on port 4
 
 ### Recorded strategies
 - `BTST` — from the daily BTST scan (`src/lib/btst-scanner.ts`); cron squares off next-day.
-- `ZERO_HERO_AI` / `SMC` — from the Terminal tab's **Zero Hero** / **Smart Money** scanners
-  (`src/components/terminal/ZeroHeroTerminal.tsx`); live premium fed as tracking ticks.
+- `SMC` — from the Terminal tab's **Smart Money** scanner
+  (`src/components/terminal/TerminalTab.tsx`); live premium fed as tracking ticks.
+  (The retired `ZERO_HERO_AI` rows stay in the ledger as history — the strategy is gone.)
 - Any strategy can record via `recordSignal()` (`src/lib/trade-audit-client.ts`).
 
 ### Hermes Pro Agent Architecture
@@ -264,7 +265,7 @@ Session Health: `check_session_tokens` (live probes of breeze/mo/nse + recorded 
 ```
 OLD BRAIN (generates)          VETO (fast, local only)              CANDIDATE LOG (Prisma)
 SMART_MONEY / scanners  ──▶  signal-veto.ts  ──▶ Telegram alert   candidate_log: every candidate
-Zero Hero / BTST / SDM        (O(1): cached tech + cached            sent / blocked / paper,
+Smart Money / BTST / SDM      (O(1): cached tech + cached            sent / blocked / paper,
                               calibration — no network)              tier, warnings, config_hash
 AGENT CHAT ──▶ agent-brain ──▶ evaluate_trade_gate (strict) ──▶ same funnel
 ```
@@ -362,7 +363,7 @@ and `agent-brain.ts` hardcoded lot sizes (NIFTY 75) that contradicted the NSE
 bhavcopy and `symbol-config.ts` (NIFTY 65) — it now imports `SYMBOL_CONFIGS`.
 
 ### Hybrid Brain — old brain generates, new brain vetoes (2026-10-19)
-The old brain (SMART_MONEY / scanners / Zero Hero / BTST) remains the **signal generator**; the new deterministic brain is a **veto overlay only** — it never creates signals, so it cannot reproduce the "zero TRADE verdicts" failure mode (gate needed 3-of-5 layers with flow + greeksVix always unknown).
+The old brain (SMART_MONEY / scanners / BTST) remains the **signal generator**; the new deterministic brain is a **veto overlay only** — it never creates signals, so it cannot reproduce the "zero TRADE verdicts" failure mode (gate needed 3-of-5 layers with flow + greeksVix always unknown).
 
 `src/lib/signal-veto.ts` → `evaluateSignalVeto()` — wired into `sendTradeAlert` (telegram.ts), the central alert funnel (agent-brain, scanners, jarvis-adapters, api/telegram all flow through it).
 
@@ -505,7 +506,9 @@ Auditing/duplicating code BEFORE understanding the existing codebase is forbidde
 - **Phase 7 — Testing**: Run `bun test` + `bun run build`. Verify compilation, imports, dashboard, the affected feature, audit recording, API responses, backtest, and agent chat. Every existing feature must keep working.
 - **Phase 8 — Cleanup**: Only AFTER every test passes, remove the deprecated duplicate files.
 
-Production path of record for Zero Hero: `ZeroHeroTerminal.tsx` → `zhCandidates` → `FullZeroHero` → Trade Audit (`registerTrades("ZERO_HERO_AI", …)`). Everything Zero-Hero must integrate into this path.
+Production path of record for the Terminal tab: `TerminalTab.tsx` → `SmartMoneyTab` → `registerTrades("SMC", …)` → Trade Audit. Everything Terminal-tab must integrate into this path.
+
+**Removed 2026-11-23**: the **Zero Hero** tab and the **Expiry Plan** tab are gone, together with their engines (`zero-hero.ts`, `zero-hero-ai/`, `expiry-engine.ts`, `ExpiryPlanPanel.tsx`, `ZeroHeroLiveTerminal.tsx`, `zh-terminal/`). The shared machinery they touched was renamed scoring-neutral, not deleted: `HERO_ZERO` → `EXPIRY_LOW_PREMIUM` (unified scoring), `heroZero` → `lowPremium` (Options Edge filter), `"zero_hero"` → `"low_premium"` (strike-expiry risk), `expiry_mode: "ZERO_HERO"` → `"EXPIRY_NEAR"`. The `ZERO_HERO` Hermes intent folded into `LIVE_TRADE` (the expiry-day patterns moved there) and the `ZERO_HERO` research agent was retired (29 agents remain). Historical `ZERO_HERO_AI` ledger rows and the alias map are kept so old trades still resolve.
 
 ## API Endpoints — Complete List
 

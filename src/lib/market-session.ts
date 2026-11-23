@@ -74,7 +74,7 @@ function withMarketOpen(info: Omit<SessionInfo, 'isMarketOpen'>): SessionInfo {
 // Measured on the ledger (see tests/market-session-late-option-gate.test.ts):
 //   after  13:00 IST — n=119, WR 16.0%, net −₹719,751, avgR −1.730
 //   option-chain-api after 13:00 — n=52, 0 wins, avgR −2.774
-//   ZERO_HERO_AI after 13:00    — n=42, WR 23.8%, avgR −1.195
+//   legacy ZH after 13:00       — n=42, WR 23.8%, avgR −1.195
 // New option-premium BUY entries are refused from 13:00 IST to the close.
 export const LATE_OPTION_BUY_CUTOFF_IST_MINUTES = 780; // 13:00 IST
 

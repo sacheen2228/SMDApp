@@ -30,7 +30,7 @@ import { getCurrentSession } from "@/lib/market-session";
 
 // ── Types ──
 export type TradeDecision = "TRADE" | "WATCH" | "NO_TRADE";
-export type InstrumentType = "EQUITY" | "CALL" | "PUT" | "FUTURES" | "STRADDLE" | "STRANGLE" | "CAS" | "HERO_ZERO";
+export type InstrumentType = "EQUITY" | "CALL" | "PUT" | "FUTURES" | "STRADDLE" | "STRANGLE" | "CAS" | "EXPIRY_LOW_PREMIUM";
 
 /**
  * Dedupe per (symbol, instrument-kind): an option setup is never erased by a
@@ -43,7 +43,7 @@ export function dedupeOpportunities(
   opps: ChallengeOpportunity[]
 ): ChallengeOpportunity[] {
   const OPTION_INSTRUMENTS = new Set<InstrumentType>([
-    "CALL", "PUT", "STRADDLE", "STRANGLE", "CAS", "HERO_ZERO",
+    "CALL", "PUT", "STRADDLE", "STRANGLE", "CAS", "EXPIRY_LOW_PREMIUM",
   ]);
   const map = new Map<string, ChallengeOpportunity>();
   for (const opp of opps) {
@@ -361,7 +361,7 @@ export interface ChallengeScanResult {
     stockFOCandidates: number;
     equitySwingCandidates: number;
     casSignals: number;
-    heroZeroCandidates: number;
+    lowPremiumCandidates: number;
     totalSetups: number;
     /** Option setups excluded from the top list — lot cost / risk sizing failed */
     unfitOptions: number;
@@ -856,7 +856,7 @@ export async function runChallengeScan(
       stockFOCandidates,
       equitySwingCandidates,
       casSignals: 0,
-      heroZeroCandidates: 0,
+      lowPremiumCandidates: 0,
       totalSetups: allOpportunities.length,
       unfitOptions: unfitCount,
       dataSource,

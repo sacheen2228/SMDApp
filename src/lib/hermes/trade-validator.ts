@@ -124,7 +124,7 @@ function checkValidExpiry(ctx: HermesContext): ValidationResult {
     return { step: "VALID_EXPIRY", passed: false, reason: "Expiry already passed", severity: "CRITICAL" };
   }
   if (chain.daysToExpiry === 0) {
-    return { step: "VALID_EXPIRY", passed: true, reason: "Expiry day — Zero Hero eligible", severity: "WARNING" };
+    return { step: "VALID_EXPIRY", passed: true, reason: "Expiry day — expiry-day trades eligible", severity: "WARNING" };
   }
   return { step: "VALID_EXPIRY", passed: true, reason: `Expiry: ${chain.expiry} (${chain.daysToExpiry} days)`, severity: "CRITICAL" };
 }

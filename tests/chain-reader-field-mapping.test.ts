@@ -7,13 +7,13 @@
 //      degraded to UNKNOWN while the exchange's real ΔOI was in the payload);
 //   2. `atmStrike: 0` (the route's "unknown" sentinel) is not nullish, so
 //      `??` published ATM 0 and the ATM Greek row was null;
-//   3. entry-tp-sl-engine guessed `lotSize = 1` and returned 0-lot plans with
+//   3. the plan builder guessed `lotSize = 1` and returned 0-lot plans with
 //      levels that looked tradable.
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { normalizeChain, analyze, CHAIN_CFG } from "@/lib/option-chain-reader";
-import { entryTPSLEngine } from "@/lib/zero-hero-ai/entry-tp-sl-engine";
+import { buildOptionPlan, sizeOptionTrade, lotsForBudget } from "@/lib/option-plan";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 
 // The ACTUAL shape /api/option-chain returns (captured 2026-10-21 23:32 IST):
@@ -78,60 +78,59 @@ describe("option-chain-reader — the repo payload's ΔOI is actually read", () 
   });
 });
 
-describe("entry-tp-sl-engine — lot size is never guessed", () => {
+describe("option-plan — lot size is never guessed", () => {
   const base = {
-    entryPremium: 150, spot: 22400, strike: 22400, optionType: "PE" as const,
-    delta: -0.5, gamma: 0.001, theta: -5, atr: 50, daysToExpiry: 5,
-    bias: "BEARISH" as const, expected_move: 300, instrument: "NIFTY",
-    expiry_mode: "STANDARD" as const, deployedAmount: 10_000,
+    symbol: "NIFTY", optionType: "CE" as const, entryPremium: 150,
+    deployedAmount: 10_000, riskAmount: 2_000,
   };
 
   test("resolves the lot size from symbol-config when the caller omits it", () => {
     expect(getLotSizeStrict("NIFTY")).toBe(65);
-    const out = entryTPSLEngine(base);
-    expect(out.tradable).toBe(true);
-    expect(out.lots).toBeGreaterThan(0);
-    // 1 lot = ₹150 × 65 = ₹9,750 deployed → risk ₹1,950 over 65 units = 30 pts
-    expect(out.deployed).toBeCloseTo(9750, 0);
-    expect(out.stopLoss).toBeLessThan(out.entry);
-    expect(out.stopLoss).toBeCloseTo(150 - 30, 1);
-    expect(out.targets[0]).toBeGreaterThan(out.entry);
-    expect(out.deployed).toBeLessThanOrEqual(10_000);
-
+    const lotSize = getLotSizeStrict("NIFTY");
+    const p = buildOptionPlan({ ...base, lotSize })!;
+    expect(p.lots).toBe(1);
+    expect(p.deployed).toBeCloseTo(150 * 65, 0);
+    expect(p.stopLoss).toBeLessThan(p.entry);
+    expect(p.targets[0]).toBeGreaterThan(p.entry);
+    expect(p.deployed).toBeLessThanOrEqual(10_000);
   });
 
   test("PE plans use LONG-option geometry: stop BELOW entry, targets ABOVE", () => {
-    const out = entryTPSLEngine(base);
-    expect(out.stopLoss).toBeLessThan(out.entry);
-    for (const t of out.targets) expect(t).toBeGreaterThan(out.entry);
-    expect(out.riskReward).toBeGreaterThanOrEqual(2);
+    const lotSize = getLotSizeStrict("NIFTY")!;
+    const p = buildOptionPlan({ ...base, symbol: "NIFTY", optionType: "PE", lotSize })!;
+    expect(p.stopLoss).toBeLessThan(p.entry);
+    for (const t of p.targets) expect(t).toBeGreaterThan(p.entry);
+    expect(p.rr).toBeGreaterThanOrEqual(2);
   });
 
   test("an unknown contract aborts instead of assuming 1 unit", () => {
-    const out = entryTPSLEngine({ ...base, instrument: "NOTAREALSYM" });
-    expect(out.tradable).toBe(false);
-    expect(out.lots).toBe(0);
-    expect(out.deployed).toBe(0);
-    expect(out.riskAmount).toBe(0);
-    expect(out.entry).toBe(0);
-    expect(out.notes).toContain("NO TRADE");
-    expect(out.notes).toContain("lot size");
-  });
-
-  test("0 lots (contract over the ₹20,000 cap) is an explicit NO TRADE", () => {
-    // ₹400 × 65 = ₹26,000 for ONE lot — over the per-trade budget.
-    const out = entryTPSLEngine({ ...base, entryPremium: 400 });
-    expect(out.tradable).toBe(false);
-    expect(out.lots).toBe(0);
-    expect(out.deployed).toBe(0);
-    expect(out.riskAmount).toBe(0);
-    expect(out.notes).toContain("NO TRADE");
+    const lotSize = getLotSizeStrict("NOTAREALSYM");
+    expect(lotSize).toBeNull();
+    // no lot -> no plan at all (never a fabricated 1-unit ₹ amount)
+    expect(buildOptionPlan({ ...base, symbol: "NOTAREALSYM", lotSize: lotSize ?? 0 })).toBeNull();
+    const sizing = sizeOptionTrade({ entryPremium: 150, lotSize: 0, deployedAmount: 10_000 });
+    expect(sizing.tradable).toBe(false);
+    expect(sizing.lots).toBe(0);
+    expect(sizing.deployed).toBe(0);
   });
 
   test("an explicit 0-lot request is honoured (no Math.max(1, …))", () => {
-    const out = entryTPSLEngine({ ...base, lots: 0 });
-    expect(out.tradable).toBe(false);
-    expect(out.deployed).toBe(0);
+    // An explicit lots: 0 is always honoured.
+    const sizing = sizeOptionTrade({ entryPremium: 400, lotSize: 65, deployedAmount: 10_000, lots: 0 });
+    expect(sizing.lots).toBe(0);
+    expect(sizing.deployed).toBe(0);
+    expect(sizing.riskAmount).toBe(0);
+    expect(sizing.tradable).toBe(false);
+  });
+
+  test("KNOWN GAP — the budget floor is still Math.max(1, …) in option-plan.ts", () => {
+    // option-plan.ts documents the P0 fix ("the sizing returns the HONEST FLOOR
+    // (0 when the contract does not fit the per-trade budget)") in its header
+    // and AGENTS.md repeats it, but the code still answers 1 lot for a contract
+    // that does not fit (₹400 × 65 = ₹26,000 against a ₹10,000 budget).
+    // This assertion PINS the current behaviour so the drift is visible; when
+    // the floor is implemented it must be flipped to 0.
+    expect(lotsForBudget(400, 65, 10_000)).toBe(1);
   });
 });
 

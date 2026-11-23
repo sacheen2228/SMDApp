@@ -15,9 +15,8 @@ import { InstitutionalGreeksPanel } from "@/components/terminal/InstitutionalGre
 import GreekFlowHeatmap from "@/components/terminal/GreekFlowHeatmap";
 import EnhancedOptionChain from "@/components/terminal/EnhancedOptionChain";
 import { getInstrument } from "@/stores/useTerminalStore";
-import { isFNO, getExpiryTypeForDate, getStandardizedExpiry, NSE_HOLIDAYS } from "@/lib/expiry-calculator";
+import { getStandardizedExpiry, NSE_HOLIDAYS } from "@/lib/expiry-calculator";
 import { ALL_SYMBOLS } from "@/lib/stockUniverse";
-import { analyzeZeroHeroChain, evaluateZeroHeroCandidate } from "@/lib/zero-hero";
 import { scoreTrade, withCandleContext, type MarketDataInput, type StrategyProfile } from "@/lib/unified-scoring-engine";
 import { isFallingMarket } from "@/lib/technical-analysis";
 import { getLotSize } from "@/lib/symbol-config";
@@ -28,7 +27,7 @@ import ExpiryDayOptionSurvivalCalculator from "@/components/terminal/ExpiryDayOp
 
 /**
  * Register candidate trades through the unified /api/trade/register endpoint
- * so SMC / Zero Hero AI flow through the SAME lifecycle as server-side
+ * so SMC flow through the SAME lifecycle as server-side
  * strategies (active tracker + Prisma journal + Trade Audit engine). Idempotent
  * per deterministic tradeId, so re-scans are safe.
  */
@@ -67,7 +66,7 @@ async function registerTrades(
 
 /**
  * Record EVERY scanner cycle as a permanent AI-training row (M5).
- * Used by both Zero Hero (strategy="ZERO_HERO") and Smart Money (strategy="SMC").
+ * Used by the Smart Money path (strategy="SMC").
  * Includes BUY/SELL (eligible), REJECT (below confidence floor) and a single
  * NO_TRADE when no candidate is produced. snapshotId is resolved server-side
  * to the latest recorded market snapshot for the symbol.
@@ -164,24 +163,6 @@ interface ChainRow {
   pe: { oi: number; oiChg: number; vol: number; iv: number; delta: number; ltp: number; gamma: number; theta: number; vega: number } | null;
 }
 
-interface ZHCandidate {
-  rank: number;
-  strike: number;
-  type: "CE" | "PE";
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
-  rr: number;
-  prob: number;
-  conf: number;
-  stars: number;
-  daysToExpiry: number;
-  unifiedScore?: number;
-  unifiedGrade?: string;
-  hardGatesPassed?: boolean;
-}
-
 interface TradeRec {
   action: string;
   strike: number;
@@ -223,14 +204,6 @@ function MoneyTag({ strike, atmStrike, side }: { strike: number; atmStrike: numb
   return strike > atmStrike
     ? <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-bold">ITM</span>
     : <span className="text-[9px] px-1 py-0.5 rounded bg-zinc-500/15 text-zinc-500 font-bold">OTM</span>;
-}
-
-function StarRating({ count }: { count: number }) {
-  return (
-    <span className="text-amber-400 text-[11px] tracking-tight">
-      {"★".repeat(count)}{"☆".repeat(Math.max(0, 5 - count))}
-    </span>
-  );
 }
 
 // ─── Institutional Derivatives Engine Tab (NIFTY / SENSEX only) ──────────
@@ -622,7 +595,7 @@ function TodaysTradeView() {
 // ─── CAS Straddle / Strangle Tab (Live + Backtest) ───────────────
 
 // ─── Main Component ────────────────────────────────────────────────
-export function ZeroHeroTerminal() {
+export function TerminalTab() {
   const { symbol, expiry, setSymbol, setExpiry } = useTerminalStore();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [instDropdown, setInstDropdown] = useState(false);
@@ -697,7 +670,6 @@ export function ZeroHeroTerminal() {
 
   const inst = getInstrument(symbol);
   const lotSize = inst?.lotSize || 65;
-  const isEligible = isFNO(symbol); // All F&O indices + F&O equity stocks eligible for Zero Hero
 
   // ─── Fetch option chain ──────────────────────────────────────────
   const fetchChain = useCallback(async (gen: number) => {
@@ -877,83 +849,6 @@ export function ZeroHeroTerminal() {
     return { indices: filter(INDEX_INSTRUMENTS), equity: filter(EQUITY_INSTRUMENTS) };
   }, [instSearch]);
 
-  // ─── Zero Hero candidates ────────────────────────────────────────
-  const zhCandidates = useMemo(() => {
-    if (!isEligible) return [];
-    // SAFETY: Zero Hero is ONLY allowed on expiry day
-    if (!getExpiryTypeForDate(symbol)) return []; // Not expiry day — no Zero Hero trades
-    // Session gate — audit-validated Oct 2026 (July book): ZERO_HERO in
-    // MIDDAY/CLOSING/POST_CLOSE = 15.8% WR, −₹184K; all other sessions =
-    // 43.4% WR, +₹34K. Never generate candidates in the toxic windows.
-    const istNow = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-    const istMins = istNow.getHours() * 60 + istNow.getMinutes();
-    const toxicSession = (istMins >= 720 && istMins < 780) || istMins >= 900; // 12:00-13:00, 15:00+
-    if (toxicSession) return [];
-    const threshold = spot * 0.02;
-    const nearStrikes = chain.filter((s) => Math.abs(s.strike - spot) <= threshold);
-    // Chain-wide context computed ONCE (reuses sdm-oianalysis, gamma-blast, expiry-calculator)
-    const ctx = analyzeZeroHeroChain(chain, spot, vix || 14, symbol);
-    const lotSize = getInstrument(symbol)?.lotSize || 75;
-    const list: ZHCandidate[] = [];
-    for (const s of nearStrikes) {
-      for (const type of ["CE", "PE"] as const) {
-        const d = type === "CE" ? s.ce : s.pe;
-        if (!d || d.ltp <= 0) continue;
-        // Per-candidate evaluation via the consolidated engine
-        const r = evaluateZeroHeroCandidate({
-          strike: s.strike,
-          type,
-          ltp: d.ltp,
-          delta: d.delta || 0,
-          iv: d.iv || 15,
-          oiChg: d.oiChg || 0,
-          volume: d.vol || 0,
-          spot,
-          lotSize,
-          capital: 100000,
-          riskPerTradePercent: 2,
-          maxPositionSize: 10,
-          context: ctx,
-        });
-
-        // Unified scoring engine — HERO_ZERO profile
-        const optionChain = chain.map((row: any) => ({
-          strike: row.strike,
-          ce: row.ce ? { ltp: row.ce.ltp, oi: row.ce.oi, oiChg: row.ce.oiChg, volume: row.ce.vol, iv: row.iv || 15, delta: row.ce.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
-          pe: row.pe ? { ltp: row.pe.ltp, oi: row.pe.oi, oiChg: row.pe.oiChg, volume: row.pe.vol, iv: row.iv || 15, delta: row.pe.delta || 0, theta: 0, gamma: 0, vega: 0 } : null,
-        }));
-        const unifiedDecision = scoreTrade(withCandleContext({
-          symbol,
-          strategy: "HERO_ZERO",
-          direction: type === "CE" ? "BULLISH" : "BEARISH",
-          spot,
-          optionChain,
-          pcr: ctx.oiAnalysis?.pcr || undefined,
-          maxPain: ctx.oiAnalysis?.maxPain || undefined,
-          vix: vix || undefined,
-          lotSize,
-          entryPrice: d.ltp,
-          stopLoss: r.sl,
-          target1: r.tp1,
-          target2: r.tp2,
-          historicalWinRate: 0.65,
-          historicalRR: r.rr,
-        }, candles));
-
-        list.push({
-          rank: 0, strike: s.strike, type, entry: d.ltp, sl: r.sl, tp1: r.tp1, tp2: r.tp2,
-          rr: r.rr, prob: r.prob, conf: r.conf, stars: r.stars,
-          daysToExpiry: ctx.expiry?.days_to_expiry ?? 1,
-          unifiedScore: unifiedDecision.score,
-          unifiedGrade: unifiedDecision.grade,
-          hardGatesPassed: unifiedDecision.hardGateStatus.passed,
-        });
-      }
-    }
-    list.sort((a, b) => b.conf - a.conf);
-    return list.slice(0, 10).map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [chain, spot, isEligible, vix, symbol, candles]);
-
   // ─── FII/DII flow from OI ───────────────────────────────────────
   const flowData = useMemo(() => {
     let totalCallOIChg = 0, totalPutOIChg = 0, totalCallVol = 0, totalPutVol = 0;
@@ -1127,7 +1022,7 @@ export function ZeroHeroTerminal() {
           {activeTab === "overview" && (
             <OverviewTab
               chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain}
-              flowData={flowData} zhCandidates={zhCandidates} isEligible={isEligible}
+              flowData={flowData}
               lotSize={lotSize} symbol={symbol} expiryType={expiryType}
               openTrade={openTrade} loading={loading} error={error} errorMsg={errorMsg}
               notAvailable={notAvailable} rec={rec}
@@ -1193,14 +1088,14 @@ export function ZeroHeroTerminal() {
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Overview Tab ──────────────────────────────────────────────────
-function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, isEligible, lotSize, symbol, expiryType, openTrade, loading, error, errorMsg, notAvailable, rec }: any) {
+function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, lotSize, symbol, expiryType, openTrade, loading, error, errorMsg, notAvailable, rec }: any) {
   if (loading) return <div className="text-[#7d8ba0] text-center py-10">Loading option chain data...</div>;
   if (error) return <div className="text-[#f2495c] text-center py-10"><div className="mb-2">Failed to load data</div>{errorMsg && <div className="text-[11px] text-[#7d8ba0] font-mono">{errorMsg}</div>}<div className="text-[11px] text-[#7d8ba0] mt-2">Retrying...</div></div>;
 
   return (
     <>
-      {/* Row 1: Chain + Zero Hero mini */}
-      <div className="grid grid-cols-[1.3fr_1fr_1fr] gap-3.5 items-start">
+      {/* Row 1: Live Option Chain */}
+      <div className="grid grid-cols-2 gap-3.5 items-start">
         <div className="col-span-2 bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
           <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
             <span>Live Option Chain <span className="text-[#7d8ba0] font-mono text-[11px] ml-1">{symbol} {fmt(spot)}</span></span>
@@ -1224,33 +1119,6 @@ function OverviewTab({ chain, spot, atmStrike, maxPain, flowData, zhCandidates, 
             ) : (
               <EnhancedOptionChain chain={chain} spot={spot} atmStrike={atmStrike} maxPain={maxPain} openTrade={openTrade} />
             )}
-          </div>
-        </div>
-        <div className="bg-[#10151d] border border-[#1f2733] rounded-[10px] overflow-hidden">
-          <div className="px-3 py-2.5 border-b border-[#1f2733] flex items-center justify-between font-bold text-[13px]">
-            <span>🔥 Zero Hero Scanner</span>
-            <span className="text-[#7d8ba0] font-mono text-[11px]">{isEligible ? "Top 5" : "All stocks (BTST)"}</span>
-          </div>
-          <div className="p-2.5 overflow-y-auto" style={{ maxHeight: 420 }}>
-            {!isEligible ? (
-              <div className="text-[#7d8ba0] text-center py-8 text-[12.5px]">Zero Hero BTST scans all stocks. Switch to an F&O instrument for weekly/monthly expiry trades.</div>
-            ) : zhCandidates.slice(0, 5).map((z: ZHCandidate, idx: number) => (
-              <div key={idx} className="flex justify-between items-center py-1.5 border-b border-[#1f2733] font-mono text-[11.5px] cursor-pointer hover:bg-[#151b25] px-1"
-                onClick={() => openTrade(z.strike, z.type, z.entry, z.rr)}>
-                <span>{idx + 1}. {fmtInt(z.strike)} <span className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${z.type === "CE" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" : "bg-[rgba(242,73,92,.18)] text-[#f2495c]"}`}>{z.type}</span></span>
-                <span className="text-[#1fbf75]">₹{fmt(z.entry)}</span>
-                <span className={`px-1.5 py-0.5 rounded font-bold text-[10.5px] ${z.rr >= 3 ? "bg-[rgba(45,212,167,.18)] text-[#2dd4a7]" : z.rr >= 2 ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" : "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"}`}>1:{z.rr}</span>
-                {z.unifiedGrade && (
-                  <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${
-                    z.unifiedGrade === "A+" ? "bg-[rgba(212,175,55,.25)] text-[#d4af37]" :
-                    z.unifiedGrade === "A" ? "bg-[rgba(31,191,117,.18)] text-[#1fbf75]" :
-                    z.unifiedGrade === "B" ? "bg-[rgba(79,143,247,.18)] text-[#4f8ff7]" :
-                    "bg-[rgba(125,139,160,.2)] text-[#7d8ba0]"
-                  }`} title={`Unified Score: ${z.unifiedScore}/100`}>{z.unifiedGrade}</span>
-                )}
-                <StarRating count={z.stars} />
-              </div>
-            ))}
           </div>
         </div>
       </div>
@@ -1351,7 +1219,6 @@ function FullOptionChain({ chain, spot, atmStrike, openTrade }: any) {
   );
 }
 
-// ─── Full Zero Hero ────────────────────────────────────────────────
 // ─── FII Flow Panel ────────────────────────────────────────────────
 function FIIFlowPanel({ flowData }: { flowData: any }) {
   const { totalCallOIChg, totalPutOIChg, bias, strength } = flowData;
@@ -2092,7 +1959,7 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
     gstPct,
     sebiPct,
     stampDutyPct,
-    zeroHeroPremiumThreshold,
+    lowPremiumThreshold,
   } = inputs;
 
   // Validation — reject negatives, T <= 0, IV <= 0 with friendly messages
@@ -2179,13 +2046,13 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   // vega per 1% IV change, per lot: S * n(d1) * sqrt(T) * 0.01 * lotSize
   const vegaPerLotPer1pct = spot * nD1pdf * sqrtT * 0.01 * lotSize;
 
-  // Zero-Hero flag: OTM AND premium < user threshold (default 10) AND distance > 1 SD
-  const premiumThreshold = zeroHeroPremiumThreshold != null && zeroHeroPremiumThreshold > 0 ? zeroHeroPremiumThreshold : 10;
+  // Low-premium flag: OTM AND premium < user threshold (default 10) AND distance > 1 SD
+  const premiumThreshold = lowPremiumThreshold != null && lowPremiumThreshold > 0 ? lowPremiumThreshold : 10;
   const otm = isCall ? spot < strike : spot > strike;
   const requiredMove = Math.abs(strike - spot);
   const oneStdDev = expectedMove;
-  const zeroHeroFlag = otm && entryPremium < premiumThreshold && requiredMove > oneStdDev;
-  const zeroHeroReason = zeroHeroFlag
+  const lowPremiumFlag = otm && entryPremium < premiumThreshold && requiredMove > oneStdDev;
+  const lowPremiumReason = lowPremiumFlag
     ? `OTM premium (₹${entryPremium.toFixed(2)}) below ₹${premiumThreshold.toFixed(0)} threshold and required move (${requiredMove.toFixed(0)} pts) exceeds 1 SD expected move (${oneStdDev.toFixed(0)} pts)`
     : "";
 
@@ -2284,12 +2151,12 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   const costTrapWarning = grossProfit > 0 && totalCharges > grossProfit * 0.10;
   const sttWipesProfit = expiryValue > 0 && holdPnL > 0 && sttOnIntrinsicPerUnit * quantity > holdPnL * 0.5;
 
-  // Risk meter: based on Zero-Hero conditions + expected value + ITM probability
+  // Risk meter: based on low-premium conditions + expected value + ITM probability
   let riskMeter: "Low" | "Medium" | "High" | "Extreme" = "Low";
   const reasons: string[] = [];
-  if (zeroHeroFlag) {
+  if (lowPremiumFlag) {
     riskMeter = "Extreme";
-    reasons.push("Zero-Hero: OTM, low premium, move > 1 SD");
+    reasons.push("Low premium: OTM, cheap premium, move > 1 SD");
   } else if (expectedValuePerUnit < -entryPremium * 0.5 || probProfit < 30) {
     riskMeter = "Extreme";
     reasons.push("Deep negative expected value or low profit probability");
@@ -2355,8 +2222,8 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
     thetaPerUnitPerDay,
     thetaPerLotPerDay,
     vegaPerLotPer1pct,
-    zeroHeroFlag,
-    zeroHeroReason,
+    lowPremiumFlag,
+    lowPremiumReason,
     maxLossBuyer,
     maxLossSeller,
     maxLossSellerValue,
@@ -2382,7 +2249,7 @@ function calculate(inputs: ExpCalcInputs): ExpCalcResult {
   };
 }
 
-// ─── Expiry-Day Option Survival / Zero-Hero Risk Calculator ─────────────────────
+// ─── Expiry-Day Option Survival / Low-Premium Risk Calculator ─────────────────────
 // Self-contained calculator for NSE index options (cash-settled, European-style).
 // All math is deterministic; no external dependencies.
 
@@ -2406,7 +2273,7 @@ interface ExpCalcInputs {
   gstPct: number;
   sebiPct: number;
   stampDutyPct: number;
-  zeroHeroPremiumThreshold?: number; // user-editable, default 10
+  lowPremiumThreshold?: number; // user-editable, default 10
 }
 
 interface ExpCalcResult {
@@ -2430,8 +2297,8 @@ interface ExpCalcResult {
   thetaPerUnitPerDay: number;
   thetaPerLotPerDay: number;
   vegaPerLotPer1pct: number;
-  zeroHeroFlag: boolean;
-  zeroHeroReason: string;
+  lowPremiumFlag: boolean;
+  lowPremiumReason: string;
   maxLossBuyer: number;
   maxLossSeller: string | number;
   maxLossSellerValue: number;
@@ -2558,7 +2425,7 @@ function ExpiryCalculator({
     gstPct: 18,
     sebiPct: 0.001,
     stampDutyPct: 0.002,
-    zeroHeroPremiumThreshold: 10,
+    lowPremiumThreshold: 10,
   });
   const [result, setResult] = useState<ExpCalcResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2753,7 +2620,7 @@ function ExpiryCalculator({
     inputs.gstPct,
     inputs.sebiPct,
     inputs.stampDutyPct,
-    inputs.zeroHeroPremiumThreshold,
+    inputs.lowPremiumThreshold,
   ]);
 
   if (error) {
@@ -2792,7 +2659,7 @@ function ExpiryCalculator({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Target className="h-4 w-4 text-violet-500" />
-          <span className="font-bold text-sm">Expiry-Day Option Survival / Zero-Hero Calculator</span>
+          <span className="font-bold text-sm">Expiry-Day Option Survival / Low-Premium Calculator</span>
         </div>
         <Badge variant="outline" className="text-[9px] px-2 py-1">
           {inputs.settlementMode === "final" ? "FINAL SETTLEMENT" : "PROVISIONAL SETTLEMENT"}
@@ -2816,7 +2683,7 @@ function ExpiryCalculator({
         <InputRow label="Lot Size" type="number" value={inputs.lotSize} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lotSize: Number(v) }))} />
         <InputRow label="Spot Price" type="number" value={inputs.spot} step={0.05} onChange={(v) => { spotTouchedRef.current = true; setInputs((prev) => ({ ...prev, spot: Number(v) })); }} />
         <InputRow label="IV / VIX (%)" type="number" value={inputs.iv} step={0.1} onChange={(v) => { ivTouchedRef.current = true; setInputs((prev) => ({ ...prev, iv: Number(v) })); }} />
-        <InputRow label="Zero-Hero Premium Threshold (₹)" type="number" value={inputs.zeroHeroPremiumThreshold ?? 10} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, zeroHeroPremiumThreshold: Number(v) }))} />
+        <InputRow label="Low Premium Threshold (₹)" type="number" value={inputs.lowPremiumThreshold ?? 10} step={1} onChange={(v) => setInputs((prev) => ({ ...prev, lowPremiumThreshold: Number(v) }))} />
         <InputRow label="Hours to Expiry" type="number" value={inputs.timeHours} step={0.5} onChange={(v) => setInputs((prev) => ({ ...prev, timeHours: Number(v) }))} />
         <InputRow label="Settlement Price" type="number" value={inputs.settlementPrice ?? ""} step={0.05} onChange={(v) => setInputs((prev) => ({ ...prev, settlementPrice: v === "" ? undefined : Number(v) }))} />
         <InputRow label="Settlement Mode" type="select" value={inputs.settlementMode} options={["provisional", "final"]} onChange={(v) => setInputs((prev) => ({ ...prev, settlementMode: v }))} />
@@ -2938,14 +2805,14 @@ function ExpiryCalculator({
         )}
       </div>
 
-      {/* Zero-Hero Flag */}
-      {result.zeroHeroFlag && (
+      {/* Low-Premium Flag */}
+      {result.lowPremiumFlag && (
         <div className="bg-orange-500/10 border border-orange-500/40 rounded p-2 mb-3">
           <div className="flex items-center gap-2 mb-1">
             <AlertTriangle className="h-4 w-4 text-orange-500" />
-            <span className="font-bold text-orange-500 text-xs">🚫 ZERO-HERO FLAG — NO TRADE</span>
+            <span className="font-bold text-orange-500 text-xs">🚫 LOW-PREMIUM FLAG — NO TRADE</span>
           </div>
-          <p className="text-[10px] text-orange-400">{result.zeroHeroReason}</p>
+          <p className="text-[10px] text-orange-400">{result.lowPremiumReason}</p>
         </div>
       )}
 

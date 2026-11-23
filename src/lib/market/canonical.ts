@@ -146,7 +146,7 @@ function toSDMOptionStrike(chain: OptionLeg[]): SDMOptionStrike[] {
 }
 
 // ─── SMC: FVG + Order Block ─────────────────────────────────────
-// Algorithm PORTED from src/lib/zero-hero-ai/smart-money-engine.ts (DEPRECATED).
+// Algorithm PORTED from the retired smart-money-engine.ts (was src/lib/zero-hero-ai/).
 // Reused here as the production implementation per the Architecture Guardian
 // (no import of the deprecated module) and validation requirement #2 — it is
 // the only FVG/Order-Block logic in the repository.

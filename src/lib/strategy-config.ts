@@ -8,8 +8,6 @@
 export interface ConfidenceConfig {
   /** Minimum confidence to trigger BUY_CALL or BUY_PUT (0-100) */
   entryThreshold: number;
-  /** Minimum confidence for 0DTE trades (higher than normal) */
-  zeroDteThreshold: number;
   /** Cancel recommendation if confidence drops below this */
   cancelThreshold: number;
   /** Weights for confidence scoring (must sum to 100) */
@@ -176,7 +174,6 @@ export interface StrategyConfig {
     entryConditions: boolean;
     riskEngine: boolean;
     confidenceEngine: boolean;
-    zeroDte: boolean;
     alerts: boolean;
   };
   /** Sub-configs */
@@ -206,12 +203,10 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
     entryConditions: true,
     riskEngine: true,
     confidenceEngine: true,
-    zeroDte: true,
     alerts: true,
   },
   confidence: {
     entryThreshold: 85,
-    zeroDteThreshold: 92,
     cancelThreshold: 70,
     weights: {
       trend: 20,

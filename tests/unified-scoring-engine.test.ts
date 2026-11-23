@@ -145,7 +145,7 @@ describe("Unified Scoring Engine — Acceptance Tests", () => {
 
   // TEST 5: All 5 strategy profiles produce valid scores
   it("all 5 profiles produce valid scores", () => {
-    const profiles: StrategyProfile[] = ["EQUITY_SWING", "FO", "OPTIONS", "CAS", "HERO_ZERO"];
+    const profiles: StrategyProfile[] = ["EQUITY_SWING", "FO", "OPTIONS", "CAS", "EXPIRY_LOW_PREMIUM"];
     for (const profile of profiles) {
       const input = makeInput({
         strategy: profile,
@@ -162,7 +162,7 @@ describe("Unified Scoring Engine — Acceptance Tests", () => {
 
   // TEST 6: Weight totals match profile definitions
   it("weight totals are consistent per profile", () => {
-    const profiles: StrategyProfile[] = ["EQUITY_SWING", "FO", "OPTIONS", "CAS", "HERO_ZERO"];
+    const profiles: StrategyProfile[] = ["EQUITY_SWING", "FO", "OPTIONS", "CAS", "EXPIRY_LOW_PREMIUM"];
     for (const profile of profiles) {
       const weights = getProfileWeights(profile);
       const total = getWeightTotal(weights);
@@ -262,7 +262,7 @@ describe("Unified Scoring Engine — Acceptance Tests", () => {
   // TEST 12: Hard gates block Hero-Zero in extreme VIX
   it("Hero-Zero hard gates FAIL when VIX > 30", () => {
     const input = makeInput({
-      strategy: "HERO_ZERO",
+      strategy: "EXPIRY_LOW_PREMIUM",
       vix: 35,
       optionChain: makeOptionChain(24500),
       pcr: 0.8,

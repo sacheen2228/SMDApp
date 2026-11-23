@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Agent System Tests — 30 agents, cross-confluence, Grok, engines, TP/SL
+// Agent System Tests — 29 agents, cross-confluence, Grok, engines, TP/SL
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach } from 'bun:test';
@@ -125,18 +125,18 @@ function mockAgentOutput(overrides?: Partial<AgentResearchOutput>): AgentResearc
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Agent Registry', () => {
-  it('has 30 agents registered', () => {
-    expect(getAgentCount()).toBe(30);
+  it('has 29 agents registered', () => {
+    expect(getAgentCount()).toBe(29);
   });
 
-  it('all 30 agents have valid IDs', () => {
+  it('all 29 agents have valid IDs', () => {
     const ids = getAllAgentIds();
-    expect(ids.length).toBe(30);
+    expect(ids.length).toBe(29);
     const expectedIds = [
       'MARKET_REGIME', 'FII_DII', 'GLOBAL_MARKET', 'INDIA_VIX',
       'MARKET_BREADTH', 'SECTOR_ROTATION', 'OI_PCR', 'OI_CLASSIFICATION',
       'GREEKS', 'GAMMA', 'IV_HV', 'OPTION_ACCELERATION',
-      'BUYER_CONFLUENCE', 'STRIKE_SELECTION', 'EXPIRY_THETA', 'ZERO_HERO',
+      'BUYER_CONFLUENCE', 'STRIKE_SELECTION', 'EXPIRY_THETA',
       'CAS', 'MARKET_STRUCTURE', 'SUPPORT_RESISTANCE', 'VWAP',
       'VOLUME', 'BREAKOUT', 'MTF_CONFIRMATION', 'MOMENTUM',
       'ATR', 'NEWS', 'EVENT_RISK', 'SENTIMENT', 'BTST', 'COMMODITY_MCX',
@@ -160,7 +160,7 @@ describe('Agent Registry', () => {
   it('all agents return valid schema', async () => {
     const ctx = mockContext();
     const outputs = await runAllAgents(ctx);
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
 
     for (const output of outputs) {
       expect(output.agentId).toBeTruthy();
@@ -200,7 +200,7 @@ describe('Agent Registry', () => {
       spot: 0,
     });
     const outputs = await runAllAgents(ctx);
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
 
     // Some agents should report NO_DATA or reduced confidence
     const vixAgent = outputs.find(o => o.agentId === 'INDIA_VIX');
@@ -214,7 +214,7 @@ describe('Agent Registry', () => {
       vix: 0,
     });
     const outputs = await runAllAgents(ctx);
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
 
     const oiAgent = outputs.find(o => o.agentId === 'OI_PCR');
     expect(oiAgent).toBeDefined();
@@ -226,7 +226,7 @@ describe('Agent Registry', () => {
     const ctx = mockContext();
     const outputs = await runAllAgents(ctx);
     // All agents should return valid output (some may be NO_DATA but not ERROR)
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
     for (const output of outputs) {
       expect(output.agentId).toBeTruthy();
       expect(output.observation).toBeTruthy();
@@ -686,6 +686,6 @@ describe('End-to-End Pipeline', () => {
     expect(grokDecision.symbol).toBe('NIFTY');
     expect(grokDecision.selectedEngine).toBeDefined();
     expect(grokDecision.direction).toBeDefined();
-    expect(grokDecision.evidenceQuality.totalAgents).toBe(30);
+    expect(grokDecision.evidenceQuality.totalAgents).toBe(29);
   });
 });

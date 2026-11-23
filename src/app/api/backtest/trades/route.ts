@@ -1,7 +1,7 @@
 // ─── Real Trade Backtest API ──────────────────────────────────────────
 // Backtests every recorded trade against real historical candles.
 // GET /api/backtest/trades
-//   ?strategyId=ZERO_HERO_AI  (filter by strategy)
+//   ?strategyId=SMART_MONEY  (filter by strategy)
 //   ?symbol=NIFTY             (filter by symbol)
 //   ?maxTrades=100            (limit trades to backtest, default 100;
 //                              pages through the sidecar past its 500 cap)

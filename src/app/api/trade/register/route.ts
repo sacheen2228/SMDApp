@@ -1,7 +1,7 @@
 // POST /api/trade/register
 //
 // Unified trade-registration endpoint. Client-side strategy scanners (SMC /
-// Smart Money, Zero Hero AI) post candidate trades here so they flow through
+// Smart Money) post candidate trades here so they flow through
 // the SAME lifecycle as server-side strategies: in-memory active tracking +
 // Prisma journal + Trade Audit (backtest verification) engine. This guarantees
 // every exit is synced everywhere (dashboard, audit, Prisma, Telegram, Agent).

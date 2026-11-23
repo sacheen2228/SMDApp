@@ -494,7 +494,7 @@ export function evaluateTradeGate(input: GateInput): GateResult {
     }
   }
 
-  // HYBRID MODE: the old brain (scanners / SDM / Zero Hero) generates candidates.
+  // HYBRID MODE: the old brain (scanners / SDM) generates candidates.
   // This gate then only vetoes on HARD safety failures (bad R:R, expiry-day, risk
   // budget, loss streak…). Soft signals — confidence below the floor, layer agreement
   // short of 3-of-5, unknown underlying R:R — become WARNINGS so a sound setup is

@@ -784,7 +784,7 @@ export async function GET(request: NextRequest) {
     // alerted. When called with ?live=true (the cron path), high-confidence
     // option trades are pushed through sendTradeAlert — the same centralized
     // funnel (veto + risk limits + full-day dedup + short-term throttle +
-    // calibrated confidence) used by SDM, agent and Zero-Hero alerts.
+    // calibrated confidence) used by SDM, agent and scanner alerts.
     let equityAlerts = 0;
     if (searchParams.get("live") === "true" && result.candidates) {
       const dataQualityOk = dataQuality === "LIVE";

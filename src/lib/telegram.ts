@@ -357,7 +357,7 @@ export async function sendTradeAlertInner(params: {
   }
 
   // DAY-LOSS + CONCURRENT-EXPOSURE GATE (2026-10-20).
-  // The scanner / Zero-Hero / master-bot / SDM paths all reach Telegram through
+  // The scanner / master-bot / SDM paths all reach Telegram through
   // this funnel, so this is where the loss caps and the consecutive-loss rule
   // are enforced for EVERY producer — the same caps the agent's trade gate uses.
   // FAIL CLOSED: an unreadable risk state blocks the signal.

@@ -232,7 +232,7 @@ export interface CEDirectionResult {
   reasoning: string[];
 }
 
-export interface HeroZeroFilter {
+export interface LowPremiumFilter {
   qualifies: boolean;
   reasons: string[];
   rejectionReasons: string[];
@@ -289,7 +289,7 @@ export interface TradeDecision {
   expiryMode: boolean;
   reasoning: string[];
   strikeComparison: StrikeComparison;
-  heroZero: HeroZeroFilter;
+  lowPremium: LowPremiumFilter;
   straddleAnalysis: StraddleStrangleAnalysis | null;
 }
 
@@ -300,7 +300,7 @@ export interface DynamicOptionsResult {
   strikeAnalyses: DynamicStrikeAnalysis[];
   strikeComparison: StrikeComparison;
   directionResult: CEDirectionResult;
-  heroZero: HeroZeroFilter;
+  lowPremium: LowPremiumFilter;
   straddleAnalysis: StraddleStrangleAnalysis | null;
   tradeDecision: TradeDecision;
   premiumMeltAlert: PremiumMeltAlert | null;
@@ -633,9 +633,9 @@ function analyzeStraddleStrangle(
   };
 }
 
-// ─── 8. Hero-Zero Filter ──────────────────────────────────────────────
+// ─── 8. Low-Premium Filter ──────────────────────────────────────────────
 
-function evaluateHeroZero(
+function evaluateLowPremium(
   strike: number,
   spot: number,
   optionType: 'CE' | 'PE',
@@ -651,7 +651,7 @@ function evaluateHeroZero(
   vix: number,
   trend: 'bullish' | 'bearish' | 'neutral',
   isExpiry: boolean
-): HeroZeroFilter {
+): LowPremiumFilter {
   const reasons: string[] = [];
   const rejectionReasons: string[] = [];
 
@@ -903,7 +903,7 @@ function computeOptionsEdgeScore(
   vega: number,
   iv: number,
   meltScore: number,
-  heroZero: HeroZeroFilter,
+  lowPremium: LowPremiumFilter,
   momentumStrength: number,
   volume: number,
   oi: number,
@@ -928,7 +928,7 @@ function computeOptionsEdgeScore(
   else if (meltScore < 50) score += 5;
   else if (meltScore > 70) score -= 10;
 
-  if (heroZero.reasons.length > heroZero.rejectionReasons.length) score += 5;
+  if (lowPremium.reasons.length > lowPremium.rejectionReasons.length) score += 5;
 
   if (momentumStrength > 60) score += 5;
 
@@ -1137,7 +1137,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     const breakevenMove = leg.ltp + charges / lotSize + slippage / lotSize;
     const edgeScore = computeOptionsEdgeScore(
       leg.delta, leg.gamma, leg.theta, leg.vega, leg.iv,
-      leg.premiumMeltScore.score, evaluateHeroZero(analysis.strike, spot, optionType, leg.delta, leg.gamma, leg.iv, leg.volume, leg.oi, leg.oiChg, leg.ltp, leg.ltp, leg.ltp, vix, trend, expiryMode),
+      leg.premiumMeltScore.score, evaluateLowPremium(analysis.strike, spot, optionType, leg.delta, leg.gamma, leg.iv, leg.volume, leg.oi, leg.oiChg, leg.ltp, leg.ltp, leg.ltp, vix, trend, expiryMode),
       trend === 'neutral' ? 20 : ((optionType === 'CE' && trend === 'bullish') || (optionType === 'PE' && trend === 'bearish')) ? 80 : 10,
       leg.volume, leg.oi, leg.spread, expectedMove, leg.ltp, daysToExpiry, leg.ivState.state
     );
@@ -1193,8 +1193,8 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     trend, directionResult.recommendedDirection, pcr, spot, atmStrike
   );
 
-  const heroZeroAnalysis = otmCandidate
-    ? evaluateHeroZero(otmCandidate.strike, spot, 'CE', otmCandidate.delta, otmCandidate.gamma, otmCandidate.iv, otmCandidate.premium, otmCandidate.premium, 0, otmCandidate.premium, otmCandidate.premium, otmCandidate.premium, vix, trend, expiryMode)
+  const lowPremiumAnalysis = otmCandidate
+    ? evaluateLowPremium(otmCandidate.strike, spot, 'CE', otmCandidate.delta, otmCandidate.gamma, otmCandidate.iv, otmCandidate.premium, otmCandidate.premium, 0, otmCandidate.premium, otmCandidate.premium, otmCandidate.premium, vix, trend, expiryMode)
     : { qualifies: false, reasons: [], rejectionReasons: ['No OTM candidate'], momentumStrength: 0, gammaStrength: 0, deltaAdequacy: false, volumeConfirmation: false, oiConfirmation: false, ivConfirmation: false, liquidityOk: false, spreadOk: false };
 
   const straddleAnalysis = analyzeStraddleStrangle(symbol, spot, strikesToProcess, currentATM, expectedMove, lotSize, vix);
@@ -1266,7 +1266,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
   if (trend !== 'neutral') reasoning.push(`Market trend: ${trend}`);
   if (directionResult.recommendedDirection !== 'NO_TRADE') reasoning.push(`Direction: ${directionResult.recommendedDirection}`);
   reasoning.push(`Best edge: ${bestEdge}/100 at ${bestStrike} ${bestType}`);
-  if (heroZeroAnalysis.qualifies) reasoning.push('Hero-Zero qualifies');
+  if (lowPremiumAnalysis.qualifies) reasoning.push('Low-premium setup qualifies');
   reasoning.push(...directionResult.reasoning);
   if (actionReasons.length > 0) reasoning.push(`Block reasons: ${actionReasons.join('; ')}`);
 
@@ -1313,7 +1313,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     expiryMode,
     reasoning,
     strikeComparison,
-    heroZero: heroZeroAnalysis,
+    lowPremium: lowPremiumAnalysis,
     straddleAnalysis,
   };
 
@@ -1324,7 +1324,7 @@ export function runDynamicOptionsEngine(input: DynamicOptionsInput): DynamicOpti
     strikeAnalyses,
     strikeComparison,
     directionResult,
-    heroZero: heroZeroAnalysis,
+    lowPremium: lowPremiumAnalysis,
     straddleAnalysis,
     tradeDecision,
     premiumMeltAlert,

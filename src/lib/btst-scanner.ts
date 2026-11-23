@@ -410,7 +410,7 @@ const istYmd = (when = new Date()): string =>
  * Record the BTST scanner cycle as a permanent AI-training row (M5).
  * Every daily scan is recorded with strategy "BTST" (BUY for graded
  * bullish next-day ideas, NO_TRADE when none). Reuses recordScannerResult
- * (the same build+send helper Zero Hero / SMC use) so the payload shape
+ * (the same build+send helper the SMC path uses) so the payload shape
  * is identical. Fire-and-forget: failures never break the scan itself.
  */
 export async function recordBTSTScannerResults(candidates: BTSTAnalysis[]): Promise<void> {

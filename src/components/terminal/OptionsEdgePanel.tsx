@@ -132,7 +132,7 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
 
   if (!data) return null;
 
-  const { tradeDecision: td, strikeComparison: sc, strikeAnalyses: sa, directionResult: dr, heroZero: hz, straddleAnalysis: str, premiumMeltAlert: pma, gammaAlert: ga, expiryMode: em } = data;
+  const { tradeDecision: td, strikeComparison: sc, strikeAnalyses: sa, directionResult: dr, lowPremium: hz, straddleAnalysis: str, premiumMeltAlert: pma, gammaAlert: ga, expiryMode: em } = data;
 
   return (
     <div className="space-y-3">
@@ -423,7 +423,7 @@ export default function OptionsEdgePanel({ symbol = 'NIFTY', onTrade }: OptionsE
                   <div className="text-gray-400 mt-1">Rec: {dr.recommendedDirection}</div>
                 </div>
                 <div className="p-2 rounded bg-gray-900 border border-gray-800">
-                  <div className="text-gray-500 mb-1">Hero-Zero</div>
+                  <div className="text-gray-500 mb-1">Low Premium</div>
                   <Badge variant="outline" className={hz.qualifies ? 'text-emerald-400 border-emerald-500/30' : 'text-red-400 border-red-500/30'}>
                     {hz.qualifies ? 'QUALIFIES' : 'DOES NOT QUALIFY'}
                   </Badge>

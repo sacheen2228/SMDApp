@@ -1360,7 +1360,7 @@ export function getConvictionColor(conviction: string): string {
 
 // ─── Migration: Scanner Results persistence ───────────────────────
 // Mirrors BTST (recordBTSTScannerResults) so the new Evaluation framework
-// + Replay can grade Intraday the same way as Zero Hero / SMC / BTST.
+// + Replay can grade Intraday the same way as SMC / BTST.
 export async function recordIntradayScannerResults(
   candidates: StockCandidate[],
   _config?: ScannerConfig
@@ -1427,7 +1427,7 @@ export async function recordIntradayScannerResults(
 }
 
 // Record executed intraday trades into the Trade Audit sidecar so the
-// strategy is evaluable alongside Zero Hero / SMC / BTST.
+// strategy is evaluable alongside SMC / BTST.
 export async function recordIntradayTrade(input: {
   id: string;
   symbol: string;

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// Outcome Pipeline (shared by Zero Hero, SMC, BTST, Intraday)
+// Outcome Pipeline (shared by SMC, BTST, Intraday — + legacy ZH rows)
 //
 // For every Scanner Result, attaches a resolved outcome:
 //   • Outcome   : WIN | LOSS | NO_FILL | CANCELLED | EXPIRED
@@ -129,7 +129,7 @@ function mapTradeToOutcome(t: TradeRecord): ResolvedOutcome {
 // Best-effort paper simulation on REAL recorded underlying candles,
 // reusing the Replay Engine. Produces a DIRECTIONAL outcome
 // (WIN/LOSS) + exit reason/time for tradeable signals whose
-// underlying candles were captured (index strategies: ZERO_HERO/SMC/BTST).
+// underlying candles were captured (index strategies: SMC/BTST + legacy ZH ids).
 //
 // For option strategies we keep magnitude fields (MFE/MAE/R/exitPrice)
 // NULL — premium excursions cannot be derived from the underlying, so

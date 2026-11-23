@@ -231,7 +231,7 @@ export function updateRiskState(state: RiskState, tradePnL: number): RiskState {
 // SIGNAL-PATH RISK GATE (2026-10-20)
 // ═══════════════════════════════════════════════════════════════════════════
 // Until now checkRiskLimits/getDefaultRiskConfig/updateRiskState were called
-// from NOWHERE — the scanner / Zero-Hero / master-bot Telegram paths were NOT
+// from NOWHERE — the scanner / master-bot Telegram paths were NOT
 // day-loss limited at all (only the agent path was, through the gate).
 // These functions are the shared, offline-testable core that every signal
 // path now runs BEFORE an alert leaves the app.

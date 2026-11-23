@@ -51,7 +51,7 @@ export interface ScannerResult {
   snapshotId: string; // exact CanonicalMarketSnapshot reference (NEVER duplicated fields)
   sessionId: string; // trading session for the day: `${symbol}-${date}`
   symbol: string;
-  strategy: string; // e.g. ZERO_HERO, SMC, INTRADAY, BTST
+  strategy: string; // e.g. SMART_MONEY, SMC, INTRADAY, BTST
   engineVersion: string;
   featureVersion: number;
   schemaVersion: number;

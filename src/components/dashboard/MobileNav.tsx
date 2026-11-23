@@ -8,14 +8,14 @@
 import { useEffect, useRef } from "react";
 import {
   Activity, Bot, CalendarClock, Scan, Newspaper, Settings2, BarChart3,
-  LineChart, Flame, LayoutGrid, Crosshair, Shield, Target,
+  LineChart, Flame, LayoutGrid, Shield, Target,
   Zap, Map, Landmark, Handshake, BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export type MobileViewMode =
-  | "terminal" | "chain" | "zerohero" | "scanner" | "btst" | "daily"
-  | "backtest" | "expiry" | "gap" | "news" | "institutional"
+  | "terminal" | "chain" | "scanner" | "btst" | "daily"
+  | "backtest" | "gap" | "news" | "institutional"
   | "orderbook" | "india" | "intelligence" | "credit" | "challenge"
   | "options" | "oiflow" | "liq" | "orderflow"
 
@@ -28,12 +28,10 @@ const TABS: { mode: MobileViewMode; label: string; icon: any; color: string }[] 
   // Primary trading views first
   { mode: "terminal", label: "Terminal", icon: Zap, color: "text-emerald-500" },
   { mode: "chain", label: "Chain", icon: Activity, color: "text-cyan-500" },
-  { mode: "zerohero", label: "Zero", icon: Crosshair, color: "text-amber-500" },
   { mode: "scanner", label: "Scan", icon: Scan, color: "text-teal-500" },
   { mode: "btst", label: "BTST", icon: Flame, color: "text-cyan-500" },
   { mode: "daily", label: "Daily", icon: CalendarClock, color: "text-violet-500" },
   { mode: "backtest", label: "Audit", icon: LineChart, color: "text-amber-500" },
-  { mode: "expiry", label: "Plan", icon: Target, color: "text-amber-600" },
   { mode: "gap", label: "Gap", icon: CalendarClock, color: "text-amber-500" },
   { mode: "news", label: "News", icon: Newspaper, color: "text-orange-500" },
   // Market intel

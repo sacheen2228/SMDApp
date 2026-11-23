@@ -1,4 +1,4 @@
-// Recorders that push Terminal-tab strategy candidates (Zero Hero + Smart Money)
+// Recorders that push Terminal-tab strategy candidates (Smart Money + legacy)
 // into the Trade Audit (backtest verification) engine on :4001.
 //
 // Browser + server safe. Each signal uses a deterministic, date-scoped tradeId

@@ -470,7 +470,7 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<b
   }).catch(() => { /* non-fatal */ });
 
   // Mirror the signal into the Trade Audit (backtest verification) engine so
-  // every strategy — SDM, SMC, Zero Hero AI, BTST, Intraday — lives in the
+  // every strategy — SDM, SMC, BTST, Intraday — lives in the
   // same verification store. recordSignal is idempotent on tradeId.
   recordAuditSignal(trade).catch(() => { /* non-fatal */ });
 

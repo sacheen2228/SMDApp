@@ -469,7 +469,6 @@ export function getRequiredTools(intent: string): string[] {
     RISK: ["get_risk_status", "get_trade_history"],
     TRADE_JOURNAL: ["get_trade_history"],
     BACKTEST: ["get_backtest_results"],
-    ZERO_HERO: ["get_spot", "get_option_chain", "get_vix", "get_gamma", "get_market_session", "get_mtf_signal"],
     CAS: ["get_cas_analysis", "get_expiry_liquidity"],
   };
   return intentToolMap[intent] || ["get_spot", "get_option_chain"];

@@ -358,8 +358,8 @@ Dependent checks are `SKIP` on a non-trading day — never reported as `PASS`.
 | Exit | square off by 15:15; SL = 30–50% of premium |
 
 Preserved: Telegram format, trade registration, Hermes trade generation,
-supervisor deterministic math (no LLM), and the Zero Hero production path
-(`ZeroHeroTerminal.tsx` → `zhCandidates` → `FullZeroHero` → Trade Audit).
+supervisor deterministic math (no LLM), and the Terminal production path
+(`TerminalTab.tsx` → `SmartMoneyTab` → Trade Audit).
 
 ---
 

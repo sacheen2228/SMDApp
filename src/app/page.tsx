@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, TrendingDown, Flame, BookOpen, Crosshair, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText, FlaskConical } from 'lucide-react';
+import { BarChart3, RefreshCw, Settings2, Sun, Moon, Activity, Zap, Brain, Timer, CalendarClock, Bot, Scan, Newspaper, Target, TrendingUp, TrendingDown, Flame, BookOpen, Monitor, LineChart, Shield, Users, CandlestickChart, Trophy, FileText, FlaskConical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -40,10 +40,9 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { MotilalStatus } from '@/components/dashboard/MotilalStatus';
 import { ConnectionStatusBar } from '@/components/dashboard/ConnectionStatusBar';
 import { MobileNav } from '@/components/dashboard/MobileNav';
-import { ZeroHeroTerminal } from '@/components/terminal/ZeroHeroTerminal';
+import { TerminalTab } from '@/components/terminal/TerminalTab';
 import BacktestDashboard from '@/components/backtest/BacktestDashboard';
 import { BTSTDashboard } from '@/components/btst/BTSTDashboard';
-import ExpiryPlanPanel from '@/components/dashboard/ExpiryPlanPanel';
 import DailyDerivativesPanel from '@/components/daily/DailyDerivativesPanel';
 import SignalStrip from '@/components/dashboard/SignalStrip';
 import NewsSentimentPanel from '@/components/dashboard/NewsSentimentPanel';
@@ -55,7 +54,6 @@ import { selectStrike, buildOptionPlan, type ChainRowLike, type SelectedStrike, 
 import { analyzeSMCFromCandles } from '@/lib/smc-layer';
 import type { GreeksReadInput } from '@/lib/signal-persistence';
 
-import ZeroHeroLiveTerminal from '@/components/zerohero/ZeroHeroLiveTerminal';
 import CreditTab from '@/components/credit/CreditTab';
 import { IndiaMarketChart } from '@/components/futures/IndiaMarketChart';
 import { VolumeProfilePanel } from '@/components/shared/VolumeProfilePanel';
@@ -357,7 +355,7 @@ export default function TradingDashboard() {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [showGreeks, setShowGreeks] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'expiry' | 'zerohero' | 'institutional' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'credit' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
+  const [viewMode, setViewMode] = useState<'gap' | 'scanner' | 'news' | 'agent' | 'agent-intel' | 'admin' | 'terminal' | 'chain' | 'btst' | 'backtest' | 'daily' | 'institutional' | 'orderbook' | 'india' | 'intelligence' | 'challenge' | 'credit' | 'options' | 'oiflow' | 'liq' | 'orderflow'>('terminal');
   // Support URL-based viewMode, displayMode, and chart init — allows new-tabs
   // to open a specific view/mode/symbol/tf, and direct URLs to work. Only applies
   // on mount (before user interaction), so it never overrides an explicit user selection.
@@ -1052,20 +1050,10 @@ useEffect(() => {
               onClick={() => { setViewMode('challenge'); setDisplayMode('pro'); }}>
               <Trophy className="h-2.5 w-2.5 mr-0.5" /> ₹15K→₹1L
             </Button>
-            <Button variant={viewMode === 'expiry' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'expiry' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
-              onClick={() => { setViewMode('expiry'); setDisplayMode('pro'); }}>
-              <Target className="h-2.5 w-2.5 mr-0.5" /> Expiry Plan
-            </Button>
             <Button variant={viewMode === 'backtest' ? 'default' : 'ghost'} size="sm"
               className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'backtest' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
               onClick={() => { setViewMode('backtest'); setDisplayMode('pro'); }}>
               <LineChart className="h-2.5 w-2.5 mr-0.5" /> Backtest
-            </Button>
-            <Button variant={viewMode === 'zerohero' ? 'default' : 'ghost'} size="sm"
-              className={`h-6 text-[9px] px-1.5 font-bold ${viewMode === 'zerohero' ? 'bg-amber-600 text-white shadow-sm shadow-amber-500/25' : 'text-muted-foreground hover:text-amber-500'}`}
-              onClick={() => { setViewMode('zerohero'); setDisplayMode('pro'); }}>
-              <Crosshair className="h-2.5 w-2.5 mr-0.5" /> Zero Hero
             </Button>
             
             <Button variant={viewMode === 'institutional' ? 'default' : 'ghost'} size="sm"
@@ -1353,27 +1341,10 @@ useEffect(() => {
         <div className="flex-1 overflow-auto">
           <ChallengeTab />
         </div>
-        ) : viewMode === 'expiry' ? (
-        /* ═══════ EXPIRY PLAN ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <ExpiryPlanPanel
-            symbol={symbol}
-            spotPrice={data?.spotPrice || summary?.spotPrice || 0}
-            summary={summary}
-            chainData={chainData}
-            expiries={data?.expiries}
-            selectedExpiry={selectedExpiry}
-          />
-        </div>
         ) : viewMode === 'daily' ? (
         /* ═══════ DAILY DERIVATIVES ═══════ */
         <div className="flex-1 overflow-hidden">
           <DailyDerivativesPanel symbol={symbol} />
-        </div>
-        ) : viewMode === 'zerohero' ? (
-        /* ═══════ ZERO HERO SCANNER ═══════ */
-        <div className="flex-1 overflow-hidden">
-          <ZeroHeroLiveTerminal />
         </div>
         ) : viewMode === 'institutional' ? (
         /* ═══════ INSTITUTIONAL POSITIONING ═══════ */
@@ -1402,7 +1373,7 @@ useEffect(() => {
         ) : viewMode === 'terminal' ? (
         /* ═══════ TERMINAL ═══════ */
         <div className="flex flex-1 overflow-hidden">
-          <ZeroHeroTerminal />
+          <TerminalTab />
         </div>
         ) : viewMode === 'options' ? (
         /* ═══════ OPTION PULSE ═══════ */

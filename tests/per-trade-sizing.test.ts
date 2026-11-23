@@ -25,8 +25,6 @@ import { calculatePositionSize, perTradeRiskBudget } from "@/lib/risk-management
 import { buildOptionPlan } from "@/lib/option-plan";
 import { analyzeBTST, type BTSTStockInput } from "@/lib/btst-engine";
 import { evaluatePlaybookCheck, PLAYBOOK_MAX_RISK_PCT } from "@/lib/agents/playbook-check";
-import { positionSizeCalculator } from "@/lib/zero-hero-ai/position-size-calculator";
-import { entryTPSLEngine } from "@/lib/zero-hero-ai/entry-tp-sl-engine";
 import { DEFAULT_CONFIG as JARVIS_CONFIG } from "@/lib/jarvis/orchestrator";
 import { getUserPreferences, DEFAULT_USER_PREFERENCES } from "@/lib/agent-memory";
 import { auditLevels } from "@/lib/audit-recorders";
@@ -88,7 +86,7 @@ describe("risk scales with the deployment — 20% of DEPLOYED, no fixed cap (202
   });
 });
 
-describe("risk-management.calculatePositionSize (the Zero Hero production path)", () => {
+describe("risk-management.calculatePositionSize (the shared production path)", () => {
   const base = {
     capital: 100_000,          // the legacy caller passes ₹1L — it must NOT be the risk base
     riskPerTradePercent: 20,   // % of the amount DEPLOYED
@@ -167,44 +165,6 @@ describe("playbook-check risk budget", () => {
     const r = evaluatePlaybookCheck(candidate({ maxLoss: 9_500 }), ALL, { capital: 100_000 } as any);
     expect(r.failedItems).not.toContain(7);
     expect(r.items.find(i => i.item === 7)!.note).toMatch(/deployed/i);
-  });
-});
-
-describe("zero-hero-ai position size calculator (deprecated module, still aligned)", () => {
-  test("risk = 20% of the deployed amount, lots capped by the ₹20,000 budget", () => {
-    const out = positionSizeCalculator({
-      capital: 200_000, riskPercent: RISK_PCT, entryPremium: 150, stopLossPremium: 120,
-      lotSize: 65, confidence: 80, probProfit: 0.6,
-    });
-    expect(out.maxLossAmount).toBe(RISK_BUDGET);
-    expect(out.positionValue).toBeLessThanOrEqual(DEPLOY_BUDGET);
-    expect(out.riskPerUnit * out.recommendedLots).toBeLessThanOrEqual(RISK_BUDGET);
-  });
-
-  test("kelly can only REDUCE the size, never exceed the risk budget", () => {
-    const out = positionSizeCalculator({
-      capital: 200_000, riskPercent: RISK_PCT, entryPremium: 150, stopLossPremium: 120,
-      lotSize: 65, confidence: 90, probProfit: 0.95, winRate: 0.9,
-    });
-    expect(out.kellyLots).toBeLessThanOrEqual(out.recommendedLots);
-  });
-});
-
-describe("zero-hero-ai entry/TP/SL engine (deprecated module, still aligned)", () => {
-  test("the stop comes from the rupee risk and the targets are the 2R/3R/4R ladder", () => {
-    const out = entryTPSLEngine({
-      entryPremium: 150, spot: 22400, strike: 22400, optionType: "CE",
-      delta: 0.5, gamma: 0.001, theta: -5, atr: 50, daysToExpiry: 5,
-      bias: "BULLISH", expected_move: 300, instrument: "NIFTY",
-      expiry_mode: "STANDARD", lotSize: 65, lots: 1, deployedAmount: 10_000,
-    });
-    // 1R = 20% of the premium (₹10,000 deployed → ₹2,000 risk over 65 units)
-    expect(out.stopLoss).toBeCloseTo(150 - 30, 1);
-    expect(out.targets).toHaveLength(3);
-    expect(out.targets[0]).toBeCloseTo(150 + 60, 1);   // 2R
-    expect(out.targets[1]).toBeCloseTo(150 + 90, 1);   // 3R
-    expect(out.targets[2]).toBeCloseTo(150 + 120, 1);  // 4R
-    expect(out.riskReward).toBeGreaterThanOrEqual(2);
   });
 });
 

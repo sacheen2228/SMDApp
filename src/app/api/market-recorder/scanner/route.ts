@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json({ success: true, count: rows.length, results: rows });
   } catch (err: any) {
-    // Market History sidecar (:4002) down — degrade gracefully so Zero Hero UI keeps working
+    // Market History sidecar (:4002) down — degrade gracefully so the Terminal UI keeps working
     const msg = err?.message || String(err);
     const sidecarDown = msg.includes("ECONNREFUSED") || msg.includes("fetch failed") || msg.includes("mh ");
     if (sidecarDown) {

@@ -22,7 +22,7 @@ import {
 import { getScannerResults, getSnapshotVersion } from "@/lib/market-history-client";
 
 export interface EvaluationFilters {
-  strategy?: string; // Zero Hero | SMC | BTST | Intraday (substring match)
+  strategy?: string; // SMART_MONEY | SMC | BTST | Intraday (substring match)
   symbol?: string;
   dateFrom?: string;
   dateTo?: string;

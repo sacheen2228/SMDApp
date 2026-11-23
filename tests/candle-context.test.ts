@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-// Smart Money tab (ZeroHeroTerminal) passed a PARTIAL MarketDataInput to
+// Smart Money tab (TerminalTab) passed a PARTIAL MarketDataInput to
 // scoreTrade: no marketStructure/swings/S-R/vwap/volume metrics. Those factors
 // (structure w=18, volume w=13) returned available=false with weighted=0 while
 // the denominator stayed totalWeight=96 → score pinned at ~35 → below the
@@ -39,7 +39,7 @@ function makeCandles(n: number) {
   return out;
 }
 
-// Exact SmartMoneyTab CE input shape (ZeroHeroTerminal.tsx lines 1772-1789)
+// Exact SmartMoneyTab CE input shape (TerminalTab.tsx)
 const spot = 22555.75;
 const chain = [
   { strike: 22500, ltp: 79.5 },
@@ -72,7 +72,7 @@ function baseInput(): MarketDataInput {
   } as MarketDataInput;
 }
 
-// SmartMoneyTab candidate filter (ZeroHeroTerminal.tsx lines 1791-1792)
+// SmartMoneyTab candidate filter (TerminalTab.tsx)
 function passesCandidateFilter(entry: number, sl: number, score: number) {
   return entry >= 5 && sl > 0 && sl < entry && score >= 50;
 }

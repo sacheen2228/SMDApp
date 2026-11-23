@@ -257,7 +257,7 @@ describe('MCX Commodity Module', () => {
     expect(STRATEGY_PROFILES.FO).toBeDefined();
     expect(STRATEGY_PROFILES.OPTIONS).toBeDefined();
     expect(STRATEGY_PROFILES.CAS).toBeDefined();
-    expect(STRATEGY_PROFILES.HERO_ZERO).toBeDefined();
+    expect(STRATEGY_PROFILES.EXPIRY_LOW_PREMIUM).toBeDefined();
     expect(STRATEGY_PROFILES.MCX_COMMODITY).toBeDefined();
   });
 

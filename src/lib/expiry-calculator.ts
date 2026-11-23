@@ -31,8 +31,8 @@ import { getLotSizeStrict } from '@/lib/symbol-config';
 
 export type ExpiryType = 'weekly' | 'monthly';
 
-// ─── Standardized Expiry data (Zero Hero AI contract) ────────────
-// Consolidated expiry descriptor consumed by the Zero Hero UI / engine.
+// ─── Standardized Expiry data (expiry-day contract) ────────────
+// Consolidated expiry descriptor consumed by the expiry UI / engines.
 // Reuses getNearestExpiry / getExpiryType / isExpiryDay.
 export interface StandardizedExpiry {
   instrument: string;
@@ -44,7 +44,7 @@ export interface StandardizedExpiry {
   is_monthly_expiry: boolean;
   is_weekly_expiry: boolean;
   is_quarterly_expiry: boolean;
-  expiry_mode: 'ZERO_HERO' | 'STANDARD';
+  expiry_mode: 'EXPIRY_NEAR' | 'STANDARD';
   option_liquidity: 'HIGH' | 'MEDIUM' | 'LOW';
   strategy_profile: 'EXPIRY' | 'NORMAL';
   session_type: 'EXPIRY' | 'REGULAR';
@@ -93,7 +93,7 @@ export function getStandardizedExpiry(symbol: string, referenceDate: Date = new 
     is_monthly_expiry: type === 'monthly' || isQuarterly,
     is_weekly_expiry: type === 'weekly',
     is_quarterly_expiry: isQuarterly,
-    expiry_mode: (type === 'monthly' || type === 'weekly') ? 'ZERO_HERO' : 'STANDARD',
+    expiry_mode: (type === 'monthly' || type === 'weekly') ? 'EXPIRY_NEAR' : 'STANDARD',
     option_liquidity: HIGH_LIQUIDITY.has(symbol) ? 'HIGH' : 'MEDIUM',
     strategy_profile: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'NORMAL',
     session_type: (type === 'monthly' || type === 'weekly') ? 'EXPIRY' : 'REGULAR',
@@ -298,7 +298,7 @@ export function mergeExpiryCandidates(symbol: string, providerDates: string[] = 
 
 /**
  * NOTE: no network call lives in this module. It is imported by client
- * components (ZeroHeroTerminal), so a Node-only SDK import here breaks the
+ * components (TerminalTab), so a Node-only SDK import here breaks the
  * browser bundle. The exchange list is refreshed SERVER-side by
  * `refreshNSEExpiryList()` in src/lib/nse-api.ts, which calls
  * `setExchangeExpiries()` here.

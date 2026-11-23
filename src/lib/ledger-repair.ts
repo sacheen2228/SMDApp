@@ -75,7 +75,7 @@ export function effExitDate(expiryDate: string, exitDate: string): string {
 
 /**
  * Contract actually traded: the first listed expiry on/after the creation
- * date (zero-hero/SMC hold to expiry; cleanup rows for already-expired
+ * date (SMC holds to expiry; cleanup rows for already-expired
  * contracts resolve to the NEXT expiry only if created after it — which
  * means the row was recorded post-expiry and has no real contract → null).
  */

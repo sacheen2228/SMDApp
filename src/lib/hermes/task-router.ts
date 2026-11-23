@@ -25,6 +25,9 @@ const INTENT_PATTERNS: IntentPattern[] = [
       /(?:buy|go)\s*(?:call|put|CE|PE)/i,
       /mujhe.*(?:trade|option)/i,
       /(?:live|real).*trade/i,
+      /(?:today|current).*(?:expiry|expir)/i,
+      /expiry.*(?:trade|option|buy)/i,
+      /(?:0DTE|zero\s*day)/i,
     ],
     requiredTools: ["get_spot", "get_option_chain", "get_vix", "get_market_structure", "get_oi_analysis", "get_greeks", "get_gamma", "get_fii_dii", "get_news", "get_regime", "get_risk_status", "get_market_session"],
     optionalTools: ["get_volume_profile", "get_expiry_liquidity", "get_cas_analysis"],
@@ -50,17 +53,6 @@ const INTENT_PATTERNS: IntentPattern[] = [
     ],
     requiredTools: ["get_mcx_data", "get_market_session"],
     optionalTools: ["get_news", "get_regime"],
-  },
-  {
-    intent: "ZERO_HERO",
-    mode: "TRADE",
-    patterns: [
-      /(?:zero|0).?(?:hero|DTE|day)/i,
-      /(?:today|current).*(?:expiry|expir)/i,
-      /expiry.*(?:trade|option|buy)/i,
-    ],
-    requiredTools: ["get_spot", "get_option_chain", "get_vix", "get_gamma", "get_market_session"],
-    optionalTools: ["get_oi_analysis", "get_volume_profile"],
   },
   {
     intent: "CAS",

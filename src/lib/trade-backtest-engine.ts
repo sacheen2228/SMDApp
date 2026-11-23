@@ -232,7 +232,7 @@ async function loadOptionReplayCandles(trade: TradeRecord): Promise<Candle[]> {
   let from = entryDate;
   if (!expiry) {
     // Sidecar rows carry no expiry — match entry premium against real
-    // candidate days. Two real-data quirks: (1) ZERO_HERO records at
+    // candidate days. Two real-data quirks: (1) legacy ZERO_HERO_AI records at
     // 00:00 IST so the premium reflects the PREVIOUS session; (2) SMC
     // records on weekends/holidays when no bhavcopy exists — probe the
     // next session instead. Bounded, never fabricated.
@@ -594,7 +594,7 @@ export function backtestSingleTrade(
 
   // Simulate trade replay.
   // Options: ALWAYS long premium — the sidecar has no side column and every
-  // recorder (option-chain-api, ZERO_HERO, SMART_MONEY, SMC) buys CE/PE.
+  // recorder (option-chain-api, legacy ZERO_HERO_AI, SMART_MONEY, SMC) buys CE/PE.
   // The old logic used trendDirection/optionType and replayed every PE as a
   // short, flipping the P&L sign. Equities/futures keep the trend-based rule.
   const isOptionTrade = isOptionReplayTrade(trade);

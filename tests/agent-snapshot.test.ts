@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 // ═══════════════════════════════════════════════════════════════════════════
 // v2 §3 / §21 / §28 — Shared snapshot tests:
-//  - one fetch cycle per 30-agent run (deliberate per-type count, never 30)
+//  - one fetch cycle per 29-agent run (deliberate per-type count, never one-per-agent)
 //  - agents themselves perform ZERO outbound fetches
 //  - every agent's dataFreshness derives from the single fetchedAtIso
 // ═══════════════════════════════════════════════════════════════════════════
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe('Shared Snapshot (v2 §3/§21)', () => {
-  it('one full 30-agent cycle performs one snapshot fetch set, agents fetch nothing', async () => {
+  it('one full 29-agent cycle performs one snapshot fetch set, agents fetch nothing', async () => {
     const spy = installFetchCounter();
 
     const { ctx, fetchedAtIso } = await buildAgentSnapshot('NIFTY', {
@@ -45,13 +45,13 @@ describe('Shared Snapshot (v2 §3/§21)', () => {
     expect(spy.urls.length).toBe(0);
 
     // Deliberate per-type set for one cycle (option chain, FII/DII, news,
-    // regime, structure, gamma, …) — never one-per-agent (30).
+    // regime, structure, gamma, …) — never one-per-agent (29).
     expect(snapshotFetches).toBeGreaterThan(0);
     expect(snapshotFetches).toBeLessThanOrEqual(12);
 
     // Full-cycle total equals the snapshot set alone.
     expect(spy.urls.length + snapshotFetches).toBe(snapshotFetches);
-    expect(outputs.length).toBe(30);
+    expect(outputs.length).toBe(29);
     expect(fetchedAtIso).toBeTruthy();
   });
 

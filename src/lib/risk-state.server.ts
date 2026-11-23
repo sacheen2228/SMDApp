@@ -1,7 +1,7 @@
 // risk-state.server.ts
 // SERVER-ONLY half of the risk frame: the journal / tracker readers that need the
 // database. It is deliberately a SEPARATE module because src/lib/risk-management.ts
-// is pulled into the CLIENT bundle (zero-hero → tiger-monitor → active-trade-tracker),
+// is pulled into the CLIENT bundle (tiger-monitor → active-trade-tracker),
 // and a Prisma import there breaks the client build.
 //
 // The pure cap maths (RISK_LIMITS, evaluateLossCaps, evaluateConcurrentExposure,
@@ -51,7 +51,7 @@ export function isSyntheticTradeRow(t: {
   if (SYNTHETIC_TRADE_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return true;
   // A CE/PE row with NO expiry cannot be a real option trade: it cannot be
   // monitored to TP/SL or settled. Seeded fixtures and e2e rows land like
-  // this (ZERO_HERO_AI NIFTY 23000 CE, entry 150 → 41.05, repeated four
+  // this (legacy ZERO_HERO_AI NIFTY 23000 CE, entry 150 → 41.05, repeated four
   // times) and must never drive the real loss caps.
   const type = String(t.type || "").toUpperCase();
   if ((type === "CE" || type === "PE") && !String(t.expiry || "").trim()) return true;
@@ -269,7 +269,7 @@ export async function loadRiskState(
  * THE SIGNAL-PATH CHECK — the gate every alert runs through.
  *
  * Until 2026-10-20 the loss caps and the consecutive-loss rule lived ONLY in the
- * agent's trade gate, so the scanner / Zero-Hero / master-bot Telegram paths were
+ * agent's trade gate, so the scanner / master-bot Telegram paths were
  * NOT day-loss limited at all. Every one of those paths funnels through
  * sendTradeAlert() → this function → the same caps the agent uses.
  *

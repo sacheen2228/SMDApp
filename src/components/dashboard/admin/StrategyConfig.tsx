@@ -166,7 +166,6 @@ function ModulesTabContent({ config, update }: { config: StrategyConfig; update:
     { key: "entryConditions", label: "Entry Conditions", desc: "VWAP, trend, volume filters" },
     { key: "riskEngine", label: "Risk Engine", desc: "Position sizing, SL/TP calculation" },
     { key: "confidenceEngine", label: "Confidence Engine", desc: "0-100 scoring system" },
-    { key: "zeroDte", label: "0DTE Expiry Engine", desc: "Gamma squeeze, expiry day trading" },
     { key: "alerts", label: "Live Alerts", desc: "Real-time signal notifications" },
   ];
   return (
@@ -187,7 +186,6 @@ function ConfidenceTabContent({ config, update }: { config: StrategyConfig; upda
     <div className="space-y-3">
       <div className="text-[11px] font-bold text-muted-foreground">THRESHOLDS</div>
       <Slider label="Entry Threshold" value={config.confidence.entryThreshold} onChange={v => update("confidence.entryThreshold", v)} min={50} max={100} unit="%" desc="Minimum confidence to trigger a trade" />
-      <Slider label="0DTE Threshold" value={config.confidence.zeroDteThreshold} onChange={v => update("confidence.zeroDteThreshold", v)} min={70} max={100} unit="%" desc="Higher threshold for expiry day trades" />
       <Slider label="Cancel Threshold" value={config.confidence.cancelThreshold} onChange={v => update("confidence.cancelThreshold", v)} min={30} max={90} unit="%" desc="Cancel if confidence drops below" />
       <div className="text-[11px] font-bold text-muted-foreground mt-3">SCORING WEIGHTS <span className="font-mono text-primary">({totalWeight}/100)</span></div>
       <Slider label="Trend" value={w.trend} onChange={v => update("confidence.weights.trend", v)} min={0} max={40} unit="%" />

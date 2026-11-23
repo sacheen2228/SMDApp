@@ -23,7 +23,7 @@ function getNSEClient(): NSEClient {
 
 /**
  * The expiry list the exchange actually serves, cached in the expiry
- * calculator so every consumer (Zero Hero, scanners, the agent) asks for a
+ * calculator so every consumer (scanners, the agent) asks for a
  * contract that exists.
  *
  * SERVER-SIDE ONLY: expiry-calculator.ts is imported by client components,
