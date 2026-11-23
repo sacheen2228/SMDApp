@@ -25,7 +25,6 @@ import {
   searchKnowledgeNotes,
   recordKnowledgeNote,
 } from "@/lib/agent-memory";
-import { persistDailyDerivativesKnowledge } from "@/lib/daily-derivatives-knowledge";
 
 export async function GET(req: NextRequest) {
   try {
@@ -38,9 +37,6 @@ export async function GET(req: NextRequest) {
 
     switch (action) {
       case "summary":
-        // Keep the canonical Daily Derivatives strategy note persisted so both
-        // bots can recall it via search_memory / get_memory_summary.
-        await persistDailyDerivativesKnowledge();
         return NextResponse.json({ success: true, data: getMemorySummary() });
 
       case "knowledge":

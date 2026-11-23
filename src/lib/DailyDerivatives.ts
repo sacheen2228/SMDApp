@@ -5,6 +5,7 @@
 import { getOptionChain as canonicalGetOptionChain } from "@/lib/data-layer/chains/option-chain";
 import { calculateGreeks, parseExpiryDateLoose, impliedVolFromPremium } from "@/lib/greeks";
 import { getNSEIndiaVIX } from "@/lib/nse-api";
+import { resolveVix } from "@/lib/live-option-chain";
 import { computeCandleCvdProxy, type CvdProxyResult } from "@/engines/orderflow/orderflow-engine";
 import { toIsoExpiryDate } from "@/lib/breeze-historical";
 import { readFuturesFlow, istDateStr } from "@/lib/market/futures-flow";
@@ -45,6 +46,8 @@ export interface Greeks {
   theta: number;
   vega: number;
   iv: number;
+  /** Where delta came from: the provider's own greeks, our BS(IV) computation, or unknown. */
+  deltaSource?: "provider" | "bs" | null;
 }
 
 /**
@@ -112,6 +115,54 @@ export interface OptionStrike {
   };
 }
 
+/**
+ * Map the canonical chain's `ce`/`pe` legs to the card's `call`/`put` shape.
+ *
+ * The data layer already computes PER-LEG Greeks (the provider's own values,
+ * or Black-Scholes from the provider's IV — `deriveLegGreeks`) and labels
+ * which one it was. They are carried through here so the card shows the LIVE
+ * chain's numbers instead of re-deriving one ATM row from the premium.
+ * A leg without greeks stays WITHOUT greeks — never a fabricated zero.
+ */
+export function mapChainStrikes(strikes: any[]): OptionStrike[] {
+  const num = (x: any): number | null =>
+    x == null || x === "" || !Number.isFinite(Number(x)) ? null : Number(x);
+
+  const leg = (raw: any) => {
+    if (!raw) return undefined;
+    const delta = num(raw.delta);
+    const gamma = num(raw.gamma);
+    const theta = num(raw.theta);
+    const vega = num(raw.vega);
+    const iv = num(raw.iv);
+    const hasGreeks = delta != null || gamma != null || theta != null || vega != null;
+    return {
+      ltp: Number(raw.ltp) || 0,
+      oi: Number(raw.oi) || 0,
+      oiChange: Number(raw.oiChange ?? raw.oiChg) || 0,
+      volume: Number(raw.volume) || 0,
+      bid: Number(raw.bid) || 0,
+      ask: Number(raw.ask) || 0,
+      greeks: hasGreeks
+        ? {
+            delta: delta ?? 0,
+            gamma: gamma ?? 0,
+            theta: theta ?? 0,
+            vega: vega ?? 0,
+            iv: iv ?? 0,
+            deltaSource: raw.deltaSource ?? null,
+          }
+        : undefined,
+    };
+  };
+
+  return (strikes || []).map((s: any) => ({
+    strike: Number(s.strike),
+    call: leg(s.ce),
+    put: leg(s.pe),
+  }));
+}
+
 export interface OptionChainSnapshot {
   underlying: "NIFTY" | "SENSEX";
   expiry: string;
@@ -144,6 +195,20 @@ export interface DailyDerivativesReport {
   atmStrike: number;
   atmIV: number;
   atmGreeks?: Greeks;
+  /** Where the ATM Greeks came from: the provider's own, the data layer's BS(IV), or the card's implied-premium fallback. */
+  atmGreeksSource?: "provider" | "bs" | "implied" | null;
+  /**
+   * The LIVE chain's per-strike Greeks (CE/PE) — the values the data layer
+   * computed (provider greeks, or Black-Scholes from the provider's IV).
+   * A leg the chain could not price carries no entry — never a zero.
+   */
+  greeks?: { strike: number; ce?: Greeks; pe?: Greeks }[];
+  /** True when the chain came from a fallback provider (not the primary one). */
+  chainFallbackUsed?: boolean;
+  /** The provider's own chain timestamp (when the contract was priced). */
+  chainTimestamp?: string;
+  /** Where the VIX number came from: the exchange, the chain's ATM IV, or the stated estimate. */
+  indiaVixSource?: "nse" | "atm-iv" | "estimate";
   topCallOI: { strike: number; oi: number; oiChange: number }[];
   topPutOI: { strike: number; oi: number; oiChange: number }[];
   expiry: string;
@@ -824,26 +889,9 @@ export class DailyDerivativesService {
       latestSignals = signals.slice(-5).reverse();
     }
 
-    // 4. Process option chain data — map canonical ce/pe legs to call/put
-    const strikes: OptionStrike[] = (chain.strikes || []).map((s: any) => ({
-      strike: Number(s.strike),
-      call: s.ce ? {
-        ltp: Number(s.ce.ltp) || 0,
-        oi: Number(s.ce.oi) || 0,
-        oiChange: Number(s.ce.oiChg) || 0,
-        volume: Number(s.ce.volume) || 0,
-        bid: Number(s.ce.bid) || 0,
-        ask: Number(s.ce.ask) || 0,
-      } : undefined,
-      put: s.pe ? {
-        ltp: Number(s.pe.ltp) || 0,
-        oi: Number(s.pe.oi) || 0,
-        oiChange: Number(s.pe.oiChg) || 0,
-        volume: Number(s.pe.volume) || 0,
-        bid: Number(s.pe.bid) || 0,
-        ask: Number(s.pe.ask) || 0,
-      } : undefined,
-    }));
+    // 4. Process option chain data — map canonical ce/pe legs to call/put,
+    //    KEEPING the live per-leg Greeks the data layer computed.
+    const strikes: OptionStrike[] = mapChainStrikes(chain.strikes || []);
     let totalCallOI = 0, totalPutOI = 0;
 
     for (const s of strikes) {
@@ -881,16 +929,25 @@ export class DailyDerivativesService {
       Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev, allStrikes[0] || 0
     );
 
-    // ATM Greeks
+    // ATM Greeks — the LIVE chain's own numbers first (the provider's greeks,
+    // or the data layer's BS(IV) computation — it labels which). Only when the
+    // chain carries none does the card fall back to its own BS-from-premium
+    // estimate, and that fallback is labelled so the UI can say so.
     const atm = strikes.find(s => s.strike === atmStrike);
     let atmIV = 0;
     let atmGreeks: Greeks | undefined;
+    let atmGreeksSource: "provider" | "bs" | "implied" | null = null;
     const T = Math.max((daysToExpiry || 0) / 365, 0.002);
 
-    if (atm?.call?.ltp && spot > 0) {
+    if (atm?.call?.greeks) {
+      atmGreeks = { ...atm.call.greeks };
+      atmIV = atm.call.greeks.iv || 0;
+      atmGreeksSource = atm.call.greeks.deltaSource === "provider" ? "provider" : "bs";
+    } else if (atm?.call?.ltp && spot > 0) {
       atmIV = impliedVolFromPremium(atm.call.ltp, spot, atmStrike, T, true) || 0;
       if (atmIV > 0) {
         atmGreeks = { ...calculateGreeks(spot, atmStrike, T, atmIV, true), iv: atmIV };
+        atmGreeksSource = "implied";
       }
     }
 
@@ -907,11 +964,24 @@ export class DailyDerivativesService {
       .slice(0, 5)
       .map(s => ({ strike: s.strike, oi: s.put!.oi || 0, oiChange: s.put!.oiChange || 0 }));
 
-    // India VIX — real value from NSE, fallback only when NSE is unreachable.
-    // indiaVixEstimated marks the fallback so the UI/text report can label it.
+    // India VIX — the SHARED live policy (resolveVix): the exchange's own
+    // INDIA VIX first, then the chain's ATM IV (real provider data, not an
+    // estimate), and only then the stated 15.70 assumption. The source is
+    // labelled so the UI never presents a fallback as the exchange number.
     const vixData = await getNSEIndiaVIX().catch(() => null);
-    const indiaVixEstimated = !vixData;
-    const indiaVix = vixData?.value ?? 15.70;
+    const vixResolved = resolveVix(
+      { indiaVIX: vixData?.value ?? null },
+      strikes.map((s) => ({
+        strike: s.strike,
+        ce: s.call ? { iv: s.call.greeks?.iv ?? null } : null,
+        pe: s.put ? { iv: s.put.greeks?.iv ?? null } : null,
+      })),
+      spot,
+    );
+    const indiaVixSource: "nse" | "atm-iv" | "estimate" =
+      vixData?.value != null ? "nse" : vixResolved.vix != null ? "atm-iv" : "estimate";
+    const indiaVixEstimated = indiaVixSource !== "nse";
+    const indiaVix = vixResolved.vix ?? 15.70;
     const indiaVixChange = vixData?.change ?? 0;
 
     const { sentiment, score } = this.getSentiment(indiaVix, pcr);
@@ -1143,6 +1213,15 @@ export class DailyDerivativesService {
       warmupBars: need,
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
+      chainFallbackUsed: chainResult.fallbackUsed === true,
+      // WHEN the chain was priced — the provider's own stamp first, then the
+      // collection time. An undated payload stays undated.
+      chainTimestamp: chain.asOf || chain.providerTimestamp || chain.timestamp || chain.fetchedAt || "",
+      atmGreeksSource,
+      indiaVixSource,
+      greeks: strikes
+        .filter((s) => s.call?.greeks || s.put?.greeks)
+        .map((s) => ({ strike: s.strike, ce: s.call?.greeks, pe: s.put?.greeks })),
       sellerIntel,
       cvd,
       futuresRelVol,
@@ -1159,7 +1238,7 @@ Underlying     : ${r.underlying}
 Spot           : ${r.spot.toFixed(2)}
 Time           : ${new Date(r.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 
-India VIX      : ${r.indiaVix.toFixed(2)}${r.indiaVixEstimated ? " (fallback)" : ""} (${r.indiaVixChange >= 0 ? "+" : ""}${r.indiaVixChange.toFixed(2)})
+India VIX      : ${r.indiaVix.toFixed(2)}${r.indiaVixSource === "atm-iv" ? " (chain ATM IV — not the exchange number)" : r.indiaVixSource === "estimate" ? " (stated estimate)" : ""} (${r.indiaVixChange >= 0 ? "+" : ""}${r.indiaVixChange.toFixed(2)})
 PCR            : ${r.pcr}
 Max Pain       : ${r.maxPain}
 Call Wall      : ${r.callWall}
@@ -1172,7 +1251,7 @@ ATM Theta      : ${r.atmGreeks?.theta?.toFixed(2) || "-"}
 
 Sentiment      : ${r.sentiment} (Score: ${r.sentimentScore}/100)
 Expiry         : ${r.expiry.split("T")[0]} (${r.daysToExpiry} days left)
-Data Source    : ${r.dataSource} (${r.freshness})
+Data Source    : ${r.dataSource} (${r.freshness})${r.chainFallbackUsed ? " [FALLBACK PROVIDER]" : ""}${r.chainTimestamp ? ` · priced ${r.chainTimestamp}` : ""}
 
 ── Top Call OI ──────────────────────────────
 ${r.topCallOI.map(t => `  ${t.strike} → OI: ${t.oi.toLocaleString()} | ΔOI: ${t.oiChange}`).join("\n")}

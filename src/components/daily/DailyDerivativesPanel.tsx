@@ -21,6 +21,8 @@ import {
   Crosshair,
   ShieldCheck,
   Waves,
+  Landmark,
+  Users,
 } from "lucide-react";
 
 interface Signal {
@@ -41,6 +43,8 @@ interface Greeks {
   theta: number;
   vega: number;
   iv: number;
+  /** Where delta came from: the provider's own greeks, our BS(IV) computation, or unknown. */
+  deltaSource?: "provider" | "bs" | null;
 }
 
 interface TradePlanCard {
@@ -126,6 +130,13 @@ interface DailyDerivativesReport {
   atmStrike: number;
   atmIV: number;
   atmGreeks?: Greeks;
+  /** provider greeks | the data layer's BS(IV) | the card's implied-premium fallback */
+  atmGreeksSource?: "provider" | "bs" | "implied" | null;
+  /** The LIVE chain's per-strike Greeks (CE/PE) — never a fabricated zero. */
+  greeks?: { strike: number; ce?: Greeks; pe?: Greeks }[];
+  chainFallbackUsed?: boolean;
+  chainTimestamp?: string;
+  indiaVixSource?: "nse" | "atm-iv" | "estimate";
   topCallOI: { strike: number; oi: number; oiChange: number }[];
   topPutOI: { strike: number; oi: number; oiChange: number }[];
   expiry: string;
@@ -137,6 +148,9 @@ interface DailyDerivativesReport {
   planAsOf?: string;
   preferredSide: "CALL" | "PUT" | null;
   directionBias: DirectionBias;
+  /** Which provider priced the card (NSE / MOAPI / BHAVCOPY / ...) */
+  dataSource: string;
+  freshness?: string;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
@@ -295,8 +309,50 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
   const [report, setReport] = useState<DailyDerivativesReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Side live feeds — the same provider pipeline the other tabs read
+  // (NSE FII/DII, OI classification, premium acceleration).
+  const [fiiDii, setFiiDii] = useState<any>(null);
+  const [institutional, setInstitutional] = useState<any>(null);
+  const [greekFlow, setGreekFlow] = useState<any>(null);
+  /** True while the side feeds are still in flight — a slow provider is not "unavailable". */
+  const [feedsLoading, setFeedsLoading] = useState(true);
   // Monotonic request id — a stale response never clobbers a newer one.
   const reqIdRef = useRef(0);
+
+  /**
+   * The side live feeds — FII/DII, institutional positioning and the premium
+   * acceleration engine. They are heavy (the greek-flow engine runs the whole
+   * acceleration stack), so they load ONCE per mount / symbol and on the
+   * manual Refresh — never on the 5-minute card refresh, which would hammer
+   * the providers. A dead feed degrades to "unavailable" on its own and never
+   * blocks the card.
+   */
+  const loadFeeds = useCallback(async () => {
+    setFeedsLoading(true);
+    const timed = (url: string, ms = 60000) => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), ms);
+      return fetch(url, { signal: ac.signal }).then((r) => r.json()).finally(() => clearTimeout(timer));
+    };
+    const [f, i, g] = await Promise.allSettled([
+      timed("/api/fii-dii"),
+      // Index-level feed — the persisted snapshot path (`fast=1`): the full
+      // NSE participant-OI scan can take ~5 minutes, the snapshot answers in
+      // seconds. The payload says which path produced it.
+      timed("/api/institutional-positioning?fast=1", 45000),
+      timed("/api/greek-flow?symbol=" + encodeURIComponent(symbol)),
+    ]);
+    setFeedsLoading(false);
+    // Keep the WHOLE payload: /api/fii-dii puts the flows at the top level
+    // and only the provenance meta under `data` — merge them so the card can
+    // read both the numbers and the source stamp from one object.
+    if (f.status === "fulfilled") {
+      const v: any = f.value ?? null;
+      setFiiDii(v ? { ...(v.data ?? {}), ...v } : null);
+    }
+    if (i.status === "fulfilled") setInstitutional(i.value ?? null);
+    if (g.status === "fulfilled") setGreekFlow(g.value ?? null);
+  }, [symbol]);
 
   const load = useCallback(async (force = false) => {
     const reqId = ++reqIdRef.current;
@@ -329,6 +385,16 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
   }, [initialSymbol]);
 
   useEffect(() => { load(); }, [load]);
+  // The side feeds start only AFTER the card is up (they are heavy — the
+  // greek-flow engine runs the whole acceleration stack) and only once per
+  // symbol, so they never queue behind the primary report request.
+  const feedsForSymbol = useRef<string | null>(null);
+  useEffect(() => {
+    if (!report) return;
+    if (feedsForSymbol.current === symbol) return;
+    feedsForSymbol.current = symbol;
+    loadFeeds();
+  }, [report, symbol, loadFeeds]);
   useEffect(() => {
     const t = setInterval(load, 300000); // 5 min refresh
     return () => clearInterval(t);
@@ -417,13 +483,39 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               </button>
             ))}
           </div>
-          <button onClick={() => load(true)} disabled={loading} className="flex items-center gap-1 text-[12px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
+          <button onClick={() => { load(true); loadFeeds(); }} disabled={loading} className="flex items-center gap-1 text-[12px] px-2 py-1 rounded bg-muted hover:bg-muted/70 text-muted-foreground">
             <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Refresh
           </button>
         </div>
       </div>
 
       {error && <div className="text-[14px] text-rose-400 p-3 bg-rose-500/10 rounded">{error}</div>}
+
+      {/* LIVE PROVENANCE — which provider priced this card, and when */}
+      {report && (
+        <div className="flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
+          <span className="px-1.5 py-0.5 rounded bg-muted/40 font-mono">{report.dataSource}</span>
+          {report.freshness && <span className="px-1.5 py-0.5 rounded bg-muted/40 font-mono">{report.freshness}</span>}
+          {report.chainFallbackUsed && (
+            <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-mono">FALLBACK PROVIDER</span>
+          )}
+          {report.chainTimestamp && (
+            <span className="font-mono">
+              priced {new Date(report.chainTimestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
+            </span>
+          )}
+          {report.atmGreeksSource && (
+            <span className="font-mono">
+              ATM greeks: {report.atmGreeksSource === "provider" ? "provider" : report.atmGreeksSource === "bs" ? "BS from provider IV" : "implied from premium"}
+            </span>
+          )}
+          {report.indiaVixSource && (
+            <span className="font-mono">
+              VIX: {report.indiaVixSource === "nse" ? "NSE" : report.indiaVixSource === "atm-iv" ? "chain ATM IV" : "stated estimate"}
+            </span>
+          )}
+        </div>
+      )}
 
       {report && (
         <>
@@ -441,7 +533,15 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               value={report.indiaVixEstimated ? `~${report.indiaVix.toFixed(2)}` : report.indiaVix.toFixed(2)}
               icon={Activity}
               color={report.indiaVix > 20 ? "text-rose-400" : report.indiaVix < 13 ? "text-emerald-400" : "text-amber-400"}
-              subValue={report.indiaVixEstimated ? "fallback" : `${report.indiaVixChange >= 0 ? "+" : ""}${report.indiaVixChange.toFixed(2)}`}
+              subValue={
+                report.indiaVixSource === "atm-iv"
+                  ? "chain ATM IV"
+                  : report.indiaVixSource === "estimate"
+                  ? "stated estimate"
+                  : report.indiaVixEstimated
+                  ? "fallback"
+                  : `${report.indiaVixChange >= 0 ? "+" : ""}${report.indiaVixChange.toFixed(2)}`
+              }
             />
             <MetricCard
               label="PCR"
@@ -557,6 +657,135 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               </div>
             </div>
           )}
+
+          {/* LIVE PIPELINE FEEDS — FII/DII, institutional positioning, premium acceleration.
+              The same provider feeds the other tabs read; each degrades to
+              "unavailable" on its own and never blocks the card. */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            {/* FII / DII */}
+            <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Landmark className="h-4 w-4 text-amber-400" />
+                  <span className="text-[13px] font-bold text-foreground">FII / DII Flow</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  {fiiDii?.sourceLabel || fiiDii?.source || ""}
+                </span>
+              </div>
+              {fiiDii && fiiDii.fiiNet != null ? (
+                <div className="grid grid-cols-2 gap-2 text-[12px]">
+                  <div className="bg-card/70 rounded p-2">
+                    <div className="text-muted-foreground text-[10px]">FII net</div>
+                    <div className={`font-mono font-bold ${fiiDii.fiiNet >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      ₹{fiiDii.fiiNet.toFixed(0)} Cr
+                    </div>
+                  </div>
+                  <div className="bg-card/70 rounded p-2">
+                    <div className="text-muted-foreground text-[10px]">DII net</div>
+                    <div className={`font-mono font-bold ${fiiDii.diiNet >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      ₹{fiiDii.diiNet.toFixed(0)} Cr
+                    </div>
+                  </div>
+                  <div className="col-span-2 text-[10px] text-muted-foreground">
+                    FII buy ₹{fiiDii.fiiBuy.toFixed(0)} Cr / sell ₹{fiiDii.fiiSell.toFixed(0)} Cr ·
+                    DII buy ₹{fiiDii.diiBuy.toFixed(0)} Cr / sell ₹{fiiDii.diiSell.toFixed(0)} Cr
+                    {fiiDii.ageLabel ? ` · ${fiiDii.ageLabel}` : ""}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">
+                  {!fiiDii && feedsLoading ? "loading…" : fiiDii?.reason || fiiDii?.error || "FII/DII feed unavailable"}
+                </div>
+              )}
+            </div>
+
+            {/* Institutional positioning */}
+            <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Users className="h-4 w-4 text-rose-400" />
+                  <span className="text-[13px] font-bold text-foreground">Institutional Positioning</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  {institutional?.source === "db" ? "persisted snapshot" : institutional?.source === "nse" ? "NSE scan" : ""}
+                  {institutional?.dateLabel || institutional?.date ? ` · ${institutional?.dateLabel || institutional?.date}` : ""}
+                </span>
+              </div>
+              {institutional && institutional.bias ? (
+                <div className="space-y-1.5 text-[12px]">
+                  <div className="flex items-center justify-between bg-card/70 rounded p-2">
+                    <span className="text-muted-foreground text-[10px]">Smart money bias</span>
+                    <span className={`font-mono font-bold uppercase ${
+                      institutional.bias.dominantDirection === "bullish" ? "text-emerald-400"
+                      : institutional.bias.dominantDirection === "bearish" ? "text-rose-400"
+                      : "text-muted-foreground"
+                    }`}>
+                      {institutional.bias.dominantDirection} · {institutional.bias.bullishPct}% bull / {institutional.bias.bearishPct}% bear
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between bg-card/70 rounded p-2">
+                    <span className="text-muted-foreground text-[10px]">Source alignment</span>
+                    <span className="font-mono">{institutional.alignment?.overallAlignment ?? "—"}%</span>
+                  </div>
+                  {institutional.aiSummary && (
+                    <div className="text-[10px] text-muted-foreground leading-snug line-clamp-4">
+                      {institutional.aiSummary}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">
+                  {!institutional && feedsLoading ? "loading…" : institutional?.warning || institutional?.error || "Institutional positioning unavailable"}
+                </div>
+              )}
+            </div>
+
+            {/* Premium acceleration (greek flow) */}
+            <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Gauge className="h-4 w-4 text-violet-400" />
+                  <span className="text-[13px] font-bold text-foreground">Premium Acceleration</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  {greekFlow?.availability?.strikesAnalysed != null
+                    ? `${greekFlow.availability.strikesAnalysed} strikes`
+                    : ""}
+                </span>
+              </div>
+              {greekFlow?.result ? (
+                <div className="space-y-1.5 text-[12px]">
+                  <div className="flex items-center justify-between bg-card/70 rounded p-2">
+                    <span className="text-muted-foreground text-[10px]">Expected move (1σ)</span>
+                    <span className="font-mono">
+                      {greekFlow.availability?.expectedMove?.available
+                        ? `±${greekFlow.availability.expectedMove.value}`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between bg-card/70 rounded p-2">
+                    <span className="text-muted-foreground text-[10px]">VIX used</span>
+                    <span className="font-mono">
+                      {greekFlow.availability?.vix?.used ?? "—"}
+                      <span className="text-[9px] text-muted-foreground ml-1">
+                        ({greekFlow.availability?.vix?.source || "—"})
+                      </span>
+                    </span>
+                  </div>
+                  {greekFlow.availability?.legsUnavailable > 0 && (
+                    <div className="text-[10px] text-amber-400">
+                      {greekFlow.availability.legsUnavailable} legs the chain could not price — excluded, never zeroed.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">
+                  {!greekFlow && feedsLoading ? "loading…" : greekFlow?.error || "Premium acceleration feed unavailable"}
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* CVD — context only, never a trade vote */}
           {cvd && (
@@ -1063,12 +1292,81 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
             </div>
           </div>
 
+          {/* LIVE CHAIN GREEKS — every strike the chain could price */}
+          {report.greeks && report.greeks.length > 0 && (
+            <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Waves className="h-4 w-4 text-cyan-400" />
+                <span className="text-[13px] font-bold text-foreground">Live Chain Greeks</span>
+                <span className="text-[10px] text-muted-foreground">
+                  {report.greeks.length} strikes · {report.dataSource}
+                  {report.chainFallbackUsed ? " · FALLBACK PROVIDER" : ""}
+                </span>
+              </div>
+              <div className="overflow-x-auto" style={{ maxHeight: 300 }}>
+                <table className="w-full text-[11px] font-mono">
+                  <thead className="text-muted-foreground sticky top-0 bg-card/95">
+                    <tr>
+                      <th className="text-left py-1 px-1">Strike</th>
+                      <th className="text-right px-1">CE Δ</th>
+                      <th className="text-right px-1">CE Γ</th>
+                      <th className="text-right px-1">CE Θ</th>
+                      <th className="text-right px-1">CE Vega</th>
+                      <th className="text-right px-1">CE IV</th>
+                      <th className="text-right px-1">PE Δ</th>
+                      <th className="text-right px-1">PE Γ</th>
+                      <th className="text-right px-1">PE Θ</th>
+                      <th className="text-right px-1">PE Vega</th>
+                      <th className="text-right px-1">PE IV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.greeks.map((g) => (
+                      <tr
+                        key={g.strike}
+                        className={`border-t border-border/40 ${
+                          g.strike === report.atmStrike ? "bg-amber-500/10 font-bold" : ""
+                        }`}
+                      >
+                        <td className="py-0.5 px-1">
+                          {g.strike.toLocaleString("en-IN")}
+                          {g.strike === report.atmStrike ? " ATM" : ""}
+                        </td>
+                        <td className="text-right px-1">{g.ce ? g.ce.delta.toFixed(3) : "—"}</td>
+                        <td className="text-right px-1">{g.ce ? g.ce.gamma.toFixed(5) : "—"}</td>
+                        <td className="text-right px-1">{g.ce ? g.ce.theta.toFixed(2) : "—"}</td>
+                        <td className="text-right px-1">{g.ce ? g.ce.vega.toFixed(2) : "—"}</td>
+                        <td className="text-right px-1">{g.ce ? `${g.ce.iv.toFixed(2)}%` : "—"}</td>
+                        <td className="text-right px-1">{g.pe ? g.pe.delta.toFixed(3) : "—"}</td>
+                        <td className="text-right px-1">{g.pe ? g.pe.gamma.toFixed(5) : "—"}</td>
+                        <td className="text-right px-1">{g.pe ? g.pe.theta.toFixed(2) : "—"}</td>
+                        <td className="text-right px-1">{g.pe ? g.pe.vega.toFixed(2) : "—"}</td>
+                        <td className="text-right px-1">{g.pe ? `${g.pe.iv.toFixed(2)}%` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-1.5">
+                Greeks come from the live chain (the provider&apos;s own values, or Black-Scholes from
+                the provider&apos;s IV) — a leg the chain could not price stays blank, never zero.
+              </div>
+            </div>
+          )}
+
           {/* ATM Greeks Detail */}
           {report.atmGreeks && (
             <div className="bg-card/50 border border-border/50 rounded-lg p-3">
               <div className="flex items-center gap-2 mb-2">
                 <Zap className="h-4 w-4 text-purple-400" />
-                <span className="text-[13px] font-bold text-foreground">ATM Greeks (Black-Scholes)</span>
+                <span className="text-[13px] font-bold text-foreground">ATM Greeks</span>
+                <span className="text-[10px] text-muted-foreground">
+                  {report.atmGreeksSource === "provider"
+                    ? "live chain — provider greeks"
+                    : report.atmGreeksSource === "bs"
+                    ? "live chain — Black-Scholes from the provider's IV"
+                    : "implied from the premium (the chain carried no greeks)"}
+                </span>
               </div>
               <div className="grid grid-cols-4 gap-2 text-[12px]">
                 <div className="bg-purple-500/5 rounded p-2 text-center">

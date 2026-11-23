@@ -9,11 +9,6 @@ import { buildSessionStatusReport, applyBreezeSession } from "./session-health";
 import * as G from "./agent-brain-gate";
 import { OPTION_CHAIN_TOOL, OPTION_CHAIN_KNOWLEDGE, runReadOptionChain } from "./option-chain-reader";
 import { INDICATOR_TOOLS, INDICATOR_KNOWLEDGE, runCheckIndicators, runBacktestIndicator } from "./indicators";
-import {
-  DAILY_DERIVATIVES_TOOL,
-  DAILY_DERIVATIVES_KNOWLEDGE,
-  runGetDailyDerivatives,
-} from "./daily-derivatives-knowledge";
 import { BRAIN_FLAGS } from "./brain-flags";
 import { SYMBOL_CONFIGS } from "./symbol-config";
 import { formatMCXQuoteToolResponse } from "./mcx/bridge";
@@ -222,7 +217,6 @@ ${OPTION_CHAIN_KNOWLEDGE.replace(/^## READING THE OPTION CHAIN.*\n/, "")}
 
 ${INDICATOR_KNOWLEDGE}
 
-${DAILY_DERIVATIVES_KNOWLEDGE}
 
 ## CROSS-TAB INTELLIGENCE (Hermes Agent — data is pre-fetched based on your query)
 The LIVE MARKET DATA below includes data fetched specifically for this question.
@@ -236,7 +230,6 @@ You have access to tools for deeper analysis. Use them when the pre-fetched data
 - **Trade Analysis**: get_trade_post_mortem, get_agent_analytics
 - **Trade Signals**: get_sdm_signal, get_unified_ranking, get_trade_tracking
 - **Most Active**: get_most_active_contracts (where institutional money is flowing)
-- **Derivatives/Flow**: get_daily_derivatives (PCR, max pain, walls, futures CVD, ΔOI build-up, plan ladder)
 - **Hermes Pro**: hermes_pro_analysis (full deterministic pipeline), hermes_tool_registry (tool metadata)
 
 Always call multiple tools when you need deeper analysis. Cross-reference data for stronger signals.
@@ -1049,7 +1042,6 @@ export const AGENT_TOOLS = [
     },
   },
   OPTION_CHAIN_TOOL,
-  DAILY_DERIVATIVES_TOOL,
   ...G.NEW_TOOLS,
   ...INDICATOR_TOOLS,
 ];
@@ -2352,10 +2344,6 @@ Time: ${Date.now() - start}ms`;
 
     case "read_option_chain": {
       return runReadOptionChain({ ...args, symbol }, BASE, state, symbol);
-    }
-
-    case "get_daily_derivatives": {
-      return runGetDailyDerivatives({ ...args, symbol }, BASE);
     }
 
     case "check_live_feed": {

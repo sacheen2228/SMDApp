@@ -1,5 +1,5 @@
 // Shared option chain data fetcher.
-// Used by atm-straddle, ide, daily-ide, today-trades, greek-flow,
+// Used by atm-straddle, ide, today-trades, greek-flow,
 // institutional-greeks — eliminates HTTP self-fetch which breaks on Render.
 //
 // @deprecated — thin adapter over the canonical data-layer entry point.

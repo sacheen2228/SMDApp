@@ -672,7 +672,6 @@ const TOOL_PATTERNS: Array<[string, RegExp]> = [
   ["get_fii_dii", /\bfii\b|\bdii\b|foreign institutional|institutional flow/i],
   ["get_option_chain", /\boption chain\b|\boi\b|open interest|max pain|pcr\b|strike/i],
   ["read_option_chain", /\bread the chain\b|chain read|support.*resistance|resistance.*support|walls?\b|writing|buying zones/i],
-  ["get_daily_derivatives", /daily derivatives|derivatives dashboard|\bcvd\b|cumulative delta|open interest|oi build|build.?up|fakeout|fake break|short covering|long unwinding|max pain/i],
   ["get_market_structure", /\bstructure\b|market structure|hh\s*\/\s*hl|higher (high|low)|vwap\b|supertrend|support|resistance/i],
   ["get_atm_straddle", /\batm straddle\b|straddle\b/i],
   ["get_cas_analysis", /\bcas\b|dislocation/i],

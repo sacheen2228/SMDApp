@@ -166,23 +166,6 @@ export const HERMES_TOOLS: ToolDefinition[] = [
     cacheTTL: 300_000,
     tags: ["FII", "DII", "institutional", "fund flow", "participant OI"],
   },
-  {
-    name: "get_daily_derivatives",
-    description:
-      "Daily Derivatives dashboard: PCR, max pain, call/put walls, ATM IV + Greeks, direction-bias votes, futures-leg CVD + open-interest build-up, and the canonical rupee-risk plan ladder",
-    category: "FLOW",
-    inputSchema: {
-      symbol: { type: "string", required: false, default: "NIFTY" },
-    },
-    source: "/api/daily-derivatives (DailyDerivatives.ts + market/futures-flow.ts)",
-    freshnessMaxAge: 60_000,
-    reliability: 0.85,
-    timeout: 20_000,
-    cacheable: true,
-    cacheTTL: 60_000,
-    tags: ["derivatives", "PCR", "max pain", "walls", "CVD", "open interest", "build-up", "plan"],
-  },
-
   // ── Regime ───────────────────────────────────────────────────────────
   {
     name: "get_regime",
