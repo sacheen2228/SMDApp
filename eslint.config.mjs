@@ -44,7 +44,15 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-useless-escape": "off",
   },
 }, {
-  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]
+  // The sidecar scripts run under NODE (better-sqlite3 is not bun-loadable)
+  // and must set the DB path BEFORE the module is imported, so they use
+  // require()/dynamic import() on purpose.
+  files: ["market-history/scripts/**/*.ts", "trade-audit/scripts/**/*.ts"],
+  rules: {
+    "@typescript-eslint/no-require-imports": "off",
+  },
+}, {
+  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills", "**/dist/**"]
 }];
 
 export default eslintConfig;

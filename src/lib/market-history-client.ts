@@ -45,39 +45,55 @@ async function getJson(url: string): Promise<any> {
 }
 
 // ── Writes (Recorder) ──────────────────────────────────────────
+// HARD TIMEOUTS on every write. Without them a stalled sidecar (or a stalled
+// socket) hung the recorder POST indefinitely; the systemd tick then held its
+// flock for hours and the recorder stopped recording for the rest of the
+// session. A write that cannot finish in time is a FAILED write (false), not
+// a hung request.
+const WRITE_TIMEOUT_MS = 8_000;
+
+async function postJson(path: string, body: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(`${MARKET_HISTORY_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export async function recordSnapshot(snapshot: any): Promise<boolean> {
-  const res = await fetch(`${MARKET_HISTORY_BASE}/api/snapshot`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ snapshot }),
-  });
-  if (!res.ok) return false;
-  const data = await res.json();
-  return data.success === true;
+  try {
+    const res = await fetch(`${MARKET_HISTORY_BASE}/api/snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshot }),
+      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.success === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function recordCandles(
   symbol: string,
   interval: string,
   candles: any[],
+  source?: string | null,
 ): Promise<boolean> {
-  const res = await fetch(`${MARKET_HISTORY_BASE}/api/candles`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ symbol, interval, candles }),
-  });
-  return res.ok;
+  return postJson("/api/candles", { symbol, interval, candles, source: source ?? null });
 }
 
 export async function recordScannerResults(results: any[]): Promise<boolean> {
   if (!results.length) return true;
-  const res = await fetch(`${MARKET_HISTORY_BASE}/api/scanner`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ results }),
-  });
-  return res.ok;
+  return postJson("/api/scanner", { results });
 }
 
 // Idempotent outcome resolution: write the resolved outcome fields
@@ -295,6 +311,31 @@ export async function getAvailableDates(
 
 export async function getStatus(): Promise<MarketHistoryStatus> {
   return getJson(`${MARKET_HISTORY_BASE}/api/status`);
+}
+
+/** P0 — session coverage/completeness per symbol for one trading date. */
+export interface CaptureCoverageRow {
+  symbol: string;
+  date: string;
+  snapshots: number;
+  firstSnapshot: string | null;
+  lastSnapshot: string | null;
+  expectedMinutes: number;
+  coveredMinutes: number;
+  coveragePct: number;
+  gaps: Array<{ from: string; to: string; minutes: number }>;
+  candles: number;
+  firstCandle: string | null;
+  lastCandle: string | null;
+  providerTimestamps: number;
+  missingProviderTimestamps: number;
+}
+
+export async function getCaptureCoverage(date: string, symbol?: string): Promise<CaptureCoverageRow[]> {
+  const q = new URLSearchParams({ date });
+  if (symbol) q.set("symbol", symbol);
+  const data = await getJson(`${MARKET_HISTORY_BASE}/api/coverage?${q.toString()}`);
+  return data.rows ?? [];
 }
 
 // Scalar helpers (derived from getStatus).

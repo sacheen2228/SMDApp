@@ -89,6 +89,42 @@ export interface TechnicalTimeframeInfo {
   indicators: TimeframeIndicators | null;
 }
 
+/**
+ * Futures-leg flow read — REAL traded volume + open interest from the nearest
+ * index futures contract (index SPOT carries no volume, so the spot candles
+ * can never sign a CVD curve).
+ *
+ * CVD here is CANDLE-SIGNED (an up-bar's volume counts as buying): it can
+ * never by itself falsify a breakout. The honest fake-breakout test is
+ * `relativeVolume` (the move bar vs its own prior average) together with
+ * `oiChange` / `buildup` at the signal bar.
+ *
+ * Optional: when absent the flow agents report NO_DATA — never fabricate.
+ */
+export interface FuturesFlowSlice {
+  available: boolean;
+  source: string;
+  contract?: string;
+  bars: number;
+  /** Cumulative (candle-signed) delta over the session. */
+  cvd?: number;
+  deltaPercent?: number;
+  verdict?: string;
+  oiFirst?: number;
+  oiLast?: number;
+  oiChange?: number;
+  oiChangePct?: number;
+  /** LONG_BUILDUP | SHORT_BUILDUP | SHORT_COVERING | LONG_UNWINDING | NEUTRAL */
+  buildup?: string | null;
+  /** PRICE_UP_OI_UP | PRICE_DOWN_OI_UP | PRICE_UP_OI_DOWN | PRICE_DOWN_OI_DOWN | NEUTRAL */
+  divergence?: string | null;
+  /** Last closed bar volume ÷ its prior-20-bar average (real breakout volume). */
+  relativeVolume?: number;
+  avgVolume?: number;
+  lastBarVolume?: number;
+  note?: string;
+}
+
 export interface AgentContext {
   symbol: string;
   timeframe: string;
@@ -179,6 +215,10 @@ export interface AgentContext {
 
   // Raw context (for agents that need specific data)
   rawContext?: any;
+
+  // Futures-leg flow (CVD + ΔOI + build-up + relative volume) — opt-in slice
+  // from src/lib/market/futures-flow.ts. Absent → flow agents report NO_DATA.
+  flow?: FuturesFlowSlice;
 
   // Technical analysis snapshot — computed from real OHLCV candles by
   // buildTechnicalSnapshot() (src/lib/technical-snapshot.ts).
@@ -495,6 +535,9 @@ export interface TradeMonitorState {
   exitReason?: string;
   expiry?: string;
   confidence?: number;
+  /** The producer that opened the trade (sdm-engine | stock-scanner | SMART_MONEY …).
+   *  Carried so every TP/SL card names the strategy, not just "trade-monitor". */
+  source?: string;
 }
 
 // ─── TP/SL Alert Types ───────────────────────────────────────────

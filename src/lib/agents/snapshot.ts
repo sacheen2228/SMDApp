@@ -11,9 +11,11 @@ import {
   freshnessFromIso,
   type AgentContext,
   type DataFreshnessLevel,
+  type FuturesFlowSlice,
 } from './agent-contract';
 import { runInstitutionalPositioning } from '@/lib/institutional-positioning-engine';
 import { buildTechnicalSnapshot, fetchTechnicalCandles } from '@/lib/technical-snapshot';
+import { readFuturesFlow, istDateStr, type FuturesFlowRead } from '@/lib/market/futures-flow';
 
 export interface AgentSnapshot {
   ctx: AgentContext;
@@ -29,6 +31,11 @@ export interface BuildSnapshotOptions {
   // and non-production callers stay at the deliberate ≤12 set; the
   // production pipeline route enables it.
   technical?: boolean;
+  // Futures-leg flow slice (real volume + open interest from the nearest
+  // index futures contract). Off by default like `technical` — the v2 §3
+  // fetch-budget tests and non-production callers stay network-free; the
+  // production pipeline route enables it.
+  flow?: boolean;
 }
 
 export function defaultApiBase(): string {
@@ -80,7 +87,43 @@ export async function buildAgentSnapshot(
     }
   }
 
+  // Futures flow — real futures volume + open interest (best-effort).
+  // Same shared read the Daily Derivatives card uses. Failure → ctx.flow
+  // stays absent → the flow agents report NO_DATA, never fabricated numbers.
+  if (opts.flow) {
+    try {
+      const read = await readFuturesFlow(symbol, istDateStr(0));
+      ctx.flow = toFlowSlice(read);
+    } catch (err) {
+      console.warn('[Snapshot] futures flow unavailable:', err);
+    }
+  }
+
   return { ctx, fetchedAtIso, hermes };
+}
+
+/** Map the shared futures-flow read onto the agent context slice. */
+export function toFlowSlice(read: FuturesFlowRead): FuturesFlowSlice {
+  const cvd = read?.cvd;
+  return {
+    available: Boolean(read?.available && cvd?.available),
+    source: read?.source || "none",
+    contract: read?.contract,
+    bars: read?.bars || 0,
+    cvd: cvd?.cumulative,
+    deltaPercent: cvd?.deltaPercent,
+    verdict: cvd?.verdict,
+    oiFirst: cvd?.oiFirst,
+    oiLast: cvd?.oiLast,
+    oiChange: cvd?.oiChange,
+    oiChangePct: cvd?.oiChangePct,
+    buildup: cvd?.buildup ?? null,
+    divergence: cvd?.divergence ?? null,
+    relativeVolume: read?.relativeVolume?.ratio,
+    avgVolume: read?.relativeVolume?.average,
+    lastBarVolume: read?.relativeVolume?.current,
+    note: read?.note,
+  };
 }
 
 export function mapHermesToAgentContext(

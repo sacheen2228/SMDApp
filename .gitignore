@@ -70,7 +70,9 @@ sys
 # secrets / sessions / local db
 .breeze-session.json
 *.db
-db/
+# the ROOT db/ dir only — the sidecar's source lives in market-history/src/db/
+# and must stay versioned (it owns the recorder's provenance schema).
+/db/
 *.sqlite
 *.sqlite3
 
@@ -92,3 +94,5 @@ data/cache/
 
 # MOAPI service runtime logs
 moapi-service/*.Log
+# runtime queue payloads (can reach 100s of MB — state.json stays tracked)
+web-intel/queue/pending.jsonl

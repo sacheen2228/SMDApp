@@ -27,7 +27,11 @@ export type TradeEventType =
   | 'TP2_HIT'
   | 'TP3_HIT'
   | 'SL_HIT'
-  | 'EXIT';
+  | 'EXIT'
+  // A monitoring failure (the LTP feed never came up). It is NOT a fill:
+  // it must never claim the (tradeId, SL_HIT, targetLevel) key, or a real
+  // stop-out for the same contract could never be delivered.
+  | 'MONITOR_ERROR';
 
 export type TradeEventStatus =
   | 'PENDING'
@@ -123,6 +127,7 @@ export async function sendTradeEvent(params: TradeEventInput): Promise<TradeEven
   // If a concurrent worker already claimed it, we get a unique constraint
   // violation and return null (another worker owns this event).
   let event;
+  let isRetry = false;
   try {
     event = await prisma.notificationEvent.create({
       data: {
@@ -151,17 +156,28 @@ export async function sendTradeEvent(params: TradeEventInput): Promise<TradeEven
         // Another worker is actively sending — wait for it to finish
         return { sent: false, eventId: existing.id, reason: 'processing', alreadySent: false };
       }
-      // PENDING or FAILED — another worker owns it
-      return { sent: false, eventId: existing?.id ?? null, reason: 'claimed_by_another_worker', alreadySent: false };
+      if (existing && existing.status === 'FAILED' && existing.attemptCount < 3) {
+        // The previous attempt never reached the chat (off-hours window, veto,
+        // risk block). The claim is still OURS — re-send the SAME event so the
+        // alert is not lost when the trade is detected again.
+        event = existing;
+        isRetry = true;
+      } else {
+        // PENDING or FAILED (attempts exhausted) — another worker owns it
+        return { sent: false, eventId: existing?.id ?? null, reason: 'claimed_by_another_worker', alreadySent: false };
+      }
+    } else {
+      // Non-unique error — rethrow
+      throw err;
     }
-    // Non-unique error — rethrow
-    throw err;
   }
 
   // ── Step 2: Mark PROCESSING ──
   await prisma.notificationEvent.update({
     where: { id: event.id },
-    data: { status: 'PROCESSING' },
+    data: isRetry
+      ? { status: 'PROCESSING', attemptCount: { increment: 1 }, lastError: null }
+      : { status: 'PROCESSING' },
   });
 
   // ── Step 3: Build and send via the central Telegram funnel ──
@@ -206,12 +222,19 @@ export async function sendTradeEvent(params: TradeEventInput): Promise<TradeEven
       });
       return { sent: true, eventId: event.id, reason: null, alreadySent: false };
     } else {
-      // sendTradeAlert returned false — deduped or blocked by veto
+      // The funnel refused (off-hours window, veto, risk block, owner off) —
+      // the alert was NOT delivered. Record it as FAILED: the journal must
+      // never claim a delivery that did not happen, and a FAILED event can be
+      // re-sent when the trade is detected again (the P2002 retry path).
       await prisma.notificationEvent.update({
         where: { id: event.id },
-        data: { status: 'SENT', sentAt: new Date() }, // treat as "handled" — no retry
+        data: {
+          status: 'FAILED',
+          attemptCount: { increment: 1 },
+          lastError: 'suppressed_by_dedup_or_veto',
+        },
       });
-      return { sent: true, eventId: event.id, reason: 'suppressed_by_dedup_or_veto', alreadySent: true };
+      return { sent: false, eventId: event.id, reason: 'suppressed_by_dedup_or_veto', alreadySent: false };
     }
   } catch (err: any) {
     lastError = err?.message ?? String(err);

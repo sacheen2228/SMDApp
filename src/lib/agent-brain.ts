@@ -9,6 +9,11 @@ import { buildSessionStatusReport, applyBreezeSession } from "./session-health";
 import * as G from "./agent-brain-gate";
 import { OPTION_CHAIN_TOOL, OPTION_CHAIN_KNOWLEDGE, runReadOptionChain } from "./option-chain-reader";
 import { INDICATOR_TOOLS, INDICATOR_KNOWLEDGE, runCheckIndicators, runBacktestIndicator } from "./indicators";
+import {
+  DAILY_DERIVATIVES_TOOL,
+  DAILY_DERIVATIVES_KNOWLEDGE,
+  runGetDailyDerivatives,
+} from "./daily-derivatives-knowledge";
 import { BRAIN_FLAGS } from "./brain-flags";
 import { SYMBOL_CONFIGS } from "./symbol-config";
 import { formatMCXQuoteToolResponse } from "./mcx/bridge";
@@ -217,6 +222,8 @@ ${OPTION_CHAIN_KNOWLEDGE.replace(/^## READING THE OPTION CHAIN.*\n/, "")}
 
 ${INDICATOR_KNOWLEDGE}
 
+${DAILY_DERIVATIVES_KNOWLEDGE}
+
 ## CROSS-TAB INTELLIGENCE (Hermes Agent — data is pre-fetched based on your query)
 The LIVE MARKET DATA below includes data fetched specifically for this question.
 You have access to tools for deeper analysis. Use them when the pre-fetched data isn't enough.
@@ -229,6 +236,7 @@ You have access to tools for deeper analysis. Use them when the pre-fetched data
 - **Trade Analysis**: get_trade_post_mortem, get_agent_analytics
 - **Trade Signals**: get_sdm_signal, get_unified_ranking, get_trade_tracking
 - **Most Active**: get_most_active_contracts (where institutional money is flowing)
+- **Derivatives/Flow**: get_daily_derivatives (PCR, max pain, walls, futures CVD, ΔOI build-up, plan ladder)
 - **Hermes Pro**: hermes_pro_analysis (full deterministic pipeline), hermes_tool_registry (tool metadata)
 
 Always call multiple tools when you need deeper analysis. Cross-reference data for stronger signals.
@@ -1041,6 +1049,7 @@ export const AGENT_TOOLS = [
     },
   },
   OPTION_CHAIN_TOOL,
+  DAILY_DERIVATIVES_TOOL,
   ...G.NEW_TOOLS,
   ...INDICATOR_TOOLS,
 ];
@@ -1720,12 +1729,13 @@ ${changes.join("\n")}`;
 
     case "search_memory": {
       try {
-        const { searchTradePatterns, getBestSetups, getPredictionAccuracy } = await import("./agent-memory");
+        const { searchTradePatterns, getBestSetups, getPredictionAccuracy, searchKnowledgeNotes } = await import("./agent-memory");
         const { query } = args;
         if (!query) return "Missing required param: query";
         const patterns = searchTradePatterns(query, 10);
         const setups = getBestSetups(undefined, 1);
         const accuracy = getPredictionAccuracy();
+        const notes = searchKnowledgeNotes(query, 3);
         const parts: string[] = [];
         parts.push("Memory Search: \"" + query + "\"");
         if (patterns.length > 0) {
@@ -1736,6 +1746,9 @@ ${changes.join("\n")}`;
         }
         if (setups.length > 0) {
           parts.push("\nBest setup: " + setups[0].setup + " on " + setups[0].symbol + " — " + (setups[0].winRate * 100).toFixed(0) + "% WR");
+        }
+        if (notes.length > 0) {
+          parts.push("\nDesk knowledge notes (" + notes.length + "):\n" + notes.map(function(n) { return "- [" + n.topic + "] " + n.title + "\n" + n.body; }).join("\n"));
         }
         parts.push("\nPrediction accuracy: " + accuracy.total + " predictions, " + (accuracy.accuracy * 100).toFixed(0) + "% accuracy");
         return parts.join("\n");
@@ -2339,6 +2352,10 @@ Time: ${Date.now() - start}ms`;
 
     case "read_option_chain": {
       return runReadOptionChain({ ...args, symbol }, BASE, state, symbol);
+    }
+
+    case "get_daily_derivatives": {
+      return runGetDailyDerivatives({ ...args, symbol }, BASE);
     }
 
     case "check_live_feed": {

@@ -15,6 +15,7 @@ import {
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { OrderBookPanel } from "@/components/orderbook/OrderBookPanel";
 import { Panel } from "@/components/ui/panel";
+import { computeCandleCvdProxy } from "@/engines/orderflow/orderflow-engine";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"];
 
@@ -256,16 +257,12 @@ export function OrderFlowView() {
   const spot = data?.spot ?? 0;
   const pcr = data?.pcr ?? 0;
 
-  // CVD from candles: close>open → buy vol, close<open → sell vol
   const cvd = useMemo(() => {
-    const out: { t: string; v: number }[] = [];
-    let cum = 0;
-    (data?.candles ?? []).slice(-100).forEach((c) => {
-      const delta = c.close >= c.open ? c.volume : -c.volume;
-      cum += delta;
-      out.push({ t: new Date(c.time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }), v: cum });
-    });
-    return out;
+    const result = computeCandleCvdProxy((data?.candles ?? []).slice(-100));
+    return result.points.map((p) => ({
+      t: new Date(p.time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }),
+      v: p.cvd,
+    }));
   }, [data?.candles]);
 
   const topDom = useMemo(() => {
@@ -351,7 +348,7 @@ export function OrderFlowView() {
         </TabsContent>
 
         <TabsContent value="cvd" className="mt-4 space-y-3">
-          <Panel title="Cumulative Volume Delta (CVD)" subtitle="Derived from 5m candles (close ≥ open = buy)">
+          <Panel title="Cumulative Volume Delta (CVD)" subtitle="Candle proxy (close > open = buy, close < open = sell) — not trade-side CVD">
             <div className="h-[340px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={cvd}>

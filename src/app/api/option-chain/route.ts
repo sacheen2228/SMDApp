@@ -873,6 +873,9 @@ export async function GET(request: NextRequest) {
               status: 'ACTIVE',
               sentAt: new Date().toISOString(),
               source: `option-chain-api`,
+              // SENSEX / BANKEX are BSE contracts — the monitor prices them from
+              // the BSE chain, never from NSE.
+              exchange: isBSEIndex(symbol) ? 'BSE' : 'NSE',
               expiry: selectedExpiry || undefined,
               confidence: conf,
               spotPrice: spotPrice || undefined,

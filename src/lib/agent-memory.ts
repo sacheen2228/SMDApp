@@ -15,6 +15,7 @@ const FILES = {
   preferences: "preferences.json",
   alerts: "alert-history.json",
   jarvisSignals: "jarvis-signals.json",
+  knowledge: "knowledge-notes.json",
 } as const;
 
 interface TradePattern {
@@ -70,6 +71,20 @@ interface AlertRecord {
   severity: string;
   acknowledged: boolean;
   timestamp: string;
+}
+
+/**
+ * A persisted piece of DESK KNOWLEDGE (the strategy/rules a bot must not
+ * forget) — not a trade record. Kept in its own file so the trade-pattern
+ * caps never evict it.
+ */
+export interface KnowledgeNote {
+  id: string;
+  topic: string;
+  title: string;
+  body: string;
+  tags: string[];
+  updatedAt: string;
 }
 
 function ensureDir() {
@@ -290,6 +305,61 @@ export function getJarvisSignals(instrument?: string, limit = 10): JarvisSignal[
   return list.slice(-limit).reverse();
 }
 
+// ─── Knowledge Notes (desk strategy/rules both bots must remember) ───
+export function recordKnowledgeNote(
+  note: Omit<KnowledgeNote, "id" | "updatedAt"> & { id?: string }
+): KnowledgeNote {
+  const notes = loadJson<KnowledgeNote>(FILES.knowledge);
+  const existing = note.id ? notes.find((n) => n.id === note.id) : undefined;
+  const record: KnowledgeNote = {
+    id: existing?.id || note.id || uid(),
+    topic: note.topic,
+    title: note.title,
+    body: note.body,
+    tags: note.tags || [],
+    updatedAt: new Date().toISOString(),
+  };
+  if (existing) {
+    Object.assign(existing, record);
+  } else {
+    notes.push(record);
+  }
+  if (notes.length > 100) notes.splice(0, notes.length - 100);
+  saveJson(FILES.knowledge, notes);
+  return record;
+}
+
+/** Upsert by topic + title — the canonical note is written once, then refreshed. */
+export function ensureKnowledgeNote(
+  note: Omit<KnowledgeNote, "id" | "updatedAt"> & { id?: string }
+): KnowledgeNote {
+  const notes = loadJson<KnowledgeNote>(FILES.knowledge);
+  const existing = notes.find((n) => n.topic === note.topic && n.title === note.title);
+  return recordKnowledgeNote({ ...note, id: existing?.id });
+}
+
+export function getKnowledgeNotes(topic?: string, limit = 20): KnowledgeNote[] {
+  let notes = loadJson<KnowledgeNote>(FILES.knowledge);
+  if (topic) notes = notes.filter((n) => n.topic.toLowerCase() === topic.toLowerCase());
+  return notes.slice(-limit).reverse();
+}
+
+export function searchKnowledgeNotes(query: string, limit = 10): KnowledgeNote[] {
+  const q = String(query || "").toLowerCase().trim();
+  const notes = loadJson<KnowledgeNote>(FILES.knowledge);
+  if (!q) return notes.slice(-limit).reverse();
+  return notes
+    .filter(
+      (n) =>
+        n.topic.toLowerCase().includes(q) ||
+        n.title.toLowerCase().includes(q) ||
+        n.body.toLowerCase().includes(q) ||
+        n.tags.some((t) => t.toLowerCase().includes(q))
+    )
+    .slice(-limit)
+    .reverse();
+}
+
 // ─── Summary ───
 export function getMemorySummary(): string {
   const patterns = loadJson<TradePattern>(FILES.tradePatterns);
@@ -303,6 +373,11 @@ export function getMemorySummary(): string {
   const parts: string[] = [];
   parts.push(`Trade patterns: ${patterns.length} recorded`);
   parts.push(`Setups tracked: ${memories.length}`);
+  const notes = loadJson<KnowledgeNote>(FILES.knowledge);
+  if (notes.length) {
+    const topics = [...new Set(notes.map((n) => n.topic))].join(", ");
+    parts.push(`Desk knowledge notes: ${notes.length} (${topics})`);
+  }
   if (bestSetup && bestSetup.totalTrades >= 3) {
     parts.push(`Best setup: ${bestSetup.setup} on ${bestSetup.symbol} — ${(bestSetup.winRate * 100).toFixed(0)}% WR over ${bestSetup.totalTrades} trades`);
   }

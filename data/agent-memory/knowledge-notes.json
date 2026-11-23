@@ -1,0 +1,16 @@
+[
+  {
+    "id": "mwpcix0zx1va0y",
+    "topic": "daily-derivatives",
+    "title": "Daily Derivatives dashboard logic + strategy (canonical)",
+    "body": "WHAT THE DASHBOARD READS: PCR, max pain, call/put walls, ATM IV + Greeks, sentiment, five visible direction votes (PCR, OI change, max-pain pull, walls, candle signals), the futures-leg CVD + ΔOI build-up, and the canonical trade-plan ladder.\nPLAN LADDER (canonical, one builder for every engine): risk = 20% of the amount DEPLOYED (₹10,000 deployed → ₹2,000 at risk); stop capped at 35% of the premium (the rupee risk shrinks, never grows); floor 8 ticks; targets = 2R / 3R / 4R (R:R 1:2 / 1:3 / 1:4); option R:R floor 1:2; |delta| ≥ 0.35; OTM ≤ 3 strikes; hard deployment cap ₹45,000 per trade.\n0 LOTS = NO TRADE. A contract that does not fit the deployment budget is never forced to 1 lot (the old Math.max(1, …) sizing traded RELIANCE CE at 2.25x the cap and SBIN CE at 11x).\nSESSION RULE: no NEW option premium buys after 13:00 IST — the ledger shows afternoon option entries went 0 wins / 34 trades.\nCVD IS CANDLE-SIGNED (an up-bar's volume counts as buying), so it can NEVER by itself prove a breakout is fake — a breakout bar is positive CVD by construction. The honest fake-breakout test = futures RELATIVE VOLUME (move bar vs its own prior 20-bar average) + ΔOI at the signal bar: price↑+OI↑ = fresh longs; price↑+OI↓ = SHORT COVERING (squeeze, less durable); price↓+OI↑ = fresh shorts; price↓+OI↓ = LONG UNWINDING.\nDATA HONESTY: index SPOT carries no volume (the CVD proxy had nothing to sign) → the futures leg is read instead. MOAPI has no intraday futures series and no futures OI (day volume only). SENSEX/BFO futures carry no OI → ΔOI stays unknown, never zero. No aggressor-side tape exists for these indices.\nVETO LAYERS (signal-veto + evaluate_trade_gate): wrong-side stop, R:R below the floor, expiry-day index option, |delta| too low, too many OTM steps, deployment/lot over the cap, loss streak, daily-loss cap, stale feed — all fail closed.",
+    "tags": [
+      "derivatives",
+      "cvd",
+      "open-interest",
+      "plan-ladder",
+      "veto"
+    ],
+    "updatedAt": "2026-11-20T19:02:17.267Z"
+  }
+]

@@ -21,7 +21,11 @@ import {
   recordPrediction,
   recordAlert,
   acknowledgeAlert,
+  getKnowledgeNotes,
+  searchKnowledgeNotes,
+  recordKnowledgeNote,
 } from "@/lib/agent-memory";
+import { persistDailyDerivativesKnowledge } from "@/lib/daily-derivatives-knowledge";
 
 export async function GET(req: NextRequest) {
   try {
@@ -29,11 +33,21 @@ export async function GET(req: NextRequest) {
     const action = searchParams.get("action") || "summary";
     const query = searchParams.get("q") || "";
     const symbol = searchParams.get("symbol") || undefined;
+    const topic = searchParams.get("topic") || undefined;
     const limit = parseInt(searchParams.get("limit") || "30");
 
     switch (action) {
       case "summary":
+        // Keep the canonical Daily Derivatives strategy note persisted so both
+        // bots can recall it via search_memory / get_memory_summary.
+        await persistDailyDerivativesKnowledge();
         return NextResponse.json({ success: true, data: getMemorySummary() });
+
+      case "knowledge":
+        return NextResponse.json({
+          success: true,
+          data: query ? searchKnowledgeNotes(query, limit) : getKnowledgeNotes(topic, limit),
+        });
 
       case "trades":
         return NextResponse.json({
@@ -112,6 +126,15 @@ export async function POST(req: NextRequest) {
           symbol: body.symbol,
           message: body.message,
           severity: body.severity || "INFO",
+        });
+        return NextResponse.json({ success: true });
+
+      case "knowledge":
+        recordKnowledgeNote({
+          topic: body.topic || "general",
+          title: body.title,
+          body: body.body,
+          tags: body.tags || [],
         });
         return NextResponse.json({ success: true });
 

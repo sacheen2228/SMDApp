@@ -267,7 +267,22 @@ export function insertSnapshot(s: any): boolean {
     });
   });
   tx();
+  maybeCheckpointWal();
   return inserted;
+}
+
+// The WAL is reusable space, but it stays RESERVED on disk while the sidecar
+// holds the DB open — observed: a 1.5GB WAL next to a 1.5GB DB. Checkpoint it
+// once it grows past 64MB so the space goes back to the filesystem.
+const WAL_CHECKPOINT_BYTES = 64 * 1024 * 1024;
+function maybeCheckpointWal(): void {
+  try {
+    const wal = `${db.name}-wal`;
+    const size = fs.existsSync(wal) ? fs.statSync(wal).size : 0;
+    if (size > WAL_CHECKPOINT_BYTES) db.pragma("wal_checkpoint(PASSIVE)");
+  } catch {
+    /* checkpointing is best effort */
+  }
 }
 
 export function insertCandles(symbol: string, interval: string, candles: any[], source?: string | null): void {

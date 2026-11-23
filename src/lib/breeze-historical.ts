@@ -14,6 +14,8 @@ import {
 // "FINNIFTY"/"SENSEX" return zero rows from getHistoricalDatav2, verified live).
 const INDEX_CODES: Record<string, string> = INDEX_BREEZE_CODES;
 
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 // ─── Types ───────────────────────────────────────────────────────
 export interface HistoricalCandle {
   time: string;        // ISO string "YYYY-MM-DD HH:MM:SS"
@@ -22,6 +24,7 @@ export interface HistoricalCandle {
   low: number;
   close: number;
   volume: number;
+  oi?: number;         // futures contracts only
 }
 
 export interface IntradayCandleResult {
@@ -167,6 +170,140 @@ export async function getIntradayCandles(
       source: "fallback",
       warning: `Exception: ${err.message}`,
     };
+  }
+}
+
+// ─── Futures (index derivatives) intraday candles — REAL traded volume ───
+// Index SPOT bars carry no volume (Breeze index intraday returns volume 0,
+// NSE chart-databyindex is close-only), so the CVD proxy had nothing to sign.
+// The nearest futures contract DOES carry real traded volume, verified live:
+// NIFTY 23-Nov-2026 (NFO) → 76 bars, 5,277,025 contracts traded on 2026-11-20.
+
+export interface FuturesIntradayRequest {
+  interval: "1minute" | "5minute";
+  fromDate: string;
+  toDate: string;
+  stockCode: string;
+  exchangeCode: "NFO" | "BFO";
+  productType: "futures";
+  right: "none";
+  expiryDate: string;
+}
+
+const FUTURES_EXCHANGE_BY_SYMBOL: Record<string, "NFO" | "BFO"> = {
+  SENSEX: "BFO",
+  BANKEX: "BFO",
+};
+
+/** "23-Nov-2026" / "2026-11-23" → "2026-11-23" (the only form Breeze accepts). */
+export function toIsoExpiryDate(raw: string): string | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = /^(\d{1,2})[-\s/]([A-Za-z]{3,9})[-\s/](\d{4})$/.exec(s);
+  if (m) {
+    const mon = MONTHS_SHORT.findIndex((x) => x.toLowerCase() === m![2].slice(0, 3).toLowerCase());
+    if (mon < 0) return null;
+    return `${m[3]}-${String(mon + 1).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  }
+  return null;
+}
+
+/**
+ * Build the Breeze futures historical request for one session day.
+ * Breeze reads these as IST wall-clock times (09:15–15:30 session), so the
+ * strings are built from the date parts directly — no Date object, no
+ * dependency on the server timezone.
+ */
+export function buildFuturesIntradayRequest(
+  symbol: string,
+  expiryDate: string,
+  dateStr: string,
+  interval: "1minute" | "5minute" = "5minute",
+): FuturesIntradayRequest | null {
+  const sym = String(symbol || "").toUpperCase();
+  const isoExpiry = toIsoExpiryDate(expiryDate);
+  if (!isoExpiry) return null;
+  const day = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(dateStr || "").trim());
+  if (!day) return null;
+  const sessionDay = `${day[1]}-${day[2].padStart(2, "0")}-${day[3].padStart(2, "0")}`;
+
+  return {
+    interval,
+    fromDate: `${sessionDay} 09:15:00`,
+    toDate: `${sessionDay} 15:30:00`,
+    stockCode: INDEX_CODES[sym] ?? sym,
+    exchangeCode: FUTURES_EXCHANGE_BY_SYMBOL[sym] ?? "NFO",
+    productType: "futures",
+    right: "none",
+    expiryDate: isoExpiry,
+  };
+}
+
+export interface FuturesCandleResult {
+  candles: HistoricalCandle[];
+  source: "breeze" | "none";
+  contract?: string;
+  warning?: string;
+}
+
+export async function getFuturesIntradayCandles(
+  symbol: string,
+  expiryDate: string,
+  dateStr: string,
+  interval: "1minute" | "5minute" = "5minute",
+): Promise<FuturesCandleResult> {
+  const sym = String(symbol || "").toUpperCase();
+  const request = buildFuturesIntradayRequest(sym, expiryDate, dateStr, interval);
+  if (!request) {
+    return { candles: [], source: "none", warning: `Unusable futures request for ${sym}` };
+  }
+
+  try {
+    const state = getSessionState();
+    if (!state.authenticated) await initSession();
+    const breeze = getBreezeClient();
+
+    const result: any = await breeze.getHistoricalDatav2(request as any);
+    if (!result || result.Error || result.Status === 401) {
+      const errMsg = result?.Error || result?.Message || "Breeze futures historical call failed";
+      console.warn(`[Breeze Futures] ${errMsg} for ${sym} ${request.expiryDate} on ${dateStr}`);
+      return { candles: [], source: "none", warning: `Breeze error: ${errMsg}` };
+    }
+
+    const raw = result.Success || result.data || result || [];
+    const candles: HistoricalCandle[] = [];
+    for (const c of raw) {
+      const timeStr = c.time || c.datetime || c.timestamp;
+      if (!timeStr) continue;
+      const open = Number(c.open ?? c.o ?? 0);
+      const high = Number(c.high ?? c.h ?? 0);
+      const low = Number(c.low ?? c.l ?? 0);
+      const close = Number(c.close ?? c.c ?? 0);
+      const volume = Number(c.volume ?? c.v ?? 0);
+      if (!open && !high && !low && !close) continue;
+      const oi = Number(c.open_interest ?? c.openInterest ?? c.oi ?? 0);
+      candles.push({
+        time: timeStr,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        ...(Number.isFinite(oi) ? { oi } : {}),
+      });
+    }
+    candles.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
+    const contract = `${sym} ${request.expiryDate} futures`;
+    if (!candles.length) {
+      return { candles: [], source: "none", contract, warning: `No futures candles for ${contract}` };
+    }
+    return { candles, source: "breeze", contract };
+  } catch (err: any) {
+    console.error(`[Breeze Futures] Exception for ${sym} on ${dateStr}:`, err?.message);
+    return { candles: [], source: "none", warning: `Exception: ${err?.message}` };
   }
 }
 

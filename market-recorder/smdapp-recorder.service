@@ -3,6 +3,11 @@ Description=SMDApp Market Recorder tick
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/sachin/Desktop/SMDApp
+WorkingDirectory=/home/sachin/Desktop/SDMApp
 Environment=MARKET_RECORDER_BASE=http://localhost:3000
-ExecStart=/home/sachin/Desktop/SMDApp/market-recorder/tick.sh
+ExecStart=/home/sachin/Desktop/SDMApp/market-recorder/tick.sh
+# P0 (2026-11-19): the user manager defaults TimeoutStartSec to infinity, so a
+# hung tick stayed alive for 10+ hours holding /tmp/smdapp-recorder.lock and
+# silently killed the recorder for the rest of the session. Bound it.
+TimeoutStartSec=75s
+TimeoutStopSec=10s

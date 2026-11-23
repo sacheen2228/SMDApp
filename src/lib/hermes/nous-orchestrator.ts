@@ -79,8 +79,6 @@ interface OrchestratorState {
 }
 
 // ─── Singleton ────────────────────────────────────────────────────
-let orchestratorInstance: NousOrchestrator | null = null;
-
 class NousOrchestrator {
   private prisma: PrismaClient;
   private state: OrchestratorState;
@@ -658,12 +656,9 @@ class NousOrchestrator {
   }
 }
 
-// ─── Get Singleton ────────────────────────────────────────────────
+// ─── Get Singleton (globalThis — shared across route module graphs) ───
 export function getNousOrchestrator(): NousOrchestrator {
-  if (!orchestratorInstance) {
-    orchestratorInstance = new NousOrchestrator();
-  }
-  return orchestratorInstance;
+  return ((globalThis as any).__SMD_NOUS_ORCH__ ??= new NousOrchestrator());
 }
 
 // ─── Convenience Exports ──────────────────────────────────────────

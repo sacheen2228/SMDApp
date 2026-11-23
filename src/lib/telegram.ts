@@ -116,6 +116,17 @@ export function __setTelegramSenderForTests(fn: TelegramSender | null): void {
 
 export async function sendTelegramMessage(text: string, chatId?: string, opts?: { allowOffHours?: boolean }): Promise<boolean> {
   if (testSender) return testSender(text, chatId);
+  // HARD TEST-MODE GUARD — a `bun test` run must NEVER reach the live chat.
+  // On 21/11 the e2e fixtures (e2e-* ids, strike 23400, entry ₹100) were
+  // delivered to the real bot: the only protection was the optional
+  // __setTelegramSenderForTests mock, and a test that did not install it (or
+  // ran between two mocked tests) fell through to the live API.
+  // `bun test` sets NODE_ENV=test; TELEGRAM_ALLOW_TEST_SENDS=1 is the
+  // deliberate escape hatch for a manual smoke test.
+  if (process.env.NODE_ENV === "test" && process.env.TELEGRAM_ALLOW_TEST_SENDS !== "1") {
+    console.warn("[Telegram] test mode — real Telegram send blocked");
+    return false;
+  }
   // Hard gate: no Telegram output outside 09:10-15:30 IST (Mon-Fri).
   // The opts.allowOffHours flag is intended for informational (non-trade) modes
   // such as evening watchlist, preopen re‑rank and end‑of-day evaluation — these

@@ -1,4 +1,6 @@
 import { Router, Request, Response } from "express";
+import fs from "fs";
+import path from "path";
 import {
   insertSnapshot,
   insertCandles,
@@ -14,6 +16,7 @@ import {
   getAvailableDates,
   getSnapshotIntegrityRows,
   getSnapshotVersion,
+  getCaptureCoverage,
   getTotalSnapshots,
   getLastCaptureTime,
   getDbFileSizeBytes,
@@ -27,6 +30,15 @@ import {
   type ScannerResultFilter,
   type WebRecordRow,
 } from "../db";
+import { db } from "../db";
+import {
+  RETENTION_DEFAULTS,
+  planRetention,
+  runRetention,
+  dbFileBytes,
+  freeDiskBytes,
+  type RetentionMode,
+} from "../db/retention";
 
 export const apiRouter = Router();
 
@@ -56,12 +68,26 @@ apiRouter.post("/snapshot", (req: Request, res: Response) => {
 
 apiRouter.post("/candles", (req: Request, res: Response) => {
   try {
-    const { symbol, interval, candles } = req.body ?? {};
+    const { symbol, interval, candles, source } = req.body ?? {};
     if (!symbol || !interval || !Array.isArray(candles)) {
       return res.status(400).json({ error: "invalid_candles" });
     }
-    insertCandles(symbol, interval, candles);
+    insertCandles(symbol, interval, candles, source ?? null);
     return res.json({ success: true, count: candles.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: String(e?.message ?? e) });
+  }
+});
+
+// ── P0 recorder coverage / completeness ──────────────────────
+// How much of the trading session was actually recorded, and which minutes
+// were missed. Read-only — it never writes.
+apiRouter.get("/coverage", (req: Request, res: Response) => {
+  try {
+    const date = String(req.query.date ?? new Date().toISOString().slice(0, 10));
+    const symbol = req.query.symbol ? String(req.query.symbol) : undefined;
+    const rows = getCaptureCoverage(date, symbol ? [symbol] : undefined);
+    return res.json({ success: true, date, rows });
   } catch (e: any) {
     return res.status(500).json({ error: String(e?.message ?? e) });
   }
@@ -340,4 +366,71 @@ apiRouter.get("/web/status", (_req: Request, res: Response) => {
     sources: getWebSourceHealth(),
     serverTime: new Date().toISOString(),
   });
+});
+
+// ── Retention / disk-space maintenance ─────────────────────────
+// The user-approved policy: keep at most 30 days of raw data, and reset the
+// DB at the start of every new month. Destructive, so the route is
+// loopback-only unless a maintenance token is configured, and the engine
+// itself archives + verifies before it deletes anything.
+function isLoopback(req: Request): boolean {
+  const addr = req.socket.remoteAddress || "";
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
+function maintenanceAllowed(req: Request): boolean {
+  const token = process.env.MARKET_HISTORY_MAINTENANCE_TOKEN;
+  if (token) {
+    const given = req.header("x-maintenance-token") || "";
+    return given === token;
+  }
+  return isLoopback(req);
+}
+
+apiRouter.get("/maintenance/status", (req: Request, res: Response) => {
+  if (!maintenanceAllowed(req)) return res.status(403).json({ error: "forbidden" });
+  try {
+    const daily = planRetention("daily");
+    const monthly = planRetention("monthly");
+    const dir = RETENTION_DEFAULTS.archiveDir;
+    const archives = fs.existsSync(dir)
+      ? fs
+          .readdirSync(dir)
+          .filter((f) => f.startsWith("market_history_") && f.endsWith(".db.gz"))
+          .map((f) => {
+            const st = fs.statSync(path.join(dir, f));
+            return { file: f, bytes: st.size, modified: st.mtime.toISOString() };
+          })
+          .sort((a, b) => (a.modified < b.modified ? 1 : -1))
+      : [];
+    return res.json({
+      success: true,
+      policy: {
+        retentionDays: RETENTION_DEFAULTS.retentionDays,
+        keepArchives: RETENTION_DEFAULTS.keepArchives,
+        archiveDir: RETENTION_DEFAULTS.archiveDir,
+      },
+      daily,
+      monthly,
+      archives,
+      databaseSizeBytes: dbFileBytes(),
+      freeDiskBytes: freeDiskBytes(path.dirname(db.name)),
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: String(e?.message ?? e) });
+  }
+});
+
+apiRouter.post("/maintenance/retention", (req: Request, res: Response) => {
+  if (!maintenanceAllowed(req)) return res.status(403).json({ error: "forbidden" });
+  const mode = String(req.body?.mode ?? "daily") as RetentionMode;
+  if (!["daily", "monthly", "dry-run"].includes(mode)) {
+    return res.status(400).json({ error: "mode must be daily | monthly | dry-run" });
+  }
+  try {
+    const result = runRetention(mode);
+    return res.json({ success: result.ok, result });
+  } catch (e: any) {
+    return res.status(500).json({ error: String(e?.message ?? e) });
+  }
 });

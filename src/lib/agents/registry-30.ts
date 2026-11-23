@@ -1251,6 +1251,7 @@ async function analyzeVWAP(ctx: AgentContext): Promise<AgentResearchOutput> {
 async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
   const def = REGISTRY.find(a => a.id === 'VOLUME')!;
   const evidence: string[] = [];
+  const riskFlags: string[] = [];
   let bias: AgentBias = 'NEUTRAL';
   let confidence = 50;
 
@@ -1262,6 +1263,36 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
     if (tv.volumeTrend !== 'NO_DATA') evidence.push(`Volume trend: ${tv.volumeTrend}`);
     if (tv.relativeVolume > 0) evidence.push(`Relative volume: ${tv.relativeVolume}x 20-bar average`);
     if (tv.volumeSpike) { evidence.push('Volume spike ≥ 2x average'); confidence = Math.min(confidence + 5, 80); }
+  }
+
+  // Futures-leg flow (real traded volume + open interest). Index SPOT carries
+  // no volume, so this is the only genuine volume read for an index.
+  const flow = ctx.flow;
+  if (flow?.available) {
+    if (typeof flow.cvd === 'number') {
+      evidence.push(`Futures CVD ${flow.cvd >= 0 ? '+' : ''}${Math.round(flow.cvd).toLocaleString('en-IN')}${
+        typeof flow.deltaPercent === 'number' ? ` (${flow.deltaPercent.toFixed(2)}% of session volume)` : ''
+      } — ${flow.verdict || 'NO_VERDICT'}`);
+    }
+    if (typeof flow.oiChange === 'number') {
+      evidence.push(
+        `Futures open interest Δ ${flow.oiChange >= 0 ? '+' : ''}${Math.round(flow.oiChange).toLocaleString('en-IN')}${
+          typeof flow.oiChangePct === 'number' ? ` (${flow.oiChangePct.toFixed(2)}%)` : ''
+        } — build-up ${flow.buildup || 'UNKNOWN'}`
+      );
+    } else {
+      evidence.push('Futures open interest unavailable on this feed (never a fabricated zero)');
+    }
+    if (typeof flow.relativeVolume === 'number') {
+      evidence.push(`Futures relative volume ${flow.relativeVolume.toFixed(2)}x (last closed bar vs 20-bar average)`);
+    }
+    // CVD is candle-signed — it can never by itself falsify a breakout.
+    if (flow.buildup === 'SHORT_COVERING' && (flow.cvd ?? 0) > 0) {
+      riskFlags.push('Futures CVD positive but open interest falling — move is short covering, not fresh longs');
+    }
+    if (flow.buildup === 'LONG_UNWINDING' && (flow.cvd ?? 0) < 0) {
+      riskFlags.push('Futures CVD negative with open interest falling — long unwinding, not fresh short build-up');
+    }
   }
 
   const vol = ctx.volume || 0;
@@ -1298,7 +1329,7 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
     bias,
     confidence,
     evidence,
-    riskFlags: [],
+    riskFlags,
     recommendationContext: confidence >= 55 ? 'TRADE' : 'RESEARCH_ONLY',
     recommendationReason: 'Volume confirms price action',
     data: {
@@ -1307,6 +1338,10 @@ async function analyzeVolume(ctx: AgentContext): Promise<AgentResearchOutput> {
       volumeSpike: tv?.volumeSpike ?? false,
       volumeTrend: tv?.volumeTrend ?? 'NO_DATA',
       profileAvailable: ta?.volumeProfile.profileAvailable ?? false,
+      futuresCvd: flow?.available ? flow.cvd ?? null : null,
+      futuresOiChange: flow?.available ? flow.oiChange ?? null : null,
+      futuresBuildup: flow?.available ? flow.buildup ?? null : null,
+      futuresRelativeVolume: flow?.available ? flow.relativeVolume ?? null : null,
     },
   });
 }
@@ -1329,28 +1364,63 @@ async function analyzeBreakout(ctx: AgentContext): Promise<AgentResearchOutput> 
   const pdh = ctx.pdh;
   const pdl = ctx.pdl;
 
+  // Volume confirmation comes from the FUTURES leg (real traded volume) when
+  // the flow slice is present. ctx.volume for an index is the whole-market
+  // aggregate, NOT the breakout leg — it must never be called "confirmation".
+  const flow = ctx.flow;
+  const isIndex = ctx.instrument === 'index';
+  const flowRatio = flow?.available && typeof flow.relativeVolume === 'number' ? flow.relativeVolume : null;
+  const volumeConfirmed = flowRatio != null ? flowRatio >= 1.5 : (!isIndex && ctx.volume > 0);
+
+  const volumeNote = (side: 'breakout' | 'breakdown') => {
+    if (flowRatio != null) {
+      if (volumeConfirmed) {
+        evidence.push(
+          `Futures volume ${flowRatio.toFixed(2)}x 20-bar average confirms the ${side}`
+        );
+        return true;
+      }
+      riskFlags.push(
+        `Weak futures volume (${flowRatio.toFixed(2)}x 20-bar average) — ${side} unconfirmed`
+      );
+      return false;
+    }
+    if (isIndex) {
+      riskFlags.push('Futures volume read unavailable — breakout unconfirmed');
+      return false;
+    }
+    riskFlags.push('No volume confirmation — possible fakeout');
+    return false;
+  };
+
   if (pdh > 0 && spot > pdh) {
     evidence.push(`Price ${spot} above PDH ${pdh} — potential breakout`);
-    if (ctx.volume > 0) {
-      evidence.push('Volume confirmation available');
-      confidence = 60;
-    } else {
-      riskFlags.push('No volume confirmation — possible fakeout');
-      confidence = 40;
-    }
+    if (volumeConfirmed) confidence = 60;
+    else confidence = 40;
+    volumeNote('breakout');
     bias = 'BULLISH';
   } else if (pdl > 0 && spot < pdl) {
     evidence.push(`Price ${spot} below PDL ${pdl} — potential breakdown`);
-    if (ctx.volume > 0) {
-      evidence.push('Volume confirmation available');
-      confidence = 60;
-    } else {
-      riskFlags.push('No volume confirmation — possible fakeout');
-      confidence = 40;
-    }
+    if (volumeConfirmed) confidence = 60;
+    else confidence = 40;
+    volumeNote('breakdown');
     bias = 'BEARISH';
   } else {
     evidence.push('No breakout — price within range');
+  }
+
+  // Futures open interest at the signal bar — is the move fresh positions or
+  // a squeeze? price ↑ + OI ↓ = short covering (less durable, fakeout risk).
+  if (flow?.available && (bias === 'BULLISH' || bias === 'BEARISH')) {
+    if (bias === 'BULLISH' && flow.buildup === 'SHORT_COVERING') {
+      riskFlags.push('Breakout on short covering (open interest falling) — squeeze, not fresh longs — fakeout risk');
+    } else if (bias === 'BULLISH' && flow.buildup === 'LONG_BUILDUP') {
+      evidence.push('Futures open interest building with price — fresh longs support the breakout');
+    } else if (bias === 'BEARISH' && flow.buildup === 'LONG_UNWINDING') {
+      riskFlags.push('Breakdown on long unwinding (open interest falling) — not fresh short build-up');
+    } else if (bias === 'BEARISH' && flow.buildup === 'SHORT_BUILDUP') {
+      evidence.push('Futures open interest building with price down — fresh shorts support the breakdown');
+    }
   }
 
   // Phase 4 — breakout confirmations from real candles: volume spike,

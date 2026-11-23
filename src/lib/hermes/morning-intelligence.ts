@@ -80,15 +80,7 @@ export interface MorningIntelligenceBrief {
 
 // ── Morning Intelligence Engine ──
 class MorningIntelligence {
-  private static instance: MorningIntelligence;
   private lastBrief: MorningIntelligenceBrief | null = null;
-
-  static getInstance(): MorningIntelligence {
-    if (!MorningIntelligence.instance) {
-      MorningIntelligence.instance = new MorningIntelligence();
-    }
-    return MorningIntelligence.instance;
-  }
 
   // ── Generate Morning Brief ──
   async generate(offlineGap?: { seconds: number; formatted: string }): Promise<MorningIntelligenceBrief> {
@@ -304,8 +296,9 @@ class MorningIntelligence {
   }
 }
 
-// ── Singleton ──
-export const morningIntelligence = MorningIntelligence.getInstance();
+// ── Singleton (globalThis — each Next.js route is its own module graph) ──
+export const morningIntelligence: MorningIntelligence =
+  ((globalThis as any).__SMD_MORNING_INTEL__ ??= new MorningIntelligence());
 
 // ── Convenience ──
 export const generateMorningBrief = (offlineGap?: { seconds: number; formatted: string }) =>

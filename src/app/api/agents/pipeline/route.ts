@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   const compare = req.nextUrl.searchParams.get('compare') === '1';
 
   try {
-    const { ctx, fetchedAtIso } = await buildAgentSnapshot(symbol, { technical: true });
+    const { ctx, fetchedAtIso } = await buildAgentSnapshot(symbol, { technical: true, flow: true });
     const result = await runFullPipeline(symbol, ctx, { dryRun, compare });
 
     return Response.json({

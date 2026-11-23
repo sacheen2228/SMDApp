@@ -26,6 +26,116 @@ export interface MotilalScrip {
   lotsize: number;
 }
 
+// ── Futures contract snapshot (NSEFO / BFO) ──
+// Live-verified 2026-11-20:
+//   - getScrips("NSEFO") → 93,402 contracts in ~22s (cached 6h below). The
+//     futures rows are instrumenttype "FUTIDX", optiontype "", strikeprice -1
+//     (e.g. NIFTY 23-Nov-2026 → scripcode 61471).
+//   - getLTP(scripcode) → real DAY volume (NIFTY 23-Nov-2026: 5,327,920) but
+//     openInterest comes back 0 — MO publishes no futures OI, and its LTP is
+//     scaled (2,575,200 for a ~25,752 print), so only the volume is used.
+//   - MO has NO intraday futures series (EOD report endpoints only) → this can
+//     never replace the Breeze intraday CVD curve; it is a degraded fallback.
+
+export interface MotilalFuturesSnapshot {
+  symbol: string;
+  contract: string;
+  scripcode: number;
+  dayVolume: number;
+  openInterest: number | null;
+  asOf: string;
+}
+
+const FUTURES_CONTRACT_TTL_MS = 6 * 60 * 60_000;
+const futuresContractCache = new Map<string, { ts: number; scrip: MotilalScrip | null }>();
+
+function expiryFromContractName(name: string): string | null {
+  const m = /(\d{2})-([A-Za-z]{3})-(\d{4})/.exec(String(name || ""));
+  if (!m) return null;
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const mon = months.indexOf(m[2].slice(0, 3).toLowerCase());
+  if (mon < 0) return null;
+  return `${m[3]}-${String(mon + 1).padStart(2, "0")}-${m[1]}`;
+}
+
+/** "23-Nov-2026" / "2026-11-23" → "2026-11-23". */
+function toIsoExpiry(raw: string): string | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = /^(\d{1,2})-([A-Za-z]{3,9})-(\d{4})$/.exec(s);
+  if (m) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const mon = months.indexOf(m[2].slice(0, 3).toLowerCase());
+    if (mon < 0) return null;
+    return `${m[3]}-${String(mon + 1).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  }
+  return null;
+}
+
+/** Nearest listed futures contract for an index symbol (cached 6h). */
+export async function getFuturesContract(
+  symbol: string,
+  expiryLabel?: string,
+): Promise<MotilalScrip | null> {
+  const sym = String(symbol || "").toUpperCase();
+  const wanted = expiryLabel ? toIsoExpiry(expiryLabel) : null;
+  const key = `${sym}:${wanted ?? ""}`;
+  const hit = futuresContractCache.get(key);
+  if (hit && Date.now() - hit.ts < FUTURES_CONTRACT_TTL_MS) return hit.scrip;
+
+  let found: MotilalScrip | null = null;
+  if (!isSessionValid()) await autoLogin();
+  const token = getSessionToken() || "";
+
+  for (const exchange of ["NSEFO", "BFO"]) {
+    const scrips = await getScrips(exchange, token);
+    const futures = scrips.filter(
+      (s: any) =>
+        String(s.symbol).trim().toUpperCase() === sym &&
+        /FUT/i.test(String(s.instrumenttype || "")) &&
+        !String(s.optiontype || "").trim(),
+    );
+    if (!futures.length) continue;
+    const withExpiry = wanted
+      ? futures.filter((s: any) => expiryFromContractName(s.name) === wanted)
+      : [];
+    const pool = withExpiry.length ? withExpiry : futures;
+    pool.sort((a: any, b: any) => {
+      const da = expiryFromContractName(a.name) || "";
+      const db = expiryFromContractName(b.name) || "";
+      return da.localeCompare(db);
+    });
+    found = pool[0];
+    break;
+  }
+
+  futuresContractCache.set(key, { ts: Date.now(), scrip: found });
+  return found;
+}
+
+/** Real day volume for the nearest futures contract (no OI — MO publishes none). */
+export async function getFuturesSnapshot(
+  symbol: string,
+  expiryLabel?: string,
+): Promise<MotilalFuturesSnapshot | null> {
+  const contract = await getFuturesContract(symbol, expiryLabel);
+  if (!contract) return null;
+  if (!isSessionValid()) await autoLogin();
+  const token = getSessionToken() || "";
+  const ltp = await getLTP(contract.exchange || "NSEFO", contract.scripcode, token);
+  if (!ltp) return null;
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    contract: contract.name,
+    scripcode: contract.scripcode,
+    dayVolume: ltp.volume || 0,
+    openInterest: ltp.openInterest > 0 ? ltp.openInterest : null,
+    asOf: new Date().toISOString(),
+  };
+}
+
 // ── Common headers ──
 export function getHeaders(authToken?: string): Record<string, string> {
   const session = getSessionToken();

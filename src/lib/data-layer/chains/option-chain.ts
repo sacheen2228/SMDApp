@@ -277,7 +277,12 @@ export function deriveLegGreeks(
     T != null && T > 0
   ) {
     const gv = calculateGreeks(spot, strike, T, ivPct / 100, isCall);
-    if (Number.isFinite(gv.delta) && (gv.delta !== 0 || gv.gamma !== 0)) {
+    // Valid inputs → the BS values ARE the greeks, even when 2dp/4dp rounding
+    // puts a far-OTM delta/gamma at exactly 0. The all-zero sentinel only
+    // applies to the PROVIDER path above (a provider that shipped IV but no
+    // greeks); rejecting here used to null out 100+ live legs and starve
+    // seller-intel of analysable data.
+    if (Number.isFinite(gv.delta)) {
       return { delta: gv.delta, gamma: gv.gamma, theta: gv.theta, vega: gv.vega, deltaSource: "bs" };
     }
   }

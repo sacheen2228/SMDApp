@@ -152,6 +152,7 @@ function createAlert(
     `${'━'.repeat(20)}`,
     `${emoji} ${header}`,
     `${'━'.repeat(20)}`,
+    `Source: ${state.source || 'unknown'}`,
     `Symbol: ${state.symbol}${state.strike ? ` ${state.strike}` : ''} ${state.instrument}`,
     `Side: ${state.side}`,
     `Entry: ${px(state.entry)}`,
@@ -321,7 +322,7 @@ export function getMonitorSummary(): {
   };
 }
 
-// ─── LTP fetcher (MO → Breeze → NSE) ─────────────────────────────
+// ─── LTP fetcher (MO → Breeze → BSE → NSE) ─────────────────────────
 export interface LTPFetchDeps {
   moPath?: (ref: {
     symbol: string;
@@ -331,6 +332,10 @@ export interface LTPFetchDeps {
   }) => Promise<number>;
   breezeChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
   nseChain?: (symbol: string, strike: number, optionType: string) => Promise<number>;
+  /** BSE contracts (SENSEX / BANKEX) — NSE has no chain for them. */
+  bseChain?: (symbol: string, strike: number, optionType: string, expiry?: string) => Promise<number>;
+  /** The exchange the contract belongs to ('BSE' for SENSEX / BANKEX). */
+  exchange?: string;
 }
 
 async function defaultMOPath(ref: {
@@ -389,6 +394,42 @@ async function defaultNSEChain(
   return 0;
 }
 
+/** BSE option LTP (SENSEX / BANKEX). The BSE archive ships the expiry as a
+ *  label ("25 Nov 2026") — the trade's expiry is the ISO date. */
+async function defaultBSEChain(
+  symbol: string,
+  strike: number,
+  optionType: string,
+  expiry?: string
+): Promise<number> {
+  try {
+    const { getBSEExpiryDates, getBSEOptionChain, parseBseExpiryDate } = await import('@/lib/bse-api');
+    const expiries = await getBSEExpiryDates(symbol);
+    if (!expiries || expiries.length === 0) return 0;
+    let label = expiries[0];
+    if (expiry) {
+      const wanted = expiry.slice(0, 10);
+      const match = expiries.find((e: string) => {
+        const d = parseBseExpiryDate(e);
+        if (!d) return false;
+        const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return iso === wanted;
+      });
+      // The trade's contract is not in BSE's published list → no LTP.
+      if (!match) return 0;
+      label = match;
+    }
+    const chain = await getBSEOptionChain(symbol, label);
+    const row = chain?.data?.find((r: any) => Math.abs(Number(r.strike) - strike) < 0.001);
+    if (!row) return 0;
+    const leg = optionType === 'CE' ? row.ce : row.pe;
+    const ltp = Number(leg?.ltp || 0);
+    return ltp > 0 ? ltp : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function fetchLTP(
   symbol: string,
   strike: number,
@@ -406,6 +447,14 @@ export async function fetchLTP(
     const breezeChain = deps?.breezeChain ?? defaultBreezeChain;
     const breeze = await breezeChain(symbol, strike, optionType);
     if (breeze > 0) return breeze;
+
+    // SENSEX / BANKEX live on BSE — the NSE chain never carries them, so the
+    // BSE rung must come before the (NSE-only) fallback.
+    if (String(deps?.exchange || '').toUpperCase() === 'BSE') {
+      const bseChain = deps?.bseChain ?? defaultBSEChain;
+      const bse = await bseChain(symbol, strike, optionType, expiry);
+      if (bse > 0) return bse;
+    }
 
     const nseChain = deps?.nseChain ?? defaultNSEChain;
     const nse = await nseChain(symbol, strike, optionType);
@@ -465,7 +514,13 @@ export async function pollTradesOnce(
   let sent = 0;
   const resolver =
     resolveLTP ??
-    ((t: TradeMonitorState) => fetchLTP(t.symbol, t.strike ?? 0, t.instrument === 'CALL' ? 'CE' : t.instrument === 'PUT' ? 'PUT' : t.instrument === 'FUTURES' ? 'FUTURES' : 'EQ', t.expiry));
+    ((t: TradeMonitorState) => fetchLTP(
+      t.symbol,
+      t.strike ?? 0,
+      t.instrument === 'CALL' ? 'CE' : t.instrument === 'PUT' ? 'PE' : t.instrument === 'FUTURES' ? 'FUTURES' : 'EQ',
+      t.expiry,
+      { exchange: t.exchange },
+    ));
 
   const trades = Array.from(monitoredTrades.values()).filter(
     t => !['CLOSED', 'CANCELLED', 'ERROR', 'SL_HIT', 'TP3_HIT'].includes(t.status)
@@ -479,8 +534,10 @@ export async function pollTradesOnce(
         const fails = (ltpFailCounts.get(trade.tradeId) || 0) + 1;
         ltpFailCounts.set(trade.tradeId, fails);
         if (fails === LTP_FAIL_THRESHOLD) {
+          const sourceLabel = trade.source || 'trade-monitor';
           const msg = [
             "⚠️ MONITORING ERROR",
+            `Source: ${sourceLabel}`,
             `Symbol: ${trade.symbol}`,
             `Strike: ${trade.strike}`,
             `Type: ${trade.instrument}`,
@@ -488,17 +545,21 @@ export async function pollTradesOnce(
             `Trade remains OPEN — no TP/SL detection until feed recovers`,
             `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
           ].join("\n");
+          // MONITOR_ERROR — never SL_HIT: a dead feed is not a fill, and it
+          // must not claim the (tradeId, SL_HIT, targetLevel) key that a real
+          // stop-out needs.
           await sendTradeEvent({
             tradeId: trade.tradeId,
-            eventType: 'SL_HIT',
+            eventType: 'MONITOR_ERROR',
             targetLevel: trade.stopLoss,
+            message: msg,
             symbol: trade.symbol,
             action: trade.side,
             strike: trade.strike,
             optionType: trade.instrument,
             entry: trade.entry,
             spot: trade.currentLTP,
-            source: 'trade-monitor',
+            source: sourceLabel,
             confidence: (trade as any).confidence ?? 50,
           }).catch(() => {});
           errors.push(`LTP unavailable for ${trade.symbol} (${trade.tradeId}) after ${fails} attempts`);
@@ -527,7 +588,7 @@ export async function pollTradesOnce(
           target1: alert.tp1,
           target2: alert.tp2,
           spot: alert.currentLTP,
-          source: 'trade-monitor',
+          source: state.source || 'trade-monitor',
           confidence: state.confidence,
         }).catch(() => {});
 

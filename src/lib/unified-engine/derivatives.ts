@@ -19,6 +19,7 @@ import { normalizeChain, analyze, type ChainAnalysis } from "@/lib/option-chain-
 import { buildOptionPlan, type OptionPlan } from "@/lib/option-plan";
 import { getLotSizeStrict, getSymbolConfig, type SymbolConfig } from "@/lib/symbol-config";
 import { parseExpiryDateLoose } from "@/lib/greeks";
+import { classifyFlowBuildup, classifyFlowDivergence } from "@/engines/orderflow/orderflow-engine";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -131,30 +132,6 @@ function vixRegime(v: number): 'low' | 'normal' | 'high' | 'extreme' {
   return 'extreme';
 }
 
-function classifyBuildup(
-  priceChange: number | null,
-  oiChange: number | null,
-): FuturesOIRead["buildup"] {
-  if (priceChange == null || oiChange == null) return null;
-  if (priceChange > 0 && oiChange > 0) return "LONG_BUILDUP";
-  if (priceChange < 0 && oiChange > 0) return "SHORT_BUILDUP";
-  if (priceChange > 0 && oiChange < 0) return "SHORT_COVERING";
-  if (priceChange < 0 && oiChange < 0) return "LONG_UNWINDING";
-  return "NEUTRAL";
-}
-
-function classifyDivergence(
-  priceChange: number | null,
-  oiChange: number | null,
-): FuturesOIRead["divergence"] {
-  if (priceChange == null || oiChange == null) return null;
-  if (priceChange > 0 && oiChange > 0) return "PRICE_UP_OI_UP";
-  if (priceChange < 0 && oiChange > 0) return "PRICE_DOWN_OI_UP";
-  if (priceChange > 0 && oiChange < 0) return "PRICE_UP_OI_DOWN";
-  if (priceChange < 0 && oiChange < 0) return "PRICE_DOWN_OI_DOWN";
-  return "NEUTRAL";
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // Futures OI
 // ────────────────────────────────────────────────────────────────────────────
@@ -191,8 +168,8 @@ async function readFuturesOI(
   const priceChange = null; // not in chain summary
   const priceChangePct = null;
 
-  const buildup = classifyBuildup(priceChange, oiChange);
-  const divergence = classifyDivergence(priceChange, oiChange);
+  const buildup = classifyFlowBuildup(priceChange, oiChange);
+  const divergence = classifyFlowDivergence(priceChange, oiChange);
 
   return {
     value: {
@@ -372,16 +349,15 @@ function buildTradePlan(
     lotSize: effectiveLotSize,
     stopLossPct: 0.20, // 20% of premium at risk
     targetMultipliers: [2, 3, 4], // 1:2, 1:3, 1:4 R:R
-    maxDeployedAmount: capital,
   } as any;
 
   const plan = buildOptionPlan(planInput);
   if (!plan) {
-    return insufficient("option plan rejected — likely 0 lots (contract exceeds per-trade budget)");
+    return insufficient("option plan rejected — no usable premium / lot size");
   }
 
   if (plan.lots < 1) {
-    return insufficient("0 lots — contract does not fit per-trade deployment budget");
+    return insufficient("0 lots — no tradable size for this contract");
   }
 
   // Minimum 1:2 R:R enforced by option-plan (targets at 2R/3R/4R)

@@ -139,8 +139,8 @@ export async function GET(req: NextRequest) {
       spot, atm: atm.strike || atmStrike, ce: atmCE, pe: atmPE,
       pcr, iv, delta: atmDelta, gamma: atmGamma, vega: atmVega, theta: atmTheta,
       volumeRatio,
-      callWriting: ceOiChg < 0, putWriting: peOiChg < 0,
-      callUnwind: ceOiChg > 0, putUnwind: peOiChg > 0,
+      callWriting: ceOiChg > 0, putWriting: peOiChg > 0,
+      callUnwind: ceOiChg < 0, putUnwind: peOiChg < 0,
       fiiLong, fiiShort, diiBuy, diiSell,
       highestCallOI, highestPutOI, institutional,
     }, { strikes, ctx, daysToExpiry });

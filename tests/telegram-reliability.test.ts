@@ -20,6 +20,7 @@ afterEach(() => {
   delete process.env.TELEGRAM_BOT_TOKEN;
   delete process.env.TELEGRAM_CHAT_ID;
   delete process.env.TELEGRAM_ALLOW_OFFHOURS;
+  delete process.env.TELEGRAM_ALLOW_TEST_SENDS;
   // Restore original fetch if overwritten
   const originalFetch = (globalThis as any).__originalFetch;
   if (originalFetch) {
@@ -76,6 +77,9 @@ describe("HTML parse error retry", () => {
     process.env.TELEGRAM_CHAT_ID = "test-chat";
 
     process.env.TELEGRAM_ALLOW_OFFHOURS = "1";
+    // The fetch is stubbed — the test-mode guard would otherwise block the
+    // sender before it reaches the (stubbed) API.
+    process.env.TELEGRAM_ALLOW_TEST_SENDS = "1";
     const result = await sendTelegramMessage("<b>bold</b> text &amp; more");
     expect(result).toBe(true);
     expect(callCount).toBe(2);
@@ -84,6 +88,7 @@ describe("HTML parse error retry", () => {
   afterEach(() => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_CHAT_ID;
+    delete process.env.TELEGRAM_ALLOW_TEST_SENDS;
   });
 });
 

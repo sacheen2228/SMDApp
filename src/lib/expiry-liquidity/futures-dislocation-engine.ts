@@ -3,6 +3,7 @@
 // relative to spot. Critical for CAS expiry confirmation.
 
 import { FuturesSnapshot, CASDislocation } from './types';
+import { classifyFlowBuildup } from '@/engines/orderflow/orderflow-engine';
 
 interface FuturesState {
   currentBasis: number;
@@ -164,11 +165,7 @@ class FuturesDislocationEngine {
     priceChange: number,
     oiChange: number
   ): FuturesSnapshot['oiState'] {
-    if (priceChange > 0 && oiChange > 0) return 'LONG_BUILDUP';
-    if (priceChange < 0 && oiChange > 0) return 'SHORT_BUILDUP';
-    if (priceChange < 0 && oiChange < 0) return 'LONG_UNWINDING';
-    if (priceChange > 0 && oiChange < 0) return 'SHORT_COVERING';
-    return 'NEUTRAL';
+    return classifyFlowBuildup(priceChange, oiChange) ?? 'NEUTRAL';
   }
 
   private checkConfirmation(): void {

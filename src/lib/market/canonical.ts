@@ -14,15 +14,28 @@ export const FEATURE_VERSION = 1;
 export const ENGINE_VERSION = "1.0.0";
 
 // ─── Types (mirror CONTRACTS.md) ───────────────────────────────
+// A recorded option leg. Every market field is NULLABLE on purpose: a field
+// the provider did not publish is recorded as MISSING, never as an invented
+// zero. `estimated` marks values we computed locally (Black-Scholes greeks
+// from a published IV) so downstream consumers can tell a published delta
+// from a derived one.
 export interface OptionLeg {
   strike: number;
   type: "CE" | "PE";
-  ltp: number;
-  oi: number;
-  oiChg: number;
+  ltp: number | null;
+  oi: number | null;
+  oiChg: number | null;
   iv: number | null;
-  greeks: { delta: number; theta: number; gamma: number; vega: number };
-  volume: number;
+  greeks: {
+    delta: number | null;
+    theta: number | null;
+    gamma: number | null;
+    vega: number | null;
+  };
+  volume: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  estimated?: boolean;
 }
 
 export type SmcEventType = "BOS" | "CHoCH" | "FVG" | "ORDER_BLOCK" | "LIQUIDITY_SWEEP";
@@ -56,6 +69,23 @@ export interface CanonicalMarketSnapshot {
   snapshotId: string; // stable: `${symbol}-${timestamp}`
   symbol: string;
   timestamp: string;
+  /**
+   * The PROVIDER's own quote/chain time (ISO). NULL when the provider does
+   * not publish one (ICICI Breeze does not) — recorded as missing, never
+   * faked with the local clock. `collectedAt` is the local capture time.
+   */
+  providerTimestamp: string | null;
+  collectedAt: string;
+  /** Which source produced this snapshot ('breeze' | 'nse' | 'bse' | null). */
+  source: string | null;
+  /**
+   * Freshness of the payload, derived from the PROVIDER's own timestamp
+   * (LIVE | FRESH | DELAYED | STALE | UNAVAILABLE). NULL when the provider
+   * publishes no timestamp — an undated payload is undated, never LIVE.
+   */
+  freshness: string | null;
+  /** Contract expiry the chain belongs to (null when unknown). */
+  expiry: string | null;
   spot: number;
   futures: number | null;
   indiaVix: number | null;
@@ -77,6 +107,11 @@ export interface CanonicalMarketSnapshot {
 export interface BuildInput {
   symbol: string;
   timestamp: string;
+  providerTimestamp?: string | null;
+  collectedAt?: string;
+  source?: string | null;
+  freshness?: string | null;
+  expiry?: string | null;
   spot: number;
   futures?: number | null;
   indiaVix?: number | null;
@@ -93,15 +128,15 @@ function toSDMOptionStrike(chain: OptionLeg[]): SDMOptionStrike[] {
   for (const leg of chain) {
     const entry = byStrike.get(leg.strike) ?? { strike: leg.strike };
     const legData = {
-      ltp: leg.ltp,
-      oi: leg.oi,
-      oiChg: leg.oiChg,
-      volume: leg.volume,
+      ltp: leg.ltp ?? 0,
+      oi: leg.oi ?? 0,
+      oiChg: leg.oiChg ?? 0,
+      volume: leg.volume ?? 0,
       iv: leg.iv ?? 0,
-      delta: leg.greeks.delta,
-      theta: leg.greeks.theta,
-      gamma: leg.greeks.gamma,
-      vega: leg.greeks.vega,
+      delta: leg.greeks.delta ?? 0,
+      theta: leg.greeks.theta ?? 0,
+      gamma: leg.greeks.gamma ?? 0,
+      vega: leg.greeks.vega ?? 0,
     };
     if (leg.type === "CE") entry.ce = legData;
     else entry.pe = legData;
@@ -178,6 +213,11 @@ function buildVolumeProfile(candles: Candle[]): VolumeProfile | null {
 // ─── Main builder ──────────────────────────────────────────────
 export function buildCanonicalSnapshot(input: BuildInput): CanonicalMarketSnapshot {
   const { symbol, timestamp, spot, futures = null, indiaVix = null, breadthAdv, breadthDec, optionChain, candles, aiScores = {} } = input;
+  const providerTimestamp = input.providerTimestamp ?? null;
+  const collectedAt = input.collectedAt ?? new Date().toISOString();
+  const source = input.source ?? null;
+  const expiry = input.expiry ?? null;
+  const freshness = input.freshness ?? null;
 
   const sdm = toSDMOptionStrike(optionChain);
   const oi = analyzeOptionChain(sdm, spot);
@@ -190,7 +230,7 @@ export function buildCanonicalSnapshot(input: BuildInput): CanonicalMarketSnapsh
   const avgIv = optionChain.length
     ? optionChain.reduce((s, l) => s + (l.iv ?? 0), 0) / optionChain.length
     : null;
-  const totalVol = optionChain.reduce((s, l) => s + l.volume, 0);
+  const totalVol = optionChain.reduce((s, l) => s + (l.volume ?? 0), 0);
   const breadthRatio = breadthAdv && breadthDec ? breadthAdv / (breadthAdv + breadthDec) : null;
 
   const features: Record<string, number> = {
@@ -213,6 +253,11 @@ export function buildCanonicalSnapshot(input: BuildInput): CanonicalMarketSnapsh
     snapshotId: `${symbol}-${timestamp}`,
     symbol,
     timestamp,
+    providerTimestamp,
+    collectedAt,
+    source,
+    freshness,
+    expiry,
     spot,
     futures,
     indiaVix,
@@ -239,7 +284,18 @@ export function buildCanonicalSnapshot(input: BuildInput): CanonicalMarketSnapsh
 // transform older rows and fill any newly-added fields with safe defaults so
 // Replay Engine / Backtest never break on legacy recordings.
 export function migrateSnapshot(raw: CanonicalMarketSnapshot, version: number): CanonicalMarketSnapshot {
-  if (version === SCHEMA_VERSION) return raw;
+  // Provenance fields were added after v1 recordings existed. Fill them with
+  // MISSING (null) — never with the local clock pretending to be a provider
+  // timestamp. `collectedAt` falls back to the snapshot's own capture bucket.
+  const normalized: CanonicalMarketSnapshot = {
+    ...raw,
+    providerTimestamp: raw.providerTimestamp ?? null,
+    collectedAt: raw.collectedAt ?? raw.timestamp,
+    source: raw.source ?? null,
+    freshness: raw.freshness ?? null,
+    expiry: raw.expiry ?? null,
+  };
+  if (version === SCHEMA_VERSION) return normalized;
   // Future: switch (version) { case 1: return upgradeV1ToV2(raw); }
-  return { ...raw, schema_version: SCHEMA_VERSION };
+  return { ...normalized, schema_version: SCHEMA_VERSION };
 }

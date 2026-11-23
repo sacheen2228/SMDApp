@@ -83,7 +83,7 @@ export async function getBSEIndexData(symbol: string): Promise<BSEData | null> {
   }
 }
 
-function parseBseExpiryDate(dateStr: string): Date | null {
+export function parseBseExpiryDate(dateStr: string): Date | null {
   if (!dateStr || dateStr === '-') return null;
   const months: Record<string, number> = {
     Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,

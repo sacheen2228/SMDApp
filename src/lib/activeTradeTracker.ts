@@ -374,6 +374,7 @@ export async function addTrade(trade: ActiveTrade, skipAlert = false): Promise<b
       quantity: trade.positionSize,
       expiry: trade.expiry,
       confidence: trade.confidence,
+      source: trade.source,
     });
   } catch (err: any) {
     console.warn(`[ActiveTrade] monitor registration failed for ${trade.symbol} (${trade.id}): ${err?.message || err}`);
@@ -568,12 +569,22 @@ export async function reloadActiveTrades(): Promise<number> {
       take: 500,
     });
     let loaded = 0;
+    // The synthetic-row predicate lives with the risk frame (one list, one
+    // owner): probe-*, provenance-*, test-*, e2e-test rows and option rows
+    // without an expiry are fixtures — they are not real trades and they
+    // block the underlying they sit on.
+    let isSyntheticTradeRow: ((t: { tradeId?: string | null; strategy?: string | null; type?: string | null; expiry?: string | null }) => boolean) | null = null;
+    try {
+      const mod = await import("./risk-state.server");
+      isSyntheticTradeRow = mod.isSyntheticTradeRow;
+    } catch { /* predicate unavailable — the id/strategy guards below still apply */ }
     for (const t of rows) {
       const tradeId = t.tradeId;
       if (!tradeId || activeTrades.has(tradeId)) continue;
       if (!resumable.has(t.status)) continue;
       // Skip synthetic test IDs that would never have real LTP
       if (/^(e2e|persist|chain|sell|prod)-/.test(tradeId)) continue;
+      if (isSyntheticTradeRow && isSyntheticTradeRow({ tradeId, strategy: t.strategy, type: t.type, expiry: t.expiry })) continue;
       // Skip equity trades — no live LTP source for equity ETFs (SETFNIF50,
       // NIFTYBEES etc.) and the user has opted out of equity BTST monitoring.
       // Option trades flow through the scanner's monthlyOptionTrade path instead.
@@ -607,6 +618,44 @@ export async function reloadActiveTrades(): Promise<number> {
       applyAlertFlags(trade); // restore TP1_ALERT_SENT etc. — no re-alert after restart
       activeTrades.set(trade.id, trade);
       loaded++;
+      // Register with the UNIVERSAL monitor (the 5s TP/SL loop). Without this
+      // the restored trade lives ONLY in the tracker map: the monitor's own
+      // map stayed empty after every restart ("[TradeMonitor] Reloaded 0" while
+      // "[ActiveTrade] Reloaded 4"), so no restored NIFTY/SENSEX/scanner trade
+      // was ever polled for TP/SL.
+      try {
+        const { registerTradeForMonitoring } = await import("./agents/trade-monitor");
+        const state = registerTradeForMonitoring({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          exchange: trade.exchange || "NSE",
+          instrument:
+            trade.optionType === "CE" ? "CALL"
+              : trade.optionType === "PE" ? "PUT"
+                : trade.optionType === "FUT" ? "FUTURES"
+                  : "EQUITY",
+          side: trade.side === "SELL" ? "SELL" : "BUY",
+          strike: trade.strike,
+          entry: trade.entry,
+          stopLoss: trade.sl,
+          tp1: trade.tp1,
+          tp2: trade.tp2,
+          tp3: trade.tp3,
+          quantity: trade.positionSize,
+          expiry: trade.expiry,
+          confidence: trade.confidence,
+          source: trade.source,
+        });
+        // Carry the persisted delivery flags over — a restart must never
+        // re-alert a TP/SL that was already delivered.
+        state.tp1AlertSent = !!trade.tp1AlertSent;
+        state.tp2AlertSent = !!trade.tp2AlertSent;
+        state.tp3AlertSent = !!trade.tp3AlertSent;
+        state.slAlertSent = !!trade.slAlertSent;
+        console.log(`[ActiveTrade] Monitor registered: ${trade.symbol} ${trade.id} (${trade.source})`);
+      } catch (err: any) {
+        console.warn(`[ActiveTrade] monitor registration failed for ${trade.symbol} (${trade.id}): ${err?.message || err}`);
+      }
     }
     console.log(`[ActiveTrade] Reloaded ${loaded} active trades from database`);
     return loaded;

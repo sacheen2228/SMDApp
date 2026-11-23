@@ -28,6 +28,7 @@ import { istDayKey } from "@/lib/quant/quant-data";
 const ORIG = {
   token: process.env.TELEGRAM_BOT_TOKEN,
   allow: process.env.TELEGRAM_ALLOW_OFFHOURS,
+  allowTestSends: process.env.TELEGRAM_ALLOW_TEST_SENDS,
   chat: process.env.TELEGRAM_CHAT_ID,
   quantChat: process.env.QUANT_TELEGRAM_CHAT_ID,
 };
@@ -46,6 +47,9 @@ function armStubSend(ok: boolean): void {
   process.env.TELEGRAM_BOT_TOKEN = "TESTTOKEN";
   process.env.TELEGRAM_CHAT_ID = "TESTCHAT";
   process.env.TELEGRAM_ALLOW_OFFHOURS = "1"; // window gate off — fetch is stubbed
+  // The test-mode guard blocks the real sender; this harness stubs fetch, so
+  // the escape hatch is what lets the queue exercise the delivery path.
+  process.env.TELEGRAM_ALLOW_TEST_SENDS = "1";
 }
 
 /** Tripwire harness: any network touch explodes; token deleted so the sender bails early. */
@@ -62,6 +66,8 @@ function restoreEnv(): void {
   else process.env.TELEGRAM_BOT_TOKEN = ORIG.token;
   if (ORIG.allow === undefined) delete process.env.TELEGRAM_ALLOW_OFFHOURS;
   else process.env.TELEGRAM_ALLOW_OFFHOURS = ORIG.allow;
+  if (ORIG.allowTestSends === undefined) delete process.env.TELEGRAM_ALLOW_TEST_SENDS;
+  else process.env.TELEGRAM_ALLOW_TEST_SENDS = ORIG.allowTestSends;
   if (ORIG.chat === undefined) delete process.env.TELEGRAM_CHAT_ID;
   else process.env.TELEGRAM_CHAT_ID = ORIG.chat;
   if (ORIG.quantChat === undefined) delete process.env.QUANT_TELEGRAM_CHAT_ID;

@@ -120,6 +120,6 @@ describe("mapNSEChain — Black-Scholes greeks from IV (NSE v3 ships no greeks f
   test("spot from records.underlyingValue: ITM CE delta > near-ATM CE delta", () => {
     const itmCe = legs.find((l) => l.strike === 23000 && l.type === "CE");
     expect(itmCe).toBeDefined();
-    expect(itmCe!.greeks.delta).toBeGreaterThan(ce!.greeks.delta);
+    expect(itmCe!.greeks.delta ?? 0).toBeGreaterThan(ce!.greeks.delta ?? 0);
   });
 });

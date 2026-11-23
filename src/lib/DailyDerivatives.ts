@@ -5,6 +5,10 @@
 import { getOptionChain as canonicalGetOptionChain } from "@/lib/data-layer/chains/option-chain";
 import { calculateGreeks, parseExpiryDateLoose, impliedVolFromPremium } from "@/lib/greeks";
 import { getNSEIndiaVIX } from "@/lib/nse-api";
+import { computeCandleCvdProxy, type CvdProxyResult } from "@/engines/orderflow/orderflow-engine";
+import { toIsoExpiryDate } from "@/lib/breeze-historical";
+import { readFuturesFlow, istDateStr } from "@/lib/market/futures-flow";
+import { getFuturesSnapshot } from "@/lib/motilal/market";
 import { fetchCandlesWithFallback } from "@/lib/market/candle-chain";
 import { buildOptionPlan, selectStrike, assessTargets, type TargetReach } from "@/lib/option-plan";
 import { buildSellerIntel, type SellerIntelReport } from "@/lib/seller-intelligence";
@@ -129,6 +133,8 @@ export interface DailyDerivativesReport {
   spot: number;
   indiaVix: number;
   indiaVixChange: number;
+  /** True when NSE VIX was unreachable and the 15.70 fallback was used. */
+  indiaVixEstimated?: boolean;
   pcr: number;
   maxPain: number;
   callWall: number;
@@ -159,6 +165,29 @@ export interface DailyDerivativesReport {
   freshness: string;
   /** Seller Intelligence — OI classification, DEX/GEX, invalidation zones, verdict. */
   sellerIntel?: SellerIntelReport;
+  /** CVD from the nearest futures contract (real traded volume) — context only, never a trade vote. */
+  cvd?: CvdProxyResult;
+  /**
+   * Relative volume of the last CLOSED futures bar vs its prior 20-bar average
+   * — the honest half of the fake-breakout test (rel-vol + ΔOI). Null when
+   * there is not enough history; never a fake 1.0.
+   */
+  futuresRelVol?: {
+    /** current / average — ≥2x = conviction bar. */
+    ratio: number;
+    average: number;
+    current: number;
+    barTime?: number | string;
+  } | null;
+  /** Degraded read when the intraday futures source is down (MOAPI day volume, no OI). */
+  cvdFallback?: {
+    source: "moapi";
+    contract: string;
+    dayVolume: number;
+    openInterest: number | null;
+    asOf: string;
+    note: string;
+  };
 }
 
 // ====================== INDICATOR (kept pure) ======================
@@ -221,21 +250,25 @@ export const DEFAULTS: Config = {
   cooldownBars: 3,
 };
 
-// Bars the engine needs before ANY setup can fire — the loop starts at
-// max(slow, adx*2, atr, lookback)+1 (29 with DEFAULTS). A fresh session has
-// only ~12 bars at 10:00, so the report walks back over prior trading days
-// until this is met and the UI shows an honest "warming up" state.
-export function warmupBars(cfg: Partial<Config> = {}): number {
+// First index at which the engine can emit a signal — the loop starts at
+// max(slow, adx*2, atr, lookback)+1 (29 with DEFAULTS), so index 29 is the
+// earliest bar a setup can fire on.
+export function firstSignalIndex(cfg: Partial<Config> = {}): number {
   const o = { ...DEFAULTS, ...cfg };
   return Math.max(o.slow, o.adxPeriod * 2, o.atrPeriod, o.breakoutLookback) + 1;
 }
 
-// YYYY-MM-DD in IST — never toISOString() (UTC: a day off before 05:30 IST).
-function istDate(daysBack = 0): string {
-  return new Date(Date.now() - daysBack * 86400000).toLocaleDateString("en-CA", {
-    timeZone: "Asia/Kolkata",
-  });
+// Bars the engine needs before ANY setup can fire — the first signal index
+// PLUS the signal bar itself (30 with DEFAULTS). A fresh session has only
+// ~12 bars at 10:00, so the report walks back over prior trading days until
+// this is met and the UI shows an honest "warming up" state.
+export function warmupBars(cfg: Partial<Config> = {}): number {
+  return firstSignalIndex(cfg) + 1;
 }
+
+// YYYY-MM-DD in IST — never toISOString() (UTC: a day off before 05:30 IST).
+// Shared with the agent snapshot: src/lib/market/futures-flow.ts → istDateStr.
+const istDate = istDateStr;
 
 // Skip Sat/Sun so empty weekend fetches never pollute session-health.
 function isWeekendIst(dateStr: string): boolean {
@@ -349,7 +382,7 @@ export function emaCrossAdxAtr(candles: Candle[], cfg: Partial<Config> = {}) {
     signals.push(s);
   };
 
-  const start = warmupBars(o);
+  const start = firstSignalIndex(o);
 
   // ── Structure seeds: fractal swings + trend-run bookkeeping (REVERSAL) ──
   // A pivot at bar j is confirmed by bar j+1 — seed only pivots whose
@@ -549,6 +582,64 @@ interface PlanSnapshot {
 }
 const planSnapshots = new Map<string, PlanSnapshot>();
 
+// ====================== CVD — FUTURES (REAL VOLUME) ======================
+// Index SPOT candles carry no volume (Breeze index intraday → volume 0, NSE
+// chart-databyindex → close-only), so the CVD proxy had nothing to sign. The
+// nearest index FUTURES contract carries real traded volume (verified live on
+// 2026-11-20: NIFTY 23-Nov-2026 NFO → 76 bars, 5,277,025 contracts), so the
+// card reads the futures leg. Buy/sell attribution is still candle-signed —
+// no aggressor-side tape exists for these indices.
+//
+// ONE implementation, shared with the Grok agent snapshot:
+// src/lib/market/futures-flow.ts (readFuturesFlow) — do not fork a second
+// futures reader.
+// MOAPI fallback — DEGRADED on purpose. Live-verified 2026-11-20:
+//   - MO has no intraday endpoint (EOD report endpoints only) → it can never
+//     rebuild the 5m CVD curve.
+//   - MO publishes no futures OI (getLTP openInterest = 0; the NSEFO dump has
+//     no OI field) → ΔOI is unavailable, not zero.
+//   - What it DOES give is the real day volume of the futures contract
+//     (NIFTY 23-Nov-2026: 5,327,920) → shown as a labelled fallback read.
+const FUTURES_SNAPSHOT_TTL_MS = 60_000;
+const futuresSnapshotCache = new Map<string, { ts: number; snapshot: Awaited<ReturnType<typeof getFuturesSnapshot>> }>();
+
+async function computeMoFuturesFallback(
+  symbol: string,
+  expiryLabel?: string,
+): Promise<DailyDerivativesReport["cvdFallback"]> {
+  const key = `${symbol}:${expiryLabel ?? ""}`;
+  const hit = futuresSnapshotCache.get(key);
+  if (hit && Date.now() - hit.ts < FUTURES_SNAPSHOT_TTL_MS) {
+    if (!hit.snapshot) return undefined;
+    return {
+      source: "moapi",
+      contract: hit.snapshot.contract,
+      dayVolume: hit.snapshot.dayVolume,
+      openInterest: hit.snapshot.openInterest,
+      asOf: hit.snapshot.asOf,
+      note: "Intraday futures feed unavailable — MOAPI publishes day volume only (no intraday series, no OI).",
+    };
+  }
+
+  let snapshot: Awaited<ReturnType<typeof getFuturesSnapshot>> = null;
+  try {
+    snapshot = await getFuturesSnapshot(symbol, expiryLabel);
+  } catch (e: any) {
+    console.warn(`[DailyDerivatives] MO futures snapshot unavailable for ${symbol}:`, e?.message);
+  }
+  futuresSnapshotCache.set(key, { ts: Date.now(), snapshot });
+  if (!snapshot) return undefined;
+
+  return {
+    source: "moapi",
+    contract: snapshot.contract,
+    dayVolume: snapshot.dayVolume,
+    openInterest: snapshot.openInterest,
+    asOf: snapshot.asOf,
+    note: "Intraday futures feed unavailable — MOAPI publishes day volume only (no intraday series, no OI).",
+  };
+}
+
 // ====================== MAIN SERVICE ======================
 export class DailyDerivativesService {
   constructor() {}
@@ -690,7 +781,8 @@ export class DailyDerivativesService {
     //    never substitutes a different instrument or timeframe.
     //    Walk back over prior trading days until the engine has its warmup
     //    bars — a fresh session has only ~12 bars at 10:00 while EMA15+ADX×2
-    //    needs 29, which is why signals used to stay empty until noon.
+    //    needs 30 (first signal index 29 + the signal bar), which is why
+    //    signals used to stay empty until noon.
     //    Weekends are skipped so empty results never pollute session-health.
     const need = warmupBars();
     const byTs = new Map<string, Candle>();
@@ -815,8 +907,10 @@ export class DailyDerivativesService {
       .slice(0, 5)
       .map(s => ({ strike: s.strike, oi: s.put!.oi || 0, oiChange: s.put!.oiChange || 0 }));
 
-    // India VIX — real value from NSE, fallback only when NSE is unreachable
+    // India VIX — real value from NSE, fallback only when NSE is unreachable.
+    // indiaVixEstimated marks the fallback so the UI/text report can label it.
     const vixData = await getNSEIndiaVIX().catch(() => null);
+    const indiaVixEstimated = !vixData;
     const indiaVix = vixData?.value ?? 15.70;
     const indiaVixChange = vixData?.change ?? 0;
 
@@ -947,11 +1041,12 @@ export class DailyDerivativesService {
         planSnapshots.set(underlying, { at: Date.now(), spot, bySide });
         planAsOf = fmtPlanTime(Date.now());
       }
-      // Preferred side first
-      tradePlans.sort((a, b) =>
-        (a.optionType === (preferredSide === "PUT" ? "PE" : "CE") ? 0 : 1) -
-        (b.optionType === (preferredSide === "PUT" ? "PE" : "CE") ? 0 : 1)
-      );
+      // Preferred side first (neutral bias → no preferred side → keep order)
+      tradePlans.sort((a, b) => {
+        if (preferredSide == null) return 0;
+        return (a.optionType === (preferredSide === "PUT" ? "PE" : "CE") ? 0 : 1) -
+          (b.optionType === (preferredSide === "PUT" ? "PE" : "CE") ? 0 : 1);
+      });
     }
 
     // Expiry info
@@ -965,6 +1060,24 @@ export class DailyDerivativesService {
     const isTodayCandle = (t: number | string) =>
       new Date(t).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === todayStr;
     const todayCandles = candles.filter(c => isTodayCandle(c.time));
+    const futuresFlow = await readFuturesFlow(underlying, todayStr);
+    const futuresCvd = futuresFlow.cvd ?? null;
+    // Already computed by readFuturesFlow (same candles, zero extra network) —
+    // the DD card used to drop it while the knowledge block told the desk to
+    // use it as the honest fake-breakout test.
+    const futuresRelVol = futuresFlow.relativeVolume
+      ? {
+          ratio: futuresFlow.relativeVolume.ratio,
+          average: futuresFlow.relativeVolume.average,
+          current: futuresFlow.relativeVolume.current,
+          barTime: futuresFlow.relativeVolume.barTime,
+        }
+      : null;
+    const cvd =
+      futuresCvd ?? computeCandleCvdProxy(todayCandles, { windowBars: 3, source: candleSource || "none" });
+    const cvdFallback = futuresCvd
+      ? undefined
+      : await computeMoFuturesFallback(underlying, toIsoExpiryDate(expiry) ?? undefined);
     let vwap = 0;
     if (todayCandles.length > 0) {
       let pv = 0;
@@ -1002,6 +1115,7 @@ export class DailyDerivativesService {
       spot,
       indiaVix,
       indiaVixChange,
+      indiaVixEstimated,
       pcr: +pcr.toFixed(3),
       maxPain,
       callWall,
@@ -1030,6 +1144,9 @@ export class DailyDerivativesService {
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
       sellerIntel,
+      cvd,
+      futuresRelVol,
+      cvdFallback,
     };
   }
 
@@ -1042,7 +1159,7 @@ Underlying     : ${r.underlying}
 Spot           : ${r.spot.toFixed(2)}
 Time           : ${new Date(r.timestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 
-India VIX      : ${r.indiaVix.toFixed(2)} (${r.indiaVixChange >= 0 ? "+" : ""}${r.indiaVixChange.toFixed(2)})
+India VIX      : ${r.indiaVix.toFixed(2)}${r.indiaVixEstimated ? " (fallback)" : ""} (${r.indiaVixChange >= 0 ? "+" : ""}${r.indiaVixChange.toFixed(2)})
 PCR            : ${r.pcr}
 Max Pain       : ${r.maxPain}
 Call Wall      : ${r.callWall}
@@ -1054,7 +1171,7 @@ ATM Delta      : ${r.atmGreeks?.delta?.toFixed(3) || "-"}
 ATM Theta      : ${r.atmGreeks?.theta?.toFixed(2) || "-"}
 
 Sentiment      : ${r.sentiment} (Score: ${r.sentimentScore}/100)
-Expiry         : ${r.expiry.slice(0, 10)} (${r.daysToExpiry} days left)
+Expiry         : ${r.expiry.split("T")[0]} (${r.daysToExpiry} days left)
 Data Source    : ${r.dataSource} (${r.freshness})
 
 ── Top Call OI ──────────────────────────────
@@ -1071,7 +1188,8 @@ ${r.latestSignals.length === 0 ? "  No recent signals (candles not available)" :
 Direction       : ${r.directionBias.side === "NEUTRAL" ? "NO EDGE" : `GO ${r.directionBias.side === "CALL" ? "CE" : "PE"}`} (${r.directionBias.callVotes} CE vs ${r.directionBias.putVotes} PE, ${r.directionBias.confidence}% conf)
 ${r.directionBias.votes.map(v => `  ${v.vote === "NEUTRAL" ? "·" : "✓"} [${v.factor}] ${v.vote} — ${v.detail}`).join("\n")}
 ${r.tradePlans.length === 0 ? "  No tradable contract found" :
-  r.tradePlans.map(p => `  ${p.optionType} ${p.strike}${p.optionType === (r.preferredSide === "PUT" ? "PE" : "CE") ? " ★" : ""} | Entry: ${p.entry} | SL: ${p.stopLoss} | TP: ${p.targets.join(" / ") || "-"} | ${p.lots} lot${p.lots === 1 ? "" : "s"} ₹${Math.round(p.deployed).toLocaleString("en-IN")}${p.tradable ? "" : " — NOT TRADABLE"}`).join("\n")}
+  r.tradePlans.map(p => `  ${p.optionType} ${p.strike}${r.preferredSide != null && p.optionType === (r.preferredSide === "PUT" ? "PE" : "CE") ? " ★" : ""} | Entry: ${p.entry} | SL: ${p.stopLoss} | TP: ${p.targets.join(" / ") || "-"} | ${p.lots} lot${p.lots === 1 ? "" : "s"} ₹${Math.round(p.deployed).toLocaleString("en-IN")}${p.tradable ? "" : " — NOT TRADABLE"}`).join("\n")}
+Futures RelVol  : ${r.futuresRelVol ? `${r.futuresRelVol.ratio.toFixed(2)}x (last closed bar vs 20-bar avg) — ${r.futuresRelVol.ratio >= 2 ? "conviction bar" : "context"}` : "unavailable (never a fabricated 1.0)"} · context only, never a trade vote
 Candles         : ${r.candleCount} @ ${r.candleInterval} (${r.candleSource}${r.candleDegraded ? ` — ${r.candleDegraded}` : ""})${r.candleCount < r.warmupBars ? ` — warming up ${r.candleCount}/${r.warmupBars} bars` : ""}
 ═══════════════════════════════════════════════════
 `;

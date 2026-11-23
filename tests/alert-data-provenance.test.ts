@@ -27,9 +27,16 @@ describe("alert data provenance", () => {
 
 describe("monitoring errors never reach the real Telegram from a test run", () => {
   test("the monitoring-error alert goes through the injectable sender", async () => {
-    const { __setAlertSenderForTests } = await import("@/lib/agents/telegram-alerts");
+    // The monitoring-error card is produced by the TRADE EVENT COORDINATOR
+    // (src/lib/trade-event-coordinator.ts), which reaches Telegram through the
+    // CENTRAL sender. The injectable hook for that sender is
+    // __setTelegramSenderForTests — mocking only the legacy agents/telegram-alerts
+    // sender (as this test used to) left the real bot in the path: on 21/11 the
+    // e2e fixtures were delivered to the live chat. The NODE_ENV=test guard in
+    // sendTelegramMessage is the hard backstop behind this mock.
+    const { __setTelegramSenderForTests } = await import("@/lib/telegram");
     const sent: string[] = [];
-    __setAlertSenderForTests(async (text: string) => { sent.push(text); return true; });
+    __setTelegramSenderForTests(async (text: string) => { sent.push(text); return true; });
     const { pollTradesOnce } = await import("@/lib/agents/trade-monitor");
     const { addTrade } = await import("@/lib/activeTradeTracker");
     const id = `provenance-${Date.now()}`;
@@ -52,7 +59,7 @@ describe("monitoring errors never reach the real Telegram from a test run", () =
     const monitoring = sent.filter((s) => s.includes("MONITORING ERROR"));
     expect(monitoring.length).toBe(1);
     expect(monitoring[0]).toContain("LTP feed unavailable");
-    __setAlertSenderForTests(null);
+    __setTelegramSenderForTests(null);
 
     // CLEANUP: the fixture must not stay ACTIVE — an open NIFTY trade blocks the
     // next entry for the same symbol (and broke the option-engine test).
@@ -64,5 +71,6 @@ describe("monitoring errors never reach the real Telegram from a test run", () =
     releaseTradeLock("NIFTY", "NFO");
     const { db } = await import("@/lib/db");
     await db.trade.deleteMany({ where: { tradeId: id } });
+    await db.notificationEvent.deleteMany({ where: { tradeId: id } });
   });
 });
