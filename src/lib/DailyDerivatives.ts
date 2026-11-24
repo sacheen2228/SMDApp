@@ -14,6 +14,7 @@ import { fetchCandlesWithFallback } from "@/lib/market/candle-chain";
 import { buildOptionPlan, selectStrike, assessTargets, type TargetReach } from "@/lib/option-plan";
 import { buildSellerIntel, type SellerIntelReport } from "@/lib/seller-intelligence";
 import { getLotSizeStrict } from "@/lib/symbol-config";
+import { getCurrentSession } from "@/lib/market-session";
 
 // ====================== TYPES ======================
 export interface Candle {
@@ -163,6 +164,97 @@ export function mapChainStrikes(strikes: any[]): OptionStrike[] {
   }));
 }
 
+/**
+ * ATM IV for the card — ONE unit out: PERCENT.
+ *
+ * Two sources arrive in different units, and until now BOTH were scaled by
+ * 100 at the report assembly:
+ *   - the live chain's `greeks.iv` is already PERCENT (16.86 = 16.86%)
+ *   - `impliedVolFromPremium` returns a DECIMAL (0.1686 = 16.86%)
+ * Normalising here means the report never scales again — the 9797df9
+ * regression printed 1686% / 1967% whenever the chain shipped greeks.
+ * `atmGreeks.iv` is pinned to the same unit as the headline number.
+ */
+export function resolveAtmIv(input: {
+  atm?: OptionStrike | null;
+  spot: number;
+  T: number;
+}): { atmIV: number; atmGreeks?: Greeks; atmGreeksSource: "provider" | "bs" | "implied" | null } {
+  const { atm, spot, T } = input;
+
+  // Chain greeks win — the live market's own numbers, already percent.
+  if (atm?.call?.greeks) {
+    return {
+      atmIV: atm.call.greeks.iv || 0,
+      atmGreeks: { ...atm.call.greeks },
+      atmGreeksSource: atm.call.greeks.deltaSource === "provider" ? "provider" : "bs",
+    };
+  }
+
+  // No chain greeks → BS-from-premium estimate, scaled to percent exactly once.
+  if (atm?.call?.ltp && spot > 0) {
+    const ivDecimal = impliedVolFromPremium(atm.call.ltp, spot, atm.strike, T, true) || 0;
+    if (ivDecimal > 0) {
+      const atmIV = +(ivDecimal * 100).toFixed(4);
+      return {
+        atmIV,
+        atmGreeks: { ...calculateGreeks(spot, atm.strike, T, ivDecimal, true), iv: atmIV },
+        atmGreeksSource: "implied",
+      };
+    }
+  }
+
+  return { atmIV: 0, atmGreeksSource: null };
+}
+
+/** IST offset from UTC: +5:30 (no DST). */
+const IST_OFFSET_MS = 5.5 * 3600 * 1000;
+
+/** IST calendar-day number for an instant (epoch days, timezone-independent). */
+function istDayNumber(d: Date): number {
+  return Math.floor((d.getTime() + IST_OFFSET_MS) / 86400000);
+}
+
+/**
+ * Days to expiry as a CALENDAR-date difference in IST.
+ *
+ * The old `Math.ceil((expiry - now) / 86400000)` rounded a 7.06-day gap up
+ * to 8 for every moment before 15:30 IST (expiry's own stamp), reported 1 on
+ * expiry day instead of 0, and inflated Black-Scholes `T` by up to a day —
+ * 46% too much time on a 2-day SENSEX contract. Calendar-date difference is
+ * the number platforms show and stays stable across the session.
+ */
+export function daysToExpiryFor(expiry: Date | null | undefined, now: Date = new Date()): number {
+  if (!expiry || isNaN(expiry.getTime())) return 0;
+  return Math.max(0, istDayNumber(expiry) - istDayNumber(now));
+}
+
+/**
+ * The shared session module's verdict, flattened onto the report.
+ *
+ * Without it the card could only see `candleCount: 0` on a non-trading day
+ * and rendered "Engine warming up — 0/30 bars" all day, when no candle could
+ * ever arrive. Fails soft: an unreadable session must never break the report.
+ */
+export function marketSessionSnapshot(): {
+  session: string;
+  label: string;
+  description: string;
+  isMarketOpen: boolean;
+} {
+  try {
+    const s = getCurrentSession();
+    return {
+      session: s.session,
+      label: s.label,
+      description: s.description,
+      isMarketOpen: s.isMarketOpen === true,
+    };
+  } catch {
+    return { session: "unknown", label: "Session unknown", description: "", isMarketOpen: false };
+  }
+}
+
 export interface OptionChainSnapshot {
   underlying: "NIFTY" | "SENSEX";
   expiry: string;
@@ -226,6 +318,17 @@ export interface DailyDerivativesReport {
   candleDegraded: string | null;
   candleCount: number;
   warmupBars: number;
+  /**
+   * The shared session module's verdict — lets the UI say "market closed
+   * (weekend or exchange holiday)" instead of "Engine warming up — 0/30 bars"
+   * on a day when no candles can ever arrive.
+   */
+  marketSession?: {
+    session: string;
+    label: string;
+    description: string;
+    isMarketOpen: boolean;
+  };
   dataSource: string;
   freshness: string;
   /** Seller Intelligence — OI classification, DEX/GEX, invalidation zones, verdict. */
@@ -837,9 +940,7 @@ export class DailyDerivativesService {
     // Days to expiry — from the chain's own contract date, falling back to the
     // caller-supplied value only when the chain carries no parseable expiry.
     const expiryDate = parseExpiryDateLoose(chain.expiry || expiryISO);
-    const daysToExpiry =
-      params.daysToExpiry ??
-      (expiryDate ? Math.max(0, Math.ceil((expiryDate.getTime() - Date.now()) / 86400000)) : 0);
+    const daysToExpiry = params.daysToExpiry ?? daysToExpiryFor(expiryDate);
 
     // 2. Candles via the live capture chain (Breeze → MO → NSE index-only).
     //    SENSEX is a BSE index — the chain reports that capability skip honestly;
@@ -933,23 +1034,10 @@ export class DailyDerivativesService {
     // or the data layer's BS(IV) computation — it labels which). Only when the
     // chain carries none does the card fall back to its own BS-from-premium
     // estimate, and that fallback is labelled so the UI can say so.
+    // `resolveAtmIv` owns the unit: percent out, never scaled twice.
     const atm = strikes.find(s => s.strike === atmStrike);
-    let atmIV = 0;
-    let atmGreeks: Greeks | undefined;
-    let atmGreeksSource: "provider" | "bs" | "implied" | null = null;
     const T = Math.max((daysToExpiry || 0) / 365, 0.002);
-
-    if (atm?.call?.greeks) {
-      atmGreeks = { ...atm.call.greeks };
-      atmIV = atm.call.greeks.iv || 0;
-      atmGreeksSource = atm.call.greeks.deltaSource === "provider" ? "provider" : "bs";
-    } else if (atm?.call?.ltp && spot > 0) {
-      atmIV = impliedVolFromPremium(atm.call.ltp, spot, atmStrike, T, true) || 0;
-      if (atmIV > 0) {
-        atmGreeks = { ...calculateGreeks(spot, atmStrike, T, atmIV, true), iv: atmIV };
-        atmGreeksSource = "implied";
-      }
-    }
+    const { atmIV, atmGreeks, atmGreeksSource } = resolveAtmIv({ atm, spot, T });
 
     // Top OI
     const topCallOI = strikes
@@ -1193,7 +1281,8 @@ export class DailyDerivativesService {
       totalCallOI,
       totalPutOI,
       atmStrike,
-      atmIV: +(atmIV * 100).toFixed(2),
+      // resolveAtmIv already returns PERCENT — never scale a second time.
+      atmIV: +atmIV.toFixed(2),
       atmGreeks,
       topCallOI,
       topPutOI,
@@ -1211,6 +1300,7 @@ export class DailyDerivativesService {
       candleDegraded,
       candleCount: candles.length,
       warmupBars: need,
+      marketSession: marketSessionSnapshot(),
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
       chainFallbackUsed: chainResult.fallbackUsed === true,

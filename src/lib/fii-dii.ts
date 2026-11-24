@@ -252,6 +252,63 @@ function withBudget<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  */
 const NSE_RACE_BUDGET_MS = 3_000;
 
+// ─── History ordering ─────────────────────────────────────────────
+// MrChartist ships `history` NEWEST-FIRST (verified live 2026-11-24:
+// first=20-Nov-2026, last=31-Jul-2026). Dates are "DD-MMM-YYYY", so a
+// string compare puts 01-Oct-2026 after 01-Nov-2026 AND `slice(-5)` takes
+// the OLDEST five rows — the reported fiiNet5dAvg was -1710 (September)
+// while the true newest-five average was +8730. Order must never be
+// assumed: parse the date and sort.
+
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/** Parse "17-Jul-2026" → epoch ms, or null when unparseable. */
+function parseChartistDate(date: string): number | null {
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(date || "");
+  if (!m) return null;
+  const month = MONTH_INDEX[m[2].toLowerCase()];
+  if (month === undefined) return null;
+  const day = Number(m[1]);
+  const year = Number(m[3]);
+  if (day < 1 || day > 31) return null;
+  return new Date(year, month, day).getTime();
+}
+
+/**
+ * Return history ordered newest-first regardless of provider order.
+ * Rows whose date cannot be parsed keep their relative order at the tail —
+ * never dropped, never thrown on.
+ */
+export function sortHistoryNewestFirst(history: FiiDiiDay[]): FiiDiiDay[] {
+  const withKey = history.map((row, i) => ({ row, i, t: parseChartistDate(row.date) }));
+  withKey.sort((a, b) => {
+    if (a.t === null && b.t === null) return a.i - b.i;
+    if (a.t === null) return 1;
+    if (b.t === null) return -1;
+    return b.t - a.t;
+  });
+  return withKey.map((x) => x.row);
+}
+
+/**
+ * 5-day averages over the NEWEST five rows (order-independent).
+ * Fewer than five rows → undefined — a 0 average over an empty history
+ * reads as "FII net 0 for 5 days", which is a fabricated neutral.
+ */
+export function fiveDayAverages(history: FiiDiiDay[]): {
+  fiiNet5dAvg?: number;
+  diiNet5dAvg?: number;
+} {
+  const newest = sortHistoryNewestFirst(history).slice(0, 5);
+  if (newest.length < 5) return {};
+  const fiiNet5dAvg = newest.reduce((s, d) => s + (d.fiiNet || 0), 0) / newest.length;
+  const diiNet5dAvg = newest.reduce((s, d) => s + (d.diiNet || 0), 0) / newest.length;
+  return { fiiNet5dAvg, diiNet5dAvg };
+}
+
 async function fetchNSEParticipantOI(): Promise<ParticipantOI | null> {
   try {
     const now = Date.now();
@@ -353,12 +410,11 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
   };
   const available = !!(nseLatest || mcLatest);
 
-  const historySliced = history.slice(0, 30);
+  const historySliced = sortHistoryNewestFirst(history).slice(0, 30);
   // Compute 5-day rolling averages — only when the history actually exists.
   // (A 0 average over an EMPTY history reads as "FII net 0 for 5 days".)
-  const last5 = historySliced.slice(-5);
-  const fiiNet5dAvg = last5.length >= 5 ? last5.reduce((s, d) => s + (d.fiiNet || 0), 0) / last5.length : undefined;
-  const diiNet5dAvg = last5.length >= 5 ? last5.reduce((s, d) => s + (d.diiNet || 0), 0) / last5.length : undefined;
+  // fiveDayAverages() re-sorts internally, so it never depends on this order.
+  const { fiiNet5dAvg, diiNet5dAvg } = fiveDayAverages(historySliced);
   // FII futures long/short ratio (from the latest participant OI). undefined
   // when there is no participant data — 0.5 was a fabricated "neutral".
   const fiiFutLongRatio = participantOI ? (() => {

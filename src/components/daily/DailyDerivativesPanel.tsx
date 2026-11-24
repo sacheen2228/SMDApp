@@ -156,6 +156,14 @@ interface DailyDerivativesReport {
   candleDegraded: string | null;
   candleCount: number;
   warmupBars: number;
+  /** The shared session module's verdict — lets the UI say "market closed"
+   *  instead of "Engine warming up" on a non-trading day. */
+  marketSession?: {
+    session: string;
+    label: string;
+    description: string;
+    isMarketOpen: boolean;
+  };
   sellerIntel?: SellerIntel;
   cvd?: CvdProxy;
   /** Rel volume of the last CLOSED futures bar vs its 20-bar avg — the honest fake-breakout half. */
@@ -1261,7 +1269,14 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               <Activity className="h-4 w-4 text-violet-400" />
               <span className="text-[13px] font-bold text-foreground">Latest Technical Signals (EMA 9/15 + ADX/ATR)</span>
             </div>
-            {report.latestSignals.length === 0 ? (
+            {report.marketSession && !report.marketSession.isMarketOpen ? (
+              <div className="text-[13px] text-sky-400/90 text-center py-2">
+                Market closed — {report.marketSession.description}
+                <span className="block text-[11px] text-muted-foreground mt-1">
+                  No candles or signals can arrive until the next trading session
+                </span>
+              </div>
+            ) : report.latestSignals.length === 0 ? (
               report.candleCount < (report.warmupBars || 30) ? (
                 <div className="text-[13px] text-amber-400/90 text-center py-2">
                   Engine warming up — {report.candleCount}/{report.warmupBars || 30} bars · EMA 9/15 + ADX14 need {report.warmupBars || 30}
@@ -1288,7 +1303,11 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
             <div className="text-[11px] text-muted-foreground mt-1.5">
               Candles: {report.candleCount} @ {report.candleInterval} ({report.candleSource}
               {report.candleDegraded ? ` — ${report.candleDegraded}` : ""})
-              {report.candleCount < (report.warmupBars || 30) ? ` · warming up ${report.candleCount}/${report.warmupBars || 30}` : ""}
+              {report.marketSession && !report.marketSession.isMarketOpen
+                ? " · market closed"
+                : report.candleCount < (report.warmupBars || 30)
+                  ? ` · warming up ${report.candleCount}/${report.warmupBars || 30}`
+                  : ""}
             </div>
           </div>
 

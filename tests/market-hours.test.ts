@@ -166,13 +166,15 @@ describe("isTradingDay with holidays", () => {
     expect(isMarketOpen(MON_2026_11_09(3, 40))).toBe(false);
     expect(isTelegramSendWindow(MON_2026_11_09(3, 40))).toBe(false);
   });
-  it("holiday Monday → msUntilTelegramSendWindow skips to next day", () => {
+  it("holiday Monday → msUntilTelegramSendWindow skips consecutive holidays", () => {
     process.env.NSE_HOLIDAYS = "2026-11-09";
-    // Fri 15:31 IST → normally Mon 09:10, but Mon is holiday → Tue 09:10
+    // Fri 15:31 IST → Mon 09:10 is out (env holiday 2026-11-09), AND Tue
+    // 2026-11-10 is a canonical NSE holiday (Diwali-Balipratipada) — so the
+    // next window is Wed 2026-11-11 09:10 IST, not Tue.
     const ms = msUntilTelegramSendWindow(FRI_2026_11_06(10, 1));
-    // Fri 10:01 UTC → Tue 03:40 UTC = ~3 days 17h39m = ~322740000 ms
-    const expectedMin = 322740000 - 60_000;
-    const expectedMax = 322740000 + 60_000;
+    // Fri 10:01 UTC → Wed 03:40 UTC = 4 days 17h39m = 409140000 ms
+    const expectedMin = 409140000 - 60_000;
+    const expectedMax = 409140000 + 60_000;
     expect(ms).toBeGreaterThan(expectedMin);
     expect(ms).toBeLessThan(expectedMax);
   });

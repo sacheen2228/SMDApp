@@ -1,10 +1,18 @@
 /// <reference types="bun-types" />
 // TDD for telegram-queue.ts reliability fixes (Step 2 + Step 8).
 
-import { describe, it, expect, mock, afterEach } from "bun:test";
+import { describe, it, expect, mock, afterEach, beforeEach } from "bun:test";
 
+// These tests exercise the QUEUE's resilience, not the send window. The
+// window is closed on weekends/holidays (and NSE_HOLIDAYS now honours the
+// canonical calendar), so force it open — otherwise processQueue() returns
+// early and sendFn is never called.
+beforeEach(() => {
+  process.env.TELEGRAM_ALLOW_OFFHOURS = "1";
+});
 afterEach(() => {
   mock.restore();
+  delete process.env.TELEGRAM_ALLOW_OFFHOURS;
 });
 
 // The event-bus mock must carry the FULL export surface: mock.module replaces

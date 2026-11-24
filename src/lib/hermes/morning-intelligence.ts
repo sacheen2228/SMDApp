@@ -4,7 +4,7 @@
 
 import { getCurrentSession } from './scheduler';
 import { newsIntelligence, type NewsIntelligenceResult } from './news-intelligence';
-import { fetchFiiDiiData } from '@/lib/fii-dii';
+import { fetchFiiDiiData, fiveDayAverages } from '@/lib/fii-dii';
 
 // ── Morning Brief ──
 export interface MorningIntelligenceBrief {
@@ -185,16 +185,28 @@ class MorningIntelligence {
       const latest = data.latest;
       const history = data.history || [];
 
-      // Trend analysis (last 5 days)
-      const recentDays = history.slice(-5);
-      const fiiAvg = recentDays.reduce((s: number, d: any) => s + (d.fiiNet || 0), 0) / Math.max(recentDays.length, 1);
-      const diiAvg = recentDays.reduce((s: number, d: any) => s + (d.diiNet || 0), 0) / Math.max(recentDays.length, 1);
+      // Trend analysis (last 5 days). The provider ships history NEWEST-first,
+      // so `slice(-5)` was averaging the OLDEST five rows (September) and
+      // flipping the trend. fiveDayAverages() parses the dates instead of
+      // trusting array order; <5 rows → undefined → 'Unavailable' (no 0 = fake
+      // "flat" reading).
+      const { fiiNet5dAvg, diiNet5dAvg } = fiveDayAverages(history);
+      const trend = (avg: number | undefined) =>
+        avg === undefined
+          ? 'Unavailable'
+          : avg > 500
+            ? 'STRONG BUYING'
+            : avg > 0
+              ? 'BUYING'
+              : avg > -500
+                ? 'SELLING'
+                : 'HEAVY SELLING';
 
       return {
         fiiNet: latest?.fiiNet ?? null,
         diiNet: latest?.diiNet ?? null,
-        fiiTrend: fiiAvg > 500 ? 'STRONG BUYING' : fiiAvg > 0 ? 'BUYING' : fiiAvg > -500 ? 'SELLING' : 'HEAVY SELLING',
-        diiTrend: diiAvg > 500 ? 'STRONG BUYING' : diiAvg > 0 ? 'BUYING' : diiAvg > -500 ? 'SELLING' : 'HEAVY SELLING',
+        fiiTrend: trend(fiiNet5dAvg),
+        diiTrend: trend(diiNet5dAvg),
         date: latest?.date ?? null,
         source: latest?.source ?? 'unknown',
       };

@@ -14,6 +14,7 @@ import {
   type EmaShadowFields,
 } from "@/lib/ema-shadow-observer";
 import type { StockCandidate } from "@/lib/intraday-scanner";
+import { isMarketOpen } from "@/lib/marketHours";
 import type { WeeklyCandidate } from "@/lib/weekly-equity-scanner";
 
 const prisma = new PrismaClient();
@@ -237,7 +238,8 @@ describe("recordEmaShadowObservations", () => {
 });
 
 function isMarketOpenNow(now: number): boolean {
-  const p = new Date(now + 5.5 * 3600 * 1000);
-  const m = p.getUTCHours() * 60 + p.getUTCMinutes();
-  return m >= 9 * 60 + 15 && m <= 15 * 60 + 30;
+  // The production field is filled from `@/lib/marketHours.isMarketOpen`,
+  // which honours the canonical NSE holiday calendar — a naive time-window
+  // check would disagree on weekends/holidays.
+  return isMarketOpen(new Date(now));
 }

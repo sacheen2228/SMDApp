@@ -4,11 +4,17 @@
 // (IST = UTC+5:30, no DST), never via server-local setHours or toLocaleString.
 // This makes behaviour identical regardless of the server's timezone.
 
+// Single source of truth for NSE holidays (AGENTS.md "Holiday calendar
+// consolidated"). marketHours keeps its env list only as a supplemental
+// override — NSE_HOLIDAYS is NOT set in .env, so on its own it is always empty.
+import { isExchangeHoliday } from "@/lib/expiry-calculator";
+
 // IST offset from UTC: +5:30 = 19800000 ms
 const IST_OFFSET_MS = 5.5 * 3600 * 1000;
 
 /** NSE trading holidays (YYYY-MM-DD). Read from NSE_HOLIDAYS env var
- *  (comma-separated); never hardcoded — do not invent dates. */
+ *  (comma-separated); never hardcoded — do not invent dates.
+ *  Supplemental only: see `isHoliday()` for the canonical check. */
 export function getNSEHolidays(): string[] {
   const raw = process.env.NSE_HOLIDAYS || "";
   return raw
@@ -45,7 +51,13 @@ function istDateString(epochMs: number): string {
 
 function isHoliday(epochMs: number): boolean {
   const ds = istDateString(epochMs);
-  return getNSEHolidays().includes(ds);
+  // Env list is supplemental (tests / local overrides). The canonical NSE
+  // calendar in expiry-calculator is the single source of truth — without it
+  // this list was ALWAYS empty (NSE_HOLIDAYS is not set in .env) and every
+  // real holiday read as a trading day, while getCurrentSession() (which
+  // imports the canonical set) correctly reported "Non-trading day".
+  if (getNSEHolidays().includes(ds)) return true;
+  return isExchangeHoliday(ds);
 }
 
 function isWeekend(weekday: number): boolean {

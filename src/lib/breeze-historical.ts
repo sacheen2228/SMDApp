@@ -33,6 +33,34 @@ export interface IntradayCandleResult {
   warning?: string;
 }
 
+// ─── Error rendering ─────────────────────────────────────────────
+// Breeze rejects with plain objects ({ Error, Status }) rather than Error
+// instances, so `err.message` was undefined and the catch logged
+// "Exception for MIDCPNIFTY …: undefined" while shipping
+// `warning: "Exception: undefined"` to callers. Never render "undefined".
+export function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message || err.name || String(err);
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const known = o.Error ?? o.message ?? o.Message ?? o.reason ?? o.code;
+    if (typeof known === "string" && known) return known;
+    if (typeof known === "number") return String(known);
+    try {
+      const json = JSON.stringify(o);
+      if (json && json !== "{}") return json;
+    } catch {
+      /* circular — fall through */
+    }
+    return o.constructor?.name && o.constructor.name !== "Object"
+      ? o.constructor.name
+      : "unknown error";
+  }
+  if (err === undefined) return "unknown error";
+  if (err === null) return "null error";
+  return String(err);
+}
+
 // ─── Request builder (pure — the mapping is what broke live capture) ──
 // Index spot bars are requested as productType "cash" on the NSE/BSE exchange;
 // ICICI scrip codes (CNXBAN/NIFFIN/…) are mandatory — the exchange symbol

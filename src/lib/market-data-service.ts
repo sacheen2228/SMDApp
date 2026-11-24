@@ -126,6 +126,33 @@ function classifyQuality(env: {
   return "OK";
 }
 
+/**
+ * Age + freshness of a payload we already hold (cache hit / re-serve).
+ *
+ * The PROVIDER's own publication stamp decides — never how long ago we wrote
+ * the cache entry. A 60s-old cache entry holding a 22h-old exchange payload
+ * is 22h old, not LIVE (the cache path used to classify from `fetchedAt` and
+ * reported LIVE while the envelope's `providerTimestamp` said 23-Nov).
+ *
+ * An undated (or unparseable) stamp is capped at FRESH: collected now, but
+ * unverifiable — a 200 response is not proof of liveness, so never LIVE.
+ * Future-dated stamps clamp to age 0.
+ */
+export function payloadAgeAndFreshness(
+  providerTs: string | null | undefined,
+  collectedAtMs: number,
+  nowMs: number,
+  category: string,
+): { ageMs: number; freshness: FreshnessLevel } {
+  const pt = providerTs ? new Date(providerTs).getTime() : NaN;
+  const hasPt = Number.isFinite(pt);
+  // Provider stamp when we have one; otherwise our own collection time (so
+  // ageMs still tells the caller how stale the serving path is).
+  const ageMs = hasPt ? Math.max(0, nowMs - pt) : Math.max(0, nowMs - collectedAtMs);
+  const freshness: FreshnessLevel = hasPt ? classifyFreshness(ageMs, category) : "FRESH";
+  return { ageMs, freshness };
+}
+
 /** Re-key a config table (priorities / cacheTtl) to canonical category names. */
 function normalizeTable(table: Record<string, any> | undefined): Record<string, any> {
   const out: Record<string, any> = {};
@@ -193,13 +220,34 @@ export async function fetchMarketData<T = any>(
   if (!opts.bypassCache) {
     const cached = cache.get(key);
     if (cached && nowMs < cached.expiresAt) {
+      // Freshness from the PROVIDER's stamp, not from how long ago we wrote
+      // this entry — otherwise a 60s cache holding a 22h-old payload said LIVE.
+      const { ageMs, freshness } = payloadAgeAndFreshness(
+        cached.envelope.providerTimestamp,
+        new Date(cached.envelope.fetchedAt).getTime(),
+        nowMs,
+        normalized.category,
+      );
       const env: MarketDataEnvelope<T> = {
         ...cached.envelope,
         source: "CACHE",
         fetchedAt: new Date(nowMs).toISOString(),
-        ageMs: nowMs - new Date(cached.envelope.fetchedAt).getTime(),
+        ageMs,
+        freshness,
       };
-      env.freshness = classifyFreshness(env.ageMs, normalized.category);
+      // LIVE is only truthful while the exchange is open and printing —
+      // the same session downgrade the live path applies.
+      try {
+        const { getCurrentSession } = await import("./market-session");
+        const session = getCurrentSession();
+        const sessionLabel: TradingSessionLabel =
+          session?.isMarketOpen === true ? "REGULAR" : session?.session === "CLOSED"
+            ? "CLOSED"
+            : "PRE_OPEN";
+        env.freshness = sessionAwareFreshness(env.freshness, sessionLabel);
+      } catch {
+        /* session module unavailable — keep raw freshness */
+      }
       env.delayed = env.freshness === "DELAYED" || env.freshness === "STALE";
       env.quality = classifyQuality(env);
       env.lastSuccessfulUpdate = lastSuccessAt.has(key)

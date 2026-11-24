@@ -80,8 +80,18 @@ describe("Daily Derivatives — the live chain's Greeks", () => {
   });
 
   it("the ATM leg reads the CHAIN's Greeks instead of re-deriving from the premium", () => {
+    // The decision moved into `resolveAtmIv` (now unit-tested for real in
+    // daily-derivatives-atm-iv.test.ts) — the report assembly just delegates,
+    // so this block must no longer re-derive an IV from the premium itself.
     const atmBlock = sliceBetween("// ATM Greeks", "// Top OI");
-    expect(atmBlock).toMatch(/atm\??\.call\??\.greeks/);
+    expect(atmBlock).toMatch(/resolveAtmIv/);
+    expect(atmBlock).not.toMatch(/impliedVolFromPremium/);
+
+    // ...and the helper it delegates to must be the one reading the chain.
+    const start = SRC.indexOf("export function resolveAtmIv");
+    expect(start).toBeGreaterThan(-1);
+    const resolve = SRC.slice(start, start + 900);
+    expect(resolve).toMatch(/atm\??\.call\??\.greeks/);
   });
 
   it("the report carries the per-strike Greeks and the chain provenance", () => {

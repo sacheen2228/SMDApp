@@ -1013,13 +1013,20 @@ export async function runInstitutionalPositioning(
   }
 
   if (!todayData) {
-    // Last resort: use most recent DB entry
+    // Last resort: use chronologically newest DB entry.
+    // `date` is DDMMYYYY TEXT, so `orderBy date desc` returns the STRING max
+    // (30102026 = 30 Oct) instead of the newest row (23112026 = 23 Nov).
+    // Fetch the distinct dates and pick with a parsed-date comparison.
     const db = getDb();
     if (db) {
       try {
-        const last = await db.participantOI.findFirst({ orderBy: { date: 'desc' }, distinct: ['date'] });
-        if (last) {
-          const allRows = await db.participantOI.findMany({ where: { date: last.date } });
+        const dateRows = await db.participantOI.findMany({
+          distinct: ["date"],
+          select: { date: true },
+        });
+        const latestDate = latestParticipantDate(dateRows);
+        if (latestDate) {
+          const allRows = await db.participantOI.findMany({ where: { date: latestDate } });
           if (allRows.length > 0) {
             todayData = {};
             for (const row of allRows) {
@@ -1033,7 +1040,7 @@ export async function runInstitutionalPositioning(
                 totalLong: row.totalLong, totalShort: row.totalShort,
               };
             }
-            activeDate = last.date;
+            activeDate = latestDate;
             source = 'db';
           }
         }
@@ -1055,8 +1062,14 @@ export async function runInstitutionalPositioning(
     Client: todayData?.['Client'] || emptyRow,
   };
 
-  // Build sorted date list for delta computation
-  const allDates = [...new Set([activeDate, ...recentDates].filter(d => dbHistory.has(d) || d === activeDate))].sort().reverse();
+  // Build sorted date list for delta computation.
+  // allDates[0] is the CURRENT row and the tail walks backwards in time
+  // (buildChanges reads index 5 as "5 trading days ago", index 20 as monthly).
+  // A string sort put "30102026" first, so "previous day" was read off a
+  // 3.5-week-old row. Sort the tail by parsed date instead.
+  const dateSet = [...new Set([activeDate, ...recentDates].filter(d => dbHistory.has(d) || d === activeDate))];
+  const tail = sortDatesNewestFirst(dateSet.filter((d) => d !== activeDate));
+  const allDates = dateSet.includes(activeDate) ? [activeDate, ...tail] : tail;
 
   // Build changes
   const changes = buildChanges(today, dbHistory, allDates);
@@ -1113,7 +1126,10 @@ export async function runInstitutionalPositioning(
 
   const output: InstitutionalPositioningOutput = {
     date: activeDate,
-    dateLabel: todayLabel,
+    // The label must describe `date` (the row actually served), not today —
+    // stamping todayLabel onto a stale activeDate is how the DD panel showed
+    // "Nov 24, 2026" over 30-Oct numbers.
+    dateLabel: ddmmyyyyToLabel(activeDate) || todayLabel,
     today,
     changes,
     strengthScores,
@@ -1280,6 +1296,30 @@ export function latestParticipantDate(rows: {date: string}[]): string | null {
 export function positioningFreshness(latest: string | null, today: string): 'fresh' | 'missing' {
   if (!latest || latest !== today) return "missing";
   return "fresh";
+}
+
+/** Order DDMMYYYY dates newest-first by PARSED date.
+ * A string sort puts "30102026" (30 Oct) ahead of "23112026" (23 Nov),
+ * which made the engine serve a 3.5-week-old row as the latest one.
+ * Unparseable entries are dropped — they cannot be ordered honestly. */
+export function sortDatesNewestFirst(dates: string[]): string[] {
+  return dates
+    .map((d) => ({ d, t: ddmmyyyyToDate(d)?.getTime() }))
+    .filter((x): x is { d: string; t: number } => typeof x.t === "number")
+    .sort((a, b) => b.t - a.t)
+    .map((x) => x.d);
+}
+
+/** "23112026" → "Nov 23, 2026". The label must describe the DATA date —
+ * stamping today's label onto a stale row is how the DD panel ended up
+ * showing "Nov 24, 2026" over 30-Oct numbers. Returns "" on garbage so the
+ * caller can fall back instead of making a false claim. */
+export function ddmmyyyyToLabel(ddmmyyyy: string): string {
+  const d = ddmmyyyyToDate(ddmmyyyy);
+  if (!d) return "";
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${months[d.getMonth()]} ${dd}, ${d.getFullYear()}`;
 }
 
 /** Check if participant OI data already exists for a given IST date in the DB.
