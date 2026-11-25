@@ -13,7 +13,7 @@
 // nothing in this module creates a trade or selects a strike.
 
 import { classifyFreshness, collectedFreshness, providerTimestamp } from '@/lib/api-freshness';
-import { calculateGreeks } from '@/lib/greeks';
+import { calculateGreeks, impliedVolFromPremium } from '@/lib/greeks';
 import type { OptionChainData, OptionStrike, OptionLeg, ProviderResult } from '@/lib/data-layer/types';
 
 // ── Exchange routing ────────────────────────────────────────────────
@@ -233,6 +233,8 @@ export interface DerivedGreeks {
   gamma: number | null;
   theta: number | null;
   vega: number | null;
+  /** Percent IV actually used (provider IV, or the premium-inverted one). */
+  iv: number | null;
   deltaSource: "provider" | "bs" | null;
 }
 
@@ -247,7 +249,7 @@ function tYears(expiry: string | null | undefined, now: Date = new Date()): numb
 }
 
 export function deriveLegGreeks(
-  raw: { delta?: any; gamma?: any; theta?: any; vega?: any; iv?: any },
+  raw: { delta?: any; gamma?: any; theta?: any; vega?: any; iv?: any; ltp?: any; premium?: any },
   spot: number,
   strike: number,
   expiryIso: string | null | undefined,
@@ -261,15 +263,25 @@ export function deriveLegGreeks(
     Number.isFinite(d) && Number.isFinite(g) && Number.isFinite(th) &&
     (d !== 0 || g !== 0 || th !== 0);   // all-zero = "unknown" sentinel, not a real greek
   if (hasProvider) {
+    const ivOk = Number.isFinite(Number(raw?.iv)) && Number(raw?.iv) > 0 ? Number(raw?.iv) : null;
     return {
       delta: d, gamma: g, theta: th,
       vega: Number.isFinite(v) ? v : null,
+      iv: ivOk,
       deltaSource: "provider",
     };
   }
 
-  const ivPct = Number(raw?.iv);
   const T = tYears(expiryIso);
+  let ivPct = Number(raw?.iv);
+  // No published IV (Breeze often ships ltp + OI only) → invert the live
+  // premium. Without this the whole Live Chain Greeks table disappears
+  // whenever Breeze wins the provider race.
+  if (!(Number.isFinite(ivPct) && ivPct > 0) && T != null && T > 0) {
+    const prem = Number(raw?.ltp ?? raw?.premium);
+    const ivDec = impliedVolFromPremium(prem, spot, strike, T, isCall);
+    if (ivDec != null && ivDec > 0) ivPct = ivDec * 100;
+  }
   if (
     Number.isFinite(ivPct) && ivPct > 0 &&
     Number.isFinite(spot) && spot > 0 &&
@@ -283,11 +295,11 @@ export function deriveLegGreeks(
     // greeks); rejecting here used to null out 100+ live legs and starve
     // seller-intel of analysable data.
     if (Number.isFinite(gv.delta)) {
-      return { delta: gv.delta, gamma: gv.gamma, theta: gv.theta, vega: gv.vega, deltaSource: "bs" };
+      return { delta: gv.delta, gamma: gv.gamma, theta: gv.theta, vega: gv.vega, iv: ivPct, deltaSource: "bs" };
     }
   }
 
-  return { delta: null, gamma: null, theta: null, vega: null, deltaSource: null };
+  return { delta: null, gamma: null, theta: null, vega: null, iv: null, deltaSource: null };
 }
 
 function mapLeg(
@@ -298,16 +310,23 @@ function mapLeg(
   isCall: boolean,
 ): OptionLeg | null {
   if (!leg) return null;
-  const gk = deriveLegGreeks(leg, spot, strike, expiryIso, isCall);
+  const gk = deriveLegGreeks(
+    { delta: leg.delta, gamma: leg.gamma, theta: leg.theta, vega: leg.vega, iv: leg.iv, ltp: leg.ltp },
+    spot, strike, expiryIso, isCall,
+  );
   const num = (x: any): number | null => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
   const oiChange = num(leg.oiChange) ?? num(leg.oiChg);
+  const ltp = num(leg.ltp);
+  // Prefer the derived IV (provider IV or premium-inverted) when the raw
+  // leg shipped iv=0 — otherwise the CE/PE IV columns show 0.00%.
+  const ivOut = num(leg.iv) && num(leg.iv)! > 0 ? num(leg.iv) : gk.iv;
   return {
-    ltp: num(leg.ltp),
+    ltp,
     oi: num(leg.oi),
     oiChange,
     oiChg: num(leg.oiChg) ?? oiChange,   // both names — type says oiChange, legacy readers use oiChg
     volume: num(leg.volume),
-    iv: num(leg.iv),
+    iv: ivOut,
     bid: num(leg.bid),
     ask: num(leg.ask),
     rho: num(leg.rho),
@@ -405,6 +424,7 @@ function normalizeNseChain(
           delta: row?.CE?.greeks?.delta, gamma: row?.CE?.greeks?.gamma,
           theta: row?.CE?.greeks?.theta, vega: row?.CE?.greeks?.vega,
           iv: row?.CE?.impliedVolatility,
+          ltp: row?.CE?.lastPrice,
         },
         spotVal, Number(strike), selected, true,
       );
@@ -414,7 +434,9 @@ function normalizeNseChain(
         oi: row?.CE?.openInterest ?? null,
         oiChange: row?.CE?.changeinOpenInterest ?? null,
         oiChg: row?.CE?.changeinOpenInterest ?? null,
-        iv: row?.CE?.impliedVolatility ?? null,
+        iv: (row?.CE?.impliedVolatility && Number(row.CE.impliedVolatility) > 0)
+          ? row.CE.impliedVolatility
+          : ceGk.iv,
         bid: row?.CE?.bidprice ?? row?.CE?.bid ?? null,
         ask: row?.CE?.askPrice ?? row?.CE?.ask ?? null,
         delta: ceGk.delta,
@@ -430,6 +452,7 @@ function normalizeNseChain(
           delta: row?.PE?.greeks?.delta, gamma: row?.PE?.greeks?.gamma,
           theta: row?.PE?.greeks?.theta, vega: row?.PE?.greeks?.vega,
           iv: row?.PE?.impliedVolatility,
+          ltp: row?.PE?.lastPrice,
         },
         spotVal, Number(strike), selected, false,
       );
@@ -439,7 +462,9 @@ function normalizeNseChain(
         oi: row?.PE?.openInterest ?? null,
         oiChange: row?.PE?.changeinOpenInterest ?? null,
         oiChg: row?.PE?.changeinOpenInterest ?? null,
-        iv: row?.PE?.impliedVolatility ?? null,
+        iv: (row?.PE?.impliedVolatility && Number(row.PE.impliedVolatility) > 0)
+          ? row.PE.impliedVolatility
+          : peGk.iv,
         bid: row?.PE?.bidprice ?? row?.PE?.bid ?? null,
         ask: row?.PE?.askPrice ?? row?.PE?.ask ?? null,
         delta: peGk.delta,
@@ -529,14 +554,14 @@ function normalizeBseChain(
       // One row per strike holds BOTH sides: PE fields are unprefixed,
       // CE fields carry a `C_` prefix (see legacy `bse-api.ts` mapping).
       // BSE publishes no greeks — IV only — so delta comes from BS(IV).
-      const ceGk = deriveLegGreeks({ iv: row?.C_IV }, spotVal, strike, selected, true);
+      const ceGk = deriveLegGreeks({ iv: row?.C_IV, ltp: row?.C_Last_Trd_Price }, spotVal, strike, selected, true);
       const ce: OptionLeg = {
         ltp: parseNum(row?.C_Last_Trd_Price),
         volume: parseNum(row?.C_Vol_Traded),
         oi: parseNum(row?.C_Open_Interest),
         oiChange: parseNum(row?.C_Absolute_Change_OI),
         oiChg: parseNum(row?.C_Absolute_Change_OI),
-        iv: roundIv(parseNum(row?.C_IV)),
+        iv: (() => { const p = roundIv(parseNum(row?.C_IV)); return p != null && p > 0 ? p : ceGk.iv; })(),
         bid: parseNum(row?.C_BidPrice),
         ask: parseNum(row?.C_OfferPrice),
         delta: ceGk.delta,
@@ -547,14 +572,14 @@ function normalizeBseChain(
         rho: null,
       };
 
-      const peGk = deriveLegGreeks({ iv: row?.IV }, spotVal, strike, selected, false);
+      const peGk = deriveLegGreeks({ iv: row?.IV, ltp: row?.Last_Trd_Price }, spotVal, strike, selected, false);
       const pe: OptionLeg = {
         ltp: parseNum(row?.Last_Trd_Price),
         volume: parseNum(row?.Vol_Traded),
         oi: parseNum(row?.Open_Interest),
         oiChange: parseNum(row?.Absolute_Change_OI),
         oiChg: parseNum(row?.Absolute_Change_OI),
-        iv: roundIv(parseNum(row?.IV)),
+        iv: (() => { const p = roundIv(parseNum(row?.IV)); return p != null && p > 0 ? p : peGk.iv; })(),
         bid: parseNum(row?.BidPrice),
         ask: parseNum(row?.OfferPrice),
         delta: peGk.delta,
@@ -609,6 +634,30 @@ export function normalizeOptionChain(
 // provider, everything else → try NSE first (equities), then BSE.
 // Falls through to MOAPI (stub) then NO_DATA.
 // Does NOT fetch Breeze — that stays in the route layer (auth-gated).
+
+// Last LIVE chain per symbol — only used to absorb a transient provider-race
+// miss while the market is open (Breeze timeout / NSE gate). Age-capped at
+// LIVE_CHAIN_MEMO_MS and re-labelled DELAYED; never EOD, never fabricated.
+const LIVE_CHAIN_MEMO_MS = 90_000;
+const liveChainMemo = new Map<
+  string,
+  { data: CanonicalOptionChain; at: number; source: string }
+>();
+
+/** Test hook — clear the last-live memo. */
+export function __clearLiveChainMemoForTests(): void {
+  liveChainMemo.clear();
+}
+
+/** Test hook — prime the memo as if a live provider just succeeded. */
+export function __primeLiveChainMemoForTests(
+  symbol: string,
+  data: CanonicalOptionChain,
+  source = "NSE",
+  at = Date.now(),
+): void {
+  liveChainMemo.set(symbol, { data, at, source });
+}
 
 export async function getOptionChain(
   symbol: string,
@@ -668,10 +717,58 @@ export async function getOptionChain(
       source: engineSourceToLayer(env.provider),
       fallbackReason: env.fallbackReason,
     };
-    return settle(result, requestedIso, requestedRaw);
+    const settled = settle(result, requestedIso, requestedRaw);
+    if (settled.data) {
+      // Remember the last LIVE hit so a transient race miss (Breeze timeout,
+      // NSE gate) during market open can re-serve this snapshot instead of
+      // hard-failing to NO_DATA. Age is stamped; the miss path only reuses
+      // within LIVE_CHAIN_MEMO_MS and labels the reason honestly.
+      liveChainMemo.set(symbol, {
+        data: settled.data,
+        at: Date.now(),
+        source: settled.source,
+      });
+    }
+    return settled;
   }
 
-  // Last resort: end-of-day bhavcopy (clearly labelled, never a live chain).
+  // Last resort: end-of-day bhavcopy — market CLOSED only. Serving EOD
+  // during open hours fed the scanner prev-close as spot (25349 vs live
+  // 25921) and labelled a stale chain as usable. Data policy: exchange
+  // archives are pre/post-market only.
+  let marketOpen = false;
+  try {
+    const { getCurrentSession } = await import('@/lib/market-session');
+    marketOpen = getCurrentSession().isMarketOpen;
+  } catch {
+    marketOpen = false; // session unknown → allow the archive (fail open for after-hours)
+  }
+  if (marketOpen) {
+    // Transient race miss while open: re-serve the last LIVE chain we got
+    // (≤90s old) rather than 503 the whole report. Never EOD, never a
+    // fabricated strike — the snapshot is a real provider payload.
+    const memo = liveChainMemo.get(symbol);
+    const ageMs = memo ? Date.now() - memo.at : Infinity;
+    if (memo && ageMs <= LIVE_CHAIN_MEMO_MS) {
+      const reason = `live providers race-failed; re-serving last live chain (${Math.round(ageMs / 1000)}s old)`;
+      return settle(
+        {
+          data: { ...memo.data, freshness: 'DELAYED' },
+          fallbackUsed: true,
+          source: memo.source,
+          fallbackReason: reason,
+        },
+        requestedIso,
+        requestedRaw,
+      );
+    }
+    return {
+      data: null,
+      fallbackUsed: true,
+      source: 'NO_DATA',
+      fallbackReason: `live option chain unavailable for ${symbol} (market open — EOD bhavcopy not served)`,
+    };
+  }
   const { bhavcopyProvider } = await import('@/lib/data-layer/providers/bhavcopy');
   const eod = await bhavcopyProvider.getOptionChain(symbol, requestedIso ?? undefined);
   if (eod.data) {

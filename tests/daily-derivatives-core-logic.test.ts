@@ -25,6 +25,8 @@ function sliceBetween(startMarker: string, endMarker: string): string {
 describe("Daily Derivatives core logic (locked)", () => {
   it("the direction bias has exactly the five canonical factors", () => {
     const service: any = new DailyDerivativesService();
+    // spot 24500 BELOW maxPain 24550 → gravity UP → Max Pain votes CALL
+    // (fixed 2026-11-25 — was inverted vs sdm-engine / gap-engine).
     const bias = service.computeDirectionBias({
       spot: 24500,
       pcr: 1.12,
@@ -42,9 +44,38 @@ describe("Daily Derivatives core logic (locked)", () => {
       "Candles",
       "Sentiment",
     ]);
+    // PCR put-heavy CALL · Max Pain gravity-up CALL · OI support CALL → 3-0
     expect(bias.side).toBe("CALL");
-    expect(bias.callVotes).toBe(2);
-    expect(bias.putVotes).toBe(1);
+    expect(bias.callVotes).toBe(3);
+    expect(bias.putVotes).toBe(0);
+    expect(bias.votes.find((v: any) => v.factor === "Max Pain").vote).toBe("CALL");
+  });
+
+  it("max pain votes with gravity: spot above MP → PUT, below → CALL", () => {
+    const service: any = new DailyDerivativesService();
+    const above = service.computeDirectionBias({
+      spot: 25734,
+      pcr: 1.0,
+      maxPain: 25700,
+      topCallOI: [{ oiChange: 0 }],
+      topPutOI: [{ oiChange: 0 }],
+      latestSignals: [],
+      sentimentScore: 50,
+    });
+    expect(above.votes.find((v: any) => v.factor === "Max Pain").vote).toBe("PUT");
+    expect(above.votes.find((v: any) => v.factor === "Max Pain").detail).toMatch(/gravity down/i);
+
+    const below = service.computeDirectionBias({
+      spot: 25650,
+      pcr: 1.0,
+      maxPain: 25700,
+      topCallOI: [{ oiChange: 0 }],
+      topPutOI: [{ oiChange: 0 }],
+      latestSignals: [],
+      sentimentScore: 50,
+    });
+    expect(below.votes.find((v: any) => v.factor === "Max Pain").vote).toBe("CALL");
+    expect(below.votes.find((v: any) => v.factor === "Max Pain").detail).toMatch(/gravity up/i);
   });
 
   it("the futures flow read never enters the bias", () => {

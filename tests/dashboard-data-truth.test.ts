@@ -20,7 +20,7 @@
 // imported by production code, and no test fixture is used as a data source
 // by a production path.
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 
@@ -197,6 +197,13 @@ describe("a failed feed yields an explicit unavailable state", () => {
     globalThis.fetch = (async () => {
       throw new Error("network down");
     }) as any;
+    // The DAILY EOD capture (the skill's 19:05 job) is a REAL source — it is
+    // mocked away here so this block tests the "no source at all" path.
+    mock.module("@/lib/orchestrator/eod-artifacts", () => ({
+      readNseEodFiiDii: async () => null,
+      readNseEodMostActive: async () => null,
+      isoToChartistDate: (iso: string) => iso,
+    }));
   });
 
   afterEach(() => {
@@ -224,6 +231,24 @@ describe("a failed feed yields an explicit unavailable state", () => {
     expect(body.fiiNet).toBeNull();
     expect(body.fiiNet5dAvg).toBeNull();
     expect(body.fiiFutLongRatio).toBeNull();
+  });
+
+  it("/api/fii-dii → serves the DAILY EOD capture when the live feed is down", async () => {
+    mock.module("@/lib/orchestrator/eod-artifacts", () => ({
+      readNseEodFiiDii: async () => ({
+        fiiNet: 4479.08, diiNet: 4018.72, fiiBuy: 24309.87, fiiSell: 19830.79,
+        diiBuy: 22379.82, diiSell: 18361.1, date: "25-Nov-2026", source: "nse-eod",
+      }),
+      readNseEodMostActive: async () => null,
+      isoToChartistDate: (iso: string) => iso,
+    }));
+    const { GET } = await import("@/app/api/fii-dii/route");
+    const res: any = await GET();
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.fiiNet).toBe(4479.08);
+    expect(body.sourceLabel).toBe("NSE EOD");
+    expect(body.dataDate).toBe("25-Nov-2026");
   });
 
   it("/api/market/breadth → UNAVAILABLE, not a zero breadth reading", async () => {

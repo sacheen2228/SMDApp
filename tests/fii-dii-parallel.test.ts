@@ -1,9 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { fetchFiiDiiData, _resetFiiDiiCacheForTests } from "@/lib/fii-dii";
+import { fetchFiiDiiData, fiiDiiExpectedSession, _resetFiiDiiCacheForTests } from "@/lib/fii-dii";
 
 // fetchFiiDiiData used to await NSE FIRST (3×10s retries + backoff ≈ 33s)
 // before starting MrChartist. One slow NSE minute pinned /api/fii-dii on
 // the 15s provider timeout even though MrChartist answers in ~100ms.
+//
+// The mock dates MUST be the current session: a snapshot from an older
+// session is rejected by the date gate (that gate is what stopped a 5-day-old
+// row from being served as today's flow — see tests/fii-dii-freshness.test.ts).
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The expected session as "DD-MMM-YYYY" (the NSE/MrChartist date format). */
+function currentSessionDate(): string {
+  const iso = fiiDiiExpectedSession(new Date());
+  const [y, m, d] = iso.split("-");
+  return `${d}-${MONTHS[Number(m) - 1]}-${y}`;
+}
 
 const realFetch = globalThis.fetch;
 
@@ -42,7 +55,7 @@ describe("fetchFiiDiiData — slow NSE must not block MrChartist", () => {
           fii_sell: 200,
           dii_buy: 300,
           dii_sell: 400,
-          date: "20-Nov-2026",
+          date: currentSessionDate(),
         });
       }
       if (url.includes("fii-diidata.mrchartist.com/api/history")) {
@@ -74,8 +87,8 @@ describe("fetchFiiDiiData — slow NSE must not block MrChartist", () => {
       const url = String(input?.url ?? input);
       if (url.includes("nseindia.in/api/fiidiiTradeReact")) {
         return jsonRes([
-          { category: "FII", buyValue: "10", sellValue: "20", netValue: "-10", date: "20-Nov-2026" },
-          { category: "DII", buyValue: "30", sellValue: "5", netValue: "25", date: "20-Nov-2026" },
+          { category: "FII", buyValue: "10", sellValue: "20", netValue: "-10", date: currentSessionDate() },
+          { category: "DII", buyValue: "30", sellValue: "5", netValue: "25", date: currentSessionDate() },
         ]);
       }
       if (url.includes("nseindia")) {
@@ -89,7 +102,7 @@ describe("fetchFiiDiiData — slow NSE must not block MrChartist", () => {
           fii_sell: 0,
           dii_buy: 0,
           dii_sell: 0,
-          date: "20-Nov-2026",
+          date: currentSessionDate(),
         });
       }
       if (url.includes("fii-diidata.mrchartist.com/api/history")) {

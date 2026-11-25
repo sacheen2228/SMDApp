@@ -280,7 +280,8 @@ export async function runEvaluateMode(opts: RunOpts = {}): Promise<{ ok: boolean
 /** Evening mode — compute scores for NIFTY 50, pick top‑5, append to store,
  *  and fire a Telegram digest (off‑hours gate respected). */
 export async function runEveningMode(opts: RunOpts = {}): Promise<{ ok: boolean; message: string }> {
-  const { fetchNIFTY50Stocks, getNSEEquityOptionChain } = await import("@/lib/nse-api");
+  const { fetchNIFTY50Stocks } = await import("@/lib/nse-stock-data");
+  const { getNSEEquityOptionChain } = await import("@/lib/nse-api");
   const { appendPicks, formatPick } = await import("@/lib/watchlist-picks");
 
   const stocks = await fetchNIFTY50Stocks();
@@ -396,7 +397,8 @@ export async function runWatchMode(opts: RunOpts = {}): Promise<{ ok: boolean; m
  *  trade‑plan summary.  Uses the shared `deriveUnderlyingLevels` + the
  *  strike‑selector runner (or falls back to a minimal BS re‑price). */
 export async function runPlanMode(opts: RunOpts = {}): Promise<{ ok: boolean; message: string }> {
-  const { fetchNIFTY50Stocks, getNSEEquityOptionChain } = await import("@/lib/nse-api");
+  const { fetchNIFTY50Stocks } = await import("@/lib/nse-stock-data");
+  const { getNSEEquityOptionChain } = await import("@/lib/nse-api");
   const { deriveUnderlyingLevels, formatPick, readCurrentPicks } = await import("@/lib/watchlist-scanner");
   const { shouldSuppressSend } = await import("@/lib/telegram");
   const picks = readCurrentPicks();

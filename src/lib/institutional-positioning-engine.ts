@@ -577,7 +577,7 @@ function classifyParticipantPosition(
 
 // ─── Strength Score Engine ───────────────────────────────────────
 
-function computeStrengthScore(
+export function computeStrengthScore(
   participant: string,
   changes: ParticipantChanges | null,
   netPosition: number
@@ -608,8 +608,14 @@ function computeStrengthScore(
   // Clamp
   score = Math.max(5, Math.min(95, Math.round(score)));
 
-  const direction = score >= 60 ? 'bullish' : score <= 40 ? 'bearish' : 'neutral';
-  const conviction = (score >= 75 || score <= 25) ? 'high' : (score >= 55 || score <= 45) ? 'moderate' : 'low';
+  // Direction and label MUST agree. The direction used a stricter cut
+  // (>=60 bullish / <=40 bearish) than the label (>=55 "Mild Bullish"), so a
+  // participant the card called "Mild Bullish" was counted as NEUTRAL by the
+  // bias aggregator — the card read "neutral · 0% bull" while the narrative
+  // said FIIs were buying aggressively. The label bands are the contract:
+  //   >=55 Mild Bullish | 45-54 Neutral | <=44 Mild Bearish
+  const direction = score >= 55 ? 'bullish' : score < 45 ? 'bearish' : 'neutral';
+  const conviction = (score >= 75 || score <= 25) ? 'high' : (score >= 55 || score < 45) ? 'moderate' : 'low';
   const label = score >= 80 ? 'Strong Bullish' : score >= 65 ? 'Bullish' : score >= 55 ? 'Mild Bullish' : score >= 45 ? 'Neutral' : score >= 35 ? 'Mild Bearish' : score >= 20 ? 'Bearish' : 'Strong Bearish';
 
   return { participant, score, direction, label, conviction };
@@ -617,11 +623,20 @@ function computeStrengthScore(
 
 // ─── Smart Money Bias ────────────────────────────────────────────
 
-function computeSmartMoneyBias(scores: StrengthScore[]): SmartMoneyBias {
+/**
+ * The smart-money bias is the WEIGHTED read of the institutional
+ * participants only: FII (0.40) + Pro (0.35) + DII (0.25).
+ * Retail (Client) is the counterparty, not smart money — it is judged by the
+ * retail-trap detector. It used to be folded in with a default 0.25 weight
+ * (the participant was not even in the weight map), which diluted the read
+ * and let retail call-buying show up as a bullish smart-money signal.
+ */
+export function computeSmartMoneyBias(scores: StrengthScore[]): SmartMoneyBias {
   const weights: Record<string, number> = { FII: 0.40, Pro: 0.35, DII: 0.25 };
   let bullishW = 0, bearishW = 0, neutralW = 0;
   for (const s of scores) {
-    const w = weights[s.participant] || 0.25;
+    const w = weights[s.participant];
+    if (w == null) continue;   // retail (Client) is not smart money
     if (s.direction === 'bullish') bullishW += w;
     else if (s.direction === 'bearish') bearishW += w;
     else neutralW += w;
@@ -915,12 +930,14 @@ function computeConfidence(
   options: OptionsReport,
   futures: FuturesReport
 ): InstitutionalConfidence {
-  // Participant alignment: how much do FII/Pro/DII agree
-  const directions = scores.map(s => s.direction);
+  // Participant alignment: how much do FII/Pro/DII agree.
+  // Retail (Client) is excluded — it is the counterparty, and counting it
+  // against a denominator of 3 could report >100% alignment.
+  const directions = scores.filter(s => s.participant !== 'Client').map(s => s.direction);
   const bullishCount = directions.filter(d => d === 'bullish').length;
   const bearishCount = directions.filter(d => d === 'bearish').length;
   const maxAgreement = Math.max(bullishCount, bearishCount);
-  const participantAlignment = Math.round((maxAgreement / 3) * 100);
+  const participantAlignment = Math.min(100, Math.round((maxAgreement / 3) * 100));
 
   // Option chain confirmation: do options flow match bias
   const optionChainConfirmation = options.expectedDirection !== 'neutral' ? 75 : 50;
@@ -1239,8 +1256,11 @@ export function generateAIMarketSummary(output: InstitutionalPositioningOutput):
   // Alignment
   if (alignment.overallAlignment >= 60) {
     lines.push(`Institutional positioning and ${retailTrap.detected ? '' : 'Option Chain remain'} aligned.`);
-  } else {
+  } else if (alignment.conflictingSources.length > 0) {
     lines.push(`Position conflicts exist between participants (alignment ${alignment.overallAlignment}%). Caution advised.`);
+  } else {
+    // Low alignment WITHOUT a conflict = no consensus, not a conflict.
+    lines.push(`No clear consensus between participants (alignment ${alignment.overallAlignment}%). Caution advised.`);
   }
 
   // Tomorrow

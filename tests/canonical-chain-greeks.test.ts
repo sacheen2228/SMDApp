@@ -18,7 +18,7 @@ import { selectStrike, assessTargets } from "@/lib/option-plan";
 
 const SPOT = 25460;
 const STRIKE = 25450;
-const EXPIRY = "2026-11-20"; // ISO, a few days out
+const EXPIRY = "2026-12-20"; // ISO, a few weeks out (must stay in the future)
 
 function providerLeg() {
   return {
@@ -34,7 +34,15 @@ function zeroGreeksLeg() {
 }
 
 function bareLeg() {
-  return { ltp: 120, oi: 500_000, oiChg: 120_000, volume: 90_000, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 };
+  // iv=0, no greeks, but a live premium above intrinsic (~132) so the
+  // no-arb bounds allow a premium → IV inversion.
+  return { ltp: 145, oi: 500_000, oiChg: 120_000, volume: 90_000, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 };
+}
+
+function noPremiumLeg() {
+  // Breeze-shaped leg with neither IV nor a usable premium — nothing to
+  // invert. Delta must stay honestly null (never a fabricated 0).
+  return { ltp: null, oi: 500_000, oiChg: 120_000, volume: 90_000, iv: 0, delta: 0, gamma: 0, theta: 0, vega: 0 };
 }
 
 describe("mapEngineStrikes — greeks survive the canonical normalizer", () => {
@@ -66,11 +74,22 @@ describe("mapEngineStrikes — greeks survive the canonical normalizer", () => {
     expect(ce.gamma).toBeGreaterThan(0);
   });
 
-  test("no IV and no greeks → delta honestly null (never 0 pretending to be real)", () => {
+  test("no IV but a live premium → invert premium to IV, BS greeks labelled 'bs'", () => {
+    // Breeze often ships ltp + OI with iv=0 and no greeks. Without the
+    // premium inversion the whole Live Chain Greeks table disappears.
     const [row] = mapEngineStrikesOrDie([{ strike: STRIKE, ce: bareLeg(), pe: null }], SPOT, EXPIRY);
+    const ce: any = row.ce!;
+    expect(ce.deltaSource).toBe("bs");
+    expect(ce.delta).toBeGreaterThan(0);
+    expect(ce.iv).toBeGreaterThan(0);
+  });
+
+  test("no IV, no greeks, no premium → delta honestly null (never 0 pretending to be real)", () => {
+    const [row] = mapEngineStrikesOrDie([{ strike: STRIKE, ce: noPremiumLeg(), pe: null }], SPOT, EXPIRY);
     const ce: any = row.ce!;
     expect(ce.delta).toBeNull();
     expect(ce.deltaSource).toBeNull();
+    expect(ce.iv).toBeNull();
   });
 
   test("non-finite strikes are dropped, numeric strings coerced", () => {

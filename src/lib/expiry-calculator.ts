@@ -223,6 +223,41 @@ export function isExchangeHoliday(isoDate: string | null | undefined): boolean {
   return NSE_HOLIDAYS.has(String(isoDate || '').slice(0, 10));
 }
 
+/**
+ * Is an ISO calendar date ("YYYY-MM-DD") an NSE trading day?
+ * The canonical holiday set lives in this module — callers must not keep a
+ * second copy of the calendar.
+ */
+export function isTradingDayIso(isoDate: string | null | undefined): boolean {
+  const iso = String(isoDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return false;
+  return isTradingDay(dt);
+}
+
+/**
+ * The NSE trading day STRICTLY before an ISO date ("YYYY-MM-DD").
+ * Returns null for an unparseable input. Used by the EOD feeds to work out
+ * which session's figures are the latest published ones.
+ */
+export function previousTradingDayIso(isoDate: string | null | undefined): string | null {
+  const iso = String(isoDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  const cursor = new Date(y, m - 1, d);
+  if (cursor.getFullYear() !== y || cursor.getMonth() !== m - 1 || cursor.getDate() !== d) return null;
+  cursor.setDate(cursor.getDate() - 1);
+  for (let i = 0; i < 40; i++) {
+    if (isTradingDay(cursor)) {
+      return `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return null;
+}
+
 function isWeekend(d: Date): boolean {
   const day = d.getDay();
   return day === 0 || day === 6;

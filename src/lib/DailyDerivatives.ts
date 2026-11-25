@@ -75,6 +75,23 @@ export interface TradePlanCard {
   setup?: string;
   /** Per-target achievability vs OI walls (spot must break the wall to print). */
   targetReach?: TargetReach[];
+  /** Honest hold window from EMA / OI / greeks / stop (never a fabricated exit clock). */
+  holdingTime?: string;
+  /** Why that window — EMA trend, ΔOI, theta, stop geometry (UI tooltip). */
+  holdingReasons?: string[];
+  /** TAKE / WAIT / NO — deterministic per-card verdict (evaluatePlanTrade). */
+  decision?: TradeDecision;
+  /** Short badge label: "TAKE", "WAIT", "NO TRADE". */
+  decisionLabel?: string;
+  /** Why that verdict — every hard/soft check that fired (UI tooltip). */
+  decisionReasons?: string[];
+  /** Pro confluence: evidence GROUPS voting for this side / total cast. */
+  confluenceAligned?: number;
+  confluenceCast?: number;
+  /** Book read for the selected leg — GOOD / WIDE / UNVERIFIED (no book = unverified). */
+  liquidityState?: LiquidityState;
+  /** % of mid — null when the book was missing (never invented). */
+  liquiditySpreadPct?: number | null;
 }
 
 /** One factor's directional vote — visible reasoning, never a hidden weight. */
@@ -312,7 +329,16 @@ export interface DailyDerivativesReport {
   /** When the frozen SL/TP ladder was generated — levels don't tick. */
   planAsOf?: string;
   preferredSide: "CALL" | "PUT" | null;
+  /** Hysteresis status of the ★ — "pending" means an opposing vote is stacking, not yet flipped. */
+  preferredStatus?: "confirmed" | "pending" | "none";
+  /** Opposing side waiting to clear the flip gate (null when none). */
+  preferredPending?: "CALL" | "PUT" | null;
   directionBias: DirectionBias;
+  /**
+   * Chop / sideways regime — live EMA whipsaw + ADX + range + RVOL.
+   * `null` when candles are unavailable (never a fabricated "trending").
+   */
+  chopRegime?: ChopAssessment | null;
   candleSource: string;
   candleInterval: string;
   candleDegraded: string | null;
@@ -731,7 +757,260 @@ export function emaCrossAdxAtr(candles: Candle[], cfg: Partial<Config> = {}) {
     }
   }
 
-  return { signals, trend };
+  return { signals, trend, lastBar: readLastEmaBar(candles, o) };
+}
+
+/**
+ * Live EMA9/15 + ADX/ATR state at the last closed bar — the inputs the
+ * hold-time calculator needs (trend side, strength, gap vs ATR).
+ * null when the series is too short to have a valid last bar.
+ */
+export interface EmaBarState {
+  trend: "UP" | "DOWN" | "NONE";
+  adx: number;
+  plusDI: number;
+  minusDI: number;
+  emaFast: number;
+  emaSlow: number;
+  atr: number;
+  /** |fast − slow| / ATR — how expanded the cross is (0 = flat cross). */
+  gapAtr: number;
+}
+
+function readLastEmaBar(candles: Candle[], o: Config): EmaBarState | null {
+  const n = candles.length;
+  if (n < 2) return null;
+  const closes = candles.map((x) => x.close);
+  const emaFast = ema(closes, o.fast);
+  const emaSlow = ema(closes, o.slow);
+  const atrArr = atr(candles, o.atrPeriod);
+  const { adx: adxArr, plusDI, minusDI } = adx(candles, o.adxPeriod);
+  const i = n - 1;
+  const f = emaFast[i], s = emaSlow[i], a = atrArr[i];
+  if ([f, s, a, adxArr[i]].some((x) => !Number.isFinite(x))) return null;
+  const trend: EmaBarState["trend"] = f > s ? "UP" : f < s ? "DOWN" : "NONE";
+  return {
+    trend,
+    adx: adxArr[i],
+    plusDI: Number.isFinite(plusDI[i]) ? plusDI[i] : 0,
+    minusDI: Number.isFinite(minusDI[i]) ? minusDI[i] : 0,
+    emaFast: f,
+    emaSlow: s,
+    atr: a,
+    gapAtr: a > 0 ? Math.abs(f - s) / a : 0,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHOP / SIDEWAYS REGIME — "don't get trapped in a range"
+//
+// Trend setups (breakout / pullback / retest) die in chop: EMA whipsaws
+// stop you both ways while theta bleeds the premium. Deterministic pure
+// score from the SAME candles the signal engine already read — no extra
+// network. Hard conditions short-circuit; otherwise a 0-100 score ≥50
+// marks the regime CHOP.
+// ═══════════════════════════════════════════════════════════════════
+
+export interface ChopAssessment {
+  chop: boolean;
+  /** 0-100 — higher = more range-bound. */
+  score: number;
+  /** Why (or why not) — UI tooltip + verdict reasons. */
+  reasons: string[];
+  /** Live last-bar vs avg volume (null when volume history unavailable). */
+  rvol?: number | null;
+}
+
+/** EMA9/15 sign-flip count over the last `lookback` bars (whipsaw proxy). */
+export function countEmaCrosses(
+  candles: Candle[],
+  lookback = 30,
+  fast = 9,
+  slow = 15,
+): number {
+  if (candles.length < Math.max(fast, slow) + 2) return 0;
+  const closes = candles.map((c) => c.close);
+  const ef = ema(closes, fast);
+  const es = ema(closes, slow);
+  const start = Math.max(Math.max(fast, slow), candles.length - lookback);
+  let crosses = 0;
+  let prevSign = 0;
+  for (let i = start; i < candles.length; i++) {
+    const d = ef[i] - es[i];
+    if (!Number.isFinite(d) || d === 0) continue;
+    const sign = d > 0 ? 1 : -1;
+    if (prevSign !== 0 && sign !== prevSign) crosses += 1;
+    prevSign = sign;
+  }
+  return crosses;
+}
+
+/**
+ * Last bar's volume ÷ the average of the prior `lookback` bars.
+ * Null when history is too thin or the average is zero — never a fake 1.0.
+ */
+export function lastBarRvol(candles: Candle[], lookback = 20): number | null {
+  if (candles.length < lookback + 1) return null;
+  const last = candles[candles.length - 1].volume;
+  if (!Number.isFinite(last) || last <= 0) return null;
+  let sum = 0;
+  let n = 0;
+  for (let i = candles.length - 1 - lookback; i < candles.length - 1; i++) {
+    const v = candles[i].volume;
+    if (Number.isFinite(v) && v > 0) {
+      sum += v;
+      n += 1;
+    }
+  }
+  if (n < Math.floor(lookback / 2)) return null;
+  const avg = sum / n;
+  return avg > 0 ? last / avg : null;
+}
+
+/**
+ * Classify the tape as TRENDING / CHOP from EMA state + raw candles + live volume.
+ *
+ * Hard CHOP (any one):
+ *   • ≥3 EMA crosses in 30 bars AND ADX < 22    (whipsaw with no trend)
+ *   • ADX < 15 AND gapAtr < 0.15                (dead tape, flat cross)
+ *   • trend NONE AND gapAtr < 0.10              (fast≈slow, no expansion)
+ *   • RVOL < 0.50 AND ADX < 22                  (nobody trading + no trend)
+ *
+ * Otherwise score soft factors (ADX, gap, crosses, close-flips, range/ATR,
+ * **live RVOL**) — score ≥ 50 = CHOP. Thin volume traps breakout attempts
+ * in a range; a conviction bar (RVOL ≥1.5) is the expansion tell.
+ */
+export function assessChop(input: {
+  ema?: EmaBarState | null;
+  candles?: Candle[];
+  lookback?: number;
+  /** Last-bar relative volume — pass futures-flow RVOL or lastBarRvol(). */
+  rvol?: number | null;
+}): ChopAssessment {
+  const ema = input.ema ?? null;
+  const candles = input.candles ?? [];
+  const lb = input.lookback ?? 30;
+  const reasons: string[] = [];
+  const rvol =
+    input.rvol != null && Number.isFinite(input.rvol) ? input.rvol : null;
+
+  const crosses = candles.length > 0 ? countEmaCrosses(candles, lb) : 0;
+  const adx = ema?.adx ?? NaN;
+  const gap = ema?.gapAtr ?? NaN;
+  const trend = ema?.trend ?? null;
+
+  // Close-to-close direction flip rate over the lookback (extra whipsaw cue).
+  let flips = 0;
+  const slice = candles.slice(-lb);
+  for (let i = 1; i < slice.length; i++) {
+    const a = slice[i - 1].close;
+    const b = slice[i].close;
+    if (a === b) continue;
+    const dir = b > a ? 1 : -1;
+    if (i >= 2) {
+      const pa = slice[i - 2].close;
+      const pdir = a > pa ? 1 : a < pa ? -1 : 0;
+      if (pdir !== 0 && dir !== pdir) flips += 1;
+    }
+  }
+  const flipRate = slice.length > 2 ? flips / (slice.length - 2) : 0;
+
+  // Range compression: (max−min of highs/lows) over lookback ÷ ATR.
+  let rangeAtr: number | null = null;
+  if (slice.length >= 5 && ema && ema.atr > 0) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (const c of slice) {
+      if (c.high > hi) hi = c.high;
+      if (c.low < lo) lo = c.low;
+    }
+    rangeAtr = (hi - lo) / ema.atr;
+  }
+
+  // ── Hard CHOP short-circuits ──
+  if (crosses >= 3 && Number.isFinite(adx) && adx < 22) {
+    reasons.push(
+      `${crosses} EMA9/15 crosses in ${lb} bars + ADX ${adx.toFixed(0)} < 22 — whipsaw, no trend`,
+    );
+    if (rvol != null) reasons.push(`RVOL ${rvol.toFixed(2)}x`);
+    return { chop: true, score: Math.max(70, 50 + crosses * 5), reasons, rvol };
+  }
+  if (
+    Number.isFinite(adx) && adx < 15 &&
+    Number.isFinite(gap) && gap < 0.15
+  ) {
+    reasons.push(
+      `ADX ${adx.toFixed(0)} < 15 + EMA gap ${gap.toFixed(2)}×ATR — dead tape`,
+    );
+    if (rvol != null) reasons.push(`RVOL ${rvol.toFixed(2)}x`);
+    return { chop: true, score: 75, reasons, rvol };
+  }
+  if (trend === "NONE" && Number.isFinite(gap) && gap < 0.10) {
+    reasons.push(
+      `flat EMA cross (gap ${gap.toFixed(2)}×ATR) — no expansion, range-bound`,
+    );
+    if (rvol != null) reasons.push(`RVOL ${rvol.toFixed(2)}x`);
+    return { chop: true, score: 70, reasons, rvol };
+  }
+  // Nobody in the tape + no trend = the classic sideways trap.
+  if (rvol != null && rvol < 0.5 && Number.isFinite(adx) && adx < 22) {
+    reasons.push(
+      `RVOL ${rvol.toFixed(2)}x < 0.50 + ADX ${adx.toFixed(0)} < 22 — dead volume, no participants`,
+    );
+    return { chop: true, score: 80, reasons, rvol };
+  }
+
+  // ── Soft score ──
+  let score = 0;
+  if (Number.isFinite(adx)) {
+    if (adx < 18) { score += 30; reasons.push(`ADX ${adx.toFixed(0)} < 18 — weak trend`); }
+    else if (adx < 22) { score += 18; reasons.push(`ADX ${adx.toFixed(0)} < 22 — soft trend`); }
+    else if (adx >= 28) { score -= 10; reasons.push(`ADX ${adx.toFixed(0)} ≥ 28 — trending`); }
+  }
+  if (Number.isFinite(gap)) {
+    if (gap < 0.12) { score += 20; reasons.push(`EMA gap ${gap.toFixed(2)}×ATR — compressed`); }
+    else if (gap < 0.2) { score += 10; reasons.push(`EMA gap ${gap.toFixed(2)}×ATR — tight`); }
+    else if (gap >= 0.35) { score -= 10; reasons.push(`EMA gap ${gap.toFixed(2)}×ATR — expanded`); }
+  }
+  if (crosses >= 4) { score += 25; reasons.push(`${crosses} EMA crosses / ${lb} bars — heavy whipsaw`); }
+  else if (crosses >= 3) { score += 15; reasons.push(`${crosses} EMA crosses / ${lb} bars`); }
+  if (flipRate >= 0.55) { score += 15; reasons.push(`close flips ${(flipRate * 100).toFixed(0)}% of bars — two-way tape`); }
+  else if (flipRate >= 0.4) { score += 8; reasons.push(`close flips ${(flipRate * 100).toFixed(0)}% of bars`); }
+  if (rangeAtr != null) {
+    if (rangeAtr < 3.5) { score += 20; reasons.push(`range ${rangeAtr.toFixed(1)}×ATR over ${lb} bars — boxed in`); }
+    else if (rangeAtr < 5) { score += 10; reasons.push(`range ${rangeAtr.toFixed(1)}×ATR — modest swing`); }
+    else if (rangeAtr >= 8) { score -= 10; reasons.push(`range ${rangeAtr.toFixed(1)}×ATR — wide trend walk`); }
+  }
+  if (trend === "NONE") { score += 10; reasons.push("EMA9/15 flat"); }
+
+  // Live volume — the participation tell a range never shows in price alone.
+  if (rvol != null) {
+    if (rvol < 0.6) {
+      score += 25;
+      reasons.push(`RVOL ${rvol.toFixed(2)}x — dead volume, breakout attempts will fail`);
+    } else if (rvol < 0.85) {
+      score += 15;
+      reasons.push(`RVOL ${rvol.toFixed(2)}x — thin tape, easy to get trapped`);
+    } else if (rvol < 1.0) {
+      score += 8;
+      reasons.push(`RVOL ${rvol.toFixed(2)}x — below average participation`);
+    } else if (rvol >= 1.5) {
+      score -= 18;
+      reasons.push(`RVOL ${rvol.toFixed(2)}x — conviction volume, expansion likely`);
+    } else if (rvol >= 1.15) {
+      score -= 8;
+      reasons.push(`RVOL ${rvol.toFixed(2)}x — healthy participation`);
+    }
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  const chop = score >= 50;
+  if (!chop && reasons.length === 0) {
+    reasons.push("no chop signature — expansion present");
+  }
+  if (chop) reasons.unshift(`chop score ${score}/100 — sideways regime`);
+  else reasons.unshift(`chop score ${score}/100 — trending enough`);
+  return { chop, score, reasons, rvol };
 }
 
 // ====================== TRADE-PLAN SNAPSHOT ======================
@@ -749,6 +1028,924 @@ interface PlanSnapshot {
   bySide: Partial<Record<"CALL" | "PUT", TradePlanCard>>;
 }
 const planSnapshots = new Map<string, PlanSnapshot>();
+
+// ═══════════════════════════════════════════════════════════════════
+// PREFERRED-SIDE HYSTERESIS — stop the ★ flipping PE↔CE every poll
+//
+// problem: directionBias is recomputed from live PCR / max-pain / OI /
+// candles every refresh. A single OI-shift tick or a new candle setup
+// flips the majority and the ★ JUMPS to the other card mid-session.
+//
+// rule (mirrors signal-persistence for the main SDM card):
+//   • the FIRST directional vote confirms immediately (no cold-start wait);
+//   • the SAME side keeps the ★ (no flicker);
+//   • an OPPOSING side is only PENDING until it appears ≥2 consecutive
+//     polls AND survives ≥2 minutes — only then does the ★ flip;
+//   • NEUTRAL holds the confirmed side (a quiet tape must not clear the ★);
+//   • symbols are independent (NIFTY ≠ SENSEX).
+// ═══════════════════════════════════════════════════════════════════
+
+export interface PreferredLock {
+  confirmed: "CALL" | "PUT" | null;
+  pending: "CALL" | "PUT" | null;
+  pendingSince: number;
+  pendingCount: number;
+}
+
+export interface PreferredSideResult {
+  side: "CALL" | "PUT" | null;
+  status: "confirmed" | "pending" | "none";
+  pending: "CALL" | "PUT" | null;
+}
+
+const PREF_MIN_CONFIRMATIONS = 2;
+const PREF_MIN_PERSIST_MS = 2 * 60_000;
+const preferredLocks = new Map<string, PreferredLock>();
+
+function blankPreferredLock(): PreferredLock {
+  return { confirmed: null, pending: null, pendingSince: 0, pendingCount: 0 };
+}
+
+/**
+ * Resolve the ★ side with flip-hysteresis. `raw` is the live majority
+ * (null = NEUTRAL). Pure state machine — no network, no chain.
+ */
+export function resolvePreferredSide(
+  symbol: string,
+  raw: "CALL" | "PUT" | null,
+  nowMs: number = Date.now(),
+): PreferredSideResult {
+  let lock = preferredLocks.get(symbol);
+  if (!lock) {
+    lock = blankPreferredLock();
+    preferredLocks.set(symbol, lock);
+  }
+
+  // NEUTRAL holds the confirmed side — never clears the ★ on a quiet tape.
+  if (raw == null) {
+    lock.pending = null;
+    lock.pendingCount = 0;
+    if (lock.confirmed) {
+      return { side: lock.confirmed, status: "confirmed", pending: null };
+    }
+    return { side: null, status: "none", pending: null };
+  }
+
+  // First directional vote confirms immediately (cold start).
+  if (lock.confirmed == null) {
+    lock.confirmed = raw;
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { side: raw, status: "confirmed", pending: null };
+  }
+
+  // Same side as confirmed → keep it, clear any pending streak.
+  if (raw === lock.confirmed) {
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { side: lock.confirmed, status: "confirmed", pending: null };
+  }
+
+  // Opposing side — accumulate pending; flip only past count + persistence.
+  if (lock.pending !== raw) {
+    lock.pending = raw;
+    lock.pendingSince = nowMs;
+    lock.pendingCount = 1;
+  } else {
+    lock.pendingCount += 1;
+  }
+
+  const persistOk = nowMs - lock.pendingSince >= PREF_MIN_PERSIST_MS;
+  const countOk = lock.pendingCount >= PREF_MIN_CONFIRMATIONS;
+  if (persistOk && countOk) {
+    lock.confirmed = raw;
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { side: raw, status: "confirmed", pending: null };
+  }
+
+  return { side: lock.confirmed, status: "pending", pending: lock.pending };
+}
+
+/** Test hook — clear the per-symbol ★ locks. */
+export function __resetPreferredLocksForTests(): void {
+  preferredLocks.clear();
+}
+
+/** Test hook — clear frozen plan ladders. */
+export function __resetPlanSnapshotsForTests(): void {
+  planSnapshots.clear();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PLAN TRADE VERDICT — "should I take this trade?" on every card
+//
+// Deterministic pure function (no network, no clock). Fail-closed:
+//   NO   — the ladder is untradable (0 lots, bad R:R, stop on wrong side)
+//   WAIT — soft blockers (against ★ bias, TP1 walled, opposite seller vote)
+//   TAKE — tradable + not soft-blocked (aligned or neutral bias, TP1 clear)
+// Hold window stays a separate field — verdict answers ENTRY, hold answers EXIT.
+// ═══════════════════════════════════════════════════════════════════
+
+export type TradeDecision = "TAKE" | "WAIT" | "NO";
+
+export interface PlanTradeInput {
+  optionType: "CE" | "PE";
+  tradable: boolean;
+  lots: number;
+  rr: number;
+  entry: number;
+  stopLoss: number;
+  /** Confirmed ★ side (null = neutral / none). */
+  preferredSide?: "CALL" | "PUT" | null;
+  preferredStatus?: "confirmed" | "pending" | "none";
+  /** Per-target wall reach from assessTargets. */
+  targetReach?: TargetReach[];
+  /** Seller Intelligence aggregate vote (BUY_CE / BUY_PE / WAIT). */
+  sellerSignal?: "BUY_CE" | "BUY_PE" | "WAIT" | null;
+  /** Market open — closed session can never be TAKE. */
+  marketOpen?: boolean;
+  /** Selected leg's live |delta| — lottery tickets wait. */
+  delta?: number | null;
+  /** Selected leg's θ/day — heavy decay shortens conviction. */
+  theta?: number | null;
+  /** Selected leg's ΔOI today — heavy unwinding waits. */
+  oiChange?: number | null;
+  /** Last-bar EMA9/15 state — trend against the option side waits. */
+  ema?: EmaBarState | null;
+  /** Futures/candle CVD verdict — opposing flow waits (context soft-vote). */
+  cvdVerdict?: string | null;
+  /** Chop/sideways regime — range-bound tape traps trend entries. */
+  chop?: boolean;
+  /** Chop score + reasons for the verdict tooltip. */
+  chopAssessment?: ChopAssessment | null;
+  /**
+   * Seller Intelligence context (same chain fetch) — retest gate, dealer
+   * GEX bias, net DEX, VWAP/breakout. Live fields only; nulls never block.
+   */
+  sellerCtx?: {
+    requiresRetest?: boolean;
+    entryConfirmed?: boolean;
+    score?: number;
+    direction?: string;
+    dealerBias?: string;
+    dealerRegime?: string;
+    netDex?: number | null;
+    gammaFlip?: number | null;
+    spot?: number;
+    vwap?: number | null;
+    priceAboveVwap?: boolean | null;
+    breakoutConfirmed?: boolean;
+  } | null;
+  /** Selected leg bid — liquidity gate (0/missing = no book → UNVERIFIED). */
+  bid?: number | null;
+  /** Selected leg ask — wide spread eats the edge before TP1. */
+  ask?: number | null;
+  /** Chain freshness (LIVE / FRESH / DELAYED / STALE) — decides if an unverified book blocks. */
+  chainFreshness?: string | null;
+}
+
+export interface ConfluenceChannel {
+  name: string;
+  vote: "CALL" | "PUT";
+}
+
+/**
+ * Evidence GROUP — correlated indicators collapse into ONE group.
+ *
+ * dealer GEX + net DEX + seller intel all come from the SAME chain snapshot;
+ * EMA + VWAP are both price structure. Counting them as separate votes
+ * overstated the evidence, so the gate counts groups, not indicators.
+ */
+export type EvidenceGroupName =
+  | "Price structure"
+  | "Options positioning"
+  | "Order flow"
+  | "Directional bias";
+
+export interface ConfluenceGroup {
+  name: EvidenceGroupName;
+  /** The raw indicator votes inside this group (diagnostics / tooltip). */
+  members: ConfluenceChannel[];
+  /** The group's side — null when the group has no data or is conflicted. */
+  vote: "CALL" | "PUT" | null;
+  state: "ALIGNED" | "CONFLICTED" | "NO_DATA";
+}
+
+export interface ConfluenceResult {
+  /** Evidence GROUPS voting FOR the option side. */
+  aligned: number;
+  /** Groups with any directional view (incl. conflicted — they cast, they do not align). */
+  cast: number;
+  groups: ConfluenceGroup[];
+  /** Flat member votes (diagnostics only — never counted as separate evidence). */
+  channels: ConfluenceChannel[];
+  /** Pro gate: how many aligned groups are required. */
+  required: number;
+  pass: boolean;
+}
+
+/** Chain qualities that count as "a book should exist" for the liquidity gate. */
+const LIVE_CHAIN_QUALITIES = new Set(["LIVE", "FRESH"]);
+
+/** Pro gate: how many independent evidence groups must align before TAKE. */
+export const REQUIRED_CONFLUENCE_GROUPS = 3;
+
+/** Spread % of mid that is too wide to enter (exit cost eats TP1). */
+export const MAX_SPREAD_PCT = 8;
+
+export type LiquidityState = "GOOD" | "WIDE" | "UNVERIFIED";
+
+export interface LiquidityRead {
+  state: LiquidityState;
+  /** % of mid — null when the book is missing (never invented). */
+  spreadPct: number | null;
+  bid: number | null;
+  ask: number | null;
+}
+
+/**
+ * What to do when the leg has NO book.
+ *   "wait" — fail closed: an unverified book is not a tradable book.
+ *   "warn" — reduced confidence: keep the verdict, flag the caveat.
+ * A missing book is NEVER treated as good liquidity.
+ */
+export const LIQUIDITY_UNVERIFIED_POLICY: "wait" | "warn" = "wait";
+
+/**
+ * Liquidity read for one option leg.
+ *
+ * A missing / zero / crossed book is UNVERIFIED — no spread is invented and
+ * the contract is never assumed liquid. Only a real book can be GOOD or WIDE.
+ */
+export function evaluateLegLiquidity(
+  bid?: number | null,
+  ask?: number | null,
+): LiquidityRead {
+  const b = typeof bid === "number" && Number.isFinite(bid) ? bid : null;
+  const a = typeof ask === "number" && Number.isFinite(ask) ? ask : null;
+  if (b == null || a == null || b <= 0 || a <= 0 || a <= b) {
+    return { state: "UNVERIFIED", spreadPct: null, bid: b, ask: a };
+  }
+  const mid = (b + a) / 2;
+  const spreadPct = ((a - b) / mid) * 100;
+  return {
+    state: spreadPct > MAX_SPREAD_PCT ? "WIDE" : "GOOD",
+    spreadPct,
+    bid: b,
+    ask: a,
+  };
+}
+
+const CONFLUENCE_GROUPS: Array<{ name: EvidenceGroupName; members: string[] }> = [
+  { name: "Price structure", members: ["EMA", "VWAP"] },
+  { name: "Options positioning", members: ["dealer GEX", "net DEX", "seller intel"] },
+  { name: "Order flow", members: ["CVD"] },
+  { name: "Directional bias", members: ["★ bias"] },
+];
+
+/**
+ * Independent directional confirmations for the selected option side, counted
+ * by EVIDENCE GROUP (not by raw indicator).
+ *
+ * Research gate (institutional options checklists): 3+ independent sources of
+ * evidence must agree before entry. Correlated indicators are one source:
+ *   - Price structure     — EMA9/15 trend + VWAP side
+ *   - Options positioning — dealer GEX + net DEX + seller intel (one chain)
+ *   - Order flow          — futures CVD
+ *   - Directional bias    — the ★ bias
+ * A group whose members disagree (GEX bearish vs net DEX positive) abstains:
+ * conflicting evidence is not a vote. NEUTRAL / missing never votes.
+ */
+export function computeConfluence(input: PlanTradeInput): ConfluenceResult {
+  const isCE = input.optionType === "CE";
+  const side = isCE ? "CALL" : "PUT";
+  const votes = new Map<string, "CALL" | "PUT">();
+
+  const put = (name: string, vote: "CALL" | "PUT" | null) => {
+    if (vote) votes.set(name, vote);
+  };
+
+  put("★ bias", input.preferredSide ?? null);
+
+  const cvd = (input.cvdVerdict || "").toUpperCase();
+  put(
+    "CVD",
+    cvd.includes("BULL") ? "CALL" : cvd.includes("BEAR") ? "PUT" : null,
+  );
+
+  const emaTrend = input.ema?.trend;
+  put("EMA", emaTrend === "UP" ? "CALL" : emaTrend === "DOWN" ? "PUT" : null);
+
+  put(
+    "seller intel",
+    input.sellerSignal === "BUY_CE"
+      ? "CALL"
+      : input.sellerSignal === "BUY_PE"
+        ? "PUT"
+        : null,
+  );
+
+  const dealer = (input.sellerCtx?.dealerBias || "").toUpperCase();
+  put(
+    "dealer GEX",
+    dealer === "BULLISH" ? "CALL" : dealer === "BEARISH" ? "PUT" : null,
+  );
+
+  const sc = input.sellerCtx;
+  if (sc?.priceAboveVwap != null && sc.vwap != null && sc.vwap > 0) {
+    put("VWAP", sc.priceAboveVwap ? "CALL" : "PUT");
+  }
+
+  if (sc?.netDex != null && Number.isFinite(sc.netDex) && sc.netDex !== 0) {
+    put("net DEX", sc.netDex > 0 ? "CALL" : "PUT");
+  }
+
+  const channels: ConfluenceChannel[] = [];
+  const groups: ConfluenceGroup[] = [];
+
+  for (const spec of CONFLUENCE_GROUPS) {
+    const members: ConfluenceChannel[] = [];
+    for (const name of spec.members) {
+      const vote = votes.get(name);
+      if (!vote) continue;
+      members.push({ name, vote });
+    }
+    channels.push(...members);
+
+    const sides = new Set(members.map((m) => m.vote));
+    if (members.length === 0) {
+      groups.push({ name: spec.name, members, vote: null, state: "NO_DATA" });
+    } else if (sides.size > 1) {
+      // Internal conflict — the group abstains instead of picking a side.
+      groups.push({ name: spec.name, members, vote: null, state: "CONFLICTED" });
+    } else {
+      groups.push({
+        name: spec.name,
+        members,
+        vote: members[0].vote,
+        state: "ALIGNED",
+      });
+    }
+  }
+
+  const aligned = groups.filter((g) => g.vote === side).length;
+  const cast = groups.filter((g) => g.state !== "NO_DATA").length;
+  return {
+    aligned,
+    cast,
+    groups,
+    channels,
+    required: REQUIRED_CONFLUENCE_GROUPS,
+    pass: aligned >= REQUIRED_CONFLUENCE_GROUPS,
+  };
+}
+
+export interface PlanTradeResult {
+  decision: TradeDecision;
+  label: string;
+  reasons: string[];
+  /** Present when the pro confluence gate ran (≥3-group check). */
+  confluence?: ConfluenceResult;
+  /** GOOD / WIDE / UNVERIFIED book read for the selected leg. */
+  liquidity?: LiquidityRead;
+}
+
+export function evaluatePlanTrade(input: PlanTradeInput): PlanTradeResult {
+  const reasons: string[] = [];
+  const isCE = input.optionType === "CE";
+  const side = isCE ? "CALL" : "PUT";
+
+  // Evidence + liquidity are computed FIRST so every card exposes them —
+  // including the hard-NO cards (the UI badge shows what the tape said).
+  const confluence = computeConfluence(input);
+  const liquidity = evaluateLegLiquidity(input.bid, input.ask);
+  const chainIsLive = LIVE_CHAIN_QUALITIES.has(
+    (input.chainFreshness || "").toUpperCase(),
+  );
+
+  // ── Hard NO — fail closed ──
+  if (input.marketOpen === false) {
+    reasons.push("market closed");
+    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
+  }
+  if (!input.tradable || input.lots < 1) {
+    reasons.push(
+      input.lots < 1 && input.entry > 0
+        ? `0 lots — 1 lot costs more than the per-trade budget`
+        : "no valid SL/TP ladder",
+    );
+    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
+  }
+  if (!(input.rr >= 1.5)) {
+    reasons.push(`R:R ${input.rr.toFixed(2)} < 1.5 gate`);
+    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
+  }
+  if (!(input.entry > 0) || !(input.stopLoss > 0)) {
+    reasons.push("missing entry or stop");
+    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
+  }
+  // Stop must be on the correct side (long CE/PE: stop < entry).
+  if (input.stopLoss >= input.entry) {
+    reasons.push("stop not below entry");
+    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
+  }
+
+  // ── Soft WAIT — entry conditions not clean ──
+  const wait: string[] = [];
+
+  const preferred = input.preferredSide ?? null;
+  const prefConfirmed = input.preferredStatus === "confirmed" || input.preferredStatus == null;
+  if (preferred && prefConfirmed && preferred !== side) {
+    wait.push(`against ★ ${preferred === "PUT" ? "PE" : "CE"} bias`);
+  }
+  if (
+    input.preferredStatus === "pending" &&
+    input.preferredSide &&
+    preferred !== side
+  ) {
+    // This side is the pending challenger — wait for the ★ to flip.
+    wait.push("★ still on the other side (pending)");
+  }
+
+  // TP1 walled shut — the first exit cannot print until the wall breaks.
+  const reach = input.targetReach ?? [];
+  const tp1 = reach[0];
+  if (tp1 && !tp1.achievable) {
+    wait.push(
+      tp1.note
+        ? `TP1 blocked — ${tp1.note}`
+        : "TP1 blocked by OI wall",
+    );
+  } else if (reach.length > 0 && reach.every((t) => !t.achievable)) {
+    wait.push("all TPs blocked by OI walls");
+  }
+
+  const seller = input.sellerSignal ?? null;
+  if (seller === "BUY_CE" && !isCE) wait.push("seller intel votes BUY_CE");
+  if (seller === "BUY_PE" && isCE) wait.push("seller intel votes BUY_PE");
+  // seller "WAIT" is the DEFAULT when OI is mixed — it flips every poll and
+  // must NOT block an otherwise-clean ladder (only a hard opposite vote does).
+
+  // ── Greeks / EMA / leg-OI quality (same live inputs the hold window uses) ──
+  const absDelta = input.delta != null && Number.isFinite(input.delta)
+    ? Math.abs(input.delta)
+    : null;
+  if (absDelta != null && absDelta > 0 && absDelta < 0.3) {
+    wait.push(`lottery delta ${absDelta.toFixed(2)} < 0.30 — OTM noise, not an edge`);
+  }
+
+  const ema = input.ema ?? null;
+  if (ema) {
+    const wantUp = isCE;
+    const against =
+      (wantUp && ema.trend === "DOWN") || (!wantUp && ema.trend === "UP");
+    if (against) {
+      wait.push(
+        `EMA9/15 ${ema.trend} against ${isCE ? "CE" : "PE"} — trend opposes the long`,
+      );
+    }
+  }
+
+  const oiChg = input.oiChange;
+  if (oiChg != null && Number.isFinite(oiChg) && oiChg <= -5000) {
+    wait.push(
+      `leg unwinding ΔOI ${Math.round(oiChg).toLocaleString("en-IN")} — sellers exiting this side`,
+    );
+  }
+
+  // Heavy θ (≥4% of premium/day) erodes the ladder before TP1 — wait unless
+  // the premium is tiny (absolute ₹/day on a cheap option is noise).
+  const theta = input.theta;
+  const entryPx = input.entry;
+  if (
+    theta != null &&
+    Number.isFinite(theta) &&
+    entryPx > 0 &&
+    Math.abs(theta) / entryPx >= 0.04 &&
+    entryPx >= 50
+  ) {
+    wait.push(
+      `θ ${theta.toFixed(1)}/day = ${((Math.abs(theta) / entryPx) * 100).toFixed(1)}% of premium — decay outruns TP1`,
+    );
+  }
+
+  // CVD soft-vote — opposing aggressive flow waits; neutral/unavailable never blocks.
+  const cvd = (input.cvdVerdict || "").toUpperCase();
+  const cvdBull = cvd === "BULLISH" || cvd === "BULLISH_DIVERGENCE";
+  const cvdBear = cvd === "BEARISH" || cvd === "BEARISH_DIVERGENCE";
+  if (isCE && cvdBear) wait.push(`CVD ${cvd} — flow against CE`);
+  if (!isCE && cvdBull) wait.push(`CVD ${cvd} — flow against PE`);
+
+  // Chop / sideways — trend setups get whipsawed both ways while θ bleeds.
+  if (input.chop) {
+    const top = input.chopAssessment?.reasons?.[0];
+    wait.push(
+      top && /chop/i.test(top)
+        ? top
+        : "chop / sideways regime — wait for expansion, don't fight the range",
+    );
+  }
+
+  // ── Seller Intelligence context (DEX/GEX/VWAP/retest) ──
+  const sc = input.sellerCtx ?? null;
+  if (sc?.requiresRetest) {
+    wait.push("seller intel AWAITING_RETEST — entry not confirmed yet");
+  }
+  const dealer = (sc?.dealerBias || "").toUpperCase();
+  if (dealer === "BEARISH" && isCE) {
+    wait.push(
+      `dealer ${sc?.dealerRegime || ""} bias BEARISH — GEX flow against CE`.replace(/\s+/g, " "),
+    );
+  }
+  if (dealer === "BULLISH" && !isCE) {
+    wait.push(
+      `dealer ${sc?.dealerRegime || ""} bias BULLISH — GEX flow against PE`.replace(/\s+/g, " "),
+    );
+  }
+  // VWAP side-gate: long options prefer price above VWAP (CE) / below (PE).
+  // Only when the read is available — a missing VWAP never blocks.
+  if (sc?.priceAboveVwap != null && sc.vwap != null && sc.vwap > 0) {
+    if (isCE && sc.priceAboveVwap === false) {
+      wait.push(`price ${sc.spot?.toFixed(0)} below VWAP ${sc.vwap.toFixed(0)} — against CE`);
+    }
+    if (!isCE && sc.priceAboveVwap === true) {
+      wait.push(`price ${sc.spot?.toFixed(0)} above VWAP ${sc.vwap.toFixed(0)} — against PE`);
+    }
+  }
+
+  // ── Liquidity — a missing book is UNVERIFIED, never "good" ──
+  if (liquidity.state === "WIDE") {
+    wait.push(
+      `spread ${liquidity.spreadPct!.toFixed(1)}% of mid > ${MAX_SPREAD_PCT}% — exit cost eats TP1`,
+    );
+  } else if (liquidity.state === "UNVERIFIED") {
+    const note = chainIsLive
+      ? "liquidity UNVERIFIED — no bid/ask book on a LIVE chain (spread not assumed)"
+      : "liquidity UNVERIFIED — no bid/ask book (spread not assumed)";
+    // On a LIVE chain a book must exist — its absence is a real blocker
+    // (fail closed). On a non-live chain the session/freshness rules already
+    // govern the verdict, so the caveat is recorded, never invented away.
+    if (LIQUIDITY_UNVERIFIED_POLICY === "wait" && chainIsLive) {
+      wait.push(note);
+    } else {
+      reasons.push(note);
+    }
+  }
+
+  // ── Pro confluence gate — ≥3 independent evidence GROUPS must agree ──
+  // Correlated indicators (GEX/DEX/seller, EMA/VWAP) count once. A group
+  // whose members disagree abstains. Sparse tapes never fabricate a vote.
+  if (!confluence.pass) {
+    const need = confluence.required - confluence.aligned;
+    wait.push(
+      confluence.cast === 0
+        ? "no evidence groups — need ≥3 independent evidence groups"
+        : `confluence ${confluence.aligned}/${confluence.cast} groups — need ${need} more independent group${need === 1 ? "" : "s"} (pro gate ≥3 groups)`,
+    );
+  }
+
+  if (wait.length > 0) {
+    return {
+      decision: "WAIT",
+      label: "WAIT",
+      reasons: [...reasons, ...wait],
+      confluence,
+      liquidity,
+    };
+  }
+
+  // ── TAKE ──
+  reasons.push("ladder valid · R:R ≥ 1.5 · stop below entry");
+  reasons.push(
+    `confluence ${confluence.aligned}/${confluence.cast} groups — pro gate ≥3 ✓`,
+  );
+  if (preferred && prefConfirmed && preferred === side) {
+    reasons.push(`aligned with ★ ${side === "CALL" ? "CE" : "PE"} bias`);
+  } else if (!preferred) {
+    reasons.push("neutral bias — no ★ blocker");
+  }
+  if (tp1?.achievable) reasons.push("TP1 clear of walls");
+  if (absDelta != null) {
+    reasons.push(`|delta| ${absDelta.toFixed(2)} — ${absDelta >= 0.4 ? "ATM, healthy" : absDelta >= 0.3 ? "moderate" : "lean"}`);
+  }
+  if (ema) {
+    const wantUp = isCE;
+    const aligned =
+      (wantUp && ema.trend === "UP") || (!wantUp && ema.trend === "DOWN");
+    if (aligned) reasons.push(`EMA9/15 ${ema.trend} — trend with the option`);
+    else if (ema.trend === "NONE") reasons.push("EMA flat — no trend drag either way");
+  }
+  if (oiChg != null && Number.isFinite(oiChg)) {
+    reasons.push(
+      `leg ΔOI ${oiChg >= 0 ? "+" : ""}${Math.round(oiChg).toLocaleString("en-IN")} — ${oiChg >= 0 ? "building" : "mild unwind"}`,
+    );
+  }
+  if (cvdBull && isCE) reasons.push(`CVD ${cvd} — flow with CE`);
+  if (cvdBear && !isCE) reasons.push(`CVD ${cvd} — flow with PE`);
+  if (!input.chop && input.chopAssessment) {
+    reasons.push(input.chopAssessment.reasons[0] || "trend regime — expansion present");
+  }
+  if (sc?.entryConfirmed) reasons.push("seller entry confirmed (retest ✓)");
+  if (sc?.score != null && sc.score >= 40 && seller && seller !== "WAIT") {
+    reasons.push(`seller score ${sc.score}/100`);
+  }
+  if (dealer === "BULLISH" && isCE) reasons.push("dealer bias BULLISH — with CE");
+  if (dealer === "BEARISH" && !isCE) reasons.push("dealer bias BEARISH — with PE");
+  if (
+    sc?.netDex != null &&
+    Number.isFinite(sc.netDex) &&
+    Math.abs(sc.netDex) > 0
+  ) {
+    const lean = sc.netDex > 0 ? "call-delta dominant" : "put-delta dominant";
+    const withSide = (sc.netDex > 0 && isCE) || (sc.netDex < 0 && !isCE);
+    if (withSide) reasons.push(`net DEX ${lean} — with ${isCE ? "CE" : "PE"}`);
+  }
+  if (seller && seller !== "WAIT") {
+    const sellerSide = seller === "BUY_CE" ? "CALL" : "PUT";
+    if (sellerSide === side) reasons.push(`seller intel agrees (${seller})`);
+  }
+  if (seller === "WAIT") reasons.push("seller intel neutral (WAIT — not a blocker)");
+  return { decision: "TAKE", label: "TAKE", reasons, confluence, liquidity };
+}
+
+// ── Decision hysteresis — stop TAKE↔WAIT flicker every poll ──────────
+// raw evaluatePlanTrade recomputes from live OI / seller / walls each poll;
+// a single mixed OI tick used to drop TAKE → WAIT in one minute. Mirror the
+// ★ lock: same verdict keeps; an opposing verdict needs ≥2 consecutive polls
+// AND ≥2 minutes. Hard NO always applies immediately (fail closed).
+
+export interface PlanDecisionLock {
+  confirmed: TradeDecision | null;
+  pending: TradeDecision | null;
+  pendingSince: number;
+  pendingCount: number;
+}
+
+const DEC_MIN_CONFIRMATIONS = 2;
+const DEC_MIN_PERSIST_MS = 2 * 60_000;
+const planDecisionLocks = new Map<string, PlanDecisionLock>();
+
+function blankDecisionLock(): PlanDecisionLock {
+  return { confirmed: null, pending: null, pendingSince: 0, pendingCount: 0 };
+}
+
+/**
+ * Sticky TAKE/WAIT per symbol+side. Pure state machine — no network.
+ * `raw` is this poll's evaluatePlanTrade verdict.
+ */
+export function resolvePlanDecision(
+  symbol: string,
+  optionType: "CE" | "PE",
+  raw: TradeDecision,
+  nowMs: number = Date.now(),
+): { decision: TradeDecision; status: "confirmed" | "pending"; pending: TradeDecision | null } {
+  const key = `${symbol}:${optionType}`;
+  let lock = planDecisionLocks.get(key);
+  if (!lock) {
+    lock = blankDecisionLock();
+    planDecisionLocks.set(key, lock);
+  }
+
+  // Hard NO always wins immediately — safety never waits on hysteresis.
+  if (raw === "NO") {
+    lock.confirmed = "NO";
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { decision: "NO", status: "confirmed", pending: null };
+  }
+
+  // First verdict confirms immediately (cold start).
+  if (lock.confirmed == null) {
+    lock.confirmed = raw;
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { decision: raw, status: "confirmed", pending: null };
+  }
+
+  // Same as confirmed → keep (no flicker).
+  if (raw === lock.confirmed) {
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { decision: lock.confirmed, status: "confirmed", pending: null };
+  }
+
+  // Opposing raw — accumulate; only flip past count + persistence.
+  if (lock.pending !== raw) {
+    lock.pending = raw;
+    lock.pendingSince = nowMs;
+    lock.pendingCount = 1;
+  } else {
+    lock.pendingCount += 1;
+  }
+
+  const persistOk = nowMs - lock.pendingSince >= DEC_MIN_PERSIST_MS;
+  const countOk = lock.pendingCount >= DEC_MIN_CONFIRMATIONS;
+  if (persistOk && countOk) {
+    lock.confirmed = raw;
+    lock.pending = null;
+    lock.pendingCount = 0;
+    return { decision: raw, status: "confirmed", pending: null };
+  }
+
+  return { decision: lock.confirmed, status: "pending", pending: lock.pending };
+}
+
+/** Test hook — clear per-symbol plan decision locks. */
+export function __resetPlanDecisionLocksForTests(): void {
+  planDecisionLocks.clear();
+}
+
+/**
+ * Hold window computed from LIVE inputs — EMA cross state, OI / ΔOI,
+ * greeks (delta + theta), and the plan's seller stop. Never invents an
+ * exit clock: the window is a guidance range; SL/TP remain the real exits.
+ *
+ * Deterministic scoring (no randomness, pure function):
+ *   base window from DTE → tighten on chop / thin delta / heavy θ
+ *                          → extend on aligned trend + strong ADX + room to wall
+ *   FAKEOUT/REVERSAL always capped short (trap must resolve fast).
+ */
+export interface HoldTimeInput {
+  daysToExpiry: number;
+  setup?: string;
+  optionType: "CE" | "PE";
+  /** Last-bar EMA9/15 + ADX state (null when candles unavailable). */
+  ema?: EmaBarState | null;
+  /** Selected leg's live delta (provider or BS). */
+  delta?: number | null;
+  /** Selected leg's live theta (per day, negative for longs). */
+  theta?: number | null;
+  /** Selected leg's ΔOI today (contracts). */
+  oiChange?: number | null;
+  /** Nearest opposing OI wall in the TP path (from assessTargets). */
+  wall?: { strike: number; oi: number; oiChange: number } | null;
+  /** Plan entry premium. */
+  entry?: number;
+  /** Plan stop (seller stop / rupee-risk stop). */
+  stopLoss?: number;
+}
+
+export interface HoldTimeResult {
+  /** Display label, e.g. "45-90 min". */
+  label: string;
+  minutesLow: number;
+  minutesHigh: number;
+  /** Human-readable factors that set the window (UI tooltip). */
+  reasons: string[];
+}
+
+function clampWindow(low: number, high: number): [number, number] {
+  const lo = Math.max(10, Math.round(low));
+  const hi = Math.max(lo + 15, Math.round(high));
+  return [lo, hi];
+}
+
+function fmtWindow(lo: number, hi: number): string {
+  if (hi < 60) return `${lo}-${hi} min`;
+  const loH = lo >= 60 ? (lo % 60 === 0 ? `${lo / 60}h` : `${Math.floor(lo / 60)}h${lo % 60}`) : `${lo} min`;
+  const hiH = hi % 60 === 0 ? `${hi / 60}h` : `${Math.floor(hi / 60)}h${hi % 60}`;
+  if (lo < 60) return `${lo} min-${hiH}`;
+  return `${loH}-${hiH}`;
+}
+
+export function computeHoldTime(input: HoldTimeInput): HoldTimeResult {
+  const dte = Number(input.daysToExpiry);
+  const setup = (input.setup || "").toUpperCase();
+  const reasons: string[] = [];
+
+  // ── Base window from DTE ──
+  let low: number, high: number;
+  if (Number.isFinite(dte) && dte <= 0) {
+    low = 15; high = 30;
+    reasons.push("expiry day — theta kills longs");
+  } else if (dte === 1) {
+    low = 30; high = 60;
+    reasons.push("expiry eve — short window");
+  } else {
+    low = 60; high = 240;
+    reasons.push(`DTE ${dte} — swing-to-intraday base`);
+  }
+
+  const isTrap = setup.includes("FAKEOUT") || setup.includes("REVERSAL");
+  const isContinuation =
+    setup.includes("BREAKOUT") ||
+    setup.includes("RETEST") ||
+    setup.includes("PULLBACK") ||
+    setup.includes("CROSSOVER");
+
+  // ── EMA cross alignment (CE wants UP, PE wants DOWN) ──
+  const ema = input.ema ?? null;
+  const wantUp = input.optionType === "CE";
+  if (ema) {
+    const aligned =
+      (wantUp && ema.trend === "UP") || (!wantUp && ema.trend === "DOWN");
+    const against =
+      (wantUp && ema.trend === "DOWN") || (!wantUp && ema.trend === "UP");
+    reasons.push(
+      `EMA9/15 ${ema.trend} · ADX ${ema.adx.toFixed(0)} · gap ${ema.gapAtr.toFixed(2)}×ATR`,
+    );
+    if (against) {
+      // Trend opposes the long option — the hold must be short; SL first.
+      low = Math.min(low, 30);
+      high = Math.min(high, 90);
+      reasons.push("EMA against option side — exit on SL or first TP");
+    } else if (aligned && ema.adx >= 25 && ema.gapAtr >= 0.15) {
+      // Confirmed expansion — room to ride toward the TP ladder.
+      high = Math.min(360, high + 60);
+      reasons.push("trend aligned + ADX≥25 — room to ride TP");
+    } else if (ema.trend === "NONE" || ema.gapAtr < 0.1) {
+      // Flat / tight cross — chop eats premium.
+      low = Math.min(low, 30);
+      high = Math.min(high, 90);
+      reasons.push("flat EMA cross — chop, keep the hold short");
+    }
+  } else {
+    reasons.push("EMA state unavailable — base window only");
+  }
+
+  // ── Setup type caps ──
+  if (isTrap) {
+    high = Math.min(high, 90);
+    low = Math.min(low, 45);
+    reasons.push("trap/reversal — resolve within 90 min");
+  } else if (isContinuation && ema && ((wantUp && ema.trend === "UP") || (!wantUp && ema.trend === "DOWN"))) {
+    reasons.push("continuation setup with trend tailwind");
+  }
+
+  // ── Delta: thin lottery vs tradable ──
+  const delta = input.delta;
+  if (delta != null && Number.isFinite(delta)) {
+    const abs = Math.abs(delta);
+    if (abs < 0.3) {
+      high = Math.min(high, 90);
+      reasons.push(`|delta| ${abs.toFixed(2)} — lottery, cap 90 min`);
+    } else if (abs >= 0.45 && abs <= 0.75) {
+      reasons.push(`|delta| ${abs.toFixed(2)} — ATM, healthy for the ladder`);
+    }
+  }
+
+  // ── Theta: heavy time-decay shortens a long option hold ──
+  const theta = input.theta;
+  const entry = Number(input.entry) || 0;
+  if (theta != null && Number.isFinite(theta) && entry > 0) {
+    // θ as % of premium per day (theta is negative for longs).
+    const thetaPct = Math.abs(theta) / entry;
+    if (thetaPct >= 0.04) {
+      high = Math.min(high, 120);
+      reasons.push(`|θ| ${(thetaPct * 100).toFixed(1)}%/day of premium — decay heavy`);
+    }
+  }
+
+  // ── OI: fresh writing against the TP path (wall) ──
+  const wall = input.wall ?? null;
+  if (wall && wall.oiChange > 0) {
+    // Opposing wall still being written — TPs above it need a spot break;
+    // do not promise a multi-hour ride into defended OI.
+    high = Math.min(high, 120);
+    reasons.push(
+      `wall ${wall.strike} writing +${wall.oiChange.toLocaleString("en-IN")} OI — TPs blocked until broken`,
+    );
+  }
+  const oiChange = input.oiChange;
+  if (oiChange != null && Number.isFinite(oiChange) && oiChange <= -5000) {
+    // Heavy unwinding of THIS leg can precede a premium fade — mild shorten.
+    high = Math.min(high, 150);
+    reasons.push(`this leg ΔOI ${oiChange.toLocaleString("en-IN")} — unwinding, don't overstay`);
+  }
+
+  // ── Seller stop geometry: tight stop = short hold expectation ──
+  const stop = Number(input.stopLoss) || 0;
+  if (entry > 0 && stop > 0 && stop < entry) {
+    const stopPct = (entry - stop) / entry;
+    if (stopPct <= 0.12) {
+      high = Math.min(high, 90);
+      reasons.push(`stop ${((1 - stopPct) * 100).toFixed(0)}% of entry — tight, SL can print fast`);
+    } else if (stopPct >= 0.25) {
+      reasons.push(`stop ${((1 - stopPct) * 100).toFixed(0)}% of entry — room before SL`);
+    }
+  }
+
+  const [lo, hi] = clampWindow(low, high);
+  return {
+    label: fmtWindow(lo, hi),
+    minutesLow: lo,
+    minutesHigh: hi,
+    reasons,
+  };
+}
+
+/** Back-compat wrapper — static table when no live inputs are wired. */
+export function estimateHoldTime(input: {
+  daysToExpiry: number;
+  setup?: string;
+}): string {
+  return computeHoldTime({
+    daysToExpiry: input.daysToExpiry,
+    setup: input.setup,
+    optionType: "CE",
+  }).label;
+}
 
 // ====================== CVD — FUTURES (REAL VOLUME) ======================
 // Index SPOT candles carry no volume (Breeze index intraday → volume 0, NSE
@@ -861,12 +2058,15 @@ export class DailyDerivativesService {
           : { factor: "PCR", vote: "NEUTRAL", detail: `PCR ${args.pcr.toFixed(2)} — balanced` }
     );
 
-    // 2. Max-pain position — spot above pain = put writers defend (bull), below = call writers press (bear)
+    // 2. Max-pain gravity — sellers win if spot settles AT max pain.
+    //    Spot ABOVE MP → pain is below → gravity pulls DOWN → bearish (PUT).
+    //    Spot BELOW MP → gravity pulls UP → bullish (CALL).
+    //    (Was inverted here while sdm-engine / gap-engine had it right.)
     votes.push(
       args.spot > args.maxPain
-        ? { factor: "Max Pain", vote: "CALL", detail: `spot ${args.spot.toFixed(0)} above MP ${args.maxPain} — upward pin` }
+        ? { factor: "Max Pain", vote: "PUT", detail: `spot ${args.spot.toFixed(0)} above MP ${args.maxPain} — gravity down to pain` }
         : args.spot < args.maxPain
-          ? { factor: "Max Pain", vote: "PUT", detail: `spot ${args.spot.toFixed(0)} below MP ${args.maxPain} — downward pin` }
+          ? { factor: "Max Pain", vote: "CALL", detail: `spot ${args.spot.toFixed(0)} below MP ${args.maxPain} — gravity up to pain` }
           : { factor: "Max Pain", vote: "NEUTRAL", detail: `spot at MP ${args.maxPain}` }
     );
 
@@ -926,12 +2126,21 @@ export class DailyDerivativesService {
   }): Promise<DailyDerivativesReport> {
     const { underlying, expiryISO, interval = "5minute" } = params;
 
-    // 1. Get option chain from canonical data layer (NSE/BSE/MOAPI)
-    const chainResult = await canonicalGetOptionChain(underlying, expiryISO);
-    
+    // 1. Get option chain from canonical data layer (NSE/BSE/MOAPI/Breeze).
+    //    Two short retries with backoff: under load the first race can lose
+    //    every provider even though the next attempt succeeds seconds later.
+    //    Never fall back to EOD bhavcopy while the market is open.
+    let chainResult = await canonicalGetOptionChain(underlying, expiryISO);
+    for (let attempt = 0; !chainResult.data && attempt < 2; attempt++) {
+      await new Promise((r) => setTimeout(r, 1_500 * (attempt + 1)));
+      chainResult = await canonicalGetOptionChain(underlying, expiryISO);
+    }
+
     if (!chainResult.data) {
       console.error(`[DailyDerivatives] Chain fetch failed:`, chainResult.fallbackReason);
-      throw new Error(chainResult.fallbackReason || "Failed to fetch option chain");
+      const err: any = new Error(chainResult.fallbackReason || "Failed to fetch option chain");
+      err.status = 503;
+      throw err;
     }
 
     const chain = chainResult.data;
@@ -984,10 +2193,12 @@ export class DailyDerivativesService {
     // 3. Indicator Signals (if we have candles)
     let latestSignals: Signal[] = [];
     let allSignals: Signal[] = [];
+    let emaState: EmaBarState | null = null;
     if (candles.length > 0) {
-      const { signals } = emaCrossAdxAtr(candles, { adxMin: 20 });
+      const { signals, lastBar } = emaCrossAdxAtr(candles, { adxMin: 20 });
       allSignals = signals;
       latestSignals = signals.slice(-5).reverse();
+      emaState = lastBar;
     }
 
     // 4. Process option chain data — map canonical ce/pe legs to call/put,
@@ -1080,8 +2291,14 @@ export class DailyDerivativesService {
     const directionBias = this.computeDirectionBias({
       spot, pcr, maxPain, topCallOI, topPutOI, latestSignals, sentimentScore: score,
     });
-    const preferredSide: "CALL" | "PUT" | null =
-      directionBias.side === "NEUTRAL" ? null : directionBias.side;
+    // ★ follows the hysteresis lock — one OI tick or one new candle setup
+    // must NOT flip PE↔CE mid-session. Raw majority is still on directionBias.
+    const pref = resolvePreferredSide(
+      underlying,
+      directionBias.side === "NEUTRAL" ? null : directionBias.side,
+      Date.now(),
+    );
+    const preferredSide = pref.side;
 
     const tradePlans: TradePlanCard[] = [];
     const lotSize = getLotSizeStrict(underlying);
@@ -1134,6 +2351,35 @@ export class DailyDerivativesService {
           chain: chainRows,
         });
         const blocked = targetReach.filter(t => !t.achievable).map(t => t.note).filter(Boolean);
+        // Live leg: ΔOI + θ for the hold window (same chain row we priced).
+        const legRow = chainRows.find((r) => r.strike === sel.strike);
+        const leg = sel.optionType === "CE" ? legRow?.ce : legRow?.pe;
+        const legOiChange =
+          leg && Number.isFinite(Number((leg as any).oiChange))
+            ? Number((leg as any).oiChange)
+            : null;
+        const legTheta =
+          leg?.greeks && Number.isFinite(leg.greeks.theta) ? leg.greeks.theta : null;
+        // First blocked TP's wall — writing against the path shortens the hold.
+        const firstBlocked = targetReach.find((t) => !t.achievable && t.wall);
+        const hold = computeHoldTime({
+          daysToExpiry,
+          setup,
+          optionType: sel.optionType,
+          ema: emaState,
+          delta: sel.delta,
+          theta: legTheta,
+          oiChange: legOiChange,
+          wall: firstBlocked?.wall
+            ? {
+                strike: firstBlocked.wall.strike,
+                oi: firstBlocked.wall.oi,
+                oiChange: firstBlocked.wall.oiChange,
+              }
+            : null,
+          entry: plan ? plan.entry : sel.entry,
+          stopLoss: plan?.stopLoss ?? 0,
+        });
         return {
           optionType: sel.optionType,
           strike: sel.strike,
@@ -1149,6 +2395,8 @@ export class DailyDerivativesService {
           livePremium: sel.entry,
           setup,
           targetReach,
+          holdingTime: hold.label,
+          holdingReasons: hold.reasons,
           reason: plan
             ? `${sel.reason}${cleanNotes.length ? ` — ${cleanNotes.join(" · ")}` : ""}${blocked.length ? ` — ${blocked.join(" · ")}` : ""}`
             : `${sel.reason} — no valid SL/TP ladder`,
@@ -1159,17 +2407,15 @@ export class DailyDerivativesService {
       const ttlOk = !!cached && Date.now() - cached.at < PLAN_TTL_MS;
       const drift = cached && cached.spot > 0 ? Math.abs(spot - cached.spot) / cached.spot : Infinity;
       const driftOk = drift <= PLAN_SPOT_DRIFT;
-      // Reuse only while every present side keeps its selected strike; a
-      // side that appears fresh (was absent) forces a coherent rebuild.
-      const strikesMatch =
+      // Reuse the frozen ladder while TTL + drift hold. A side that appears
+      // fresh (was absent, now present) forces a coherent rebuild so we never
+      // mix a stale card with a new one. An ATM WALK that would re-select a
+      // neighbouring strike does NOT rebuild — the held plan's entry/SL/TP
+      // stay anchored (only `refreshPlan: true` or a material spot move
+      // rebuilds). That is what stops the strike number ticking every poll.
+      const sideAppeared =
         !!cached &&
-        (["CALL", "PUT"] as const).every((d) => {
-          const frozen = cached.bySide[d];
-          const sel = selBySide[d];
-          if (!frozen) return !sel;
-          if (!sel) return true; // frozen survives a momentarily thin chain
-          return sel.strike === frozen.strike;
-        });
+        (["CALL", "PUT"] as const).some((d) => !cached.bySide[d] && selBySide[d]);
       const fmtPlanTime = (ms: number) =>
         new Date(ms).toLocaleTimeString("en-IN", {
           timeZone: "Asia/Kolkata",
@@ -1178,14 +2424,50 @@ export class DailyDerivativesService {
           hour12: false,
         });
 
-      if (!params.refreshPlan && cached && ttlOk && driftOk && strikesMatch) {
-        // Frozen ladder — entry/SL/TP stay put; only the live premium ticks.
+      if (!params.refreshPlan && cached && ttlOk && driftOk && !sideAppeared) {
+        // Frozen ladder — entry/SL/TP/strike stay put; only live premium ticks.
+        // Hold window is NOT a level: recompute it from live EMA/OI/greeks/stop
+        // so the badge tracks the tape without rebuilding the SL/TP ladder.
         planAsOf = fmtPlanTime(cached.at);
         for (const direction of ["CALL", "PUT"] as const) {
           const frozen = cached.bySide[direction];
           if (!frozen) continue;
           const sel = selBySide[direction];
-          tradePlans.push(sel ? { ...frozen, livePremium: sel.entry } : frozen);
+          const card = sel ? { ...frozen, livePremium: sel.entry } : frozen;
+          if (sel) {
+            const legRow = chainRows.find((r) => r.strike === frozen.strike);
+            const leg = frozen.optionType === "CE" ? legRow?.ce : legRow?.pe;
+            const legOiChange =
+              leg && Number.isFinite(Number((leg as any).oiChange))
+                ? Number((leg as any).oiChange)
+                : null;
+            const legTheta =
+              leg?.greeks && Number.isFinite(leg.greeks.theta) ? leg.greeks.theta : null;
+            const firstBlocked = (frozen.targetReach || []).find(
+              (t) => !t.achievable && t.wall,
+            );
+            const hold = computeHoldTime({
+              daysToExpiry,
+              setup: frozen.setup,
+              optionType: frozen.optionType,
+              ema: emaState,
+              delta: sel.delta,
+              theta: legTheta,
+              oiChange: legOiChange,
+              wall: firstBlocked?.wall
+                ? {
+                    strike: firstBlocked.wall.strike,
+                    oi: firstBlocked.wall.oi,
+                    oiChange: firstBlocked.wall.oiChange,
+                  }
+                : null,
+              entry: frozen.entry,
+              stopLoss: frozen.stopLoss,
+            });
+            card.holdingTime = hold.label;
+            card.holdingReasons = hold.reasons;
+          }
+          tradePlans.push(card);
         }
       } else {
         const bySide: PlanSnapshot["bySide"] = {};
@@ -1267,6 +2549,97 @@ export class DailyDerivativesService {
       latestSignals: todaysSignals,
     });
 
+    // Per-card TAKE / WAIT / NO — needs sellerIntel + CVD (built just above).
+    // Live leg greeks / ΔOI / EMA / CVD / chop feed the same quality checks
+    // the hold window uses, so ENTRY and EXIT read one consistent tape.
+    const marketOpenNow = marketSessionSnapshot()?.isMarketOpen !== false;
+    const cvdVerdict = cvd?.available ? cvd.verdict : null;
+    // Live RVOL: futures-flow's last-bar read when present, else derive from
+    // the same candles — null when history is thin (never a fake 1.0).
+    const liveRvol =
+      futuresRelVol?.ratio != null && Number.isFinite(futuresRelVol.ratio)
+        ? futuresRelVol.ratio
+        : lastBarRvol(candles);
+    const chopAssessment =
+      candles.length > 0
+        ? assessChop({ ema: emaState, candles, rvol: liveRvol })
+        : null;
+    for (const card of tradePlans) {
+      // Frozen strike still gets LIVE greeks/OI from the current chain row.
+      const legRow = strikes.find((s) => s.strike === card.strike);
+      const leg = card.optionType === "CE" ? legRow?.call : legRow?.put;
+      const legDelta =
+        leg?.greeks && Number.isFinite(leg.greeks.delta) ? leg.greeks.delta : null;
+      const legTheta =
+        leg?.greeks && Number.isFinite(leg.greeks.theta) ? leg.greeks.theta : null;
+      const legOiChange =
+        leg && Number.isFinite(leg.oiChange) ? leg.oiChange : null;
+      const legBid = leg && Number.isFinite(leg.bid) ? leg.bid : null;
+      const legAsk = leg && Number.isFinite(leg.ask) ? leg.ask : null;
+      const v = evaluatePlanTrade({
+        optionType: card.optionType,
+        tradable: card.tradable,
+        lots: card.lots,
+        rr: card.rr,
+        entry: card.entry,
+        stopLoss: card.stopLoss,
+        preferredSide,
+        preferredStatus: pref.status,
+        targetReach: card.targetReach,
+        sellerSignal: sellerIntel.verdict.signal,
+        marketOpen: marketOpenNow,
+        delta: legDelta,
+        theta: legTheta,
+        oiChange: legOiChange,
+        ema: emaState,
+        cvdVerdict,
+        chop: chopAssessment?.chop === true,
+        chopAssessment,
+        bid: legBid,
+        ask: legAsk,
+        chainFreshness: chain.freshness || null,
+        sellerCtx: {
+          requiresRetest: sellerIntel.verdict.requiresRetest,
+          entryConfirmed: sellerIntel.verdict.entryConfirmed,
+          score: sellerIntel.verdict.score,
+          direction: sellerIntel.verdict.direction,
+          dealerBias: sellerIntel.exposure.dealerBias,
+          dealerRegime: sellerIntel.exposure.dealerRegime,
+          netDex: sellerIntel.exposure.netDex,
+          gammaFlip: sellerIntel.exposure.gammaFlip,
+          spot,
+          vwap: sellerIntel.market.vwap,
+          priceAboveVwap:
+            sellerIntel.market.vwap > 0
+              ? spot > sellerIntel.market.vwap
+              : null,
+          breakoutConfirmed: sellerIntel.market.breakoutConfirmed,
+        },
+      });
+      // Sticky verdict — one mixed OI/seller tick must not flip TAKE→WAIT
+      // mid-entry. Hard NO bypasses the lock (fail closed).
+      const locked = resolvePlanDecision(underlying, card.optionType, v.decision);
+      card.decision = locked.decision;
+      card.decisionLabel =
+        locked.decision === "TAKE" ? "TAKE" : locked.decision === "WAIT" ? "WAIT" : "NO TRADE";
+      if (v.confluence) {
+        card.confluenceAligned = v.confluence.aligned;
+        card.confluenceCast = v.confluence.cast;
+      }
+      if (v.liquidity) {
+        card.liquidityState = v.liquidity.state;
+        card.liquiditySpreadPct = v.liquidity.spreadPct;
+      }
+      if (locked.status === "pending" && locked.pending && locked.decision !== v.decision) {
+        card.decisionReasons = [
+          ...v.reasons,
+          `raw ${v.decision} pending — keeping ${locked.decision} until confirmed`,
+        ];
+      } else {
+        card.decisionReasons = v.reasons;
+      }
+    }
+
     return {
       underlying,
       timestamp: new Date().toISOString(),
@@ -1294,7 +2667,10 @@ export class DailyDerivativesService {
       tradePlans,
       planAsOf,
       preferredSide,
+      preferredStatus: pref.status,
+      preferredPending: pref.pending,
       directionBias,
+      chopRegime: chopAssessment,
       candleSource,
       candleInterval,
       candleDegraded,

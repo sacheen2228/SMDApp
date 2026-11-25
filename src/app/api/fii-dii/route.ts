@@ -3,6 +3,14 @@ import { fetchFIIDII } from '@/lib/market-data-service';
 import { buildFreshnessMeta } from '@/lib/api-freshness';
 import { buildCardMeta, getMarketClock } from '@/lib/data-freshness';
 
+/** Human label for the source of the numbers. */
+function sourceLabel(source: string | undefined | null): string {
+  if (source === 'nse') return 'NSE';
+  if (source === 'nse-eod') return 'NSE EOD';
+  if (source === 'mrchartist') return 'MrChartist (fallback)';
+  return '';
+}
+
 export async function GET() {
   try {
     const envelope = await fetchFIIDII({
@@ -27,6 +35,7 @@ export async function GET() {
           data: meta,
           date: null,
           source: null,
+          sourceLabel: '',
           fiiNet: null,
           diiNet: null,
           fiiBuy: null,
@@ -46,10 +55,15 @@ export async function GET() {
     const clock = await getMarketClock();
     const data = envelope.data as any;
     const dataDate = data.date;
-    const providerStamp = dataDate ? new Date(dataDate) : null;
+    // The feed is published once per session (~18:00 IST). Age the figure from
+    // its publication instant — midnight would age a same-session figure into
+    // "STALE" by the end of the evening.
+    const { fiiDiiPublishedAtIso } = await import('@/lib/fii-dii');
+    const publishedAtIso = dataDate ? fiiDiiPublishedAtIso(dataDate) : null;
+    const providerStamp = publishedAtIso ? new Date(publishedAtIso) : (dataDate ? new Date(dataDate) : null);
     const freshness = buildFreshnessMeta({
       provider: envelope.provider,
-      dataTimestamp: dataDate ? new Date(dataDate) : new Date(0),
+      dataTimestamp: providerStamp ?? new Date(0),
       dataType: "fiiDii",
       fallbackUsed: envelope.fallbackUsed,
       fallbackReason: envelope.fallbackReason,
@@ -85,13 +99,16 @@ export async function GET() {
       diiBuy: data.diiBuy,
       diiSell: data.diiSell,
       date: data.date,
+      dataDate: data.date,
       source: envelope.provider,
+      sourceLabel: sourceLabel(data.source),
       freshness,
       fiiNet5dAvg: data.fiiNet5dAvg ?? null,
       diiNet5dAvg: data.diiNet5dAvg ?? null,
       fiiFutLongRatio: data.fiiFutLongRatio ?? null,
       provenance: {
         source: envelope.provider,
+        dataSource: data.source,
         retrievedAt: providerStamp ? providerStamp.toISOString() : null,
         collectedAt: new Date().toISOString(),
         freshness: freshness.freshness,
@@ -100,6 +117,8 @@ export async function GET() {
         ageLabel: meta.ageLabel,
         status: 'AVAILABLE',
         historyRows: data.history?.length ?? 0,
+        ...(data.expectedSession ? { expectedSession: data.expectedSession } : {}),
+        ...(data.rejectedSources?.length ? { rejectedSources: data.rejectedSources } : {}),
       },
       history: data.history,
     };

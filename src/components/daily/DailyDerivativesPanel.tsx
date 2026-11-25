@@ -63,6 +63,15 @@ interface TradePlanCard {
   livePremium?: number;
   setup?: string;
   targetReach?: TargetReach[];
+  holdingTime?: string;
+  holdingReasons?: string[];
+  decision?: "TAKE" | "WAIT" | "NO";
+  decisionLabel?: string;
+  decisionReasons?: string[];
+  confluenceAligned?: number;
+  confluenceCast?: number;
+  liquidityState?: "GOOD" | "WIDE" | "UNVERIFIED";
+  liquiditySpreadPct?: number | null;
 }
 
 interface DirectionVote {
@@ -147,7 +156,16 @@ interface DailyDerivativesReport {
   tradePlans: TradePlanCard[];
   planAsOf?: string;
   preferredSide: "CALL" | "PUT" | null;
+  preferredStatus?: "confirmed" | "pending" | "none";
+  preferredPending?: "CALL" | "PUT" | null;
   directionBias: DirectionBias;
+  /** Chop/sideways regime from live EMA+ADX+range+RVOL — null = no candles. */
+  chopRegime?: {
+    chop: boolean;
+    score: number;
+    reasons: string[];
+    rvol?: number | null;
+  } | null;
   /** Which provider priced the card (NSE / MOAPI / BHAVCOPY / ...) */
   dataSource: string;
   freshness?: string;
@@ -312,6 +330,52 @@ function CvdSparkline({ values }: { values: number[] }) {
   );
 }
 
+/** Compact "Sort By Volume / Value" table of the NSE most-active option strikes. */
+function MostActiveTable({ title, rows }: { title: string; rows: any[] }) {
+  const fmtVol = (v: number) =>
+    v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(Math.round(v || 0));
+  const fmtTurnover = (v: number) =>
+    v >= 100 ? `₹${(v / 100).toFixed(0)}Cr` : v >= 1 ? `₹${v.toFixed(0)}L` : `₹${((v || 0) * 100).toFixed(0)}K`;
+  return (
+    <div className="bg-card/70 rounded p-2">
+      <div className="text-[10px] font-semibold text-muted-foreground mb-1">{title}</div>
+      {!rows || rows.length === 0 ? (
+        <div className="text-[10px] text-muted-foreground">No rows</div>
+      ) : (
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="text-muted-foreground">
+              <th className="text-left font-medium py-0.5">Strike</th>
+              <th className="text-left font-medium py-0.5">Expiry</th>
+              <th className="text-right font-medium py-0.5">LTP</th>
+              <th className="text-right font-medium py-0.5">Contracts</th>
+              <th className="text-right font-medium py-0.5">Turnover</th>
+              <th className="text-right font-medium py-0.5">OI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 8).map((r, i) => (
+              <tr key={`${r.underlying}-${r.expiryDate}-${r.strikePrice}-${r.optionType}-${i}`} className="border-t border-border/40">
+                <td className="font-mono text-foreground">
+                  {r.strikePrice}
+                  <span className={r.optionType === "Call" ? "text-emerald-400" : "text-rose-400"}>
+                    {r.optionType === "Call" ? " CE" : r.optionType === "Put" ? " PE" : ""}
+                  </span>
+                </td>
+                <td className="text-muted-foreground">{r.expiryDate}</td>
+                <td className="text-right font-mono">₹{Number(r.lastPrice || 0).toFixed(1)}</td>
+                <td className="text-right font-mono text-cyan-400">{fmtVol(r.numberOfContractsTraded)}</td>
+                <td className="text-right font-mono text-amber-400">{fmtTurnover(r.totalTurnover)}</td>
+                <td className="text-right font-mono text-purple-400">{fmtVol(r.openInterest)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: string }) {
   const [symbol, setSymbol] = useState<string>(SYMBOLS.includes(initialSymbol as any) ? (initialSymbol as any) : "NIFTY");
   const [report, setReport] = useState<DailyDerivativesReport | null>(null);
@@ -322,6 +386,8 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
   const [fiiDii, setFiiDii] = useState<any>(null);
   const [institutional, setInstitutional] = useState<any>(null);
   const [greekFlow, setGreekFlow] = useState<any>(null);
+  /** NSE most-active contracts (both rankings) — where the money actually traded. */
+  const [mostActive, setMostActive] = useState<any>(null);
   /** True while the side feeds are still in flight — a slow provider is not "unavailable". */
   const [feedsLoading, setFeedsLoading] = useState(true);
   // Monotonic request id — a stale response never clobbers a newer one.
@@ -342,13 +408,16 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
       const timer = setTimeout(() => ac.abort(), ms);
       return fetch(url, { signal: ac.signal }).then((r) => r.json()).finally(() => clearTimeout(timer));
     };
-    const [f, i, g] = await Promise.allSettled([
+    const [f, i, g, m] = await Promise.allSettled([
       timed("/api/fii-dii"),
       // Index-level feed — the persisted snapshot path (`fast=1`): the full
       // NSE participant-OI scan can take ~5 minutes, the snapshot answers in
       // seconds. The payload says which path produced it.
       timed("/api/institutional-positioning?fast=1", 45000),
       timed("/api/greek-flow?symbol=" + encodeURIComponent(symbol)),
+      // NSE most-active contracts — the daily "Sort By Volume / Value" list
+      // of the strikes that actually traded.
+      timed("/api/market/most-active", 45000),
     ]);
     setFeedsLoading(false);
     // Keep the WHOLE payload: /api/fii-dii puts the flows at the top level
@@ -360,6 +429,10 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
     }
     if (i.status === "fulfilled") setInstitutional(i.value ?? null);
     if (g.status === "fulfilled") setGreekFlow(g.value ?? null);
+    if (m.status === "fulfilled") {
+      const v: any = m.value ?? null;
+      setMostActive(v?.success ? { ...(v.data ?? {}), ...v } : null);
+    }
   }, [symbol]);
 
   const load = useCallback(async (force = false) => {
@@ -424,6 +497,17 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
     if (a >= 100000) return sign + (a / 100000).toFixed(2) + " L";
     return n.toLocaleString("en-IN");
   };
+
+  /** Most-active option strikes for this tab's underlying (NSE feed). */
+  const mostActiveOptionRows = (cat: any): any[] =>
+    (Array.isArray(cat?.data) ? cat.data : [])
+      .filter((r: any) => r && Number(r.strikePrice || 0) > 0)
+      .filter((r: any) => (symbol === "NIFTY" ? r.underlying === "NIFTY" : true));
+  const mostActiveByVolume = mostActiveOptionRows(mostActive?.contracts?.byVolume ?? mostActive?.contracts);
+  const mostActiveByValue = mostActiveOptionRows(
+    mostActive?.contracts?.byValue?.length ? mostActive.contracts.byValue : mostActive?.byValueContracts
+  );
+  const mostActiveRows = [...mostActiveByVolume, ...mostActiveByValue];
 
   const SignalBadge = ({ type, side, strength, time, reason }: { type: string; side: string; strength: number; time?: string; reason?: string }) => {
     const isLong = side === "LONG";
@@ -639,6 +723,22 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                   <span className="text-[13px] font-bold text-foreground">Direction</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  {report.chopRegime && (
+                    <span
+                      title={report.chopRegime.reasons.join(" · ")}
+                      className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        report.chopRegime.chop
+                          ? "bg-amber-500/25 text-amber-300 border border-amber-500/40"
+                          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                      }`}
+                    >
+                      {report.chopRegime.chop
+                        ? `⚠ CHOP ${report.chopRegime.score}`
+                        : `TREND ${report.chopRegime.score}`}
+                      {report.chopRegime.rvol != null &&
+                        ` · RVOL ${report.chopRegime.rvol.toFixed(2)}x`}
+                    </span>
+                  )}
                   <span className="text-[11px] font-mono text-muted-foreground">
                     {report.directionBias.callVotes} CE vs {report.directionBias.putVotes} PE · {report.directionBias.confidence}% conf
                   </span>
@@ -698,6 +798,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                   <div className="col-span-2 text-[10px] text-muted-foreground">
                     FII buy ₹{fiiDii.fiiBuy.toFixed(0)} Cr / sell ₹{fiiDii.fiiSell.toFixed(0)} Cr ·
                     DII buy ₹{fiiDii.diiBuy.toFixed(0)} Cr / sell ₹{fiiDii.diiSell.toFixed(0)} Cr
+                    {fiiDii.dataDate ? ` · ${fiiDii.dataDate}` : ""}
                     {fiiDii.ageLabel ? ` · ${fiiDii.ageLabel}` : ""}
                   </div>
                 </div>
@@ -737,7 +838,7 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                     <span className="font-mono">{institutional.alignment?.overallAlignment ?? "—"}%</span>
                   </div>
                   {institutional.aiSummary && (
-                    <div className="text-[10px] text-muted-foreground leading-snug line-clamp-4">
+                    <div className="text-[10px] text-muted-foreground leading-snug line-clamp-6">
                       {institutional.aiSummary}
                     </div>
                   )}
@@ -793,6 +894,43 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                 </div>
               )}
             </div>
+          </div>
+
+          {/* MOST ACTIVE STRIKES — NSE's own "Sort By Volume / Value" list.
+              Context only (never a trade vote): where the contracts actually
+              traded, by contracts traded and by turnover. The feed is NSE-only
+              (SENSEX is a BSE underlying). */}
+          <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-orange-400" />
+                <span className="text-[13px] font-bold text-foreground">Most Active Strikes</span>
+                {mostActive?.source === "nse-eod" && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-300 border-amber-500/30">
+                    EOD capture
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-muted-foreground">
+                {mostActive?.sessionDate ? `session ${mostActive.sessionDate}` : ""}
+                {mostActive?.contracts?.timestamp ? ` · snapshot ${mostActive.contracts.timestamp}` : ""}
+                {mostActive?.meta?.ageLabel ? ` · ${mostActive.meta.ageLabel}` : ""}
+              </span>
+            </div>
+            {symbol !== "NIFTY" ? (
+              <div className="text-[11px] text-muted-foreground">
+                NSE feed — NIFTY contracts only (this tab shows {symbol}).
+              </div>
+            ) : mostActiveRows.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground">
+                {!mostActive && feedsLoading ? "loading…" : mostActive?.error || "NSE most-active contracts unavailable"}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <MostActiveTable title="Sort By Volume" rows={mostActiveByVolume} />
+                <MostActiveTable title="Sort By Value" rows={mostActiveByValue} />
+              </div>
+            )}
           </div>
 
           {/* CVD — context only, never a trade vote */}
@@ -954,6 +1092,14 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                 {report.planAsOf && (
                   <span className="text-[11px] text-violet-300/90">levels as of {report.planAsOf}</span>
                 )}
+                {report.preferredStatus === "pending" && report.preferredPending && (
+                  <span
+                    title="Opposing majority is stacking — the ★ flips only after 2+ polls over 2 minutes"
+                    className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-amber-500/15 text-amber-300"
+                  >
+                    bias → {report.preferredPending} confirming…
+                  </span>
+                )}
               </div>
             </div>
             {(report.tradePlans || []).length === 0 ? (
@@ -978,9 +1124,78 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                               ★ PREFERRED ({report.preferredSide})
                             </span>
                           )}
-                          {!preferred && report.preferredSide && (
+                          {!preferred && report.preferredSide && report.preferredStatus === "pending" && report.preferredPending === (isCE ? "CALL" : "PUT") && (
+                            <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-amber-500/15 text-amber-300">
+                              pending ★
+                            </span>
+                          )}
+                          {!preferred && report.preferredSide && report.preferredStatus !== "pending" && (
                             <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-muted text-muted-foreground">
                               against bias
+                            </span>
+                          )}
+                          {p.decisionLabel && (
+                            <span
+                              title={(p.decisionReasons || []).join(" · ") || "Deterministic entry verdict"}
+                              className={`px-2 py-0.5 rounded text-[11px] font-black tracking-wide ${
+                                p.decision === "TAKE"
+                                  ? "bg-emerald-500/25 text-emerald-300 border border-emerald-500/40"
+                                  : p.decision === "WAIT"
+                                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                    : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                              }`}
+                            >
+                              {p.decision === "TAKE"
+                                ? "✓ TAKE TRADE"
+                                : p.decision === "WAIT"
+                                  ? "⏳ WAIT"
+                                  : "✕ NO TRADE"}
+                            </span>
+                          )}
+                          {p.confluenceCast != null && p.confluenceCast > 0 && (
+                            <span
+                              title={`Pro confluence: ${p.confluenceAligned ?? 0} of ${p.confluenceCast} independent evidence GROUPS agree (gate ≥3) — Price structure (EMA+VWAP) · Options positioning (GEX+DEX+seller) · Order flow (CVD) · Directional bias (★)`}
+                              className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                                (p.confluenceAligned ?? 0) >= 3
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : "bg-amber-500/15 text-amber-300"
+                              }`}
+                            >
+                              conf {p.confluenceAligned ?? 0}/{p.confluenceCast}
+                            </span>
+                          )}
+                          {p.liquidityState && (
+                            <span
+                              title={
+                                p.liquidityState === "UNVERIFIED"
+                                  ? "Liquidity UNVERIFIED — no bid/ask book on this leg (spread not assumed)"
+                                  : `Liquidity ${p.liquidityState} — spread ${p.liquiditySpreadPct?.toFixed(2)}% of mid (max 8%)`
+                              }
+                              className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                                p.liquidityState === "GOOD"
+                                  ? "bg-sky-500/15 text-sky-300"
+                                  : p.liquidityState === "WIDE"
+                                    ? "bg-rose-500/15 text-rose-300"
+                                    : "bg-slate-500/20 text-slate-300"
+                              }`}
+                            >
+                              {p.liquidityState === "GOOD"
+                                ? "LIQ OK"
+                                : p.liquidityState === "WIDE"
+                                  ? "LIQ WIDE"
+                                  : "LIQ ?"}
+                            </span>
+                          )}
+                          {p.holdingTime && (
+                            <span
+                              title={
+                                p.holdingReasons?.length
+                                  ? p.holdingReasons.join(" · ")
+                                  : "Hold window from EMA / OI / greeks / stop"
+                              }
+                              className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-indigo-500/15 text-indigo-300"
+                            >
+                              hold ~{p.holdingTime}
                             </span>
                           )}
                           {p.setup && (

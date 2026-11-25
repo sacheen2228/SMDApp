@@ -19,7 +19,13 @@ export interface MostActiveContract {
 }
 
 export interface MostActiveCategory {
+  /** Rows sorted by VOLUME (the page's default sort). Kept as `data` so the
+   *  existing consumers (Terminal card, agent tool, smd-context) keep working. */
   data: MostActiveContract[];
+  /** Rows sorted by VOLUME (explicit). */
+  byVolume: MostActiveContract[];
+  /** Rows sorted by VALUE (turnover) — the page's second sort. */
+  byValue: MostActiveContract[];
   timestamp: string;
 }
 
@@ -31,6 +37,10 @@ export interface MostActiveSnapshot {
   putsIndex: MostActiveCategory;
   callsStocks: MostActiveCategory;
   putsStocks: MostActiveCategory;
+  /** ALL calls (index + stock) with both sorts. */
+  calls: MostActiveCategory;
+  /** ALL puts (index + stock) with both sorts. */
+  puts: MostActiveCategory;
   oi: MostActiveCategory;
   fetchedAt: number;
   marketStatus: string;
@@ -86,71 +96,75 @@ async function fetchNSEEndpoint(
 }
 
 // ─── Normalize data from NSE response ───────────────────────────
-// The live endpoint answers with a CATEGORY wrapper, e.g.
-//   { "volume": { "data": [ …contracts… ], "timestamp": "…" } }
-// The old mapper only looked at `raw.data`, so every category came back
-// empty and the card rendered "Most Active F&O Contracts" with nothing in
-// it. Both shapes are handled now.
-function normalizeContracts(raw: any): MostActiveCategory {
-  const rows: any[] = Array.isArray(raw?.data)
-    ? raw.data
-    : Array.isArray(raw?.volume?.data)
-      ? raw.volume.data
-      : [];
-  const timestamp = raw?.timestamp || raw?.volume?.timestamp || "";
+// The live endpoint answers with a CATEGORY wrapper per sort:
+//   { "volume": { "data": [ …contracts… ], "timestamp": "…" },
+//     "value":  { "data": [ …contracts… ], "timestamp": "…" } }
+// The old mapper only looked at `raw.data` / `raw.volume.data`, so every
+// category came back empty and the card rendered "Most Active F&O Contracts"
+// with nothing in it. BOTH sorts are now kept — the page's "Sort By Volume"
+// and "Sort By Value" are different rankings and the value list was dropped.
+function mapRow(d: any): MostActiveContract {
   return {
-    data: rows.map((d: any) => ({
-      instrument: d.instrument || d.instrumentType || "",
-      underlying: d.underlying || "",
-      expiryDate: d.expiryDate || "",
-      optionType: d.optionType || "",
-      strikePrice: d.strikePrice || 0,
-      lastPrice: d.lastPrice || 0,
-      pChange: d.pChange || 0,
-      numberOfContractsTraded: d.numberOfContractsTraded || 0,
-      totalTurnover: d.totalTurnover || 0,
-      openInterest: d.openInterest || 0,
-      underlyingValue: d.underlyingValue || 0,
-    })),
+    instrument: d.instrument || d.instrumentType || "",
+    underlying: d.underlying || "",
+    expiryDate: d.expiryDate || "",
+    optionType: d.optionType || "",
+    strikePrice: d.strikePrice || 0,
+    lastPrice: d.lastPrice || 0,
+    pChange: d.pChange || 0,
+    numberOfContractsTraded: d.numberOfContractsTraded || 0,
+    totalTurnover: d.totalTurnover || 0,
+    openInterest: d.openInterest || 0,
+    underlyingValue: d.underlyingValue || 0,
+  };
+}
+
+export function normalizeContracts(raw: any): MostActiveCategory {
+  const byVolume = Array.isArray(raw?.volume?.data)
+    ? raw.volume.data
+    : Array.isArray(raw?.data)
+      ? raw.data
+      : [];
+  const byValue = Array.isArray(raw?.value?.data) ? raw.value.data : [];
+  const timestamp = raw?.timestamp || raw?.volume?.timestamp || raw?.value?.timestamp || "";
+  return {
+    data: byVolume.map(mapRow),
+    byVolume: byVolume.map(mapRow),
+    byValue: byValue.map(mapRow),
     timestamp,
   };
 }
 
-function normalizeWrapped(raw: any): MostActiveCategory {
-  // NSE wraps calls/puts as { OPTIDX: { volume: { data: [...] } } }
-  if (!raw || typeof raw !== "object") return { data: [], timestamp: "" };
+/** An empty category — used when a provider request failed. */
+export function emptyCategory(): MostActiveCategory {
+  return { data: [], byVolume: [], byValue: [], timestamp: "" };
+}
 
-  const allContracts: MostActiveContract[] = [];
-  let timestamp = "";
-
-  for (const instrumentType of Object.keys(raw)) {
-    const instrumentData = raw[instrumentType];
-    if (!instrumentData || typeof instrumentData !== "object") continue;
-
-    for (const sortType of Object.keys(instrumentData)) {
-      const sortData = instrumentData[sortType];
-      if (sortData?.data && Array.isArray(sortData.data)) {
-        if (!timestamp && sortData.timestamp) timestamp = sortData.timestamp;
-        for (const d of sortData.data) {
-          allContracts.push({
-            instrument: d.instrument || instrumentType,
-            underlying: d.underlying || "",
-            expiryDate: d.expiryDate || "",
-            optionType: d.optionType || "",
-            strikePrice: d.strikePrice || 0,
-            lastPrice: d.lastPrice || 0,
-            pChange: d.pChange || 0,
-            numberOfContractsTraded: d.numberOfContractsTraded || 0,
-            totalTurnover: d.totalTurnover || 0,
-            openInterest: d.openInterest || 0,
-            underlyingValue: d.underlyingValue || 0,
-          });
-        }
-      }
-    }
-  }
-
-  return { data: allContracts, timestamp };
+/**
+ * Split a calls/puts category into index (OPTIDX) and stock (OPTSTK) rows.
+ * The `calls` / `puts` endpoints serve BOTH in one list — the page splits
+ * them client-side, so the split belongs here.
+ */
+export function splitByInstrumentType(category: MostActiveCategory): {
+  index: MostActiveCategory;
+  stocks: MostActiveCategory;
+} {
+  const isIndex = (c: MostActiveContract) => c.instrument.includes("Index") || c.instrument.includes("IDX");
+  const pick = (rows: MostActiveContract[]) => rows.filter(isIndex);
+  const pickStocks = (rows: MostActiveContract[]) => rows.filter((c) => !isIndex(c));
+  const index: MostActiveCategory = {
+    data: pick(category.byVolume),
+    byVolume: pick(category.byVolume),
+    byValue: pick(category.byValue),
+    timestamp: category.timestamp,
+  };
+  const stocks: MostActiveCategory = {
+    data: pickStocks(category.byVolume),
+    byVolume: pickStocks(category.byVolume),
+    byValue: pickStocks(category.byValue),
+    timestamp: category.timestamp,
+  };
+  return { index, stocks };
 }
 
 // ─── Main Fetcher ───────────────────────────────────────────────
@@ -162,28 +176,42 @@ export async function fetchMostActiveContracts(): Promise<MostActiveSnapshot | n
       return null;
     }
 
-    // Fetch all categories in parallel
-    const [contractsRaw, futuresRaw, optionsRaw, callsIdxRaw, putsIdxRaw, callsStkRaw, putsStkRaw, oiRaw] =
+    // Fetch all categories in parallel. The index names NSE actually serves
+    // are contracts / futures / options / oi / calls / puts — each with a
+    // "volume" and a "value" ranking. The old `calls-index`, `puts-index`,
+    // `calls-stocks` and `puts-stocks` names answer `{}` (verified live
+    // 2026-11-25), so the Calls/Puts tabs and the P/C sentiment badge were
+    // permanently empty.
+    const [contractsRaw, futuresRaw, optionsRaw, oiRaw, callsRaw, putsRaw] =
       await Promise.allSettled([
         fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "contracts", limit: "20" }),
         fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "futures", limit: "20" }),
         fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "options", limit: "20" }),
-        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "calls-index", limit: "20" }),
-        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "puts-index", limit: "20" }),
-        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "calls-stocks", limit: "20" }),
-        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "puts-stocks", limit: "20" }),
         fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "oi", limit: "20" }),
+        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "calls", limit: "20" }),
+        fetchNSEEndpoint("/api/snapshot-derivatives-equity", cookie, { index: "puts", limit: "20" }),
       ]);
 
+    const contracts = normalizeContracts(contractsRaw.status === "fulfilled" ? contractsRaw.value : null);
+    const futures = normalizeContracts(futuresRaw.status === "fulfilled" ? futuresRaw.value : null);
+    const options = normalizeContracts(optionsRaw.status === "fulfilled" ? optionsRaw.value : null);
+    const oi = normalizeContracts(oiRaw.status === "fulfilled" ? oiRaw.value : null);
+    const calls = normalizeContracts(callsRaw.status === "fulfilled" ? callsRaw.value : null);
+    const puts = normalizeContracts(putsRaw.status === "fulfilled" ? putsRaw.value : null);
+    const callSplit = splitByInstrumentType(calls);
+    const putSplit = splitByInstrumentType(puts);
+
     const snapshot: MostActiveSnapshot = {
-      contracts: normalizeContracts(contractsRaw.status === "fulfilled" ? contractsRaw.value : null),
-      futures: normalizeContracts(futuresRaw.status === "fulfilled" ? futuresRaw.value : null),
-      options: normalizeContracts(optionsRaw.status === "fulfilled" ? optionsRaw.value : null),
-      callsIndex: normalizeWrapped(callsIdxRaw.status === "fulfilled" ? callsIdxRaw.value : null),
-      putsIndex: normalizeWrapped(putsIdxRaw.status === "fulfilled" ? putsIdxRaw.value : null),
-      callsStocks: normalizeWrapped(callsStkRaw.status === "fulfilled" ? callsStkRaw.value : null),
-      putsStocks: normalizeWrapped(putsStkRaw.status === "fulfilled" ? putsStkRaw.value : null),
-      oi: normalizeContracts(oiRaw.status === "fulfilled" ? oiRaw.value : null),
+      contracts,
+      futures,
+      options,
+      callsIndex: callSplit.index,
+      putsIndex: putSplit.index,
+      callsStocks: callSplit.stocks,
+      putsStocks: putSplit.stocks,
+      calls,
+      puts,
+      oi,
       fetchedAt: Date.now(),
       marketStatus: "unknown",
     };

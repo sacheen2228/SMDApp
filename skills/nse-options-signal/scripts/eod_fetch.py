@@ -154,7 +154,14 @@ def src_gainers_losers(session, d):
 
 
 def src_most_active(session, d):
-    return {"by_value": nse_fetch.get(session, nse_fetch.ENDPOINTS["most_active_contracts"])}
+    # The NSE page has two rankings ("Sort By Volume" / "Sort By Value"); the
+    # endpoint returns both under `volume` and `value`. The old wrapper stored
+    # the WHOLE payload under a single "by_value" key — misleading, and the
+    # volume ranking was invisible to the readers.
+    payload = nse_fetch.get(session, nse_fetch.ENDPOINTS["most_active_contracts"]) or {}
+    return {"by_volume": payload.get("volume"), "by_value": payload.get("value"),
+            "timestamp": (payload.get("volume") or {}).get("timestamp")
+                        or (payload.get("value") or {}).get("timestamp")}
 
 
 def src_holidays(session, d):

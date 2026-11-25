@@ -25,6 +25,8 @@ import { getFuturesIntradayCandles, toIsoExpiryDate } from "@/lib/breeze-histori
 import { getOptionChainExpiries } from "@/lib/icici-breeze/option-chain";
 import { calculateRelativeVolume } from "@/lib/volume-engine";
 import type { Candle } from "@/lib/auction-types";
+import { ddmmyyyyToIso, pickNearestFuturesExpiry } from "@/lib/index-futures-candles";
+import { initSession, getBreezeClient, getSessionState } from "@/lib/icici-breeze/auth";
 
 /** Index symbols with a live futures leg we can read. */
 export const FUTURES_FLOW_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"] as const;
@@ -167,10 +169,58 @@ export async function readFuturesFlow(
   }
 
   try {
-    const expiries = await getOptionChainExpiries(sym);
-    for (const expiry of expiries.slice(0, 3)) {
-      const iso = toIsoExpiryDate(expiry);
-      if (!iso) continue;
+    // Candidate expiries: SECURITY-MASTER FUT- contracts first. The option-
+    // chain list mixes in weekly option expiries Breeze does not list as
+    // futures (verified live 2026-11-25: 01/08/15-Dec return 0 rows while
+    // FUT-NIFTY-29-Dec-2026 returns the real session series). Chain expiries
+    // stay as fallback for symbols the master does not carry.
+    const candidates: string[] = [];
+    const pushIso = (iso: string | null | undefined) => {
+      if (iso && !candidates.includes(iso)) candidates.push(iso);
+    };
+    try {
+      const state = getSessionState();
+      if (!state.authenticated) await initSession();
+      const breeze = getBreezeClient();
+      let masterLists: any[] = Array.isArray((breeze as any)?.stockScriptDictList)
+        ? (breeze as any).stockScriptDictList
+        : [];
+      const hasFut = masterLists.some(
+        (l) => l && typeof l === "object" && Object.keys(l).some((k) => k.startsWith("FUT-")),
+      );
+      if (!hasFut) {
+        try { await (breeze as any).getStockScriptList(); } catch { /* keep what we have */ }
+        masterLists = Array.isArray((breeze as any)?.stockScriptDictList)
+          ? (breeze as any).stockScriptDictList
+          : [];
+      }
+      // All listed FUT- contracts on/after today, nearest first.
+      const prefix = `FUT-${sym}-`;
+      const dayStart = (() => {
+        const ist = new Date(Date.now() + 5.5 * 3600_000);
+        return Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()) - 5.5 * 3600_000;
+      })();
+      const masterIsos: string[] = [];
+      for (const list of masterLists) {
+        if (!list || typeof list !== "object") continue;
+        for (const k of Object.keys(list)) {
+          if (!k.startsWith(prefix)) continue;
+          const iso = ddmmyyyyToIso(k.slice(prefix.length));
+          if (!iso) continue;
+          const ts = Date.parse(iso + "T00:00:00+05:30");
+          if (Number.isNaN(ts) || ts < dayStart) continue;
+          masterIsos.push(iso);
+        }
+      }
+      masterIsos.sort((a, b) => Date.parse(a) - Date.parse(b));
+      for (const iso of masterIsos) pushIso(iso);
+      // Keep the shared picker as a belt-and-braces single-nearest read.
+      pushIso(pickNearestFuturesExpiry(masterLists, sym));
+    } catch { /* master unavailable → chain fallback below */ }
+    for (const expiry of await getOptionChainExpiries(sym)) {
+      pushIso(toIsoExpiryDate(expiry));
+    }
+    for (const iso of candidates) {
       const res = await getFuturesIntradayCandles(sym, iso, dateStr, opts.interval ?? "5minute");
       if (!res.candles.length) continue;
 

@@ -586,36 +586,58 @@ export const fiiDiiProvider: MarketDataProvider = {
   categories: ["fii-dii"],
   async fetch(opts) {
     if (opts.category !== "fii-dii") return null;
-    const { fetchFiiDiiData } = await import("@/lib/fii-dii");
+    const { fetchFiiDiiData, fiiDiiExpectedSession, selectFiiDiiLatest, isFiiDiiDateAcceptable } = await import("@/lib/fii-dii");
     const result = await fetchFiiDiiData();
-    if (!result?.available || !result.latest) return null;
+    const expectedSession = result.expectedSession || fiiDiiExpectedSession(new Date(opts.nowMs ?? Date.now()));
+
+    // Priority: NSE live → the NSE EOD artifact (the skill's 19:05 capture of
+    // the same NSE figures, used when the live endpoint is rate-limited) →
+    // the date-validated MrChartist fallback. A stale row is never served.
+    let latest = result.available ? result.latest : null;
+    if (!latest || latest.source === "mrchartist") {
+      const { readNseEodFiiDii } = await import("@/lib/orchestrator/eod-artifacts");
+      const artifact = await readNseEodFiiDii(expectedSession);
+      if (artifact && isFiiDiiDateAcceptable(artifact.date, expectedSession)) {
+        const merged = selectFiiDiiLatest([artifact, latest], expectedSession);
+        if (merged.snapshot) latest = merged.snapshot;
+      }
+    }
+    if (!latest) return null;
+
+    // Freshness follows the snapshot's own session date — the feed is a
+    // once-a-day EOD publication, never a live tick.
+    const acceptable = isFiiDiiDateAcceptable(latest.date, expectedSession);
+    const freshness = acceptable ? "FRESH" : "STALE";
+
     return {
       data: {
-        fiiNet: result.latest.fiiNet,
-        diiNet: result.latest.diiNet,
-        fiiBuy: result.latest.fiiBuy,
-        fiiSell: result.latest.fiiSell,
-        diiBuy: result.latest.diiBuy,
-        diiSell: result.latest.diiSell,
-        date: result.latest.date,
-        source: result.latest.source,
+        fiiNet: latest.fiiNet,
+        diiNet: latest.diiNet,
+        fiiBuy: latest.fiiBuy,
+        fiiSell: latest.fiiSell,
+        diiBuy: latest.diiBuy,
+        diiSell: latest.diiSell,
+        date: latest.date,
+        source: latest.source,
+        expectedSession,
         history: result.history,
         participantOI: result.participantOI,
         fiiNet5dAvg: result.fiiNet5dAvg,
         diiNet5dAvg: result.diiNet5dAvg,
         fiiFutLongRatio: result.fiiFutLongRatio,
+        ...(result.rejectedSources?.length ? { rejectedSources: result.rejectedSources } : {}),
       },
-      providerTimestamp: result.latest.date,
+      providerTimestamp: latest.date,
       validation: validateEnvelope({
         symbol: opts.symbol,
         provider: "fii-dii",
-        source: result.latest.source === "mrchartist" ? "FALLBACK" : "PRIMARY",
-        data: { fiiNet: result.latest.fiiNet },
-        providerTimestamp: result.latest.date,
+        source: latest.source === "mrchartist" ? "FALLBACK" : "PRIMARY",
+        data: { fiiNet: latest.fiiNet },
+        providerTimestamp: latest.date,
         fetchedAt: new Date(opts.nowMs ?? Date.now()).toISOString(),
         ageMs: 0,
-        freshness: "FRESH",
-        delayed: false,
+        freshness,
+        delayed: freshness !== "FRESH",
         providerErrors: [],
         available: true,
       }),

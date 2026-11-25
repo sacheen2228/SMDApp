@@ -28,6 +28,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, data: report });
   } catch (error: any) {
     console.error("[Daily Derivatives API] Error:", error);
-    return NextResponse.json({ success: false, error: error.message || "Failed to generate report" }, { status: 500 });
+    // Chain/provider unavailable is a 503 (retry later), not a server bug.
+    const status = error?.status === 503 || /unavailable|NO_DATA|failed/i.test(error?.message || "")
+      ? 503
+      : 500;
+    return NextResponse.json(
+      { success: false, error: error.message || "Failed to generate report" },
+      { status },
+    );
   }
 }

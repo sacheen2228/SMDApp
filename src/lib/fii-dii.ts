@@ -1,6 +1,13 @@
 // FII/DII data from NSE India (primary) + MrChartist (history/F&O)
 // All data is public — NSE publishes daily FII/FPI & DII cash activity
 
+import { isTradingDayIso, previousTradingDayIso } from './expiry-calculator';
+
+/** Where a snapshot came from. `nse-eod` = the NSE figure captured by the
+ *  skill's 19:05 EOD job (same NSE numbers, read from disk when the live
+ *  endpoint is rate-limited). */
+export type FiiDiiSource = 'nse' | 'nse-eod' | 'mrchartist';
+
 export interface FiiDiiDay {
   date: string;          // "17-Jul-2026"
   fiiBuy: number;        // ₹ Cr
@@ -30,7 +37,7 @@ export interface FiiDiiSnapshot {
   diiBuy: number;
   diiSell: number;
   date: string;
-  source: 'nse' | 'mrchartist';
+  source: FiiDiiSource;
 }
 
 export interface FiiDiiResult {
@@ -46,6 +53,12 @@ export interface FiiDiiResult {
    * never as "FII net 0".
    */
   available: boolean;
+  /** ISO session whose figures are the latest published ones ("2026-11-25"). */
+  expectedSession?: string;
+  /** Sources whose data was too old to serve (kept for the UI's provenance). */
+  rejectedSources?: { source: string; date: string }[];
+  /** Why nothing could be served (only when `available` is false). */
+  reason?: string;
 }
 
 export interface ParticipantOI {
@@ -309,6 +322,139 @@ export function fiveDayAverages(history: FiiDiiDay[]): {
   return { fiiNet5dAvg, diiNet5dAvg };
 }
 
+// ─── Session-date gate ───────────────────────────────────────────
+// The FII/DII cash figures are published once per session (~18:00 IST). A
+// provider that answers with an OLD session's numbers must never be served as
+// "today's flow": the card showed a 5-day-old row (20-Nov) as the current
+// figure whenever NSE was rate-limited and the MrChartist fallback was used.
+
+/** NSE publishes the FII/DII cash figures around 18:00 IST. */
+export const FII_DII_PUBLISH_MINUTE_IST = 18 * 60;
+
+/** The IST calendar date ("YYYY-MM-DD") of an instant. */
+function istIsoDate(now: Date): string {
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  return `${ist.getFullYear()}-${String(ist.getMonth() + 1).padStart(2, '0')}-${String(ist.getDate()).padStart(2, '0')}`;
+}
+
+/** Minutes since IST midnight. */
+function istMinuteOfDay(now: Date): number {
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  return ist.getHours() * 60 + ist.getMinutes();
+}
+
+/**
+ * The session whose published figures are the latest ones.
+ * Before the publication time on a trading day that is the PREVIOUS session;
+ * after it, today. On a weekend/holiday it is the last session before today
+ * (the holiday list is the canonical one).
+ * `publishMinuteIst` is the IST minute the exchange publishes that feed
+ * (18:00 for the FII/DII cash figures, 16:00 for the derivatives snapshot).
+ */
+export function expectedPublishedSession(now: Date = new Date(), publishMinuteIst: number = FII_DII_PUBLISH_MINUTE_IST): string {
+  const today = istIsoDate(now);
+  const tradingToday = isTradingDayIso(today);
+  const publishedToday = tradingToday && istMinuteOfDay(now) >= publishMinuteIst;
+  if (publishedToday) return today;
+  return previousTradingDayIso(today) ?? today;
+}
+
+/** The FII/DII figures belong to the session that published them. */
+export function fiiDiiExpectedSession(now: Date = new Date()): string {
+  return expectedPublishedSession(now, FII_DII_PUBLISH_MINUTE_IST);
+}
+
+/**
+ * The publication instant of a snapshot date (18:00 IST) as an ISO string.
+ * The figures are stamped at publication time — midnight would age a
+ * same-session figure into "STALE" by the end of the evening.
+ */
+export function fiiDiiPublishedAtIso(date: string): string | null {
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '').slice(0, 10))
+    ? String(date).slice(0, 10)
+    : (() => {
+        const t = parseFiiDiiDate(date);
+        if (t === null) return null;
+        const dt = new Date(t);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      })();
+  if (!iso) return null;
+  return `${iso}T18:00:00+05:30`;
+}
+
+/**
+ * Parse a snapshot date ("DD-MMM-YYYY" from NSE/MrChartist or "YYYY-MM-DD"
+ * from the EOD artifact) → epoch ms of that local calendar day.
+ */
+export function parseFiiDiiDate(date: string): number | null {
+  const s = String(date || '').trim();
+  if (!s) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (iso) {
+    const y = Number(iso[1]), m = Number(iso[2]), d = Number(iso[3]);
+    const dt = new Date(y, m - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+    return dt.getTime();
+  }
+  const dm = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(s);
+  if (dm) {
+    const mi = MONTH_INDEX[dm[2].toLowerCase()];
+    if (mi === undefined) return null;
+    const day = Number(dm[1]);
+    const year = Number(dm[3]);
+    if (day < 1 || day > 31) return null;
+    return new Date(year, mi, day).getTime();
+  }
+  return null;
+}
+
+/**
+ * Is a snapshot date acceptable as the latest published figure?
+ * Accepts the expected session and the session before it (a delayed
+ * publication is still the current published figure). Anything older — a
+ * stale fallback — is rejected instead of being served as current.
+ */
+export function isFiiDiiDateAcceptable(date: string, expectedSession: string): boolean {
+  const t = parseFiiDiiDate(date);
+  const e = parseFiiDiiDate(expectedSession);
+  if (t === null || e === null) return false;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const ageDays = Math.round((e - t) / dayMs);
+  if (ageDays < 0) return false;   // a future date is not a published figure
+  return ageDays <= 1;
+}
+
+export interface FiiDiiSelection {
+  snapshot: FiiDiiSnapshot | null;
+  rejected: { source: string; date: string }[];
+}
+
+/**
+ * Pick the snapshot to serve from the candidates, in the caller's priority
+ * order (NSE live → NSE EOD artifact → MrChartist). Among the ACCEPTABLE
+ * candidates the newest date wins; a tie keeps the caller's priority (the
+ * sort is stable). Stale candidates are reported, never served.
+ */
+export function selectFiiDiiLatest(
+  candidates: (FiiDiiSnapshot | null | undefined)[],
+  expectedSession: string,
+): FiiDiiSelection {
+  const rejected: { source: string; date: string }[] = [];
+  const accepted: { snap: FiiDiiSnapshot; t: number }[] = [];
+  for (const cand of candidates) {
+    if (!cand) continue;
+    const t = parseFiiDiiDate(cand.date);
+    if (t === null || !isFiiDiiDateAcceptable(cand.date, expectedSession)) {
+      rejected.push({ source: cand.source, date: cand.date });
+      continue;
+    }
+    accepted.push({ snap: cand, t });
+  }
+  if (!accepted.length) return { snapshot: null, rejected };
+  accepted.sort((a, b) => b.t - a.t);
+  return { snapshot: accepted[0].snap, rejected };
+}
+
 async function fetchNSEParticipantOI(): Promise<ParticipantOI | null> {
   try {
     const now = Date.now();
@@ -401,14 +547,25 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
     withBudget(fetchNSEParticipantOI(), NSE_RACE_BUDGET_MS, null),
   ]);
 
-  const latest = nseLatest || mcLatest || {
+  // The session whose figures are the latest published ones. A snapshot that
+  // belongs to an older session is NOT served as the current flow — that is
+  // how a 5-day-old fallback row ended up on the card as today's number.
+  const expectedSession = fiiDiiExpectedSession(new Date());
+  const selection = selectFiiDiiLatest([nseLatest, mcLatest], expectedSession);
+
+  const latest = selection.snapshot || {
     fiiNet: 0, diiNet: 0,
     fiiBuy: 0, fiiSell: 0,
     diiBuy: 0, diiSell: 0,
     date: '',
     source: 'mrchartist' as const,
   };
-  const available = !!(nseLatest || mcLatest);
+  const available = !!selection.snapshot;
+  const reason = available
+    ? undefined
+    : (selection.rejected.length > 0
+      ? `FII/DII data is stale — newest available ${selection.rejected[0].date}, expected ${expectedSession}`
+      : 'FII/DII feed unavailable (all providers failed)');
 
   const historySliced = sortHistoryNewestFirst(history).slice(0, 30);
   // Compute 5-day rolling averages — only when the history actually exists.
@@ -425,6 +582,9 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
 
   const result: FiiDiiResult = {
     latest, history: historySliced, available,
+    expectedSession,
+    ...(selection.rejected.length > 0 ? { rejectedSources: selection.rejected } : {}),
+    ...(reason ? { reason } : {}),
     ...(participantOI ? { participantOI } : {}),
     ...(fiiNet5dAvg != null ? { fiiNet5dAvg: Math.round(fiiNet5dAvg) } : {}),
     ...(diiNet5dAvg != null ? { diiNet5dAvg: Math.round(diiNet5dAvg) } : {}),
