@@ -2516,7 +2516,7 @@ export class DailyDerivativesService {
     const cvdFallback = futuresCvd
       ? undefined
       : await computeMoFuturesFallback(underlying, toIsoExpiryDate(expiry) ?? undefined);
-    let vwap = 0;
+    let vwap: number | null = null;
     if (todayCandles.length > 0) {
       let pv = 0;
       let vol = 0;
@@ -2526,7 +2526,7 @@ export class DailyDerivativesService {
         pv += tp * v;
         vol += v;
       }
-      vwap = vol > 0 ? pv / vol : todayCandles.reduce((s, c) => s + c.close, 0) / todayCandles.length;
+      vwap = vol > 0 ? pv / vol : null;
     }
     const dayOpen = todayCandles[0]?.open ?? candles[0]?.open ?? spot;
     const todaysSignals = allSignals.filter(s => isTodayCandle(s.time));
@@ -2540,9 +2540,8 @@ export class DailyDerivativesService {
         ce: s.ce,
         pe: s.pe,
       })),
-      // No VWAP yet (pre-market / no volume) → fall back to spot so neither
-      // above-nor-below passes and the verdict stays WAIT honestly.
-      vwap: vwap > 0 ? vwap : spot,
+      // No VWAP yet (pre-market / no volume) → null so no false confluence vote.
+      vwap,
       dayOpen,
       latestSignals: todaysSignals,
     });

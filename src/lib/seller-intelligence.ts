@@ -50,7 +50,7 @@ export interface OptionSnapshot {
 
 export interface MarketConfirmation {
   underlyingChangePct: number;
-  vwap: number;
+  vwap: number | null;
   currentPrice: number;
   breakoutConfirmed: boolean;
   retestConfirmed: boolean;
@@ -335,8 +335,8 @@ export function generateTradeCandidate(
     .filter(a => a.dataFresh && a.potentialShortCovering && a.volumeRatio >= config.minVolumeRatio)
     .sort((a, b) => b.coveringScore - a.coveringScore)[0];
 
-  const aboveVwap = market.currentPrice > market.vwap;
-  const belowVwap = market.currentPrice < market.vwap;
+  const aboveVwap = market.vwap != null && market.currentPrice > market.vwap;
+  const belowVwap = market.vwap != null && market.currentPrice < market.vwap;
   const rising = market.underlyingChangePct > 0;
   const falling = market.underlyingChangePct < 0;
 
@@ -454,7 +454,7 @@ export interface SellerIntelInput {
   spot: number;
   lotSize: number;
   strikes: { strike: number; ce?: SellerIntelLeg | null; pe?: SellerIntelLeg | null }[];
-  vwap: number;
+  vwap: number | null;
   dayOpen: number;
   latestSignals: { type: string; side?: string; time?: number | string }[];
   nowMs?: number;

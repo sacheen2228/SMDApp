@@ -210,7 +210,7 @@ interface SellerIntel {
   };
   market: {
     underlyingChangePct: number;
-    vwap: number;
+    vwap: number | null;
     currentPrice: number;
     breakoutConfirmed: boolean;
     retestConfirmed: boolean;
@@ -1349,8 +1349,8 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               {/* Market confirmation strip */}
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground mb-2 font-mono">
                 <span>chg {report.sellerIntel.market.underlyingChangePct >= 0 ? "+" : ""}{report.sellerIntel.market.underlyingChangePct.toFixed(2)}%</span>
-                <span>VWAP {report.sellerIntel.market.vwap.toFixed(0)}</span>
-                <span className={report.sellerIntel.market.currentPrice > report.sellerIntel.market.vwap ? "text-emerald-400" : "text-rose-400"}>
+                <span>VWAP {report.sellerIntel.market.vwap != null ? report.sellerIntel.market.vwap.toFixed(0) : "—"}</span>
+                <span className={report.sellerIntel.market.vwap != null && report.sellerIntel.market.currentPrice > report.sellerIntel.market.vwap ? "text-emerald-400" : report.sellerIntel.market.vwap != null && report.sellerIntel.market.currentPrice < report.sellerIntel.market.vwap ? "text-rose-400" : "text-muted-foreground"}>
                   price {report.sellerIntel.market.currentPrice.toFixed(0)}
                 </span>
                 <span className={report.sellerIntel.market.breakoutConfirmed ? "text-emerald-400" : ""}>

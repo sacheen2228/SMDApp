@@ -25,7 +25,7 @@ export const CHAIN_CFG = {
 // ─────────────────────────────────────────────────────────────
 // Types + tolerant normaliser (ADAPT field names to your /api/option-chain payload)
 // ─────────────────────────────────────────────────────────────
-export interface Leg { oi: number; oiChange?: number; ltp?: number; ltpChange?: number; volume?: number; iv?: number; delta?: number }
+export interface Leg { oi: number; oiChange?: number; ltp?: number; ltpChange?: number; volume?: number; iv?: number; delta?: number; derived?: boolean }
 export interface Row { strike: number; ce: Leg; pe: Leg }
 export interface NormChain {
   symbol: string; spot: number; rows: Row[]; pcr?: number; maxPain?: number; atm?: number; vix?: number;
@@ -105,9 +105,22 @@ export function fillChanges(c: NormChain, base?: Snap): void {
   for (const r of c.rows) {
     const b = base.m.get(r.strike);
     if (!b) continue;
-    r.ce.oiChange = r.ce.oi - b.ceOi; r.pe.oiChange = r.pe.oi - b.peOi;
-    if (r.ce.ltp != null && b.ceLtp != null) r.ce.ltpChange = r.ce.ltp - b.ceLtp;
-    if (r.pe.ltp != null && b.peLtp != null) r.pe.ltpChange = r.pe.ltp - b.peLtp;
+    if (r.ce.oiChange == null) {
+      r.ce.oiChange = r.ce.oi - b.ceOi;
+      r.ce.derived = true;
+    }
+    if (r.pe.oiChange == null) {
+      r.pe.oiChange = r.pe.oi - b.peOi;
+      r.pe.derived = true;
+    }
+    if (r.ce.ltpChange == null && r.ce.ltp != null && b.ceLtp != null) {
+      r.ce.ltpChange = r.ce.ltp - b.ceLtp;
+      r.ce.derived = true;
+    }
+    if (r.pe.ltpChange == null && r.pe.ltp != null && b.peLtp != null) {
+      r.pe.ltpChange = r.pe.ltp - b.peLtp;
+      r.pe.derived = true;
+    }
   }
 }
 
