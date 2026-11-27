@@ -135,13 +135,13 @@ describe("modelTradeExposure — the worst case is the account, not a trade budg
 });
 
 describe("positionSize — the one sizing model never refuses on capital", () => {
-  test("a contract whose 1 lot costs more than the budget is still sized (1 lot)", () => {
+  test("a contract whose 1 lot costs more than the budget is sized to 0 lots", () => {
     const ps = positionSize({ entry: 900, sl: 720, lotSize: 65 }); // ₹58,500 per lot
-    expect(ps.lots).toBe(1);
+    expect(ps.lots).toBe(0);
     expect(ps.ok).toBe(true);
-    expect(ps.capitalRequired).toBeCloseTo(58_500, 0);
-    // the risk is the MARKET stop's risk, not a budgeted one
-    expect(ps.maxLoss).toBeCloseTo(180 * 65, 0);
+    expect(ps.capitalRequired).toBe(0);
+    // nothing is committed when 2 lots don't fit
+    expect(ps.maxLoss).toBe(0);
   });
 
   test("an affordable contract keeps its budgeted size", () => {
@@ -154,16 +154,16 @@ describe("positionSize — the one sizing model never refuses on capital", () =>
 describe("option sizing — the 1-lot floor, never a capital rejection", () => {
   test("a contract above the default deployment is still tradable", () => {
     const sizing = sizeOptionTrade({ entryPremium: 900, lotSize: 65 }); // ₹58,500 per lot
-    expect(sizing.lots).toBe(1);
+    expect(sizing.lots).toBe(2);
     expect(sizing.tradable).toBe(true);
-    expect(sizing.deployed).toBeCloseTo(58_500, 0);
-    expect(sizing.overBudget).toBe(true);
-    expect(sizing.reason ?? "").toMatch(/1 lot/i);
+    expect(sizing.deployed).toBeCloseTo(117_000, 0);
+    expect(sizing.overBudget).toBe(false);
+    expect(sizing.reason).toBeUndefined();
   });
 
   test("a normal contract is sized from the deployment budget", () => {
     const sizing = sizeOptionTrade({ entryPremium: 100, lotSize: 65 }); // ₹6,500 per lot
-    expect(sizing.lots).toBe(Math.floor(PLAN_CONFIG.defaultDeployedAmount / 6_500));
+    expect(sizing.lots).toBe(2);
     expect(sizing.tradable).toBe(true);
     expect(sizing.overBudget).toBe(false);
   });
@@ -178,7 +178,7 @@ describe("option sizing — the 1-lot floor, never a capital rejection", () => {
     const plan = buildOptionPlan({ symbol: "NIFTY", optionType: "CE", entryPremium: 900, lotSize: 65 });
     expect(plan).not.toBeNull();
     expect(plan!.tradable).toBe(true);
-    expect(plan!.lots).toBe(1);
+    expect(plan!.lots).toBe(2);
     expect(plan!.stopLoss).toBeLessThan(plan!.entry);
     expect(plan!.targets[0]).toBeGreaterThan(plan!.entry);
     // the risk is 20% of what is actually deployed

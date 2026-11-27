@@ -88,8 +88,8 @@ describe("option-plan — lot size is never guessed", () => {
     expect(getLotSizeStrict("NIFTY")).toBe(65);
     const lotSize = getLotSizeStrict("NIFTY");
     const p = buildOptionPlan({ ...base, lotSize })!;
-    expect(p.lots).toBe(1);
-    expect(p.deployed).toBeCloseTo(150 * 65, 0);
+    expect(p.lots).toBe(0);  // 1 lot (₹9,750) < 2-lot default → 0 lots, not tradable
+    expect(p.deployed).toBe(0);
     expect(p.stopLoss).toBeLessThan(p.entry);
     expect(p.targets[0]).toBeGreaterThan(p.entry);
     expect(p.deployed).toBeLessThanOrEqual(10_000);
@@ -126,11 +126,9 @@ describe("option-plan — lot size is never guessed", () => {
   test("KNOWN GAP — the budget floor is still Math.max(1, …) in option-plan.ts", () => {
     // option-plan.ts documents the P0 fix ("the sizing returns the HONEST FLOOR
     // (0 when the contract does not fit the per-trade budget)") in its header
-    // and AGENTS.md repeats it, but the code still answers 1 lot for a contract
-    // that does not fit (₹400 × 65 = ₹26,000 against a ₹10,000 budget).
-    // This assertion PINS the current behaviour so the drift is visible; when
-    // the floor is implemented it must be flipped to 0.
-    expect(lotsForBudget(400, 65, 10_000)).toBe(1);
+    // and AGENTS.md repeats it. With the 2-lot-or-0 rule (user rule 2026-11-27):
+    // lotsForBudget(400, 65, 10_000) = affordable(0) < defaultLots(2) → 0.
+    expect(lotsForBudget(400, 65, 10_000)).toBe(0);
   });
 });
 

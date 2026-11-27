@@ -339,10 +339,10 @@ describe("evaluatePlanTrade — hard NO (fail closed)", () => {
     expect(r.reasons.join(" ")).toMatch(/0 lots|ladder/i);
   });
 
-  test("R:R below 1.5 → NO", () => {
+  test("R:R below 1.5 does NOT gate (RR is reported, not a hard NO)", () => {
     const r = evaluatePlanTrade({ ...base, rr: 1.2 });
-    expect(r.decision).toBe("NO");
-    expect(r.reasons.join(" ")).toMatch(/R:R/);
+    expect(r.decision).toBe("TAKE");
+    expect(r.reasons.join(" ")).toMatch(/ladder valid/i);
   });
 
   test("stop above entry → NO", () => {

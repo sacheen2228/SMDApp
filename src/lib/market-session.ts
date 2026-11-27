@@ -80,7 +80,25 @@ export const LATE_OPTION_BUY_CUTOFF_IST_MINUTES = 780; // 13:00 IST
 
 /** True when a NEW option buy at `mins` (IST minutes since midnight) is blocked. */
 export function lateOptionBuysBlocked(mins: number): boolean {
-  return mins >= LATE_OPTION_BUY_CUTOFF_IST_MINUTES && process.env.SMD_ALLOW_LATE_OPTION_BUYS !== '1';
+  return mins >= LATE_OPTION_BUY_CONFIG.cutoffIstMinutes && process.env.SMD_ALLOW_LATE_OPTION_BUYS !== '1';
+}
+
+/** The configured late-option-buy cutoff. */
+export const LATE_OPTION_BUY_CONFIG = {
+  /** IST minutes since midnight M-bM-^@M-^T new option buys are refused from this minute. */
+  cutoffIstMinutes: LATE_OPTION_BUY_CUTOFF_IST_MINUTES,
+} as const;
+
+/** Move the configured cutoff (tests / replay). Call with no argument to restore the default. */
+export function setLateOptionBuyCutoff(minutes?: number): void {
+  const next = Number(minutes);
+  LATE_OPTION_BUY_CONFIG.cutoffIstMinutes =
+    Number.isFinite(next) && minutes !== undefined ? next : LATE_OPTION_BUY_CUTOFF_IST_MINUTES;
+}
+
+/** The configured cutoff as an IST clock label. */
+export function lateOptionBuyCutoffLabel(): string {
+  return timeStr(LATE_OPTION_BUY_CONFIG.cutoffIstMinutes);
 }
 
 /**
@@ -93,13 +111,13 @@ export function lateOptionBuysBlocked(mins: number): boolean {
 export function getSessionForMinutes(mins: number): SessionInfo {
   const s = baseSession(mins);
   if (lateOptionBuysBlocked(mins) && s.allowedActions.includes('BUY_CALL')) {
-    return {
+    return withMarketOpen({
       ...s,
       allowedActions: s.allowedActions.filter(a => a !== 'BUY_CALL' && a !== 'BUY_PUT'),
       description: `${s.description} — No New Option Buys after 13:00 IST (afternoon option entries went 0 wins / 34 trades on the ledger). Set SMD_ALLOW_LATE_OPTION_BUYS=1 to override.`,
-    };
+    });
   }
-  return s;
+  return withMarketOpen(s);
 }
 
 // ─── Session Lookup Helpers ──────────────────────────────────────

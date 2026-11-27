@@ -78,10 +78,10 @@ describe("per-trade model — the house plan", () => {
     expect(levels.plan).not.toBeNull();
 
     const plan = levels.plan!;
-    // risk = 20% of the DEPLOYED amount (no fixed cap): 4 lots × ₹44,174
-    // → ₹8,834.8 → riskPoints = 20% of the premium (₹33.98)
-    expect(plan.lots).toBe(4);
-    expect(plan.deployed).toBeCloseTo(4 * 169.9 * NIFTY_LOT, 0);
+    // risk = 20% of the DEPLOYED amount (no fixed cap): 2 lots × ₹11,043.5
+    // → ₹22,087 → riskPoints = 20% of the premium (₹33.98)
+    expect(plan.lots).toBe(2);
+    expect(plan.deployed).toBeCloseTo(2 * 169.9 * NIFTY_LOT, 0);
     expect(plan.riskAmount).toBeCloseTo(plan.deployed * 0.2, 0);
     expect(plan.riskPoints).toBeCloseTo(169.9 * 0.2, 1);
     expect(plan.stopLoss).toBeCloseTo(169.9 - plan.riskPoints, 1);
@@ -101,8 +101,8 @@ describe("per-trade model — the house plan", () => {
       lotSize: NIFTY_LOT,
     })!;
     expect(plan.deployed).toBeLessThanOrEqual(GATE_CONFIG.tradeBudget);
-    expect(plan.lots).toBe(4);            // ₹11,043 per lot → 4 fit inside ₹45,000
-    expect(plan.deployed).toBeCloseTo(4 * 169.9 * NIFTY_LOT, 0);
+    expect(plan.lots).toBe(2);            // ₹11,043 per lot → 2 fit inside ₹45,000 (capped at defaultLots)
+    expect(plan.deployed).toBeCloseTo(2 * 169.9 * NIFTY_LOT, 0);
   });
 });
 
@@ -121,9 +121,9 @@ describe("per-trade model — the /api/sdm-signal sizing", () => {
       new Date().toISOString(),
     );
 
-    // the deployment budget decides the SIZE (4 lots × ₹11,043.5 = ₹44,174)
-    expect(rec.positionSizing.lots).toBe(4);
-    expect(rec.positionSizing.quantity).toBe(4 * NIFTY_LOT);
+    // the deployment budget decides the SIZE (2 lots × ₹11,043.5 = ₹22,087)
+    expect(rec.positionSizing.lots).toBe(2);
+    expect(rec.positionSizing.quantity).toBe(2 * NIFTY_LOT);
     // risk = 20% of the DEPLOYED amount (4 × ₹11,043.5 = ₹44,174) — no fixed cap
     expect(rec.positionSizing.riskAmount / rec.positionSizing.positionValue).toBeCloseTo(0.2, 2);
     expect(rec.positionSizing.maxLoss).toBeCloseTo(rec.positionSizing.riskAmount, 0);
@@ -159,11 +159,11 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
       lotSize: NIFTY_LOT,
     });
     // risk budget = 20% of ₹45,000 = ₹9,000 → floor(9,000/1,300) = 6 by risk;
-    // affordable = floor(45,000/6,500) = 6 → 6 lots
-    expect(ps.lots).toBe(6);
-    expect(ps.qty).toBe(6 * NIFTY_LOT);
-    expect(ps.maxLoss).toBeCloseTo(7_800, 0);
-    expect(ps.capitalRequired).toBeCloseTo(6 * 100 * NIFTY_LOT, 0);
+    // affordable = floor(45,000/6,500) = 6 → capped at defaultLots = 2
+    expect(ps.lots).toBe(2);
+    expect(ps.qty).toBe(2 * NIFTY_LOT);
+    expect(ps.maxLoss).toBeCloseTo(2_600, 0);
+    expect(ps.capitalRequired).toBeCloseTo(2 * 100 * NIFTY_LOT, 0);
   });
 
   test("a contract above the default deployment is still 1 lot (no capital refusal)", () => {
@@ -180,7 +180,7 @@ describe("per-trade model — positionSize() is the only sizing model", () => {
       sl: 780,
       lotSize: NIFTY_LOT,
     });
-    expect(ps2.lots).toBe(1);             // ₹52,000 per lot → the 1-lot floor, never 0
+    expect(ps2.lots).toBe(0);             // ₹52,000 per lot → 2 lots don't fit → 0 lots
     expect(ps2.ok).toBe(true);
   });
 });

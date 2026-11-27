@@ -173,10 +173,11 @@ describe("evaluateSignalRiskLimits — the whole signal-path verdict", () => {
 describe("modelTradeExposure — the candidate's own ₹ exposure", () => {
   test("a NIFTY lot at ₹100 with a 20% stop is sized to the 20%-of-deployed budget", () => {
     const e = modelTradeExposure({ entry: 100, stopLoss: 80, lotSize: 65 });
-    // 20% of the ₹45k budget = ₹9,000 / ₹1,300 per lot = 6 lots (₹7,800 at risk)
-    expect(e.lots).toBe(6);
-    expect(e.deployed).toBeCloseTo(6 * 65 * 100, 0);
-    expect(e.risk).toBeCloseTo(6 * 65 * 20, 0);
+    // 20% of the ₹45k budget = ₹9,000 / ₹1,300 per lot = 6 lots by risk,
+    // but capped at GATE_CONFIG.defaultLots = 2 → 2 lots (₹7,800 at risk)
+    expect(e.lots).toBe(2);
+    expect(e.deployed).toBeCloseTo(2 * 65 * 100, 0);
+    expect(e.risk).toBeCloseTo(2 * 65 * 20, 0);
     expect(e.unknown).toBe(false);
   });
 

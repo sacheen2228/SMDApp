@@ -130,6 +130,20 @@ export interface FuturesFlowRead {
   bars: number;
   cvd?: CvdProxyResult;
   relativeVolume?: FuturesFlowVolumeRead;
+  /**
+   * The futures session candles this read was built from (the same bars — no
+   * extra fetch). The DD card needs the REAL traded volume for its VWAP: the
+   * index-spot candles carry no volume, so a VWAP built from them would be an
+   * average of closes wearing a VWAP's name.
+   */
+  candles?: Array<{
+    time: number | string;
+    open?: number;
+    high?: number;
+    low?: number;
+    close?: number;
+    volume?: number;
+  }>;
   note?: string;
 }
 
@@ -251,6 +265,14 @@ export async function readFuturesFlow(
         bars: res.candles.length,
         cvd: computed,
         relativeVolume: futuresFlowRelativeVolume(res.candles as any) ?? undefined,
+        candles: res.candles.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        })),
       };
       break;
     }

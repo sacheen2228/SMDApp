@@ -29,6 +29,7 @@ export const GATE_CONFIG = {
   maxOtmSteps: 3,          // OTM ≤ 3 strikes from ATM
   minAbsDelta: 0.35,       // below = lottery ticket
   capital: 50_000,         // the real trading capital (₹50k), NOT ₹2L
+  defaultLots: 2,          // default lot count (option-plan.ts PLAN_CONFIG.defaultLots) — caps lots; returns 0 when unaffordable
   // With 20% risk per trade, one stop = 20% of the account: allow two losses, then stop.
   maxConsecutiveLosses: 2,
   maxDailyLossPct: 40,
@@ -286,9 +287,10 @@ export function positionSize(input: {
   const riskPerLot = Math.abs(entry - sl) * lotSize;
   // affordability: the PREMIUM actually committed per lot must fit the budget
   const affordableLots = Math.floor(budget / (entry * lotSize));
-  // THE 1-LOT FLOOR: the deployment budget decides the SIZE, the market stop
-  // decides the RISK. A valid contract is never refused because of capital.
-  const lots = Math.max(1, affordableLots);
+  // The deployment budget decides the SIZE: if the contract does not fit the
+  // default lot count (GATE_CONFIG.defaultLots = 2) we return 0 lots — never
+  // force 1 lot on an unaffordable contract (user rule 2026-10-20 / 2026-11-27).
+  const lots = affordableLots >= GATE_CONFIG.defaultLots ? GATE_CONFIG.defaultLots : 0;
   const maxLoss = riskPerLot * lots;
   const capitalRequired = entry * lotSize * lots;
   const deployedRiskPct = capitalRequired > 0 ? (maxLoss / capitalRequired) * 100 : 0;

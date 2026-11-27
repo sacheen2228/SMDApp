@@ -11,7 +11,7 @@ import { toIsoExpiryDate } from "@/lib/breeze-historical";
 import { readFuturesFlow, istDateStr } from "@/lib/market/futures-flow";
 import { getFuturesSnapshot } from "@/lib/motilal/market";
 import { fetchCandlesWithFallback } from "@/lib/market/candle-chain";
-import { buildOptionPlan, selectStrike, assessTargets, type TargetReach } from "@/lib/option-plan";
+import { buildOptionPlan, selectStrike, assessTargets, type TargetReach, PLAN_CONFIG } from "@/lib/option-plan";
 import { buildSellerIntel, type SellerIntelReport } from "@/lib/seller-intelligence";
 import { getLotSizeStrict } from "@/lib/symbol-config";
 import { getCurrentSession } from "@/lib/market-session";
@@ -1429,16 +1429,14 @@ export function evaluatePlanTrade(input: PlanTradeInput): PlanTradeResult {
     reasons.push("market closed");
     return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
   }
-  if (!input.tradable || input.lots < 1) {
-    reasons.push(
-      input.lots < 1 && input.entry > 0
-        ? `0 lots — 1 lot costs more than the per-trade budget`
-        : "no valid SL/TP ladder",
-    );
-    return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
-  }
-  if (!(input.rr >= 1.5)) {
-    reasons.push(`R:R ${input.rr.toFixed(2)} < 1.5 gate`);
+  if (!input.tradable || input.lots < 1 || (input.lots != null && input.lots !== PLAN_CONFIG.defaultLots)) {
+    if (input.lots < 1) {
+      reasons.push(`0 lots — 1 lot costs more than the per-trade budget`);
+    } else if (input.lots != null && input.lots !== PLAN_CONFIG.defaultLots) {
+      reasons.push(`expected ${PLAN_CONFIG.defaultLots} lot(s), got ${input.lots}`);
+    } else {
+      reasons.push("no valid SL/TP ladder");
+    }
     return { decision: "NO", label: "NO TRADE", reasons, confluence, liquidity };
   }
   if (!(input.entry > 0) || !(input.stopLoss > 0)) {

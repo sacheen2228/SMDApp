@@ -81,7 +81,10 @@ describe("risk scales with the deployment — 20% of DEPLOYED, no fixed cap (202
     const p = buildOptionPlan({
       symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65, lots: 1, riskAmount: 3_000,
     })!;
-    expect(p.riskAmount).toBeCloseTo(3_000, 0);            // the stated ₹3,000 is honoured (was capped at ₹2k/₹4k)
+    expect(p.lots).toBe(0);
+    expect(p.tradable).toBe(false);
+    expect(p.deployed).toBe(0);
+    expect(p.riskAmount).toBe(0);            // nothing committed when not tradable
     expect(p.riskPoints).toBeCloseTo(3_000 / 65, 1);
   });
 });

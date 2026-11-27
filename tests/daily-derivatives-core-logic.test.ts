@@ -101,8 +101,7 @@ describe("Daily Derivatives core logic (locked)", () => {
     expect(plan.deployed).toBeLessThanOrEqual(45000);
     expect(plan.riskAmount).toBeCloseTo(plan.deployed * 0.2, 6);
 
-    // Over the per-trade budget → ONE lot (the capital never refuses a valid
-    // contract, user directive 2026-11-21) with the over-budget flag raised.
+    // Over the per-trade budget → 0 lots (2 lots don't fit), not tradable.
     const overBudget = buildOptionPlan({
       symbol: "RELIANCE",
       optionType: "CE",
@@ -110,11 +109,11 @@ describe("Daily Derivatives core logic (locked)", () => {
       lotSize: 500,
       deployedAmount: 20000,
     });
-    expect(overBudget.lots).toBe(1);
-    expect(overBudget.tradable).toBe(true);
-    expect(overBudget.deployed).toBe(45_000);
-    expect(overBudget.riskAmount).toBeGreaterThan(0);
-    expect(overBudget.notes.join(" ")).toMatch(/above the/);
+    expect(overBudget.lots).toBe(0);
+    expect(overBudget.tradable).toBe(false);
+    expect(overBudget.deployed).toBe(0);
+    expect(overBudget.riskAmount).toBe(0);
+    expect(overBudget.notes.join(" ")).toMatch(/0 lots|NO TRADE/);
   });
 
   it("a PE plan keeps the bought-option geometry (stop BELOW entry)", () => {

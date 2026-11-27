@@ -3,24 +3,26 @@ import { buildOptionPlan, lotsForBudget, PLAN_CONFIG } from "@/lib/option-plan";
 
 describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
   test("the user's example: spend ₹10,000 → risk ₹2,000, targets at 2R/3R/4R", () => {
-    // 1 NIFTY lot (65) at ₹153.85 → deployed ₹10,000
+    // 1 lot (65) at ₹153.85 costs ₹10,000 — under the 2-lot default → lots=0, not tradable
     const p = buildOptionPlan({
-      symbol: "NIFTY", optionType: "CE", entryPremium: 153.85, lotSize: 65, lots: 1,
+      symbol: "NIFTY", optionType: "CE", entryPremium: 153.85, lotSize: 65, lots: 0,
       deployedAmount: 10_000, riskAmount: 2_000,
     })!;
-    expect(p.deployed).toBeCloseTo(10_000, 0);
-    expect(p.riskAmount).toBeCloseTo(2_000, 0);
+    expect(p.lots).toBe(0);
+    expect(p.tradable).toBe(false);
+    expect(p.deployed).toBe(0);
+    expect(p.riskAmount).toBe(0);
     expect(p.riskPoints).toBeCloseTo(2000 / 65, 5);
-    // levels are rounded to the ₹0.05 tick grid
+    // levels are rounded to the ₹0.05 tick grid (per-unit, still meaningful)
     expect(Math.abs(p.stopLoss - (153.85 - 2000 / 65))).toBeLessThanOrEqual(0.05);
     expect(Math.abs(p.targets[0] - (153.85 + 2 * (2000 / 65)))).toBeLessThanOrEqual(0.05);
     expect(Math.abs(p.targets[1] - (153.85 + 3 * (2000 / 65)))).toBeLessThanOrEqual(0.05);
     expect(Math.abs(p.targets[2] - (153.85 + 4 * (2000 / 65)))).toBeLessThanOrEqual(0.05);
     expect(p.rr).toBeCloseTo(2, 1);
-    // ₹ at the targets: 2R = ₹4,000, 3R = ₹6,000, 4R = ₹8,000
-    expect(p.rupee.tp1).toBeCloseTo(4_000, -1);   // tick rounding on the price
-    expect(p.rupee.tp2).toBeCloseTo(6_000, -1);
-    expect(p.rupee.tp3).toBeCloseTo(8_000, -1);
+    // ₹ P&L at targets is 0 when not tradable
+    expect(p.rupee.tp1).toBe(0);
+    expect(p.rupee.tp2).toBe(0);
+    expect(p.rupee.tp3).toBe(0);
   });
 
   test("a 4R target is dropped when the premium cannot reach it", () => {
@@ -36,17 +38,20 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
     const p = buildOptionPlan({
       symbol: "NIFTY", optionType: "CE", entryPremium: 100, lotSize: 65, lots: 1, deployedAmount: 10_000,
     })!;
-    expect(p.riskAmount / p.deployed).toBeCloseTo(PLAN_CONFIG.riskPctOfDeployed, 5);
+    expect(p.lots).toBe(0);
+    expect(p.tradable).toBe(false);
+    expect(p.deployed).toBe(0);
+    expect(p.riskAmount).toBe(0);
   });
 
-  test("default sizing uses the live ₹45k deployment budget", () => {
-    expect(lotsForBudget(300, 65, 20_000)).toBe(1);   // ₹19,500 per lot
-    expect(lotsForBudget(150, 65, 20_000)).toBe(2);   // ₹9,750 per lot
-    expect(lotsForBudget(100, 65, 20_000)).toBe(3);   // ₹6,500 per lot
+  test("default sizing uses the 2-lot rule (0 when 2 lots don't fit)", () => {
+    expect(lotsForBudget(300, 65, 20_000)).toBe(0);   // ₹19,500 per lot — only 1 fits → not tradable
+    expect(lotsForBudget(150, 65, 20_000)).toBe(2);   // ₹9,750 per lot — 2 fit → 2 lots
+    expect(lotsForBudget(100, 65, 20_000)).toBe(2);   // ₹6,500 per lot — 3 fit, capped at 2 lots
     const p = buildOptionPlan({ symbol: "NIFTY", optionType: "CE", entryPremium: 150, lotSize: 65 })!;
-    expect(p.lots).toBe(4);                           // floor(45,000 / 9,750)
-    expect(p.units).toBe(260);
-    expect(p.deployed).toBe(39_000);
+    expect(p.lots).toBe(2);                           // capped at defaultLots (2)
+    expect(p.units).toBe(130);
+    expect(p.deployed).toBe(19_500);
   });
 
   test("the stop is capped at 35% of the premium and the rupee risk shrinks with it", () => {
@@ -100,15 +105,18 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
       symbol: "NIFTY", optionType: "PE", entryPremium: 100, lotSize: 65, lots: 1,
       deployedAmount: 6_500, riskAmount: 1_300,
     })!;
+    expect(p.lots).toBe(0);
+    expect(p.tradable).toBe(false);
+    expect(p.deployed).toBe(0);
+    expect(p.riskAmount).toBe(0);
     expect(p.stopLoss).toBeLessThan(100);
     expect(p.targets[0]).toBeGreaterThan(100);
     expect(p.targets[1]).toBeGreaterThan(p.targets[0]);
     expect(p.targets[2]).toBeGreaterThan(p.targets[1]);
-    // the ₹ P&L at each target must be a GAIN (the old mirrored plan
-    // reported a NEGATIVE rupee.tp1 while calling it a target)
-    expect(p.rupee.tp1).toBeGreaterThan(0);
-    expect(p.rupee.tp2).toBeGreaterThan(0);
-    expect(p.rupee.tp3).toBeGreaterThan(0);
+    // the ₹ P&L at each target is 0 when not tradable
+    expect(p.rupee.tp1).toBe(0);
+    expect(p.rupee.tp2).toBe(0);
+    expect(p.rupee.tp3).toBe(0);
     // signed R:R — risk = entry − stop (positive only for a correct stop)
     expect(p.rr).toBeGreaterThan(0);
     expect(p.rr).toBeCloseTo(2, 1);
@@ -133,12 +141,15 @@ describe("option-plan — rupee risk + R:R 1:2/1:3/1:4 ladder", () => {
     expect(pe.stopLoss).toBe(ce.stopLoss);
     expect(pe.targets).toEqual(ce.targets);
     expect(pe.rr).toBeCloseTo(2, 1);
-    expect(pe.rupee.tp1).toBeGreaterThan(0);
+    expect(pe.rupee.tp1).toBe(0);
     // the OLD (wrong) numbers must never come back
     expect(pe.stopLoss).not.toBe(46.9);
     expect(pe.targets).not.toContain(23.45);
     expect(pe.targets).not.toContain(15.65);
     expect(pe.targets).not.toContain(7.8);
+    expect(pe.lots).toBe(0);
+    expect(pe.tradable).toBe(false);
+    expect(pe.rupee.tp1).toBe(0);
   });
 
   test("a stop ABOVE the entry can never be reported as a valid R:R (signed risk)", () => {

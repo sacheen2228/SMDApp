@@ -143,8 +143,9 @@ export function evaluatePlaybookCheck(
 
   // 6. Strike selector passes: option R:R >= 1:2 and a tradable size.
   //    The SIZE is never a veto (user directive 2026-11-21): the deployment
-  //    budget decides the lots (1 lot floor) and the market stop decides the
-  //    risk — the risk budget is REPORTED, not enforced.
+  //    budget decides the lots (2-lot default, 0 when unaffordable) and the
+  //    market stop decides the risk — the risk budget is REPORTED, not enforced.
+  //    A 0-lot result is reported honestly but does NOT veto item 6 — only R:R does.
   const entry = candidate.entry;
   const sl = candidate.stopLoss;
   const tp1 = candidate.target1;
@@ -164,8 +165,7 @@ export function evaluatePlaybookCheck(
     i6notes.push(`option R:R ${rr.toFixed(2)} ≥ ${PLAYBOOK_MIN_RR}`);
   }
   if (lots < 1) {
-    i6pass = false;
-    i6notes.push(`no tradable size for ${lotSize}-unit lots — the premium or the lot size is unknown`);
+    i6notes.push(`no tradable size for ${lotSize}-unit lots — 2-lot default does not fit the budget (size shown, never a veto)`);
   } else {
     i6notes.push(`${lots} lot(s) at the ₹${Math.round(budget).toLocaleString("en-IN")} risk budget (${PLAYBOOK_MAX_RISK_PCT}% of the ₹${DEPLOY_BUDGET.toLocaleString("en-IN")} deployed per trade; lot ${lotSize}) — the market stop risks ₹${Math.round(riskPerLot).toLocaleString("en-IN")}/lot`);
   }

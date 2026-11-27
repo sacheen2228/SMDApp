@@ -142,11 +142,10 @@ describe("istClock / checkFreshness", () => {
 describe("positionSize", () => {
   test("the deployment budget decides the size, the market stop decides the risk", () => {
     const r = positionSize({ capital: 200000, riskPct: 1, entry: 150, sl: 120, lotSize: 75 });
-    // ₹45,000 default deployment → 4 lots × ₹11,250; the market stop (₹30)
-    // decides the risk — capital never refuses the trade.
+    // ₹45,000 default deployment → 4 lots fit but defaultLots caps at 2
     expect(r.ok).toBe(true);
-    expect(r.lots).toBe(4);
-    expect(r.maxLoss).toBe(9000);
+    expect(r.lots).toBe(2);
+    expect(r.maxLoss).toBe(4500);
     expect(r.guidance).toMatch(/market stop risks/);
   });
   test("fits when stop is tight enough (per-trade budget model)", () => {
@@ -161,16 +160,16 @@ describe("positionSize", () => {
 
   test("a bigger account does not buy a bigger position (the deployment size binds)", () => {
     const r = positionSize({ capital: 200000, riskPct: 1, entry: 150, sl: 145, lotSize: 75 });
-    expect(r.lots).toBe(4);
+    expect(r.lots).toBe(2); // capped at defaultLots
     expect(r.ok).toBe(true);
   });
 
-  test("a premium above the deployment budget is still ONE lot (never 0)", () => {
+  test("a premium above the deployment budget returns 0 lots (no forced 1 lot)", () => {
     const r = positionSize({ entry: 900, sl: 700, lotSize: 65 });
-    expect(r.lots).toBe(1);
     expect(r.ok).toBe(true);
-    expect(r.capitalRequired).toBe(58500);
-    expect(r.maxLoss).toBe(13000);
+    expect(r.lots).toBe(0);
+    expect(r.capitalRequired).toBe(0);
+    expect(r.maxLoss).toBe(0);
   });
   test("entry=sl never divides by zero", () => {
     const r = positionSize({ capital: 200000, riskPct: 1, entry: 150, sl: 150, lotSize: 75 });

@@ -5,7 +5,9 @@ import type {
   RiskCheckResult,
 } from "../types/sdm";
 import { GATE_CONFIG, positionSize } from "./agent-brain-gate";
+import { BRAIN_FLAGS } from "./brain-flags";
 import { getLotSizeStrict } from "./symbol-config";
+import { getSessionForMinutes, lateOptionBuysBlocked, LATE_OPTION_BUY_CONFIG, lateOptionBuyCutoffLabel, isTradeAllowed } from "./market-session";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PER-TRADE SIZING MODEL — the user's rule (2026-10-20, re-read 2026-11-21):
@@ -583,7 +585,242 @@ export const OPEN_JOURNAL_STATUSES = ["ACTIVE", "OPEN", "PENDING", "TP1_HIT", "T
  * a past clock sees the book as it was then, not as it is now.
  */
 
-// ─── Server-only readers live in ./risk-state.server ────────────────────
-// (the database and the in-memory tracker must never enter the client bundle).
-// Import them from "./risk-state.server" directly — re-exporting here would
-// pull Prisma into every client bundle that touches this file.
+// ── Daily Derivatives risk gate ─────────────────────────────────────────
+// Single verdict for one candidate trade in the DD dashboard. Reuses existing
+// config: GATE_CONFIG, RISK_LIMITS, session module. Pure — no DB, no network,
+// no clock (the IST minute is supplied by the caller).
+export interface DailyDerivativesRiskInput {
+  side: "BUY" | "SELL";
+  direction: "CALL" | "PUT";
+  deployedAmount?: number | null;
+  riskAmount?: number | null;
+  entry?: number | null;
+  stopLoss?: number | null;
+  lotSize?: number | null;
+  lots?: number | null;
+  state?: Partial<RiskStateSnapshot>;
+  openPositions?: number | null;
+  isExpiryDay?: boolean;
+  daysToExpiry?: number | null;
+  istMinutes?: number | null;
+  marketOpen?: boolean | null;
+  concurrencyPolicy?: "warn" | "block";
+  capital?: number;
+}
+
+export interface DailyDerivativesRiskResult {
+  ok: boolean;
+  reasons: string[];
+  warnings: string[];
+  exposure: {
+    deployed: number;
+    risk: number;
+    riskBudget: number;
+    perTradeBudget: number;
+    riskPctOfTrade: number;
+    withinPerTradeRisk: boolean;
+    withinDeploymentBudget: boolean;
+    unknown: boolean;
+    openDeployed: number;
+    openRisk: number;
+    totalDeployed: number;
+    totalRisk: number;
+  };
+  policy: {
+    limits: typeof RISK_LIMITS;
+    riskPctOfTrade: number;
+    maxConsecutiveLosses: number;
+    allowExpiryDay: boolean;
+    concurrency: {
+      maxConcurrentTrades: number;
+      openPositions: number;
+      slotsRemaining: number;
+      atLimit: boolean;
+      policy: "warn" | "block";
+    };
+    session: {
+      session: string;
+      label: string;
+      description: string;
+      isMarketOpen: boolean;
+      allowedActions: import("@/lib/market-session").SessionInfo["allowedActions"];
+      requiredAction: "BUY_CALL" | "BUY_PUT" | null;
+      buyForbiddenBySession: boolean;
+      buyForbiddenReason: string;
+      lateOptionBuy: {
+        enabled: boolean;
+        enforced: boolean;
+        sessionRuleFired: boolean;
+        cutoffIstMinutes: number;
+        cutoffIstLabel: string;
+        atIstMinutes: number;
+        source: string;
+        reason: string;
+      };
+    };
+  };
+}
+
+export function evaluateDailyDerivativesRisk(input: DailyDerivativesRiskInput): DailyDerivativesRiskResult {
+  const reasons: string[] = [];
+  const warnings: string[] = [];
+  const state = input.state ?? {};
+
+  // ── 1. Candidate exposure ─────────────────────────────────────────────
+  let deployed = Number(input.deployedAmount);
+  let risk = Number(input.riskAmount);
+  let unknownExposure = false;
+
+  if (!(deployed > 0) && input.entry != null) {
+    const priced = modelTradeExposure({
+      entry: input.entry,
+      stopLoss: input.stopLoss,
+      lotSize: input.lotSize,
+      lots: input.lots,
+      capital: input.capital,
+    });
+    deployed = priced.deployed;
+    risk = priced.risk;
+    unknownExposure = priced.unknown;
+  }
+  deployed = Math.max(0, Number.isFinite(deployed) ? deployed : 0);
+  risk = Math.max(0, Number.isFinite(risk) ? risk : 0);
+
+  // Per-trade risk budget
+  const riskBudget = perTradeRiskBudget(deployed);
+  const withinPerTradeRisk = risk <= riskBudget + 1;
+  const withinDeploymentBudget = deployed <= RISK_LIMITS.perTradeBudget;
+
+  // ── 2. Session ──
+  const pinned = typeof input.istMinutes === "number" && Number.isFinite(input.istMinutes);
+  const mins = pinned ? Number(input.istMinutes) : getISTMinutes();
+  const session: SessionInfo = pinned ? getSessionForMinutes(mins) : getCurrentSession("index");
+  const marketOpen =
+    input.marketOpen != null ? input.marketOpen === true : session.isMarketOpen === true;
+
+  const isBuy = input.side !== "SELL";
+  const direction: "CALL" | "PUT" | null = input.direction === "PUT" ? "PUT" : input.direction === "CALL" ? "CALL" : null;
+  const requiredAction: "BUY_CALL" | "BUY_PUT" | null = isBuy && direction ? (direction === "PUT" ? "BUY_PUT" : "BUY_CALL") : null;
+
+  const base = getSessionForMinutes(mins);
+  const sessionAllows = requiredAction ? session.allowedActions.includes(requiredAction) : true;
+  const lateRuleFired = lateOptionBuysBlocked(mins);
+  const lateEnabled = (BRAIN_FLAGS as { noOptionBuysAfter13?: boolean }).noOptionBuysAfter13 === true;
+  const lateOnlyBlocker = !!(requiredAction && lateRuleFired && !sessionAllows);
+  const cutoffMinutes = LATE_OPTION_BUY_CONFIG.cutoffIstMinutes;
+  const cutoffLabel = lateOptionBuyCutoffLabel();
+
+  if (!marketOpen) {
+    reasons.push(`market closed — ${session.label}${session.description ? `: ${session.description}` : ""}`);
+  } else if (requiredAction && !sessionAllows && !lateOnlyBlocker) {
+    const verdict = isTradeAllowed(direction!, session);
+    reasons.push(`session forbids ${requiredAction} — ${verdict.reason}`);
+  }
+  if (requiredAction && lateRuleFired && lateEnabled) {
+    reasons.push(`late option-buy rule — no new option buys after ${cutoffLabel} IST (BRAIN_FLAGS.noOptionBuysAfter13 is ON)`);
+  }
+
+  // ── 3. Expiry day ──
+  const expiryDay = input.isExpiryDay === true || (input.daysToExpiry != null && Number(input.daysToExpiry) === 0);
+  if (expiryDay && !GATE_CONFIG.allowExpiryDay) {
+    reasons.push("expiry day — GATE_CONFIG.allowExpiryDay is false, an option expiring today is refused (expiry-day gamma lottery)");
+  }
+
+  // ── 4. Per-trade risk + deployment ──
+  if (unknownExposure) {
+    reasons.push("risk exposure unknown — the per-trade risk limit cannot be verified (fail closed)");
+  } else if (!(deployed > 0)) {
+    reasons.push("no deployment — the candidate commits nothing, there is no risk to check");
+  } else {
+    if (!withinPerTradeRisk) {
+      reasons.push(`risk ${inr(risk)} exceeds the per-trade risk limit ${inr(riskBudget)} (${GATE_CONFIG.riskPctOfTrade}% of the ${inr(deployed)} deployed)`);
+    }
+    if (!withinDeploymentBudget) {
+      reasons.push(`deployment ${inr(deployed)} exceeds the per-trade budget ${inr(RISK_LIMITS.perTradeBudget)}`);
+    }
+  }
+
+  // ── 5. Realised loss caps + loss streak ──
+  const signalVerdict = evaluateSignalRiskLimits({
+    state,
+    newDeployed: deployed,
+    newRisk: risk,
+    capital: input.capital,
+  });
+  for (const reason of signalVerdict.reasons) reasons.push(reason);
+  for (const warning of signalVerdict.warnings) warnings.push(warning);
+
+  const streak = Number(state.consecutiveLosses) || 0;
+  if (streak >= GATE_CONFIG.maxConsecutiveLosses && !signalVerdict.reasons.some((r) => /consecutive losses/i.test(r))) {
+    reasons.push(`${streak} consecutive losses (limit ${GATE_CONFIG.maxConsecutiveLosses}) — stop trading for the session`);
+  }
+
+  // ── 6. Concurrency ──
+  const maxConcurrentTrades = RISK_LIMITS.maxConcurrentTrades;
+  const openPositions = Math.max(0, Number(input.openPositions ?? state.openPositions) || 0);
+  const atLimit = openPositions >= maxConcurrentTrades;
+  const concurrencyPolicy: "warn" | "block" = input.concurrencyPolicy === "block" ? "block" : "warn";
+  if (atLimit) {
+    const message = `${openPositions} open positions at the configured maximum of ${maxConcurrentTrades} concurrent trades — concurrency policy: ${concurrencyPolicy}`;
+    if (concurrencyPolicy === "block") reasons.push(message);
+    else warnings.push(message);
+  }
+
+  const openDeployed = Math.max(0, Number(state.openDeployed) || 0);
+  const openRisk = Math.max(0, Number(state.openRisk) || 0);
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    warnings,
+    exposure: {
+      deployed,
+      risk,
+      riskBudget,
+      perTradeBudget: RISK_LIMITS.perTradeBudget,
+      riskPctOfTrade: GATE_CONFIG.riskPctOfTrade,
+      withinPerTradeRisk,
+      withinDeploymentBudget,
+      unknown: unknownExposure,
+      openDeployed,
+      openRisk,
+      totalDeployed: openDeployed + deployed,
+      totalRisk: openRisk + risk,
+    },
+    policy: {
+      limits: RISK_LIMITS,
+      riskPctOfTrade: GATE_CONFIG.riskPctOfTrade,
+      maxConsecutiveLosses: GATE_CONFIG.maxConsecutiveLosses,
+      allowExpiryDay: GATE_CONFIG.allowExpiryDay,
+      concurrency: {
+        maxConcurrentTrades,
+        openPositions,
+        slotsRemaining: Math.max(0, maxConcurrentTrades - openPositions),
+        atLimit,
+        policy: concurrencyPolicy,
+      },
+        session: {
+        session: session.session,
+        label: session.label,
+        description: session.description,
+        isMarketOpen: marketOpen,
+        allowedActions: session.allowedActions,
+        requiredAction,
+        buyForbiddenBySession: !!(requiredAction && !sessionAllows),
+        buyForbiddenReason: requiredAction && !sessionAllows ? isTradeAllowed(direction!, session).reason : "",
+        lateOptionBuy: {
+          enabled: lateEnabled,
+          enforced: !!(requiredAction && lateRuleFired && lateEnabled),
+          sessionRuleFired: lateRuleFired,
+          cutoffIstMinutes: cutoffMinutes,
+          cutoffIstLabel: cutoffLabel,
+          atIstMinutes: mins,
+          source: "BRAIN_FLAGS.noOptionBuysAfter13",
+          reason: lateEnabled
+            ? lateRuleFired ? `the configured cutoff (${cutoffLabel} IST) has passed — new option buys are refused` : `the configured cutoff (${cutoffLabel} IST) has not passed yet`
+            : `the rule is OFF (BRAIN_FLAGS.noOptionBuysAfter13 = false) — the configured cutoff (${cutoffLabel} IST) is reported, not enforced`,
+        },
+      },
+    },
+  };
+}
