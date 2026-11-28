@@ -11,8 +11,31 @@
 //     day is labelled NO_PREMIUM_BASELINE and reports 0 change, never invented
 //   • volume ratio is relvol vs the chain median (caller supplies averageVolume)
 //   • legs with no greeks are skipped and counted, never analysed on delta 0
-
+//
+// DEX/GEX UNITS:
+//   DEX (Delta Exposure) = OI × lotSize × delta × spotPrice   (₹ rupees)
+//     - OI: number of open contracts (exchange-published)
+//     - lotSize: exchange lot size (NIFTY=65, SENSEX=20 per symbol-config)
+//     - delta: Black-Scholes delta from exchange IV (provider or BS-computed)
+//     - spotPrice: underlying spot price (₹)
+//     - CE delta is positive, PE delta is negative → DEX is signed
+//
+//   GEX (Gamma Exposure) = gamma × OI × spotPrice² × 0.01   (see gex-engine.ts)
+//     - gamma: per 1-point index move per contract (from exchange IV or BS)
+//     - spotPrice²: converts gamma to rupee exposure per contract
+//     - ×0.01: converts from "per 100 index points" to "per 1 index point"
+//
+// DEX/GEX values are computed from exchange-published OI and BS-derived greeks.
+// They have NOT been independently reconciled against exchange-published
+// DEX/GEX figures. Treat as indicative only.
 import { calculateGEX } from "@/lib/gex-engine";
+import { istDayKey } from "@/lib/risk-management";
+import {
+  getLatestPriorObservation,
+  getSessionFirstObservation,
+  pruneOldObservations,
+  recordOiObservation,
+} from "@/lib/oi-baseline-store";
 import type { SDMOptionStrike, GEXResult } from "@/types/sdm";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -25,6 +48,109 @@ export type PositionClassification =
   | "SHORT_COVERING"
   | "LONG_UNWINDING"
   | "MIXED";
+
+/**
+ * OI baseline classification. It describes WHICH session the OI baseline was
+ * observed in — never invented, never UTC-shifted.
+ *
+ *   INTRADAY    — we own a same-session observation of this contract's OI.
+ *                 baselineTimestamp = epoch ms of that observation.
+ *   OVERNIGHT   — our newest owned observation belongs to an earlier session;
+ *                 the OI change spans the overnight gap. baselineTimestamp =
+ *                 epoch ms of that earlier observation.
+ *   UNVERIFIED  — no owned observation; the baseline is reconstructed from the
+ *                 exchange ΔOI (oi − ΔOI) whose reference session the provider
+ *                 does not publish. baselineTimestamp = null.
+ *   UNAVAILABLE — no ΔOI at all and no owned observation.
+ */
+export type OIBaselineType = "INTRADAY" | "OVERNIGHT" | "UNVERIFIED" | "UNAVAILABLE";
+
+export type OIBaselineSource =
+  | "exchange-delta"
+  | "same-session-snapshot"
+  | "prior-session-snapshot"
+  | "none";
+
+/** An OI baseline this process OBSERVED (never reconstructed). */
+export interface OwnedOIBaseline {
+  /** OI observed at `observedAt`. */
+  oi: number;
+  /** Epoch ms of the observation. */
+  observedAt: number;
+  /** IST trading-session key (YYYY-MM-DD) of the observation. */
+  session: string;
+}
+
+export interface OIBaselineVerdict {
+  type: OIBaselineType;
+  source: OIBaselineSource;
+  /** Epoch ms of the baseline observation — null when reconstructed. */
+  baselineTimestamp: number | null;
+  /** IST trading date of the baseline observation — null when unknown. */
+  baselineSession: string | null;
+  /** IST trading date of the current observation. */
+  currentSession: string;
+  /** True only when the baseline is from the same session — the only one that
+   *  may drive intraday writer-pressure / covering inference. */
+  valid: boolean;
+  reason: string;
+}
+
+/** Classify the OI baseline provenance. */
+export function classifyOIBaseline(input: {
+  previousOI: number;
+  owned: OwnedOIBaseline | null;
+  currentTimestamp: number;
+}): OIBaselineVerdict {
+  const currentSession = istDayKey(input.currentTimestamp);
+  const previousOk = Number.isFinite(input.previousOI) && input.previousOI > 0;
+
+  const owned = input.owned;
+  if (owned && Number.isFinite(owned.oi) && owned.oi > 0 && Number.isFinite(owned.observedAt)) {
+    if (owned.session === currentSession) {
+      return {
+        type: "INTRADAY",
+        source: "same-session-snapshot",
+        baselineTimestamp: owned.observedAt,
+        baselineSession: owned.session,
+        currentSession,
+        valid: true,
+        reason: `OI baseline observed in this session (${owned.session}) at ${new Date(owned.observedAt).toISOString()}`,
+      };
+    }
+    return {
+      type: "OVERNIGHT",
+      source: "prior-session-snapshot",
+      baselineTimestamp: owned.observedAt,
+      baselineSession: owned.session,
+      currentSession,
+      valid: false,
+      reason: `OI baseline observed in an earlier session (${owned.session}); the change spans the overnight gap`,
+    };
+  }
+
+  if (!previousOk) {
+    return {
+      type: "UNAVAILABLE",
+      source: "none",
+      baselineTimestamp: null,
+      baselineSession: null,
+      currentSession,
+      valid: false,
+      reason: "no OI baseline — the provider published no ΔOI and no observation is owned",
+    };
+  }
+
+  return {
+    type: "UNVERIFIED",
+    source: "exchange-delta",
+    baselineTimestamp: null,
+    baselineSession: null,
+    currentSession,
+    valid: false,
+    reason: "OI baseline reconstructed from the exchange ΔOI — its reference session is not published",
+  };
+}
 
 export interface OptionSnapshot {
   symbol: string;
@@ -46,6 +172,11 @@ export interface OptionSnapshot {
   previousIV: number;
   lotSize: number;
   timestamp: number;
+  /**
+   * An OI baseline this process OBSERVED (never a reconstruction).
+   * null → only the exchange ΔOI reconstruction (oi − ΔOI) is available.
+   */
+  oiBaseline?: OwnedOIBaseline | null;
 }
 
 export interface MarketConfirmation {
@@ -96,8 +227,10 @@ export interface SellerAnalysis {
   type: OptionType;
   classification: PositionClassification;
   oiChangePct: number;
-  premiumChangePct: number;
-  ivChangePct: number;
+  /** null when no valid previous premium baseline exists (day-first observation) */
+  premiumChangePct: number | null;
+  /** null when no valid previous IV baseline exists (day-first observation) */
+  ivChangePct: number | null;
   volumeRatio: number;
   delta: number;
   gamma: number;
@@ -113,6 +246,22 @@ export interface SellerAnalysis {
   dataFresh: boolean;
   warnings: string[];
   timestamp: number;
+  /** OI change baseline classification: INTRADAY / OVERNIGHT / UNVERIFIED / UNAVAILABLE */
+  oiChangeType: "INTRADAY" | "OVERNIGHT" | "UNVERIFIED" | "UNAVAILABLE";
+  /** When the baseline observation was taken (epoch ms) */
+  baselineTimestamp: number | null;
+  /** When the current observation was taken (epoch ms) */
+  comparisonTimestamp: number | null;
+  /** Source of the baseline: "exchange-delta" / "same-session-snapshot" / "prior-session-snapshot" / "none" */
+  baselineSource: OIBaselineSource;
+  /** Whether the baseline is valid for writer-pressure analysis (same-session only). */
+  baselineValid: boolean;
+  /** IST trading-session key (YYYY-MM-DD) of the current observation. */
+  currentSession: string;
+  /** OI change vs our own same-session baseline (null when we own none). */
+  intradayOiChangeAbsolute: number | null;
+  /** OI change vs our own same-session baseline (null when we own none). */
+  intradayOiChangePct: number | null;
 }
 
 export type SellerZoneStatus =
@@ -187,12 +336,12 @@ export function calculateExposure(snap: OptionSnapshot): Exposure {
 
 function magnitudeScore(
   oiChangePct: number,
-  premiumChangePct: number,
+  premiumChangePct: number | null,
   volumeRatio: number,
   oiAligned: boolean
 ): number {
   const oi = Math.min(Math.abs(oiChangePct) / 20, 1) * 40;
-  const prem = Math.min(Math.abs(premiumChangePct) / 5, 1) * 30;
+  const prem = premiumChangePct != null ? Math.min(Math.abs(premiumChangePct) / 5, 1) * 30 : 0;
   const vol = Math.min(Math.abs(volumeRatio) / 3, 1) * 20;
   const base = oiAligned ? 10 : 0;
   return Math.round(oi + prem + vol + base);
@@ -234,29 +383,65 @@ export function analyzeOption(
     Number.isFinite(current.gamma) &&
     Number.isFinite(current.theta);
 
+  // OI baseline provenance. An owned same-session observation (INTRADAY) is
+  // the only basis we may act on for intraday writer-pressure inference. An
+  // exchange-ΔOI reconstruction (UNVERIFIED) tells us nothing about which
+  // session the baseline belongs to — never UTC-shifted, never guessed.
+  const verdict = classifyOIBaseline({
+    previousOI: current.previousOI,
+    owned: current.oiBaseline ?? null,
+    currentTimestamp: current.timestamp,
+  });
+
+  const oiChangeType: OIBaselineType = verdict.type;
+  const baselineTimestamp: number | null = verdict.baselineTimestamp;
+  const baselineSession: string | null = verdict.baselineSession;
+  const baselineSource: OIBaselineSource = verdict.source;
+  const baselineValid: boolean = verdict.valid;
+
+  if (oiChangeType === "UNVERIFIED") warnings.push("OI_BASELINE_SESSION_UNVERIFIED");
+  else if (oiChangeType === "OVERNIGHT") warnings.push("OI_BASELINE_OVERNIGHT");
+
+  // Headline OI change vs the exchange ΔOI baseline (session-to-date vs previous close).
+  const oiChangeAbsolute = current.oi - current.previousOI;
   const oiChangePct = baselineOk
     ? ((current.oi - current.previousOI) / current.previousOI) * 100
     : 0;
-  const premiumChangePct =
-    current.previousPremium > 0
-      ? ((current.premium - current.previousPremium) / current.previousPremium) * 100
-      : 0;
-  const ivChangePct =
-    current.previousIV > 0 ? ((current.iv - current.previousIV) / current.previousIV) * 100 : 0;
+
+  // Intraday OI change vs our own owned baseline (session-first observation),
+  // or vs our newest prior-session observation (OVERNIGHT). Null when we own
+  // no observation at all.
+  const owned = current.oiBaseline ?? null;
+  const intradayOiChangeAbsolute =
+    owned && Number.isFinite(owned.oi) && owned.oi > 0 ? current.oi - owned.oi : null;
+  const intradayOiChangePct =
+    owned && Number.isFinite(owned.oi) && owned.oi > 0
+      ? ((current.oi - owned.oi) / owned.oi) * 100
+      : null;
+
+  // Classification basis: our own owned baseline when present (intraday
+  // when same-session, overnight when earlier), else the exchange ΔOI.
+  const classifiedOiChangePct = intradayOiChangePct ?? oiChangePct;
+  const premiumChangePct = current.previousPremium > 0
+    ? ((current.premium - current.previousPremium) / current.previousPremium) * 100
+    : null;
+  const ivChangePct = current.previousIV > 0
+    ? ((current.iv - current.previousIV) / current.previousIV) * 100
+    : null;
   const volumeRatio = current.averageVolume > 0 ? current.volume / current.averageVolume : 0;
 
-  const classification = classifyPosition(oiChangePct, premiumChangePct, config.oiChangeThreshold);
+  const classification = classifyPosition(classifiedOiChangePct, premiumChangePct, config.oiChangeThreshold);
 
   let writerPressureScore = 0;
   let coveringScore = 0;
-  if (valid) {
-    const raw = magnitudeScore(oiChangePct, premiumChangePct, volumeRatio, oiChangePct > 0);
+  if (valid && baselineValid) {
+    const raw = magnitudeScore(classifiedOiChangePct, premiumChangePct, volumeRatio, classifiedOiChangePct > 0);
     if (classification === "SHORT_BUILDUP") writerPressureScore = raw;
     if (classification === "SHORT_COVERING") coveringScore = raw;
   }
 
-  const potentialWriterPressure = valid && classification === "SHORT_BUILDUP";
-  const potentialShortCovering = valid && classification === "SHORT_COVERING";
+  const potentialWriterPressure = valid && baselineValid && classification === "SHORT_BUILDUP";
+  const potentialShortCovering = valid && baselineValid && classification === "SHORT_COVERING";
 
   return {
     symbol: current.symbol,
@@ -282,6 +467,14 @@ export function analyzeOption(
     dataFresh,
     warnings,
     timestamp: current.timestamp,
+    oiChangeType,
+    baselineTimestamp,
+    comparisonTimestamp: current.timestamp,
+    baselineSession,
+    baselineSource,
+    baselineValid,
+    intradayOiChangeAbsolute,
+    intradayOiChangePct,
   };
 }
 
@@ -417,20 +610,35 @@ export function generateTradeCandidate(
   };
 }
 
-// ── Day-first premium/IV baseline ring ───────────────────────────────
+// ── Day-first premium/IV baseline ring + owned OI observations ───────────
+//
+// The day-first ring holds the FIRST observation of each IST trading day per
+// contract — premium/IV baselines (never invented, day-first = 0 change) and
+// the session-first OI baseline (INTRADAY). A second ring, lastOiObservation,
+// holds the NEWEST OI observation per contract so a prior-session observation
+// can be reported honestly as OVERNIGHT instead of being silently dropped.
+const baselineRing = new Map<
+  string,
+  { premium: number; iv: number; oi: number; observedAt: number; session: string }
+>();
 
-const baselineRing = new Map<string, { premium: number; iv: number }>();
-
-function istDay(ms: number): string {
-  return new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+function ringKey(symbol: string, expiry: string, strike: number, type: OptionType, day: string): string {
+  return `${symbol}|${expiry}|${day}|${strike}|${type}`;
 }
 
-function ringKey(symbol: string, strike: number, type: OptionType, day: string): string {
-  return `${symbol}|${day}|${strike}|${type}`;
+function contractKey(symbol: string, expiry: string, strike: number, type: OptionType): string {
+  return `${symbol}|${expiry}|${strike}|${type}`;
 }
+
+/** Newest OI observation per contract — survives IST date rollover. */
+const lastOiObservation = new Map<string, { oi: number; observedAt: number; session: string }>();
+
+let _pruneCounter = 0;
 
 export function __resetSellerIntelRing(): void {
   baselineRing.clear();
+  lastOiObservation.clear();
+  _pruneCounter = 0;
 }
 
 // ── DD-tab orchestrator ──────────────────────────────────────────────
@@ -464,8 +672,19 @@ export interface SellerBoardRow {
   strike: number;
   type: OptionType;
   oi: number;
+  oiChangeAbsolute: number;
   oiChangePct: number;
-  premiumChangePct: number;
+  oiChangeType: "INTRADAY" | "OVERNIGHT" | "UNVERIFIED" | "UNAVAILABLE";
+  baselineTimestamp: number | null;
+  baselineSession: string | null;
+  baselineSource: OIBaselineSource;
+  baselineValid: boolean;
+  /** null when no valid previous premium baseline exists */
+  premiumChangePct: number | null;
+  /** OI change vs our own owned baseline (null when we own none). */
+  intradayOiChangeAbsolute: number | null;
+  /** OI change vs our own owned baseline (null when we own none). */
+  intradayOiChangePct: number | null;
   classification: PositionClassification;
   score: number;
   volumeRatio: number;
@@ -515,7 +734,7 @@ function legAnalysable(leg: SellerIntelLeg): boolean {
 
 export function buildSellerIntel(input: SellerIntelInput): SellerIntelReport {
   const nowMs = input.nowMs ?? Date.now();
-  const day = istDay(nowMs);
+  const day = istDayKey(nowMs);
   const dataNotes: string[] = [];
   let missingBaseline = 0;
   let skippedNoGreeks = 0;
@@ -559,17 +778,86 @@ export function buildSellerIntel(input: SellerIntelInput): SellerIntelReport {
 
       const premium = num(leg.ltp);
       const iv = num(leg.iv);
-      const key = ringKey(input.symbol, s.strike, type, day);
+      const key = ringKey(input.symbol, input.expiry, s.strike, type, day);
+      const contract = contractKey(input.symbol, input.expiry, s.strike, type);
       const base = baselineRing.get(key);
-      let previousPremium = premium;
-      let previousIV = iv;
+
+      // Owned OI baseline: same-session observation (INTRADAY) wins; else the
+      // newest observation we own from an earlier session (OVERNIGHT). Only
+      // when we own nothing do we fall back to the exchange-ΔOI reconstruction.
+      // The durable store backs up the in-memory Maps across restarts: when the
+      // ring is empty (new process or first observation of the day) we consult
+      // durable storage before declaring the baseline unavailable.
+      let ownedBaseline: OwnedOIBaseline | null = null;
       if (base) {
-        previousPremium = base.premium;
-        previousIV = base.iv;
+        ownedBaseline = { oi: base.oi, observedAt: base.observedAt, session: base.session };
       } else {
-        baselineRing.set(key, { premium, iv });
+        // Same-session observation from a previous process instance today.
+        const sessionFirst = getSessionFirstObservation(
+          input.symbol,
+          input.expiry,
+          s.strike,
+          type,
+          day
+        );
+        if (sessionFirst && Number.isFinite(sessionFirst.oi) && sessionFirst.oi > 0) {
+          ownedBaseline = {
+            oi: sessionFirst.oi,
+            observedAt: sessionFirst.observedAt,
+            session: sessionFirst.session,
+          };
+        } else {
+          const prior = lastOiObservation.get(contract);
+          if (prior && Number.isFinite(prior.oi) && prior.oi > 0 && prior.session < day) {
+            ownedBaseline = { oi: prior.oi, observedAt: prior.observedAt, session: prior.session };
+          } else {
+            const latestPrior = getLatestPriorObservation(
+              input.symbol,
+              input.expiry,
+              s.strike,
+              type,
+              day
+            );
+            if (latestPrior && Number.isFinite(latestPrior.oi) && latestPrior.oi > 0) {
+              ownedBaseline = {
+                oi: latestPrior.oi,
+                observedAt: latestPrior.observedAt,
+                session: latestPrior.session,
+              };
+            }
+          }
+        }
+        baselineRing.set(key, { premium, iv, oi, observedAt: nowMs, session: day });
         missingBaseline++;
       }
+      lastOiObservation.set(contract, {
+        oi,
+        observedAt: nowMs,
+        session: day,
+      });
+
+      // Persist the observation durably so it survives a restart. Best-effort:
+      // a storage failure never fabricates a baseline — the caller simply has
+      // no owned baseline for this contract until a new observation lands.
+      recordOiObservation({
+        symbol: input.symbol,
+        expiry: input.expiry,
+        strike: s.strike,
+        type,
+        oi,
+        observedAt: nowMs,
+        session: day,
+        source: "seller-intelligence",
+        provenance: "observed",
+        quality: "OK",
+        createdAt: nowMs,
+      });
+
+      _pruneCounter += 1;
+      if (_pruneCounter % 50 === 0) pruneOldObservations();
+
+      const previousPremium = base ? base.premium : premium;
+      const previousIV = base ? base.iv : iv;
 
       const snap: OptionSnapshot = {
         symbol: input.symbol,
@@ -591,6 +879,7 @@ export function buildSellerIntel(input: SellerIntelInput): SellerIntelReport {
         previousIV,
         lotSize: input.lotSize,
         timestamp: nowMs,
+        oiBaseline: ownedBaseline,
       };
       snapshots.push(snap);
       const analysis = analyzeOption(snap);
@@ -620,11 +909,20 @@ export function buildSellerIntel(input: SellerIntelInput): SellerIntelReport {
   const topWriting: SellerBoardRow[] = [];
   const topCovering: SellerBoardRow[] = [];
   for (const { snap, analysis } of byStrikeType.values()) {
+    const oiChangeAbsolute = snap.oi - snap.previousOI;
     const row: SellerBoardRow = {
       strike: snap.strike,
       type: snap.type,
       oi: snap.oi,
+      oiChangeAbsolute,
       oiChangePct: analysis.oiChangePct,
+      oiChangeType: analysis.oiChangeType,
+      baselineTimestamp: analysis.baselineTimestamp,
+      baselineSession: analysis.baselineSession,
+      baselineSource: analysis.baselineSource,
+      baselineValid: analysis.baselineValid,
+      intradayOiChangeAbsolute: analysis.intradayOiChangeAbsolute,
+      intradayOiChangePct: analysis.intradayOiChangePct,
       premiumChangePct: analysis.premiumChangePct,
       classification: analysis.classification,
       score:

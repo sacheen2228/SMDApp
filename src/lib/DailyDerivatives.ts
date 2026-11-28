@@ -111,6 +111,137 @@ export interface DirectionBias {
   votes: DirectionVote[];
 }
 
+/**
+ * A calibrated wall — one of three distinct types kept separate:
+ *   OI       — highest open-interest concentration (call or put wall).
+ *   GEX      — strongest call or put gamma exposure (gamma wall).
+ *   TRADE_PLAN — nearest opposing trade-plan strike (trade-blocking wall).
+ *
+ * `expiryContribution` is "nearest" when the chain carries only the selected
+ * nearest live expiry (the canonical chain is single-expiry), so every wall
+ * belongs to that expiry. `status` is UNAVAILABLE when the underlying input
+ * is missing — never a fabricated zero.
+ */
+export interface WallInfo {
+  strike: number;
+  side: "CALL" | "PUT";
+  magnitude: number; // OI contracts (OI source) or raw GEX (GEX source)
+  distance: number; // |strike - spot| in index points
+  expiry: string; // expiry this wall belongs to
+  expiryContribution: "nearest" | "combined";
+  source: "OI" | "GEX" | "TRADE_PLAN";
+  status: "VERIFIED" | "DERIVED" | "UNVERIFIED" | "UNAVAILABLE";
+}
+
+export interface WallCalibration {
+  gammaCallWall: WallInfo | null;
+  gammaPutWall: WallInfo | null;
+  tradeBlockingWall: WallInfo | null;
+  wallConfluence: "ALIGNED" | "CONFLICT" | "NONE" | null;
+}
+
+const CE_TO_SIDE: Record<"CE" | "PE", "CALL" | "PUT"> = { CE: "CALL", PE: "PUT" };
+
+/**
+ * Calibrate the three wall types from data already present in the chain
+ * (OI, gamma walls from `calculateGEX`, trade plans). Never builds a new
+ * engine — only re-sorts and re-labels values the pipeline already computed.
+ * Missing inputs yield `null` / `UNAVAILABLE`, never a fabricated zero.
+ */
+export function calibrateWalls(input: {
+  strikes: OptionStrike[];
+  spot: number;
+  expiry: string;
+  tradePlans: TradePlanCard[];
+  preferredSide: "CALL" | "PUT" | null;
+  gammaWalls: { strike: number; type: "CE" | "PE"; gex: number; oi: number }[];
+  oiCallWall: number;
+  oiPutWall: number;
+}): WallCalibration {
+  const { strikes, spot, expiry, tradePlans, preferredSide, gammaWalls, oiCallWall, oiPutWall } = input;
+  const hasSpot = Number.isFinite(spot) && spot > 0;
+  const distance = (strike: number) => (hasSpot ? Math.abs(strike - spot) : 0);
+
+  // ── Gamma walls: split into strongest CALL wall and strongest PUT wall ──
+  const callWalls = gammaWalls.filter((w) => w.type === "CE" && Number.isFinite(w.gex) && w.gex > 0);
+  const putWalls = gammaWalls.filter((w) => w.type === "PE" && Number.isFinite(w.gex) && w.gex > 0);
+  const bestCall = callWalls.reduce((best, w) => (w.gex > best.gex ? w : best), callWalls[0]);
+  const bestPut = putWalls.reduce((best, w) => (w.gex > best.gex ? w : best), putWalls[0]);
+
+  const gammaCallWall: WallInfo | null = bestCall
+    ? {
+        strike: bestCall.strike,
+        side: "CALL",
+        magnitude: bestCall.gex,
+        distance: distance(bestCall.strike),
+        expiry,
+        expiryContribution: "nearest",
+        source: "GEX",
+        status: "DERIVED",
+      }
+    : null;
+  const gammaPutWall: WallInfo | null = bestPut
+    ? {
+        strike: bestPut.strike,
+        side: "PUT",
+        magnitude: bestPut.gex,
+        distance: distance(bestPut.strike),
+        expiry,
+        expiryContribution: "nearest",
+        source: "GEX",
+        status: "DERIVED",
+      }
+    : null;
+
+  // ── Trade-blocking wall: nearest active trade-plan strike on the side
+  //     opposing the preferred directional bias. ──
+  const opposingSide: "CALL" | "PUT" | null =
+    preferredSide === "CALL" ? "PUT" : preferredSide === "PUT" ? "CALL" : null;
+  const opposingPlans = opposingSide
+    ? tradePlans.filter(
+        (p) =>
+          p.tradable === true &&
+          CE_TO_SIDE[p.optionType] === opposingSide &&
+          Number.isFinite(p.strike) &&
+          p.strike > 0,
+      )
+    : [];
+  opposingPlans.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+  const nearestOpposing = opposingPlans[0];
+  const tradeBlockingWall: WallInfo | null = nearestOpposing
+    ? {
+        strike: nearestOpposing.strike,
+        side: nearestOpposing.optionType === "CE" ? "CALL" : "PUT",
+        magnitude: nearestOpposing.lots,
+        distance: distance(nearestOpposing.strike),
+        expiry,
+        expiryContribution: "nearest",
+        source: "TRADE_PLAN",
+        status: "VERIFIED",
+      }
+    : null;
+
+  // ── Wall co-location: do OI and gamma walls sit on the same side? ──
+  //  Both are computed from the same option-chain snapshot, so this is
+  //  co-location, not independent confirmation.
+  const oiSide = oiCallWall > 0 && oiPutWall > 0 ? (oiCallWall >= oiPutWall ? "CALL" : "PUT") : null;
+  const gammaSide = gammaCallWall && gammaPutWall
+    ? gammaCallWall.magnitude >= gammaPutWall.magnitude
+      ? "CALL"
+      : "PUT"
+    : gammaCallWall
+    ? "CALL"
+    : gammaPutWall
+    ? "PUT"
+    : null;
+  let wallConfluence: "ALIGNED" | "CONFLICT" | "NONE" = "NONE";
+  if (oiSide && gammaSide) {
+    wallConfluence = oiSide === gammaSide ? "ALIGNED" : "CONFLICT";
+  }
+
+  return { gammaCallWall, gammaPutWall, tradeBlockingWall, wallConfluence };
+}
+
 export interface OptionStrike {
   strike: number;
   call?: {
@@ -190,7 +321,30 @@ export function mapChainStrikes(strikes: any[]): OptionStrike[] {
  *   - `impliedVolFromPremium` returns a DECIMAL (0.1686 = 16.86%)
  * Normalising here means the report never scales again — the 9797df9
  * regression printed 1686% / 1967% whenever the chain shipped greeks.
- * `atmGreeks.iv` is pinned to the same unit as the headline number.
+/**
+ * Resolve ATM Greeks from the chain's own provider greeks, or fall back to
+ * Black-Scholes from the provider's IV.
+ *
+ * CALCULATION INPUTS (all required):
+ *   - spot: underlying spot price (₹)
+ *   - atm.strike: ATM strike price (₹)
+ *   - T: time to expiry in years (calendar-day DTE / 365, floored at 0.002)
+ *   - atm.call.greeks: provider's own delta/gamma/theta/vega (if available)
+ *   - atm.call.greeks.deltaSource: "provider" or "bs" — provenance of the delta
+ *   - atm.call.ltp: ATM CE premium (₹) — used only if no chain greeks
+ *   - atm.call.iv: implied volatility (decimal) — used only if no chain greeks
+ *   - Risk-free rate: hardcoded 7% in calculateGreeks (not configurable)
+ *   - Calculation timestamp: Date.now() at call time
+ *
+ * PRECEDENCE:
+ *   1. Chain greeks (provider's own delta/gamma/theta/vega) — wins if available
+ *   2. BS-from-premium: invert IV from ATM CE premium via Black-Scholes,
+ *      then compute greeks from that IV
+ *   3. Neither available → atmGreeksSource: null, atmIV: 0
+ *
+ * UNVERIFIED: The Black-Scholes model and the 7% risk-free rate are not
+ * independently validated against exchange-published greeks. deltaSource
+ * labels whether delta came from the provider or was BS-computed.
  */
 export function resolveAtmIv(input: {
   atm?: OptionStrike | null;
@@ -301,6 +455,15 @@ export interface DailyDerivativesReport {
   putWall: number;
   totalCallOI: number;
   totalPutOI: number;
+  /** Gamma Wall calibration — strongest call/put gamma wall (separate from OI wall). */
+  gammaCallWall: WallInfo | null;
+  gammaPutWall: WallInfo | null;
+  /** Trade-plan blocking wall — nearest opposing trade-plan strike. */
+  tradeBlockingWall: WallInfo | null;
+  /** Whether OI wall and gamma wall co-locate on the same side. Both are
+   *  computed from the same option-chain snapshot, so this is co-location,
+   *  not independent confirmation or increased statistical confidence. */
+  wallConfluence: "ALIGNED" | "CONFLICT" | "NONE" | null;
   atmStrike: number;
   atmIV: number;
   atmGreeks?: Greeks;
@@ -314,8 +477,23 @@ export interface DailyDerivativesReport {
   greeks?: { strike: number; ce?: Greeks; pe?: Greeks }[];
   /** True when the chain came from a fallback provider (not the primary one). */
   chainFallbackUsed?: boolean;
-  /** The provider's own chain timestamp (when the contract was priced). */
-  chainTimestamp?: string;
+  /**
+   * Chain timestamp provenance — never mixes provider quote time with
+   * application collection time:
+   *   providerQuoteTime — the exchange's own quote timestamp (ISO-8601 UTC),
+   *                       null when the provider did not supply one.
+   *   providerResponseTime — when the application received the payload
+   *                          (ISO-8601 UTC). Equals `fetchedAt` because the
+   *                          report is assembled right after the fetch completes.
+   *   fetchedAt — when the payload was fetched from the provider
+   *               (ISO-8601 UTC). Never mixed with provider quote time.
+   *   cacheCreatedAt — when the payload was stored in the live chain cache
+   *                    (ISO-8601 UTC), or null when served fresh and not cached.
+   */
+  providerQuoteTime?: string | null;
+  providerResponseTime?: string | null;
+  fetchedAt?: string | null;
+  cacheCreatedAt?: string | null;
   /** Where the VIX number came from: the exchange, the chain's ATM IV, or the stated estimate. */
   indiaVixSource?: "nse" | "atm-iv" | "estimate";
   topCallOI: { strike: number; oi: number; oiChange: number }[];
@@ -2637,6 +2815,18 @@ export class DailyDerivativesService {
       }
     }
 
+    // ── Wall calibration — OI / gamma / trade-plan walls, kept separate ──
+    const wallCalibration = calibrateWalls({
+      strikes,
+      spot,
+      expiry,
+      tradePlans,
+      preferredSide,
+      gammaWalls: sellerIntel.exposure.gammaWalls,
+      oiCallWall: callWall,
+      oiPutWall: putWall,
+    });
+
     return {
       underlying,
       timestamp: new Date().toISOString(),
@@ -2648,6 +2838,10 @@ export class DailyDerivativesService {
       maxPain,
       callWall,
       putWall,
+      gammaCallWall: wallCalibration.gammaCallWall,
+      gammaPutWall: wallCalibration.gammaPutWall,
+      tradeBlockingWall: wallCalibration.tradeBlockingWall,
+      wallConfluence: wallCalibration.wallConfluence,
       totalCallOI,
       totalPutOI,
       atmStrike,
@@ -2677,9 +2871,27 @@ export class DailyDerivativesService {
       dataSource: chainResult.source || "canonical",
       freshness: chain.freshness || "UNKNOWN",
       chainFallbackUsed: chainResult.fallbackUsed === true,
-      // WHEN the chain was priced — the provider's own stamp first, then the
-      // collection time. An undated payload stays undated.
-      chainTimestamp: chain.asOf || chain.providerTimestamp || chain.timestamp || chain.fetchedAt || "",
+      // Chain timestamp provenance — never mixes provider quote time with
+      // application collection time:
+      //   providerQuoteTime — the exchange's own quote timestamp
+      //                       (getOptionChain populates chain.providerTimestamp)
+      //   providerResponseTime — when the provider's response was received
+      //                          (getOptionChain populates chain.fetchedAt, the
+      //                          envelope's response-receipt timestamp)
+      //   fetchedAt — when fetching AND normalization fully completed
+      //               (fetchCompletedAt, captured just below — distinct from
+      //                providerResponseTime)
+      //   cacheCreatedAt — null: the DD data path has no cache-entry creation
+      //                  timestamp (cacheCreatedAt is only stamped on the
+      //                  liveChainMemo copy inside getOptionChain, not on the
+      //                  returned data).
+      providerQuoteTime: chain.providerTimestamp ?? null,
+      providerResponseTime: chain.fetchedAt ?? null,
+      fetchedAt: (() => {
+        const fetchCompletedAt = new Date();
+        return fetchCompletedAt.toISOString();
+      })(),
+      cacheCreatedAt: null,
       atmGreeksSource,
       indiaVixSource,
       greeks: strikes
@@ -2714,7 +2926,7 @@ ATM Theta      : ${r.atmGreeks?.theta?.toFixed(2) || "-"}
 
 Sentiment      : ${r.sentiment} (Score: ${r.sentimentScore}/100)
 Expiry         : ${r.expiry.split("T")[0]} (${r.daysToExpiry} days left)
-Data Source    : ${r.dataSource} (${r.freshness})${r.chainFallbackUsed ? " [FALLBACK PROVIDER]" : ""}${r.chainTimestamp ? ` · priced ${r.chainTimestamp}` : ""}
+Data Source    : ${r.dataSource} (${r.freshness})${r.chainFallbackUsed ? " [FALLBACK PROVIDER]" : ""}${r.providerQuoteTime ? ` · quoted ${new Date(r.providerQuoteTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} IST` : ` · quote time unavailable`}${r.providerResponseTime ? ` · fetched ${new Date(r.providerResponseTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} IST` : ""}
 
 ── Top Call OI ──────────────────────────────
 ${r.topCallOI.map(t => `  ${t.strike} → OI: ${t.oi.toLocaleString()} | ΔOI: ${t.oiChange}`).join("\n")}

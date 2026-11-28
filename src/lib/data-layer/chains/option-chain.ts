@@ -191,13 +191,21 @@ export function providerAsOf(raw: any): string | null {
 /**
  * The canonical option chain. Extends the shared schema with the stamps a
  * caller needs to know WHICH contract it holds and WHEN it was priced:
- *   asOf            — the provider's own publication/pricing timestamp
- *   expiryRequested — what the caller asked for (null = auto-selected)
- *   expirySelection — how the expiry was chosen
- *   isEod           — true for end-of-day bhavcopy data (never a live chain)
+ *   providerQuoteTime — the provider's own quote/pricing timestamp (ISO-8601 UTC),
+ *                       null when the provider did not supply one (never
+ *                       substituted with collection time).
+ *   collectedAt       — when the application collected/fetched the payload
+ *                       (ISO-8601 UTC).
+ *   cacheCreatedAt    — when the payload was stored in the in-memory cache
+ *                       (ISO-8601 UTC).
+ *   expiryRequested   — what the caller asked for (null = auto-selected)
+ *   expirySelection   — how the expiry was chosen
+ *   isEod             — true for end-of-day bhavcopy data (never a live chain)
  */
 export interface CanonicalOptionChain extends OptionChainData {
-  asOf?: string;
+  providerQuoteTime: string | null;
+  collectedAt: string;
+  cacheCreatedAt: string | null;
   expiryRequested?: string | null;
   expirySelection?: 'requested' | 'nearest-live' | 'provider';
   isEod?: boolean;
@@ -479,6 +487,7 @@ function normalizeNseChain(
     }
 
     const collectedAt = new Date().toISOString();
+    const providerQuoteTs = providerAsOf(raw);
     const data: CanonicalOptionChain = {
       underlying: raw?.records?.underlying ?? symbol ?? 'UNKNOWN',
       spot: raw?.records?.underlyingValue ?? null,
@@ -488,8 +497,12 @@ function normalizeNseChain(
       source: 'NSE',
       fallbackUsed: false,
       freshness: collectedFreshness(raw, 'optionChain'),
-      // Provenance: WHEN the exchange priced this chain + WHICH contract.
-      asOf: providerAsOf(raw) ?? collectedAt,
+      // Provenance: WHEN the exchange priced this chain + WHEN we collected it.
+      // providerQuoteTime is the exchange's own quote timestamp (null if the
+      // provider did not supply one — never substituted with collection time).
+      providerQuoteTime: providerQuoteTs ?? null,
+      collectedAt,
+      cacheCreatedAt: null,
       expiryRequested: requestedExpiry ?? null,
       expirySelection: requested ? 'requested' : 'nearest-live',
       isEod: false,
@@ -602,7 +615,11 @@ function normalizeBseChain(
       source: 'BSE',
       fallbackUsed: false,
       freshness: collectedFreshness(raw, 'optionChain'),
-      asOf: providerAsOf(raw) ?? collectedAt,
+      // BSE does not supply a provider quote timestamp; providerQuoteTime is
+      // null so callers don't mistake collection time for exchange quote time.
+      providerQuoteTime: null,
+      collectedAt,
+      cacheCreatedAt: null,
       expiryRequested: requestedExpiry ?? null,
       expirySelection: requestedExpiry ? 'requested' : 'provider',
       isEod: false,
@@ -723,8 +740,9 @@ export async function getOptionChain(
       // NSE gate) during market open can re-serve this snapshot instead of
       // hard-failing to NO_DATA. Age is stamped; the miss path only reuses
       // within LIVE_CHAIN_MEMO_MS and labels the reason honestly.
+      const cached = { ...settled.data, cacheCreatedAt: new Date().toISOString() };
       liveChainMemo.set(symbol, {
-        data: settled.data,
+        data: cached,
         at: Date.now(),
         source: settled.source,
       });

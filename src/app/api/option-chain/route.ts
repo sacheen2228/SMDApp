@@ -221,6 +221,9 @@ export async function GET(request: NextRequest) {
     let providerTs: Date | null = null;
     // Provenance stamps for the chain (see the `chain` block in the response).
     let chainAsOf: string | null = null;
+    // When the payload was stored in the live chain cache — null unless the
+    // canonical path served a cached snapshot (the race path always fetches fresh).
+    let chainCacheCreatedAt: string | null = null;
     let chainIsEod = false;
     let chainExpirySelection: string | null = null;
     
@@ -260,9 +263,11 @@ export async function GET(request: NextRequest) {
     if (winner) {
       const c = winner;
       providerTs = c.providerTimestamp ? new Date(c.providerTimestamp) : null;
-      dataTimestamp = providerTs ?? new Date();
+      // providerResponseTime is when we received the payload from the engine
+      dataTimestamp = new Date(c.fetchedAt);
       effectiveExpiry = c.expiry || null;
-      chainAsOf = c.providerTimestamp ?? c.fetchedAt;
+      // chainAsOf is the provider's quote time, never substituted with fetch time
+      chainAsOf = c.providerTimestamp ?? null;
       chainExpirySelection = rawExpiry ? 'requested' : 'nearest-live';
 
       chainData = {
@@ -361,12 +366,13 @@ export async function GET(request: NextRequest) {
             : canon.data.source === 'NSE'
               ? 'nse-api'
               : 'data-layer';
-        providerTs = canon.data.providerTimestamp
-          ? new Date(canon.data.providerTimestamp)
+        providerTs = canon.data.providerQuoteTime
+          ? new Date(canon.data.providerQuoteTime)
           : null;
-        dataTimestamp = providerTs ?? new Date();
+        dataTimestamp = new Date(canon.data.collectedAt);
         effectiveExpiry = canon.data.expiry || null;
-        chainAsOf = canon.data.asOf ?? canon.data.fetchedAt;
+        chainAsOf = canon.data.providerQuoteTime ?? null;
+        chainCacheCreatedAt = canon.data.cacheCreatedAt ?? null;
         chainIsEod = canon.data.isEod === true;
         chainExpirySelection = canon.data.expirySelection || null;
         if (canon.data.fallbackReason)
@@ -1041,10 +1047,20 @@ export async function GET(request: NextRequest) {
 
     // Provenance of THIS chain: which contract, when it was priced, and
     // whether it is end-of-day data. Callers (scanner, agent, UI) read
-    // `chain.source` / `chain.asOf` — they need the contract too.
+    // `chain.source` / `chain.providerQuoteTime` — they need the contract too.
+    //
+    // providerResponseTime = when the provider's response was received
+    //                        (dataTimestamp, captured at race/canonical resolution).
+    // fetchedAt            = when fetching AND normalization fully completed
+    //                        (fetchCompletedAt, captured just below).
+    // These must never be identical — providerResponseTime precedes fetchedAt.
+    const fetchCompletedAt = new Date();
     const chainStamp = {
       source,
-      asOf: chainAsOf ?? dataTimestamp.toISOString(),
+      providerQuoteTime: chainAsOf ?? null,
+      providerResponseTime: dataTimestamp.toISOString(),
+      fetchedAt: fetchCompletedAt.toISOString(),
+      cacheCreatedAt: chainCacheCreatedAt,
       expiry: selectedExpiry || null,
       expiryIso: toIsoDate(selectedExpiry) || null,
       expiryRequested: rawExpiry ?? null,

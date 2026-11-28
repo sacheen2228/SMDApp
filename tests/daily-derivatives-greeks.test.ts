@@ -99,11 +99,11 @@ describe("Daily Derivatives — the live chain's Greeks", () => {
     expect(SRC).toMatch(/greeks\??:\s*\{[^}]*strike/);
     // the chain's own provenance — which provider, how fresh, was a fallback used
     expect(SRC).toMatch(/chainFallbackUsed\??:\s*boolean/);
-    expect(SRC).toMatch(/chainTimestamp\??:\s*string/);
+    expect(SRC).toMatch(/providerQuoteTime\??:\s*string\s*\|\s*null/);
     // and the report assembly fills them from the chain result
     const assembly = sliceBetween("dataSource: chainResult.source", "return report");
     expect(assembly).toMatch(/chainFallbackUsed/);
-    expect(assembly).toMatch(/chainTimestamp/);
+    expect(assembly).toMatch(/providerQuoteTime/);
   });
 
   it("the VIX falls back to the chain's ATM IV (the shared resolveVix policy), never a silent 0", () => {

@@ -106,6 +106,7 @@ export async function GET() {
       fiiNet5dAvg: data.fiiNet5dAvg ?? null,
       diiNet5dAvg: data.diiNet5dAvg ?? null,
       fiiFutLongRatio: data.fiiFutLongRatio ?? null,
+      finality: data.finality ?? "UNVERIFIED",
       provenance: {
         source: envelope.provider,
         dataSource: data.source,

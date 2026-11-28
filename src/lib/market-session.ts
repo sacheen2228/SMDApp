@@ -17,7 +17,7 @@ export type MarketInstrument = 'index' | 'fno-stock' | 'cash-stock';
 
 // Shared IST clock + exchange calendar (single source of truth).
 // market-session-config.ts imports nothing, so this direction is cycle-free.
-import { isTradingDay, getISTMinutes as getConfigISTMinutes } from './expiry-liquidity/market-session-config';
+import { isTradingDay, getISTMinutes as getConfigISTMinutes, getISTDate, NSE_SESSION_CONFIG } from './expiry-liquidity/market-session-config';
 
 export type MarketSession =
   | 'pre_open'          // 09:00 - 09:15
@@ -313,10 +313,20 @@ export function getCurrentSession(instrument: MarketInstrument = 'index'): Sessi
   // Weekend / exchange holiday — nothing below can be "open". Without this
   // guard Saturday 10:00 IST reported `primary` with confidence 1.0.
   if (!isTradingDay()) {
+    const today = getISTDate();
+    const day = today.getUTCDay();
+    const isWeekendDay = day === 0 || day === 6;
+    const todayIso = today.toISOString().split('T')[0];
+    const isHoliday = NSE_SESSION_CONFIG.holidayCalendar.includes(todayIso);
+    const description = isWeekendDay
+      ? `Today is ${today.toLocaleDateString('en-IN', { weekday: 'long' })} — NSE market closed.`
+      : isHoliday
+      ? `Today is an NSE exchange holiday — market closed.`
+      : 'Market closed.';
     return withMarketOpen({
       session: 'closed',
       label: 'Market Closed',
-      description: 'Non-trading day (weekend or exchange holiday).',
+      description,
       confidenceMultiplier: 0,
       allowedActions: ['WAIT'],
       notes: ['No live trading possible', 'Next session starts at 09:15 IST on the next trading day'],

@@ -122,6 +122,17 @@ interface CvdFallback {
   note: string;
 }
 
+interface WallInfo {
+  strike: number;
+  side: "CALL" | "PUT";
+  magnitude: number;
+  distance: number;
+  expiry: string;
+  expiryContribution: "nearest" | "combined";
+  source: "OI" | "GEX" | "TRADE_PLAN";
+  status: "VERIFIED" | "DERIVED" | "UNVERIFIED" | "UNAVAILABLE";
+}
+
 interface DailyDerivativesReport {
   underlying: "NIFTY" | "SENSEX";
   timestamp: string;
@@ -136,6 +147,13 @@ interface DailyDerivativesReport {
   putWall: number;
   totalCallOI: number;
   totalPutOI: number;
+  /** Gamma Wall calibration — strongest call/put gamma wall (separate from OI wall). */
+  gammaCallWall: WallInfo | null;
+  gammaPutWall: WallInfo | null;
+  /** Trade-plan blocking wall — nearest opposing trade-plan strike. */
+  tradeBlockingWall: WallInfo | null;
+  /** Whether OI wall and gamma wall cluster (confluence) or conflict. */
+  wallConfluence: "ALIGNED" | "CONFLICT" | "NONE" | null;
   atmStrike: number;
   atmIV: number;
   atmGreeks?: Greeks;
@@ -144,7 +162,11 @@ interface DailyDerivativesReport {
   /** The LIVE chain's per-strike Greeks (CE/PE) — never a fabricated zero. */
   greeks?: { strike: number; ce?: Greeks; pe?: Greeks }[];
   chainFallbackUsed?: boolean;
-  chainTimestamp?: string;
+  /** Chain timestamp provenance — never mixes provider quote time with application collection time. */
+  providerQuoteTime?: string | null;
+  providerResponseTime?: string | null;
+  fetchedAt?: string | null;
+  cacheCreatedAt?: string | null;
   indiaVixSource?: "nse" | "atm-iv" | "estimate";
   topCallOI: { strike: number; oi: number; oiChange: number }[];
   topPutOI: { strike: number; oi: number; oiChange: number }[];
@@ -245,6 +267,8 @@ interface SellerBoardRow {
   type: "CE" | "PE";
   oi: number;
   oiChangePct: number;
+  oiChangeType: "INTRADAY" | "OVERNIGHT" | "UNVERIFIED" | "UNAVAILABLE";
+  baselineSession: string | null;
   premiumChangePct: number;
   classification: string;
   score: number;
@@ -591,9 +615,17 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
           {report.chainFallbackUsed && (
             <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-mono">FALLBACK PROVIDER</span>
           )}
-          {report.chainTimestamp && (
+          {report.providerQuoteTime && (
             <span className="font-mono">
-              priced {new Date(report.chainTimestamp).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
+              quoted {new Date(report.providerQuoteTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} IST
+            </span>
+          )}
+          {!report.providerQuoteTime && (
+            <span className="font-mono text-amber-400">QUOTE TIME UNAVAILABLE</span>
+          )}
+          {report.providerResponseTime && (
+            <span className="font-mono">
+              fetched {new Date(report.providerResponseTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} IST
             </span>
           )}
           {report.atmGreeksSource && (
@@ -695,6 +727,79 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
               icon={CalendarClock}
               color="text-amber-400"
             />
+          </div>
+
+          {/* Wall Intelligence — OI / Gamma / Trade-plan walls, kept separate */}
+          <div className="bg-card/50 border border-border/50 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-sky-400" />
+                <span className="text-[13px] font-bold text-foreground">Wall Intelligence</span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">
+                {report.wallConfluence === "ALIGNED"
+                  ? "OI/Γ co-located"
+                  : report.wallConfluence === "CONFLICT"
+                  ? "OI/Γ conflict"
+                  : "No co-location"}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-[11px] mb-2">
+              {[
+                {
+                  label: "Gamma Call Wall · nearest expiry",
+                  wall: report.gammaCallWall,
+                  color: "text-rose-400",
+                  icon: <TrendingUp className="h-3 w-3" />,
+                },
+                {
+                  label: "Gamma Put Wall · nearest expiry",
+                  wall: report.gammaPutWall,
+                  color: "text-emerald-400",
+                  icon: <TrendingDown className="h-3 w-3" />,
+                },
+                {
+                  label: "Trade-Blocking Wall",
+                  wall: report.tradeBlockingWall,
+                  color: "text-amber-400",
+                  icon: <Target className="h-3 w-3" />,
+                },
+              ].map(({ label, wall, color, icon }) => (
+                <div key={label} className="bg-muted/40 rounded p-1.5">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span
+                      className={`font-bold ${wall?.status === "DERIVED" || wall?.status === "VERIFIED" ? color : "text-muted-foreground"}`}
+                    >
+                      {wall ? wall.strike.toLocaleString("en-IN") : "—"}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {wall
+                      ? `≈${wall.distance.toLocaleString(undefined, { maximumFractionDigits: 0 })} pts · ${wall.expiry}`
+                      : "no data"}
+                  </div>
+                  <div className={`text-[9px] ${wall?.status === "DERIVED" ? "text-amber-400" : wall?.status === "VERIFIED" ? "text-green-400" : "text-muted-foreground"}`}>
+                    {wall?.status === "DERIVED" ? "derived (BS greeks)" : wall?.status === "VERIFIED" ? "verified" : "unavailable"}
+                  </div>
+                </div>
+              ))}
+              {/* Expiry scope note */}
+              <div className="col-span-3 bg-muted/20 rounded p-1.5 text-[10px] text-muted-foreground">
+                Walls reflect the selected nearest live expiry only ({report.expiry.split("T")[0]}); other expiries are not included. Not a measure of total market exposure.
+              </div>
+            </div>
+            {/* Regime + confluence strip */}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground font-mono">
+              <span>Γ flip {report.sellerIntel?.exposure.gammaFlip != null ? report.sellerIntel.exposure.gammaFlip.toFixed(0) : "—"}</span>
+              <span className={report.sellerIntel?.exposure.dealerRegime === "LONG_GAMMA" ? "text-emerald-400" : report.sellerIntel?.exposure.dealerRegime === "SHORT_GAMMA" ? "text-rose-400" : "text-muted-foreground"}>
+                {report.sellerIntel?.exposure.dealerRegime} · {report.sellerIntel?.exposure.dealerBias}
+              </span>
+              <span className={report.wallConfluence === "ALIGNED" ? "text-amber-400" : report.wallConfluence === "CONFLICT" ? "text-rose-400" : "text-muted-foreground"}>
+                OI/Γ {report.wallConfluence === "ALIGNED" ? "co-located" : report.wallConfluence === "CONFLICT" ? "conflict" : "none"} (same snapshot)
+              </span>
+              <span>expiry {report.expiry.split("T")[0]} (nearest)</span>
+            </div>
           </div>
 
           {/* Sentiment & Expiry */}
@@ -1375,10 +1480,13 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                           <span className={r.oiChangePct >= 0 ? "text-rose-300" : "text-emerald-300"}>
                             ΔOI {r.oiChangePct >= 0 ? "+" : ""}{r.oiChangePct.toFixed(1)}%
                           </span>
-                          <span className={r.premiumChangePct >= 0 ? "text-emerald-300" : "text-rose-300"}>
-                            prem {r.premiumChangePct >= 0 ? "+" : ""}{r.premiumChangePct.toFixed(1)}%
+                          <span className={r.premiumChangePct != null && r.premiumChangePct >= 0 ? "text-emerald-300" : r.premiumChangePct != null && r.premiumChangePct < 0 ? "text-rose-300" : "text-muted-foreground"}>
+                            prem {r.premiumChangePct != null ? (r.premiumChangePct >= 0 ? "+" : "") : ""}{r.premiumChangePct != null ? r.premiumChangePct.toFixed(1) : "—"}%
                           </span>
                           <span className="text-muted-foreground">sc {r.score}</span>
+                          <span className={`text-[10px] ${r.oiChangeType === "INTRADAY" ? "text-emerald-400" : r.oiChangeType === "OVERNIGHT" ? "text-amber-400" : "text-muted-foreground"}`}>
+                            [{r.oiChangeType}{r.baselineSession ? " · " + r.baselineSession : ""}]
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -1394,10 +1502,13 @@ function DailyDerivativesPanel({ symbol: initialSymbol = "NIFTY" }: { symbol?: s
                         <div key={i} className="flex items-center justify-between text-[11px] font-mono bg-emerald-500/5 rounded px-1.5 py-1">
                           <span className="text-foreground">{r.strike} {r.type}</span>
                           <span className="text-emerald-300">ΔOI {r.oiChangePct.toFixed(1)}%</span>
-                          <span className={r.premiumChangePct >= 0 ? "text-emerald-300" : "text-rose-300"}>
-                            prem {r.premiumChangePct >= 0 ? "+" : ""}{r.premiumChangePct.toFixed(1)}%
+                          <span className={r.premiumChangePct != null && r.premiumChangePct >= 0 ? "text-emerald-300" : r.premiumChangePct != null && r.premiumChangePct < 0 ? "text-rose-300" : "text-muted-foreground"}>
+                            prem {r.premiumChangePct != null ? (r.premiumChangePct >= 0 ? "+" : "") : ""}{r.premiumChangePct != null ? r.premiumChangePct.toFixed(1) : "—"}%
                           </span>
                           <span className="text-muted-foreground">sc {r.score}</span>
+                          <span className={`text-[10px] ${r.oiChangeType === "INTRADAY" ? "text-emerald-400" : r.oiChangeType === "OVERNIGHT" ? "text-amber-400" : "text-muted-foreground"}`}>
+                            [{r.oiChangeType}{r.baselineSession ? " · " + r.baselineSession : ""}]
+                          </span>
                         </div>
                       ))}
                     </div>

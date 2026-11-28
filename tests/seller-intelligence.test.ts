@@ -19,6 +19,7 @@ import {
   calculateGreekImpact,
   calculateExposure,
   analyzeOption,
+  classifyOIBaseline,
   calculateSellerZone,
   generateTradeCandidate,
   buildSellerIntel,
@@ -26,6 +27,7 @@ import {
   type OptionSnapshot,
   type MarketConfirmation,
 } from "@/lib/seller-intelligence";
+import { istDayKey } from "@/lib/risk-management";
 
 // ── classifyPosition ────────────────────────────────────────────────
 describe("classifyPosition", () => {
@@ -79,6 +81,7 @@ describe("analyzeOption", () => {
     oi: 500_000, previousOI: 450_000, volume: 90_000, averageVolume: 40_000,
     delta: -0.4, gamma: 0.001, theta: -12, vega: 6,
     iv: 14.5, previousIV: 14.0, lotSize: 75, timestamp: Date.now(),
+    oiBaseline: { oi: 450_000, observedAt: Date.now(), session: istDayKey(Date.now()) },
     ...over,
   });
 
@@ -121,6 +124,7 @@ describe("calculateSellerZone", () => {
     oi: 500_000, previousOI: 450_000, volume: 90_000, averageVolume: 40_000,
     delta: -0.4, gamma: 0.001, theta: -12, vega: 6,
     iv: 14.5, previousIV: 14.0, lotSize: 75, timestamp: Date.now(),
+    oiBaseline: { oi: 450_000, observedAt: Date.now(), session: istDayKey(Date.now()) },
     ...over,
   });
 
@@ -150,6 +154,7 @@ describe("generateTradeCandidate", () => {
     oi: 400_000, previousOI: 450_000, volume: 90_000, averageVolume: 40_000,
     delta: 0.5, gamma: 0.001, theta: -12, vega: 6,
     iv: 14.5, previousIV: 14.0, lotSize: 75, timestamp: Date.now(),
+    oiBaseline: { oi: 450_000, observedAt: Date.now(), session: istDayKey(Date.now()) },
     ...over,
   });
 
@@ -294,5 +299,80 @@ describe("buildSellerIntel", () => {
       expect(["DEFENDED_CANDIDATE", "PRESSURE_BUILDING", "POTENTIAL_COVERING", "INVALIDATED", "UNCONFIRMED"]).toContain(z.status);
       expect(z.zoneLow).toBeLessThan(z.zoneHigh);
     }
+  });
+});
+
+// ── OI baseline classification ─────────────────────────────────────────
+describe("classifyOIBaseline", () => {
+  const now = Date.now();
+  const session = istDayKey(now);
+  const yesterdayMs = now - 24 * 60 * 60 * 1000;
+  const yesterdaySession = istDayKey(yesterdayMs);
+
+  test("same-session owned baseline → INTRADAY, valid, exact IST timestamp", () => {
+    const v = classifyOIBaseline({
+      previousOI: 450_000,
+      owned: { oi: 450_000, observedAt: now, session },
+      currentTimestamp: now,
+    });
+    expect(v.type).toBe("INTRADAY");
+    expect(v.source).toBe("same-session-snapshot");
+    expect(v.baselineTimestamp).toBe(now);
+    expect(v.baselineSession).toBe(session);
+    expect(v.currentSession).toBe(session);
+    expect(v.valid).toBe(true);
+    expect(v.reason).toContain("this session");
+  });
+
+  test("earlier-session owned baseline → OVERNIGHT, not valid for intraday pressure", () => {
+    const v = classifyOIBaseline({
+      previousOI: 450_000,
+      owned: { oi: 450_000, observedAt: yesterdayMs, session: yesterdaySession },
+      currentTimestamp: now,
+    });
+    expect(v.type).toBe("OVERNIGHT");
+    expect(v.source).toBe("prior-session-snapshot");
+    expect(v.baselineTimestamp).toBe(yesterdayMs);
+    expect(v.baselineSession).toBe(yesterdaySession);
+    expect(v.currentSession).toBe(session);
+    expect(v.valid).toBe(false);
+    expect(v.reason).toContain("overnight");
+  });
+
+  test("exchange ΔOI reconstruction, no owned baseline → UNVERIFIED, no timestamp", () => {
+    const v = classifyOIBaseline({
+      previousOI: 450_000,
+      owned: null,
+      currentTimestamp: now,
+    });
+    expect(v.type).toBe("UNVERIFIED");
+    expect(v.source).toBe("exchange-delta");
+    expect(v.baselineTimestamp).toBeNull();
+    expect(v.baselineSession).toBeNull();
+    expect(v.valid).toBe(false);
+    expect(v.reason).toContain("reconstructed");
+  });
+
+  test("no baseline at all → UNAVAILABLE", () => {
+    const v = classifyOIBaseline({
+      previousOI: 0,
+      owned: null,
+      currentTimestamp: now,
+    });
+    expect(v.type).toBe("UNAVAILABLE");
+    expect(v.valid).toBe(false);
+    expect(v.baselineTimestamp).toBeNull();
+    expect(v.baselineSession).toBeNull();
+  });
+
+  test("timestamps never resolve to UTC midnight", () => {
+    const v = classifyOIBaseline({
+      previousOI: 450_000,
+      owned: { oi: 450_000, observedAt: now, session },
+      currentTimestamp: now,
+    });
+    expect(v.baselineTimestamp).toBe(now);
+    expect(new Date(v.baselineTimestamp!).getUTCHours()).not.toBe(0);
+    expect(v.baselineSession).toBe(session);
   });
 });

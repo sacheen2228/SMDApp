@@ -38,6 +38,10 @@ export interface FiiDiiSnapshot {
   diiSell: number;
   date: string;
   source: FiiDiiSource;
+  /** The NSE fiidiiTradeReact API does not explicitly label figures as
+   * provisional or final. EOD figures are treated as final by convention,
+   * but the source does not confirm this. */
+  finality: "FINAL" | "PROVISIONAL" | "UNVERIFIED";
 }
 
 export interface FiiDiiResult {
@@ -156,6 +160,10 @@ async function fetchNSEFiiDii(): Promise<FiiDiiSnapshot | null> {
         diiSell: parseFloat(dii?.sellValue || '0'),
         date: fii?.date || dii?.date || '',
         source: 'nse',
+        // NSE fiidiiTradeReact does not explicitly label figures as provisional
+        // or final. EOD figures are treated as final by convention, but the
+        // source does not confirm finality.
+        finality: "UNVERIFIED",
       };
     } catch (err: any) {
       if (attempt < 3) {
@@ -186,6 +194,8 @@ async function fetchMrChartistLatest(): Promise<FiiDiiSnapshot | null> {
       diiSell: d.dii_sell ?? 0,
       date: d.date ?? '',
       source: 'mrchartist',
+      // MrChartist does not explicitly label figures as provisional or final.
+      finality: "UNVERIFIED",
     };
   } catch {
     return null;
@@ -559,6 +569,7 @@ export async function fetchFiiDiiData(): Promise<FiiDiiResult> {
     diiBuy: 0, diiSell: 0,
     date: '',
     source: 'mrchartist' as const,
+    finality: 'UNVERIFIED' as const,
   };
   const available = !!selection.snapshot;
   const reason = available
